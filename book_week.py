@@ -118,13 +118,117 @@ def is_room_available_to_book(room, target_date, slot_start_hour):
     return True, ""
 
 
+def adjust_slot_for_peak_quota(slot_start, slot_end, target_date, remaining_peak_mins):
+    """
+    Adjust a slot to avoid the peak zone (9am-4pm) when peak quota is exceeded or limited.
+
+    This handles cases like:
+    - 8:00-9:30 with no peak quota → trim to 8:00-9:00
+    - 15:30-17:00 with no peak quota → trim to 16:00-17:00
+    - 10:00-14:00 with no peak quota → skip entirely (fully in peak)
+    - 8:00-10:00 with 30min peak left → trim to 8:00-9:30
+
+    Args:
+        slot_start: Start hour (e.g., 8.0 for 8am)
+        slot_end: End hour (e.g., 9.5 for 9:30am)
+        target_date: The date of the slot
+        remaining_peak_mins: How many peak minutes are still available
+
+    Returns:
+        Tuple of (adjusted_start, adjusted_end, was_adjusted, reason)
+        If the slot should be skipped entirely, returns (None, None, True, reason)
+    """
+    # Only applies to weekdays
+    if target_date.weekday() >= 5:  # Weekend
+        return slot_start, slot_end, False, ""
+
+    # Calculate how much of this slot is in peak hours
+    overlap_start = max(slot_start, PEAK_START)
+    overlap_end = min(slot_end, PEAK_END)
+    peak_overlap_mins = max(0, (overlap_end - overlap_start) * 60)
+
+    # If no peak overlap, no adjustment needed
+    if peak_overlap_mins == 0:
+        return slot_start, slot_end, False, ""
+
+    # If we have enough peak quota for this slot, no adjustment needed
+    if peak_overlap_mins <= remaining_peak_mins:
+        return slot_start, slot_end, False, ""
+
+    # We need to adjust. Check if slot is fully within peak hours
+    if slot_start >= PEAK_START and slot_end <= PEAK_END:
+        # Slot is fully in peak zone - can we use partial quota?
+        if remaining_peak_mins >= MIN_BOOKING_MINUTES:
+            # Use remaining quota: book for remaining_peak_mins
+            new_end = slot_start + remaining_peak_mins / 60
+            if new_end <= slot_end and (new_end - slot_start) * 60 >= MIN_BOOKING_MINUTES:
+                return slot_start, new_end, True, f"Trimmed to use {remaining_peak_mins:.0f}min peak quota"
+        return None, None, True, "Fully in peak zone, quota exceeded"
+
+    # Slot crosses peak boundary - adjust to avoid peak zone
+    adjusted_start = slot_start
+    adjusted_end = slot_end
+
+    # If slot starts before peak and ends during/after peak
+    if slot_start < PEAK_START and slot_end > PEAK_START:
+        if remaining_peak_mins <= 0:
+            # No peak quota left - trim to end at peak start
+            adjusted_end = PEAK_START
+        else:
+            # Use remaining peak quota
+            max_end = PEAK_START + remaining_peak_mins / 60
+            if max_end < slot_end:
+                adjusted_end = min(max_end, slot_end)
+
+    # If slot starts during peak and ends after peak
+    if slot_start >= PEAK_START and slot_start < PEAK_END and slot_end > PEAK_END:
+        if remaining_peak_mins <= 0:
+            # No peak quota left - start at peak end
+            adjusted_start = PEAK_END
+        else:
+            # Can we fit some peak time at the start?
+            peak_portion = min(PEAK_END - slot_start, remaining_peak_mins / 60)
+            if peak_portion * 60 < MIN_BOOKING_MINUTES:
+                # Not enough for a booking during peak, start after peak
+                adjusted_start = PEAK_END
+
+    # Validate adjusted slot
+    if adjusted_end - adjusted_start < MIN_BOOKING_MINUTES / 60:
+        return None, None, True, "Adjusted slot too short"
+
+    if adjusted_start != slot_start or adjusted_end != slot_end:
+        return adjusted_start, adjusted_end, True, f"Adjusted from {slot_start:.2f}-{slot_end:.2f} to avoid peak"
+
+    return slot_start, slot_end, False, ""
+
+
 class BookingTracker:
     """Tracks bookings and enforces rules."""
 
     def __init__(self):
         self.bookings = []  # List of (room, date, start_hour, end_hour)
         self.conflict_ranges = {}  # Per-day conflict ranges: {date: [(start, end), ...]}
-        self.peak_hours_used = 0  # Total minutes of peak time used
+        self.peak_hours_used = 0  # Total minutes of peak time used (from existing + new bookings)
+
+    def add_existing_event(self, date, start_hour, end_hour):
+        """Record an existing event from agenda scan (tracks peak hours + conflicts)."""
+        # Add to conflict ranges
+        date_key = date.strftime('%Y-%m-%d')
+        if date_key not in self.conflict_ranges:
+            self.conflict_ranges[date_key] = []
+        self.conflict_ranges[date_key].append((start_hour, end_hour))
+
+        # Track peak hours if this is a weekday event during peak hours
+        if date.weekday() < 5:  # Monday-Friday
+            overlap_start = max(start_hour, PEAK_START)
+            overlap_end = min(end_hour, PEAK_END)
+            if overlap_end > overlap_start:
+                peak_mins = (overlap_end - overlap_start) * 60
+                self.peak_hours_used += peak_mins
+                print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f} (+{peak_mins:.0f}min peak)")
+                return
+
+        print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f}")
 
     def add_booking(self, room, date, start_hour, end_hour):
         """Record a successful booking."""
@@ -141,12 +245,20 @@ class BookingTracker:
         print(f"  [Tracker] Total bookings: {len(self.bookings)}, Peak hours used: {self.peak_hours_used:.0f} min")
 
     def add_conflict(self, date, start_hour, end_hour):
-        """Record a discovered conflict range."""
+        """Record a discovered conflict range (during booking, not from agenda)."""
         date_key = date.strftime('%Y-%m-%d')
         if date_key not in self.conflict_ranges:
             self.conflict_ranges[date_key] = []
         self.conflict_ranges[date_key].append((start_hour, end_hour))
         print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f}")
+
+    def get_remaining_peak_minutes(self):
+        """Get remaining peak minutes available."""
+        return max(0, MAX_PEAK_HOURS * 60 - self.peak_hours_used)
+
+    def is_peak_quota_exceeded(self):
+        """Check if peak hours quota is exceeded."""
+        return self.peak_hours_used >= MAX_PEAK_HOURS * 60
 
     def overlaps_conflict(self, date, start_hour, end_hour):
         """Check if a time overlaps with known conflicts."""
@@ -899,14 +1011,15 @@ def scan_agenda(page, tracker, today):
         # Calculate the target date
         target_date = datetime.combine(today + timedelta(days=days_diff), datetime.min.time())
 
-        # Add to conflict ranges for this date
-        tracker.add_conflict(target_date, start_hour, end_hour)
+        # Add to conflict ranges for this date (also tracks peak hours)
+        tracker.add_existing_event(target_date, start_hour, end_hour)
         events_found += 1
 
         day_name = target_date.strftime("%A")
         print(f"    {date_str} ({day_name}): {start_time} - {end_time}")
 
     print(f"\n  Total conflicts added: {events_found}")
+    print(f"  Peak hours used from existing events: {tracker.peak_hours_used:.0f} min / {MAX_PEAK_HOURS * 60} min")
     print("="*60)
     return events_found
 
@@ -1220,16 +1333,21 @@ def main():
                 continue
 
             print(f"  Found {len(all_slots)} potential slots")
-            if all_slots and len(all_slots) <= 5:
-                slot_info = [(s['room'], f"{s['start_hour']:.2f}-{s['end_hour']:.2f}") for s in all_slots]
-                print(f"  [DEBUG] Slots: {slot_info}")
+            # Show first 10 slots for debugging
+            if all_slots:
+                slot_info = [(s['room'], f"{s['start_hour']:.2f}-{s['end_hour']:.2f}") for s in all_slots[:10]]
+                print(f"  [DEBUG] First 10 slots: {slot_info}")
 
             # Try to book slots
             day_booked = 0
             attempts = 0
             max_attempts = 15  # Reduce to avoid too many failed attempts
 
-            # Adjust slots to avoid conflicts (split slots if needed)
+            # Log peak quota status
+            remaining_peak = tracker.get_remaining_peak_minutes()
+            print(f"  [DEBUG] Peak quota: {tracker.peak_hours_used:.0f}/{MAX_PEAK_HOURS * 60} min used, {remaining_peak:.0f} min remaining")
+
+            # Adjust slots to avoid conflicts AND peak zone if quota exceeded
             adjusted_slots = []
             conflicts = tracker.conflict_ranges.get(target_date.strftime('%Y-%m-%d'), [])
 
@@ -1238,12 +1356,15 @@ def main():
 
             slots_removed = 0
             slots_adjusted = 0
+            peak_adjusted = 0
+            conflict_removed = 0
             for s in all_slots:
                 slot_start = s['start_hour']
                 slot_end = s['end_hour']
                 original_start = slot_start
+                original_end = slot_end
 
-                # Check if slot overlaps with any conflict
+                # Step 1: Check if slot overlaps with any conflict
                 for c_start, c_end in conflicts:
                     if slot_start < c_end and slot_end > c_start:
                         # Slot overlaps with conflict - try to use the part after the conflict
@@ -1255,19 +1376,42 @@ def main():
                             slot_start = slot_end  # Will be filtered out below
                             break
 
+                # Skip if slot was fully consumed by conflict
+                if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
+                    conflict_removed += 1
+                    continue
+
+                # Step 2: Adjust for peak hours quota (only on weekdays)
+                adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
+                    slot_start, slot_end, target_date, remaining_peak
+                )
+
+                if adj_start is None:
+                    # Slot should be skipped (fully in peak zone with no quota)
+                    print(f"  [DEBUG] Skipping {s['room']} {slot_start:.2f}-{slot_end:.2f}: {reason}")
+                    slots_removed += 1
+                    continue
+
+                if was_adjusted:
+                    slot_start = adj_start
+                    slot_end = adj_end
+                    peak_adjusted += 1
+                    print(f"  [DEBUG] Peak-adjusted {s['room']}: {original_start:.2f}-{original_end:.2f} -> {slot_start:.2f}-{slot_end:.2f}")
+
+                # Final validation
                 if slot_start < slot_end and (slot_end - slot_start) * 60 >= MIN_BOOKING_MINUTES:
                     s = s.copy()
                     s['start_hour'] = slot_start
                     s['duration'] = slot_end - slot_start
                     s['end_hour'] = slot_end
                     adjusted_slots.append(s)
-                    if slot_start != original_start:
+                    if slot_start != original_start or slot_end != original_end:
                         slots_adjusted += 1
                 else:
                     slots_removed += 1
 
-            if slots_removed > 0 or slots_adjusted > 0:
-                print(f"  [DEBUG] Slot adjustment: {slots_removed} removed, {slots_adjusted} adjusted for conflicts")
+            if conflict_removed > 0 or slots_removed > 0 or slots_adjusted > 0 or peak_adjusted > 0:
+                print(f"  [DEBUG] Slot adjustment: {conflict_removed} conflict-removed, {slots_removed} peak-removed, {slots_adjusted} adjusted, {peak_adjusted} peak-adjusted")
 
             all_slots = adjusted_slots
             all_slots.sort(key=lambda s: (not s.get('is_good', False), s['start_hour'], s['room_priority']))
@@ -1321,7 +1465,11 @@ def main():
                     print("  [DEBUG] Refreshing slot data after successful booking...")
                     available_data = get_available_slots(page)
 
-                    # Rebuild slot list
+                    # Recalculate remaining peak quota after booking
+                    remaining_peak = tracker.get_remaining_peak_minutes()
+                    print(f"  [DEBUG] Updated peak quota: {remaining_peak:.0f} min remaining")
+
+                    # Rebuild slot list with peak adjustment
                     all_slots = []
                     for room_data in available_data:
                         room_name = room_data["room"]
@@ -1331,16 +1479,32 @@ def main():
                         room_priority = PRIORITY_ROOMS.index(room_name)
 
                         for slot_data in room_data["slots"]:
-                            slot_duration = slot_data['endHour'] - slot_data['startHour']
+                            slot_start = slot_data['startHour']
+                            slot_end = slot_data['endHour']
+                            slot_duration = slot_end - slot_start
+
                             if slot_duration * 60 < MIN_BOOKING_MINUTES:
                                 continue
+
+                            # Apply peak adjustment
+                            adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
+                                slot_start, slot_end, target_date, remaining_peak
+                            )
+
+                            if adj_start is None:
+                                continue  # Skip slots fully in peak zone with no quota
+
+                            if was_adjusted:
+                                slot_start = adj_start
+                                slot_end = adj_end
+                                slot_duration = slot_end - slot_start
 
                             is_good_slot = slot_duration >= 1.0
 
                             all_slots.append({
                                 "room": room_name,
-                                "start_hour": slot_data['startHour'],
-                                "end_hour": slot_data['endHour'],
+                                "start_hour": slot_start,
+                                "end_hour": slot_end,
                                 "duration": slot_duration,
                                 "room_priority": room_priority,
                                 "is_good": is_good_slot,
