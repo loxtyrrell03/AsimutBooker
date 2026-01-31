@@ -13,12 +13,14 @@ Usage:
 
 import re
 import sys
+import json
 import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
 state_file = Path("data/browser_state/state.json")
+history_file = Path("data/booking_history.json")
 
 # Booking rules
 MAX_BOOKING_HOURS = 2
@@ -449,15 +451,18 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
 
 def go_back(page, days_ahead=None):
     """Navigate back to calendar by clicking the back button."""
-    # Click the back button with aria-label="Back to previous page"
-    back_btn = page.locator("button[aria-label='Back to previous page']").first
-    if back_btn.count() > 0 and back_btn.is_visible():
-        back_btn.click()
-        page.wait_for_timeout(2000)
-    else:
-        # Fallback: use browser back
-        page.go_back()
-        page.wait_for_timeout(2000)
+    try:
+        # Click the back button with aria-label="Back to previous page"
+        back_btn = page.locator("button[aria-label='Back to previous page']").first
+        if back_btn.count() > 0 and back_btn.is_visible():
+            back_btn.click()
+            page.wait_for_timeout(2000)
+        else:
+            # Fallback: use browser back
+            page.go_back()
+            page.wait_for_timeout(2000)
+    except Exception as e:
+        print(f"  Warning: go_back failed ({e})")
 
 
 def scan_agenda(page, tracker, today):
@@ -470,43 +475,115 @@ def scan_agenda(page, tracker, today):
     page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
     page.wait_for_timeout(3000)
 
-    # Parse all events from the agenda page
-    # The agenda shows events grouped by date with time ranges
-    events_found = 0
+    # Calculate the target date (7 days from now)
+    target_date = today + timedelta(days=7)
+    target_date_str = target_date.strftime("%d %B %Y").lstrip("0")  # e.g., "7 February 2026"
+    print(f"  Scrolling until we reach {target_date_str}...")
 
-    # Get all event entries on the page
-    # Look for time patterns like "09:30 - 11:00" or "11:00 - 13:00"
-    page_content = page.content()
+    # Keep scrolling until we see the target date or reach the end
+    max_scrolls = 50  # Safety limit
+    scroll_count = 0
+    last_height = 0
 
-    # Parse events by looking at the agenda structure
-    # Each event has a time range and details
-    event_items = page.locator(".event-list-item, [class*='event'], mat-list-item").all()
+    while scroll_count < max_scrolls:
+        # Check if target date is visible on page
+        page_text = page.evaluate("() => document.body.innerText")
+        if target_date_str in page_text:
+            print(f"  Found target date after {scroll_count} scrolls")
+            break
 
-    # Also look for specific date headers and their events
-    # The page shows dates like "Sunday 1 February 2026" followed by events
+        # Also check alternative date format (e.g., "7 February 2026" vs "07 February 2026")
+        alt_date_str = target_date.strftime("%d %B %Y")  # With leading zero
+        if alt_date_str in page_text:
+            print(f"  Found target date after {scroll_count} scrolls")
+            break
+
+        # Scroll down
+        page.evaluate("window.scrollBy(0, window.innerHeight)")
+        page.wait_for_timeout(800)
+
+        # Check if we've reached the bottom (no new content)
+        new_height = page.evaluate("() => document.body.scrollHeight")
+        if new_height == last_height:
+            print(f"  Reached end of page after {scroll_count} scrolls")
+            break
+        last_height = new_height
+        scroll_count += 1
+
+    # Scroll back to top to ensure we capture everything
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(500)
+
+    # Now scroll through the entire page once more to ensure all content is in DOM
+    print("  Final pass to capture all events...")
+    for _ in range(scroll_count + 5):
+        page.evaluate("window.scrollBy(0, window.innerHeight)")
+        page.wait_for_timeout(300)
+
+    page.wait_for_timeout(1000)
 
     # Extract events using JavaScript to get structured data
+    # This version checks for cancelled events (strikethrough/red styling) and filters them out
     events_data = page.evaluate("""() => {
         const events = [];
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // Find all date sections and their events
-        const content = document.body.innerText;
-        const lines = content.split('\\n');
-
-        let currentDate = null;
-        let currentYear = today.getFullYear();
-        let currentMonth = today.getMonth();
-
         const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                           'July', 'August', 'September', 'October', 'November', 'December'];
 
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
+        // Helper function to check if an element or its parents indicate a cancelled event
+        function isCancelled(element) {
+            let el = element;
+            while (el && el !== document.body) {
+                const style = window.getComputedStyle(el);
+                // Check for strikethrough text
+                if (style.textDecoration.includes('line-through') ||
+                    style.textDecorationLine.includes('line-through')) {
+                    return true;
+                }
+                // Check for cancelled class names
+                const className = el.className || '';
+                if (className.includes('cancelled') || className.includes('canceled') ||
+                    className.includes('deleted') || className.includes('removed')) {
+                    return true;
+                }
+                // Check for red background/color that might indicate cancellation
+                const bgColor = style.backgroundColor;
+                const textColor = style.color;
+                // Parse RGB values - look for predominantly red colors
+                const redBgMatch = bgColor.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
+                if (redBgMatch) {
+                    const r = parseInt(redBgMatch[1]);
+                    const g = parseInt(redBgMatch[2]);
+                    const b = parseInt(redBgMatch[3]);
+                    // If red is dominant and significantly higher than green/blue
+                    if (r > 180 && r > g * 1.5 && r > b * 1.5) {
+                        return true;
+                    }
+                }
+                el = el.parentElement;
+            }
+            return false;
+        }
 
-            // Check for date headers like "Sunday 1 February 2026" or "Saturday 31 January 2026"
-            const dateMatch = line.match(/(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})/i);
+        // Find all elements that contain time patterns
+        const allElements = document.querySelectorAll('*');
+        let currentDate = null;
+
+        for (const element of allElements) {
+            // Skip if element has children with text (we want leaf nodes)
+            if (element.children.length > 0) {
+                const hasTextChild = Array.from(element.children).some(child =>
+                    child.textContent.trim().length > 0
+                );
+                if (hasTextChild) continue;
+            }
+
+            const text = element.textContent.trim();
+
+            // Check for date headers
+            const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
             if (dateMatch) {
                 const day = parseInt(dateMatch[2]);
                 const month = monthNames.indexOf(dateMatch[3]);
@@ -515,20 +592,26 @@ def scan_agenda(page, tracker, today):
                 continue;
             }
 
-            // Check for time ranges like "09:30 - 11:00" or "11:00 - 13:00"
-            const timeMatch = line.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
+            // Check for time ranges like "09:30 - 11:00"
+            const timeMatch = text.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
             if (timeMatch && currentDate) {
+                // Check if this event is cancelled
+                if (isCancelled(element)) {
+                    console.log('Skipping cancelled event:', text);
+                    continue;
+                }
+
                 const startTime = timeMatch[1];
                 const endTime = timeMatch[2];
 
-                // Only include events within the next 7 days
                 const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
                 if (daysDiff >= 0 && daysDiff <= 7) {
                     events.push({
                         date: currentDate.toISOString().split('T')[0],
                         daysDiff: daysDiff,
                         startTime: startTime,
-                        endTime: endTime
+                        endTime: endTime,
+                        cancelled: false
                     });
                 }
             }
@@ -537,9 +620,19 @@ def scan_agenda(page, tracker, today):
         return events;
     }""")
 
-    print(f"\n  Found {len(events_data)} events in agenda:")
-
+    # Deduplicate events (same date + time can appear multiple times in page text)
+    seen = set()
+    unique_events = []
     for event in events_data:
+        key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
+        if key not in seen:
+            seen.add(key)
+            unique_events.append(event)
+
+    print(f"\n  Found {len(unique_events)} unique events in agenda:")
+
+    events_found = 0
+    for event in unique_events:
         date_str = event['date']
         start_time = event['startTime']
         end_time = event['endTime']
@@ -563,6 +656,34 @@ def scan_agenda(page, tracker, today):
 
     print(f"\n  Total conflicts added: {events_found}")
     print("="*60)
+    return events_found
+
+
+def save_history(bookings_made, events_detected, booking_details):
+    """Save run to booking history file."""
+    try:
+        history = {"runs": []}
+        if history_file.exists():
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "bookings_made": bookings_made,
+            "events_detected": events_detected,
+            "details": "; ".join(booking_details[:5]) if booking_details else "No bookings made"
+        }
+
+        history["runs"].insert(0, entry)
+        history["runs"] = history["runs"][:100]  # Keep last 100
+
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+
+        print(f"History saved: {bookings_made} bookings, {events_detected} events")
+    except Exception as e:
+        print(f"Warning: Could not save history: {e}")
 
 
 def main():
@@ -583,6 +704,8 @@ def main():
 
     tracker = BookingTracker()
     total_booked = 0
+    events_detected = 0
+    booking_details = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
@@ -593,7 +716,7 @@ def main():
         page = context.new_page()
 
         # First, scan the agenda to learn about existing events
-        scan_agenda(page, tracker, today)
+        events_detected = scan_agenda(page, tracker, today)
 
         # Navigate to practice rooms
         print("\nNavigating to practice rooms...")
@@ -716,9 +839,27 @@ def main():
                 all_slots.remove(slot)  # Remove from list so we don't retry
                 attempts += 1
 
-                if try_book_slot(page, slot, target_date, tracker, days_ahead):
+                try:
+                    booked = try_book_slot(page, slot, target_date, tracker, days_ahead)
+                except Exception as e:
+                    print(f"  Error booking slot: {e}")
+                    # Check if browser is still open
+                    try:
+                        page.evaluate("1+1")  # Simple check
+                    except:
+                        print("  Browser was closed - exiting")
+                        break
+                    continue
+
+                if booked:
                     day_booked += 1
                     total_booked += 1
+
+                    # Record booking detail
+                    room_name = slot['room']
+                    start_h = int(slot['start_hour'])
+                    start_m = int((slot['start_hour'] % 1) * 60)
+                    booking_details.append(f"{target_date.strftime('%Y-%m-%d')} {room_name} {start_h:02d}:{start_m:02d}")
 
                     # After successful booking, refresh slot coordinates
                     page.wait_for_timeout(2000)
@@ -770,6 +911,9 @@ def main():
             end_str = f"{int(end):02d}:{int((end % 1) * 60):02d}"
             print(f"  {date.strftime('%Y-%m-%d')} {room} {start_str}-{end_str}")
         print("="*60)
+
+        # Save run to history
+        save_history(total_booked, events_detected, booking_details)
 
         if not args.headless:
             print("\nKeeping browser open for 30 seconds to verify...")
