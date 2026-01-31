@@ -1,0 +1,85 @@
+# AsimutBooker Configuration
+# Copy this file to config.yaml and customize for your needs
+
+institution:
+  # RWCMD Asimut URL
+  url: "https://rwcmd.asimut.net/"
+  # The location category to book from (as shown in the sidebar)
+  location: "Music Practice Rooms - AHC"
+
+rooms:
+  # Rooms configuration with per-room booking horizons
+  # Each room can have its own "horizon" (how many days in advance it can be booked)
+  # Rooms are listed in order of preference (first = most preferred)
+
+  priority:
+    # Format: room_id: horizon_days
+    # Or just room_id (uses default horizon)
+    - room: "B0.35"
+      horizon: 7  # Can book 7 days in advance
+    - room: "B0.28"
+      horizon: 7
+    - room: "B0.24"
+      horizon: 7
+    - room: "B0.29"
+      horizon: 3  # Can only book 3 days in advance
+    - room: "B0.27"
+      horizon: 3
+    - room: "B0.23"
+      horizon: 7
+    - room: "B1.06"
+      horizon: 7
+    - room: "B1.07"
+      horizon: 7
+
+  # Rooms to explicitly exclude (never book these)
+  exclude:
+    - "B0.11"
+    - "B0.13"
+    - "B0.14"
+    - "B0.16"
+    # Add any rooms you don't want to use
+
+  # If true, book any available room (not in exclude list) when priority rooms are full
+  fallback: false
+
+booking:
+  # Book for all days from today up to max_horizon_days
+  # The script will check each day and book if slots are available
+  max_horizon_days: 7
+
+  # Preferred time slots (24-hour format)
+  # Script will prioritize booking during these times
+  preferred_times:
+    - start: "09:00"
+      end: "11:00"
+    - start: "14:00"
+      end: "16:00"
+    - start: "18:00"
+      end: "20:00"
+
+  # Default booking duration in hours (if applicable)
+  duration_hours: 2
+
+  # Days of the week to book (0=Monday, 6=Sunday)
+  # Leave empty to book any day
+  preferred_days: []
+
+  # Maximum bookings to make per run (to avoid over-booking)
+  max_bookings_per_run: 5
+
+schedule:
+  # How often to check for new availability (in hours)
+  check_interval_hours: 1
+
+  # Specific times to run checks (24-hour format)
+  # If set, overrides check_interval_hours
+  # Useful for running at midnight when new slots open
+  run_at_times: []
+  # Example: ["00:05", "06:00", "12:00", "18:00"]
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  # Keep logs for this many days
+  retention_days: 30
