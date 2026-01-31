@@ -71,7 +71,8 @@ class RulesEnforcer:
     def __init__(self, config: "Config"):
         self.config = config
         self.existing_bookings: list[ExistingBooking] = []
-        self.conflict_ranges: list[tuple[float, float]] = []  # (start_hour, end_hour) tuples
+        # Per-day conflict ranges: {date_str: [(start_hour, end_hour), ...]}
+        self.conflict_ranges_by_date: dict[str, list[tuple[float, float]]] = {}
 
     def add_existing_booking(self, booking: ExistingBooking) -> None:
         """Add an existing booking for tracking."""
@@ -80,10 +81,19 @@ class RulesEnforcer:
                     booking.room, booking.date.strftime("%Y-%m-%d"),
                     booking.start_time, booking.end_time)
 
-    def add_conflict_range(self, start_hour: float, end_hour: float) -> None:
-        """Add a conflict range discovered during booking attempts."""
-        self.conflict_ranges.append((start_hour, end_hour))
-        logger.info("Added conflict range: %.2f - %.2f", start_hour, end_hour)
+    def add_conflict_range(self, date: datetime, start_hour: float, end_hour: float) -> None:
+        """Add a conflict range for a specific date."""
+        date_str = date.strftime("%Y-%m-%d")
+        if date_str not in self.conflict_ranges_by_date:
+            self.conflict_ranges_by_date[date_str] = []
+
+        # Check for duplicates
+        for existing_start, existing_end in self.conflict_ranges_by_date[date_str]:
+            if abs(existing_start - start_hour) < 0.01 and abs(existing_end - end_hour) < 0.01:
+                return  # Already have this conflict
+
+        self.conflict_ranges_by_date[date_str].append((start_hour, end_hour))
+        logger.info("Added conflict for %s: %.2f - %.2f", date_str, start_hour, end_hour)
 
     def get_total_bookings(self) -> int:
         """Get total number of active bookings."""
@@ -100,12 +110,21 @@ class RulesEnforcer:
             )
         return total_minutes
 
-    def overlaps_conflict(self, start_hour: float, end_hour: float) -> bool:
-        """Check if a time range overlaps with any known conflict."""
-        for c_start, c_end in self.conflict_ranges:
+    def overlaps_conflict(self, date: datetime, start_hour: float, end_hour: float) -> bool:
+        """Check if a time range overlaps with any known conflict for a specific date."""
+        date_str = date.strftime("%Y-%m-%d")
+        if date_str not in self.conflict_ranges_by_date:
+            return False
+
+        for c_start, c_end in self.conflict_ranges_by_date[date_str]:
             if start_hour < c_end and end_hour > c_start:
                 return True
         return False
+
+    def get_conflicts_for_date(self, date: datetime) -> list[tuple[float, float]]:
+        """Get all conflict ranges for a specific date."""
+        date_str = date.strftime("%Y-%m-%d")
+        return self.conflict_ranges_by_date.get(date_str, [])
 
     def can_book_slot(self, slot: "TimeSlot", booking_duration_minutes: int) -> tuple[bool, str]:
         """
@@ -155,10 +174,10 @@ class RulesEnforcer:
                 if 0 < gap_minutes < gap_required_minutes:
                     return False, f"Same-room gap too short ({gap_minutes:.0f} min, need {gap_required_minutes})"
 
-        # Rule 5: Check for known conflicts (from previous booking attempts)
+        # Rule 5: Check for known conflicts (from agenda scan or previous booking attempts)
         slot_end_h = slot_start_h + booking_duration_minutes / 60
-        if self.overlaps_conflict(slot_start_h, slot_end_h):
-            return False, "Overlaps with known conflict range"
+        if slot.date and self.overlaps_conflict(slot.date, slot_start_h, slot_end_h):
+            return False, "Overlaps with known conflict (existing event)"
 
         return True, ""
 
@@ -231,6 +250,110 @@ class AsimutBooker:
         self.config = config
         self.base_url = config.asimut_url.rstrip("/")
         self.rules = RulesEnforcer(config)
+
+    def scan_agenda(self) -> int:
+        """
+        Scan the My Agenda page to find all existing events/reservations for the next 7 days.
+
+        This pre-populates the conflict ranges so the booker knows which times to avoid.
+
+        Returns:
+            Number of conflicts found.
+        """
+        logger.info("Scanning My Agenda for existing events...")
+
+        try:
+            # Navigate directly to the agenda page
+            self.page.goto(f"{self.base_url}/agenda", wait_until="networkidle", timeout=30000)
+            self.page.wait_for_timeout(3000)
+
+            today = datetime.now().date()
+
+            # Extract events using JavaScript to get structured data
+            events_data = self.page.evaluate("""() => {
+                const events = [];
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+
+                // Find all date sections and their events
+                const content = document.body.innerText;
+                const lines = content.split('\\n');
+
+                let currentDate = null;
+                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                                  'July', 'August', 'September', 'October', 'November', 'December'];
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+
+                    // Check for date headers like "Sunday 1 February 2026"
+                    const dateMatch = line.match(/(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})/i);
+                    if (dateMatch) {
+                        const day = parseInt(dateMatch[2]);
+                        const month = monthNames.indexOf(dateMatch[3]);
+                        const year = parseInt(dateMatch[4]);
+                        currentDate = new Date(year, month, day);
+                        continue;
+                    }
+
+                    // Check for time ranges like "09:30 - 11:00"
+                    const timeMatch = line.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
+                    if (timeMatch && currentDate) {
+                        const startTime = timeMatch[1];
+                        const endTime = timeMatch[2];
+
+                        // Only include events within the next 7 days
+                        const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
+                        if (daysDiff >= 0 && daysDiff <= 7) {
+                            events.push({
+                                date: currentDate.toISOString().split('T')[0],
+                                daysDiff: daysDiff,
+                                startTime: startTime,
+                                endTime: endTime
+                            });
+                        }
+                    }
+                }
+
+                return events;
+            }""")
+
+            events_found = 0
+            seen = set()  # Track unique events to avoid duplicates
+
+            for event in events_data:
+                date_str = event['date']
+                start_time = event['startTime']
+                end_time = event['endTime']
+                days_diff = event['daysDiff']
+
+                # Skip duplicates
+                event_key = f"{date_str}_{start_time}_{end_time}"
+                if event_key in seen:
+                    continue
+                seen.add(event_key)
+
+                # Parse times to hours
+                start_parts = start_time.split(':')
+                end_parts = end_time.split(':')
+                start_hour = int(start_parts[0]) + int(start_parts[1]) / 60
+                end_hour = int(end_parts[0]) + int(end_parts[1]) / 60
+
+                # Calculate the target date
+                target_date = datetime.combine(today + timedelta(days=days_diff), datetime.min.time())
+
+                # Add to conflict ranges for this date
+                self.rules.add_conflict_range(target_date, start_hour, end_hour)
+                events_found += 1
+
+                logger.debug("Found event: %s %s-%s", date_str, start_time, end_time)
+
+            logger.info("Found %d existing events in agenda", events_found)
+            return events_found
+
+        except Exception as e:
+            logger.error("Error scanning agenda: %s", e)
+            return 0
 
     def navigate_to_location(self) -> bool:
         """
@@ -339,6 +462,17 @@ class AsimutBooker:
         except Exception as e:
             logger.error("Error navigating to date: %s", e)
             return False
+
+    def _go_back(self) -> None:
+        """Navigate back to calendar using the back button."""
+        back_btn = self.page.locator("button[aria-label='Back to previous page']").first
+        if back_btn.count() > 0 and back_btn.is_visible():
+            back_btn.click()
+            self.page.wait_for_timeout(2000)
+        else:
+            # Fallback: use browser back
+            self.page.go_back()
+            self.page.wait_for_timeout(2000)
 
     def _get_current_calendar_date(self) -> datetime | None:
         """Get the currently displayed date from the calendar header."""
@@ -755,22 +889,18 @@ class AsimutBooker:
                 logger.warning("Cannot book %s: %s", slot.room, error_text)
 
                 # Extract conflict time range from error if present
-                conflict_text = self.page.locator("text=/\\d{2}:\\d{2}\\s*-\\s*\\d{2}:\\d{2}.*Reservation/").first
-                if conflict_text.count() > 0:
-                    text = conflict_text.text_content() or ""
-                    match = re.search(r'(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})', text)
-                    if match:
-                        c_start = int(match.group(1)) + int(match.group(2)) / 60
-                        c_end = int(match.group(3)) + int(match.group(4)) / 60
-                        self.rules.add_conflict_range(c_start, c_end)
+                if slot.date:
+                    conflict_text = self.page.locator("text=/\\d{2}:\\d{2}\\s*-\\s*\\d{2}:\\d{2}.*Reservation/").first
+                    if conflict_text.count() > 0:
+                        text = conflict_text.text_content() or ""
+                        match = re.search(r'(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})', text)
+                        if match:
+                            c_start = int(match.group(1)) + int(match.group(2)) / 60
+                            c_end = int(match.group(3)) + int(match.group(4)) / 60
+                            self.rules.add_conflict_range(slot.date, c_start, c_end)
 
-                # Go back
-                back_btn = self.page.locator("mat-icon:text('chevron_left')").first
-                if back_btn.count() > 0 and back_btn.is_visible():
-                    back_btn.click()
-                else:
-                    self.page.keyboard.press("Escape")
-                self.page.wait_for_timeout(2000)
+                # Go back using the proper back button
+                self._go_back()
                 return BookingResult(
                     success=False,
                     room=slot.room,
@@ -781,10 +911,7 @@ class AsimutBooker:
             conflict_msg = self.page.locator("text=conflicting events, text=resolve the conflicts").first
             if conflict_msg.count() > 0 and conflict_msg.is_visible():
                 logger.warning("Booking conflicts with existing reservation")
-                back_btn = self.page.locator("mat-icon:text('chevron_left')").first
-                if back_btn.count() > 0:
-                    back_btn.click()
-                self.page.wait_for_timeout(2000)
+                self._go_back()
                 return BookingResult(
                     success=False,
                     room=slot.room,
@@ -800,10 +927,7 @@ class AsimutBooker:
                     icon_text = save_icon.text_content() or ""
                     if "remove" in icon_text or "block" in icon_text:
                         logger.warning("Save button is disabled")
-                        back_btn = self.page.locator("mat-icon:text('chevron_left')").first
-                        if back_btn.count() > 0:
-                            back_btn.click()
-                        self.page.wait_for_timeout(2000)
+                        self._go_back()
                         return BookingResult(
                             success=False,
                             room=slot.room,
@@ -829,10 +953,7 @@ class AsimutBooker:
                 post_error = self.page.locator("text=error, text=Error, text=failed, text=Failed, text=not allowed").first
                 if post_error.count() > 0 and post_error.is_visible():
                     error_text = post_error.text_content() or "Unknown error"
-                    back_btn = self.page.locator("mat-icon:text('chevron_left')").first
-                    if back_btn.count() > 0:
-                        back_btn.click()
-                    self.page.wait_for_timeout(2000)
+                    self._go_back()
                     return BookingResult(
                         success=False,
                         room=slot.room,
@@ -880,7 +1001,10 @@ class AsimutBooker:
         bookings_made = 0
         max_bookings = self.config.max_bookings_per_run
 
-        # Navigate to location first
+        # First, scan the agenda to learn about existing events
+        self.scan_agenda()
+
+        # Navigate to location
         if not self.navigate_to_location():
             return [BookingResult(success=False, message="Failed to navigate to location")]
 

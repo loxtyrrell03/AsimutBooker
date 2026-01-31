@@ -5,9 +5,15 @@ This script applies all RWCMD booking rules:
 - Maximum 2hr peak allowance (Mon-Fri 9am-4pm)
 - Minimum 30 min, maximum 2hr per booking
 - 60-minute gap between same room bookings
+
+Usage:
+    python book_week.py              # Run with visible browser
+    python book_week.py --headless   # Run without browser window (for scheduled tasks)
 """
 
 import re
+import sys
+import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
@@ -454,7 +460,117 @@ def go_back(page, days_ahead=None):
         page.wait_for_timeout(2000)
 
 
+def scan_agenda(page, tracker, today):
+    """Scan the My Agenda page to find all existing events and reservations for the next 7 days."""
+    print("\n" + "="*60)
+    print("SCANNING MY AGENDA FOR EXISTING EVENTS")
+    print("="*60)
+
+    # Navigate directly to the agenda page
+    page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+    page.wait_for_timeout(3000)
+
+    # Parse all events from the agenda page
+    # The agenda shows events grouped by date with time ranges
+    events_found = 0
+
+    # Get all event entries on the page
+    # Look for time patterns like "09:30 - 11:00" or "11:00 - 13:00"
+    page_content = page.content()
+
+    # Parse events by looking at the agenda structure
+    # Each event has a time range and details
+    event_items = page.locator(".event-list-item, [class*='event'], mat-list-item").all()
+
+    # Also look for specific date headers and their events
+    # The page shows dates like "Sunday 1 February 2026" followed by events
+
+    # Extract events using JavaScript to get structured data
+    events_data = page.evaluate("""() => {
+        const events = [];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Find all date sections and their events
+        const content = document.body.innerText;
+        const lines = content.split('\\n');
+
+        let currentDate = null;
+        let currentYear = today.getFullYear();
+        let currentMonth = today.getMonth();
+
+        const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                          'July', 'August', 'September', 'October', 'November', 'December'];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            // Check for date headers like "Sunday 1 February 2026" or "Saturday 31 January 2026"
+            const dateMatch = line.match(/(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})/i);
+            if (dateMatch) {
+                const day = parseInt(dateMatch[2]);
+                const month = monthNames.indexOf(dateMatch[3]);
+                const year = parseInt(dateMatch[4]);
+                currentDate = new Date(year, month, day);
+                continue;
+            }
+
+            // Check for time ranges like "09:30 - 11:00" or "11:00 - 13:00"
+            const timeMatch = line.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
+            if (timeMatch && currentDate) {
+                const startTime = timeMatch[1];
+                const endTime = timeMatch[2];
+
+                // Only include events within the next 7 days
+                const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
+                if (daysDiff >= 0 && daysDiff <= 7) {
+                    events.push({
+                        date: currentDate.toISOString().split('T')[0],
+                        daysDiff: daysDiff,
+                        startTime: startTime,
+                        endTime: endTime
+                    });
+                }
+            }
+        }
+
+        return events;
+    }""")
+
+    print(f"\n  Found {len(events_data)} events in agenda:")
+
+    for event in events_data:
+        date_str = event['date']
+        start_time = event['startTime']
+        end_time = event['endTime']
+        days_diff = event['daysDiff']
+
+        # Parse times to hours
+        start_parts = start_time.split(':')
+        end_parts = end_time.split(':')
+        start_hour = int(start_parts[0]) + int(start_parts[1]) / 60
+        end_hour = int(end_parts[0]) + int(end_parts[1]) / 60
+
+        # Calculate the target date
+        target_date = datetime.combine(today + timedelta(days=days_diff), datetime.min.time())
+
+        # Add to conflict ranges for this date
+        tracker.add_conflict(target_date, start_hour, end_hour)
+        events_found += 1
+
+        day_name = target_date.strftime("%A")
+        print(f"    {date_str} ({day_name}): {start_time} - {end_time}")
+
+    print(f"\n  Total conflicts added: {events_found}")
+    print("="*60)
+
+
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Book practice rooms for the week")
+    parser.add_argument("--headless", action="store_true", help="Run without browser window")
+    args = parser.parse_args()
+
     today = datetime.now().date()
 
     print("="*60)
@@ -462,18 +578,22 @@ def main():
     print("="*60)
     print(f"Today: {today}")
     print(f"Booking for: {today + timedelta(days=1)} to {today + timedelta(days=7)}")
+    print(f"Mode: {'Headless' if args.headless else 'Visible browser'}")
     print("="*60)
 
     tracker = BookingTracker()
     total_booked = 0
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=args.headless)
         context = browser.new_context(
             storage_state=str(state_file),
             viewport={"width": 1920, "height": 1080}
         )
         page = context.new_page()
+
+        # First, scan the agenda to learn about existing events
+        scan_agenda(page, tracker, today)
 
         # Navigate to practice rooms
         print("\nNavigating to practice rooms...")
@@ -651,8 +771,9 @@ def main():
             print(f"  {date.strftime('%Y-%m-%d')} {room} {start_str}-{end_str}")
         print("="*60)
 
-        print("\nKeeping browser open for 30 seconds to verify...")
-        page.wait_for_timeout(30000)
+        if not args.headless:
+            print("\nKeeping browser open for 30 seconds to verify...")
+            page.wait_for_timeout(30000)
 
         context.close()
         browser.close()
