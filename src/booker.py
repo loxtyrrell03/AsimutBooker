@@ -456,36 +456,85 @@ class AsimutBooker:
                 logger.error("No click coordinates stored for this slot")
                 return BookingResult(success=False, room=slot.room, message="No coordinates to click")
 
-            # Click on the empty grid space at the calculated coordinates
+            # Step 1: Click on the empty grid space
             self.page.mouse.click(slot.click_x, slot.click_y)
-            self.page.wait_for_timeout(2000)
+            self.page.wait_for_timeout(1500)
 
-            # A booking dialog might appear, look for confirmation button
-            confirm_selectors = [
-                "button:text('Book')",
-                "button:text('Confirm')",
-                "button:text('Save')",
-                "button:text('OK')",
-                "button:text('Yes')",
-                "[mat-dialog-actions] button:first-child",
-            ]
-
-            for selector in confirm_selectors:
-                btn = self.page.locator(selector).first
-                if btn.count() > 0 and btn.is_visible():
-                    logger.debug("Clicking confirm button: %s", selector)
-                    btn.click()
+            # Step 2: A popup appears - click "Student booking provisional"
+            student_booking_btn = self.page.locator("text=Student booking provisional").first
+            if student_booking_btn.count() > 0 and student_booking_btn.is_visible():
+                logger.debug("Clicking 'Student booking provisional'")
+                student_booking_btn.click()
+                self.page.wait_for_timeout(2000)
+            else:
+                # Try alternative - might be "Student Chamber Music Provisional" etc
+                alt_booking = self.page.locator("text=Student").filter(has_text="provisional").first
+                if alt_booking.count() > 0 and alt_booking.is_visible():
+                    logger.debug("Clicking alternative student booking option")
+                    alt_booking.click()
                     self.page.wait_for_timeout(2000)
-                    break
+                else:
+                    logger.warning("No booking popup found after clicking slot")
+                    return BookingResult(
+                        success=False,
+                        room=slot.room,
+                        message="No booking popup appeared"
+                    )
 
-            # Assume success if no error thrown
+            # Step 3: Now on booking page - check for error message
+            # Error appears in yellow/cream colored box with "You are not allowed..."
+            error_msg = self.page.locator("text=You are not allowed").first
+            if error_msg.count() > 0 and error_msg.is_visible():
+                error_text = error_msg.text_content() or "Room not bookable"
+                logger.warning("Cannot book %s: %s", slot.room, error_text)
+                # Close the dialog by clicking back arrow or X
+                back_btn = self.page.locator("[class*='back'], mat-icon:text('arrow_back'), button:has(mat-icon:text('close'))").first
+                if back_btn.count() > 0:
+                    back_btn.click()
+                    self.page.wait_for_timeout(1000)
+                return BookingResult(
+                    success=False,
+                    room=slot.room,
+                    message=f"Not allowed to book: {error_text[:50]}"
+                )
+
+            # Step 4: Verify the booking details look correct (optional logging)
+            # The page shows the room name, date, and time
+            logger.debug("Booking page loaded, looking for Save button")
+
+            # Step 5: Click Save button to confirm booking
+            save_btn = self.page.locator("button:has-text('Save')").first
+            if save_btn.count() > 0 and save_btn.is_visible():
+                logger.debug("Clicking Save button")
+                save_btn.click()
+                self.page.wait_for_timeout(2000)
+            else:
+                logger.warning("Save button not found")
+                return BookingResult(
+                    success=False,
+                    room=slot.room,
+                    message="Save button not found on booking page"
+                )
+
+            # Step 6: Verify booking was successful
+            # After save, we should return to the calendar view
+            # Check for any error messages that might appear
+            post_error = self.page.locator("text=error, text=Error, text=failed, text=Failed").first
+            if post_error.count() > 0 and post_error.is_visible():
+                return BookingResult(
+                    success=False,
+                    room=slot.room,
+                    message="Booking failed after save"
+                )
+
+            logger.info("Successfully booked %s at %s on %s", slot.room, slot.start_time, date_str)
             return BookingResult(
                 success=True,
                 room=slot.room,
                 date=date_str,
                 start_time=slot.start_time,
                 end_time=slot.end_time,
-                message="Booking attempted - please verify",
+                message="Booking confirmed",
             )
 
         except Exception as e:

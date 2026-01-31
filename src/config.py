@@ -180,3 +180,49 @@ class Config:
     def horizon_days(self) -> int:
         """Alias for max_horizon_days (backward compatibility)."""
         return self.max_horizon_days
+
+    # Booking Rules Properties
+    @property
+    def rolling_quota(self) -> int:
+        """Rolling booking quota (total active bookings allowed)."""
+        return self._config.get("rules", {}).get("rolling_quota", 28)
+
+    @property
+    def peak_hours_enabled(self) -> bool:
+        """Whether peak hours restrictions are enabled."""
+        return self._config.get("rules", {}).get("peak_hours", {}).get("enabled", True)
+
+    @property
+    def peak_hours_max(self) -> float:
+        """Maximum hours of peak time allowed per rolling period."""
+        return self._config.get("rules", {}).get("peak_hours", {}).get("max_hours", 2)
+
+    @property
+    def peak_hours_start(self) -> str:
+        """Peak hours start time."""
+        return self._config.get("rules", {}).get("peak_hours", {}).get("start", "09:00")
+
+    @property
+    def peak_hours_end(self) -> str:
+        """Peak hours end time."""
+        return self._config.get("rules", {}).get("peak_hours", {}).get("end", "16:00")
+
+    @property
+    def peak_hours_days(self) -> list[int]:
+        """Days when peak hours apply (0=Monday, 4=Friday)."""
+        return self._config.get("rules", {}).get("peak_hours", {}).get("days", [0, 1, 2, 3, 4])
+
+    @property
+    def min_duration_minutes(self) -> int:
+        """Minimum booking duration in minutes."""
+        return self._config.get("rules", {}).get("duration", {}).get("min_minutes", 30)
+
+    @property
+    def max_duration_minutes(self) -> int:
+        """Maximum booking duration in minutes."""
+        return self._config.get("rules", {}).get("duration", {}).get("max_minutes", 120)
+
+    @property
+    def same_room_gap_minutes(self) -> int:
+        """Minimum gap between same-room bookings in minutes."""
+        return self._config.get("rules", {}).get("same_room_gap_minutes", 60)
