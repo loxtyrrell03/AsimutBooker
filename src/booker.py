@@ -2,7 +2,7 @@
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -12,6 +12,180 @@ if TYPE_CHECKING:
     from .config import Config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExistingBooking:
+    """Represents an existing user booking for rule tracking."""
+    room: str
+    date: datetime
+    start_time: str  # HH:MM format
+    end_time: str    # HH:MM format
+
+    def start_hour(self) -> float:
+        """Get start time as decimal hour."""
+        h, m = map(int, self.start_time.split(":"))
+        return h + m / 60
+
+    def end_hour(self) -> float:
+        """Get end time as decimal hour."""
+        h, m = map(int, self.end_time.split(":"))
+        return h + m / 60
+
+    def duration_minutes(self) -> float:
+        """Get duration in minutes."""
+        return (self.end_hour() - self.start_hour()) * 60
+
+    def is_peak_hours(self, peak_start: str, peak_end: str, peak_days: list[int]) -> bool:
+        """Check if this booking overlaps with peak hours."""
+        # Check if the day is a peak day (weekday)
+        if self.date.weekday() not in peak_days:
+            return False
+
+        peak_start_h = int(peak_start.split(":")[0]) + int(peak_start.split(":")[1]) / 60
+        peak_end_h = int(peak_end.split(":")[0]) + int(peak_end.split(":")[1]) / 60
+
+        # Check for overlap
+        return self.start_hour() < peak_end_h and self.end_hour() > peak_start_h
+
+    def peak_hours_overlap(self, peak_start: str, peak_end: str, peak_days: list[int]) -> float:
+        """Calculate how many minutes of this booking overlap with peak hours."""
+        if self.date.weekday() not in peak_days:
+            return 0
+
+        peak_start_h = int(peak_start.split(":")[0]) + int(peak_start.split(":")[1]) / 60
+        peak_end_h = int(peak_end.split(":")[0]) + int(peak_end.split(":")[1]) / 60
+
+        # Calculate overlap
+        overlap_start = max(self.start_hour(), peak_start_h)
+        overlap_end = min(self.end_hour(), peak_end_h)
+
+        if overlap_end > overlap_start:
+            return (overlap_end - overlap_start) * 60
+        return 0
+
+
+class RulesEnforcer:
+    """Enforces RWCMD booking rules."""
+
+    def __init__(self, config: "Config"):
+        self.config = config
+        self.existing_bookings: list[ExistingBooking] = []
+        self.conflict_ranges: list[tuple[float, float]] = []  # (start_hour, end_hour) tuples
+
+    def add_existing_booking(self, booking: ExistingBooking) -> None:
+        """Add an existing booking for tracking."""
+        self.existing_bookings.append(booking)
+        logger.debug("Tracking existing booking: %s %s %s-%s",
+                    booking.room, booking.date.strftime("%Y-%m-%d"),
+                    booking.start_time, booking.end_time)
+
+    def add_conflict_range(self, start_hour: float, end_hour: float) -> None:
+        """Add a conflict range discovered during booking attempts."""
+        self.conflict_ranges.append((start_hour, end_hour))
+        logger.info("Added conflict range: %.2f - %.2f", start_hour, end_hour)
+
+    def get_total_bookings(self) -> int:
+        """Get total number of active bookings."""
+        return len(self.existing_bookings)
+
+    def get_peak_hours_used(self) -> float:
+        """Get total peak hours used in minutes."""
+        total_minutes = 0
+        for booking in self.existing_bookings:
+            total_minutes += booking.peak_hours_overlap(
+                self.config.peak_hours_start,
+                self.config.peak_hours_end,
+                self.config.peak_hours_days
+            )
+        return total_minutes
+
+    def overlaps_conflict(self, start_hour: float, end_hour: float) -> bool:
+        """Check if a time range overlaps with any known conflict."""
+        for c_start, c_end in self.conflict_ranges:
+            if start_hour < c_end and end_hour > c_start:
+                return True
+        return False
+
+    def can_book_slot(self, slot: "TimeSlot", booking_duration_minutes: int) -> tuple[bool, str]:
+        """
+        Check if a slot can be booked according to all rules.
+
+        Returns:
+            Tuple of (can_book, reason_if_not)
+        """
+        # Rule 1: Check rolling quota
+        if self.get_total_bookings() >= self.config.rolling_quota:
+            return False, f"Rolling quota exceeded ({self.config.rolling_quota} bookings)"
+
+        # Rule 2: Check duration limits
+        if booking_duration_minutes < self.config.min_duration_minutes:
+            return False, f"Duration too short (min {self.config.min_duration_minutes} min)"
+        if booking_duration_minutes > self.config.max_duration_minutes:
+            return False, f"Duration too long (max {self.config.max_duration_minutes} min)"
+
+        # Rule 3: Check peak hours limit
+        if self.config.peak_hours_enabled and slot.date:
+            start_h = int(slot.start_time.split(":")[0]) + int(slot.start_time.split(":")[1]) / 60
+            end_h = start_h + booking_duration_minutes / 60
+
+            if slot.date.weekday() in self.config.peak_hours_days:
+                peak_start_h = int(self.config.peak_hours_start.split(":")[0])
+                peak_end_h = int(self.config.peak_hours_end.split(":")[0])
+
+                # Calculate peak overlap for this potential booking
+                overlap_start = max(start_h, peak_start_h)
+                overlap_end = min(end_h, peak_end_h)
+                if overlap_end > overlap_start:
+                    new_peak_minutes = (overlap_end - overlap_start) * 60
+                    current_peak_used = self.get_peak_hours_used()
+                    max_peak_minutes = self.config.peak_hours_max * 60
+
+                    if current_peak_used + new_peak_minutes > max_peak_minutes:
+                        return False, f"Peak hours limit exceeded ({current_peak_used:.0f}/{max_peak_minutes:.0f} min used)"
+
+        # Rule 4: Check same-room gap
+        gap_required_minutes = self.config.same_room_gap_minutes
+        slot_start_h = int(slot.start_time.split(":")[0]) + int(slot.start_time.split(":")[1]) / 60
+
+        for existing in self.existing_bookings:
+            if existing.room == slot.room and existing.date.date() == (slot.date.date() if slot.date else None):
+                # Same room, same day - check gap
+                gap_minutes = (slot_start_h - existing.end_hour()) * 60
+                if 0 < gap_minutes < gap_required_minutes:
+                    return False, f"Same-room gap too short ({gap_minutes:.0f} min, need {gap_required_minutes})"
+
+        # Rule 5: Check for known conflicts (from previous booking attempts)
+        slot_end_h = slot_start_h + booking_duration_minutes / 60
+        if self.overlaps_conflict(slot_start_h, slot_end_h):
+            return False, "Overlaps with known conflict range"
+
+        return True, ""
+
+    def calculate_valid_duration(self, slot: "TimeSlot") -> int:
+        """
+        Calculate the valid booking duration for a slot, respecting all rules.
+
+        Returns:
+            Duration in minutes (0 if slot cannot be booked)
+        """
+        # Parse slot times
+        start_parts = slot.start_time.split(":")
+        end_parts = slot.end_time.split(":")
+        start_h = int(start_parts[0]) + int(start_parts[1]) / 60
+        end_h = int(end_parts[0]) + int(end_parts[1]) / 60
+
+        # Available slot duration
+        slot_duration = (end_h - start_h) * 60
+
+        # Cap at max duration
+        duration = min(slot_duration, self.config.max_duration_minutes)
+
+        # Check if it meets minimum
+        if duration < self.config.min_duration_minutes:
+            return 0
+
+        return int(duration)
 
 
 @dataclass
@@ -56,6 +230,7 @@ class AsimutBooker:
         self.page = page
         self.config = config
         self.base_url = config.asimut_url.rstrip("/")
+        self.rules = RulesEnforcer(config)
 
     def navigate_to_location(self) -> bool:
         """
@@ -387,7 +562,11 @@ class AsimutBooker:
 
     def find_best_slot(self, slots: list[TimeSlot]) -> TimeSlot | None:
         """
-        Find the best slot from a list based on room priority and preferred times.
+        Find the best slot from a list based on chronological order, then room priority.
+
+        Slots are sorted:
+        1. Chronologically (earliest start time first)
+        2. By room priority (preferred rooms first)
 
         Args:
             slots: List of available slots to choose from.
@@ -398,31 +577,65 @@ class AsimutBooker:
         if not slots:
             return None
 
-        # Sort by room priority and preferred times
+        # Filter out slots that can't be booked according to rules
+        valid_slots = []
+        for slot in slots:
+            duration = self.rules.calculate_valid_duration(slot)
+            if duration > 0:
+                can_book, _ = self.rules.can_book_slot(slot, duration)
+                if can_book:
+                    valid_slots.append(slot)
+
+        if not valid_slots:
+            return None
+
+        # Sort chronologically first, then by room priority
         def slot_priority(slot: TimeSlot) -> tuple:
-            # Lower is better
+            # Parse start time for chronological sorting
+            start_h = int(slot.start_time.split(":")[0])
+            start_m = int(slot.start_time.split(":")[1])
+            start_minutes = start_h * 60 + start_m
+
+            # Room priority (lower is better)
             try:
                 room_priority = self.config.priority_rooms.index(slot.room)
             except ValueError:
                 room_priority = 999
 
-            # Check if time matches preferred times
-            time_priority = 999
-            try:
-                slot_hour = int(slot.start_time.split(":")[0])
-                for i, pref in enumerate(self.config.preferred_times):
-                    pref_start = int(pref["start"].split(":")[0])
-                    pref_end = int(pref["end"].split(":")[0])
-                    if pref_start <= slot_hour < pref_end:
-                        time_priority = i
-                        break
-            except (ValueError, KeyError):
-                pass
+            # Sort by: time first, then room priority
+            return (start_minutes, room_priority)
 
-            return (room_priority, time_priority, slot.start_time)
-
-        sorted_slots = sorted(slots, key=slot_priority)
+        sorted_slots = sorted(valid_slots, key=slot_priority)
         return sorted_slots[0] if sorted_slots else None
+
+    def get_all_slots_sorted(self, slots: list[TimeSlot]) -> list[TimeSlot]:
+        """
+        Get all slots sorted chronologically then by room priority.
+
+        Used for iterating through all slots when booking multiple.
+
+        Args:
+            slots: List of available slots.
+
+        Returns:
+            Sorted list of TimeSlot objects.
+        """
+        if not slots:
+            return []
+
+        def slot_priority(slot: TimeSlot) -> tuple:
+            start_h = int(slot.start_time.split(":")[0])
+            start_m = int(slot.start_time.split(":")[1])
+            start_minutes = start_h * 60 + start_m
+
+            try:
+                room_priority = self.config.priority_rooms.index(slot.room)
+            except ValueError:
+                room_priority = 999
+
+            return (start_minutes, room_priority)
+
+        return sorted(slots, key=slot_priority)
 
     def book_slot(self, slot: TimeSlot, dry_run: bool = False) -> BookingResult:
         """
@@ -437,20 +650,44 @@ class AsimutBooker:
         """
         date_str = slot.date.strftime("%Y-%m-%d") if slot.date else "unknown"
 
+        # Calculate booking duration (capped at max)
+        booking_duration = self.rules.calculate_valid_duration(slot)
+        if booking_duration == 0:
+            return BookingResult(
+                success=False,
+                room=slot.room,
+                message=f"Slot duration invalid (min {self.config.min_duration_minutes} min)"
+            )
+
+        # Check rules before attempting
+        can_book, reason = self.rules.can_book_slot(slot, booking_duration)
+        if not can_book:
+            logger.info("Skipping slot due to rules: %s", reason)
+            return BookingResult(success=False, room=slot.room, message=reason)
+
+        # Calculate actual end time for booking
+        start_parts = slot.start_time.split(":")
+        start_h = int(start_parts[0]) + int(start_parts[1]) / 60
+        end_h = start_h + booking_duration / 60
+        book_end_h = int(end_h)
+        book_end_m = int((end_h % 1) * 60)
+        book_end_time = f"{book_end_h:02d}:{book_end_m:02d}"
+
         if dry_run:
-            logger.info("[DRY RUN] Would book: %s at %s on %s",
-                       slot.room, slot.start_time, date_str)
+            logger.info("[DRY RUN] Would book: %s at %s-%s on %s",
+                       slot.room, slot.start_time, book_end_time, date_str)
             return BookingResult(
                 success=True,
                 room=slot.room,
                 date=date_str,
                 start_time=slot.start_time,
-                end_time=slot.end_time,
+                end_time=book_end_time,
                 message="Dry run - no booking made",
             )
 
         try:
-            logger.info("Attempting to book: %s at %s on %s", slot.room, slot.start_time, date_str)
+            logger.info("Attempting to book: %s at %s-%s on %s",
+                       slot.room, slot.start_time, book_end_time, date_str)
 
             if slot.click_x is None or slot.click_y is None:
                 logger.error("No click coordinates stored for this slot")
@@ -458,56 +695,124 @@ class AsimutBooker:
 
             # Step 1: Click on the empty grid space
             self.page.mouse.click(slot.click_x, slot.click_y)
-            self.page.wait_for_timeout(1500)
+            self.page.wait_for_timeout(2000)
 
             # Step 2: A popup appears - click "Student booking provisional"
-            student_booking_btn = self.page.locator("text=Student booking provisional").first
+            student_booking_btn = self.page.locator("mat-list-item:has-text('Student booking provisional')").first
             if student_booking_btn.count() > 0 and student_booking_btn.is_visible():
                 logger.debug("Clicking 'Student booking provisional'")
                 student_booking_btn.click()
-                self.page.wait_for_timeout(2000)
+                self.page.wait_for_timeout(3000)
             else:
-                # Try alternative - might be "Student Chamber Music Provisional" etc
-                alt_booking = self.page.locator("text=Student").filter(has_text="provisional").first
+                # Try alternative selector
+                alt_booking = self.page.locator("text=Student booking provisional").first
                 if alt_booking.count() > 0 and alt_booking.is_visible():
                     logger.debug("Clicking alternative student booking option")
                     alt_booking.click()
-                    self.page.wait_for_timeout(2000)
+                    self.page.wait_for_timeout(3000)
                 else:
                     logger.warning("No booking popup found after clicking slot")
+                    self.page.keyboard.press("Escape")
+                    self.page.wait_for_timeout(1000)
                     return BookingResult(
                         success=False,
                         room=slot.room,
                         message="No booking popup appeared"
                     )
 
-            # Step 3: Now on booking page - check for error message
-            # Error appears in yellow/cream colored box with "You are not allowed..."
+            # Step 3: Set the booking times using the time input fields
+            try:
+                # Set start time
+                start_input = self.page.locator("#startDate").first
+                if start_input.count() > 0 and start_input.is_visible():
+                    start_input.click()
+                    start_input.fill(slot.start_time)
+                    self.page.wait_for_timeout(500)
+
+                # Set end time
+                end_input = self.page.locator("#endDate").first
+                if end_input.count() > 0 and end_input.is_visible():
+                    end_input.click()
+                    end_input.fill(book_end_time)
+                    self.page.wait_for_timeout(500)
+
+                # Click near Save button to dismiss any dropdown
+                save_btn = self.page.locator("button:has-text('Save')").first
+                if save_btn.count() > 0:
+                    save_box = save_btn.bounding_box()
+                    if save_box:
+                        self.page.mouse.click(save_box["x"] + 10, save_box["y"] - 20)
+                        self.page.wait_for_timeout(500)
+
+            except Exception as e:
+                logger.warning("Error setting times: %s", e)
+
+            # Step 4: Check for error messages
+            # Check for "You are not allowed" error
             error_msg = self.page.locator("text=You are not allowed").first
             if error_msg.count() > 0 and error_msg.is_visible():
                 error_text = error_msg.text_content() or "Room not bookable"
                 logger.warning("Cannot book %s: %s", slot.room, error_text)
-                # Close the dialog by clicking back arrow or X
-                back_btn = self.page.locator("[class*='back'], mat-icon:text('arrow_back'), button:has(mat-icon:text('close'))").first
-                if back_btn.count() > 0:
+
+                # Extract conflict time range from error if present
+                conflict_text = self.page.locator("text=/\\d{2}:\\d{2}\\s*-\\s*\\d{2}:\\d{2}.*Reservation/").first
+                if conflict_text.count() > 0:
+                    text = conflict_text.text_content() or ""
+                    match = re.search(r'(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})', text)
+                    if match:
+                        c_start = int(match.group(1)) + int(match.group(2)) / 60
+                        c_end = int(match.group(3)) + int(match.group(4)) / 60
+                        self.rules.add_conflict_range(c_start, c_end)
+
+                # Go back
+                back_btn = self.page.locator("mat-icon:text('chevron_left')").first
+                if back_btn.count() > 0 and back_btn.is_visible():
                     back_btn.click()
-                    self.page.wait_for_timeout(1000)
+                else:
+                    self.page.keyboard.press("Escape")
+                self.page.wait_for_timeout(2000)
                 return BookingResult(
                     success=False,
                     room=slot.room,
-                    message=f"Not allowed to book: {error_text[:50]}"
+                    message=f"Not allowed: {error_text[:50]}"
                 )
 
-            # Step 4: Verify the booking details look correct (optional logging)
-            # The page shows the room name, date, and time
-            logger.debug("Booking page loaded, looking for Save button")
+            # Check for "conflicting events" or "resolve the conflicts"
+            conflict_msg = self.page.locator("text=conflicting events, text=resolve the conflicts").first
+            if conflict_msg.count() > 0 and conflict_msg.is_visible():
+                logger.warning("Booking conflicts with existing reservation")
+                back_btn = self.page.locator("mat-icon:text('chevron_left')").first
+                if back_btn.count() > 0:
+                    back_btn.click()
+                self.page.wait_for_timeout(2000)
+                return BookingResult(
+                    success=False,
+                    room=slot.room,
+                    message="Conflicts with existing booking"
+                )
 
-            # Step 5: Click Save button to confirm booking
+            # Step 5: Click Save button
             save_btn = self.page.locator("button:has-text('Save')").first
             if save_btn.count() > 0 and save_btn.is_visible():
+                # Check if Save button is enabled (has check icon, not remove/block)
+                save_icon = save_btn.locator("mat-icon").first
+                if save_icon.count() > 0:
+                    icon_text = save_icon.text_content() or ""
+                    if "remove" in icon_text or "block" in icon_text:
+                        logger.warning("Save button is disabled")
+                        back_btn = self.page.locator("mat-icon:text('chevron_left')").first
+                        if back_btn.count() > 0:
+                            back_btn.click()
+                        self.page.wait_for_timeout(2000)
+                        return BookingResult(
+                            success=False,
+                            room=slot.room,
+                            message="Save button disabled - booking not allowed"
+                        )
+
                 logger.debug("Clicking Save button")
                 save_btn.click()
-                self.page.wait_for_timeout(2000)
+                self.page.wait_for_timeout(3000)
             else:
                 logger.warning("Save button not found")
                 return BookingResult(
@@ -517,23 +822,40 @@ class AsimutBooker:
                 )
 
             # Step 6: Verify booking was successful
-            # After save, we should return to the calendar view
-            # Check for any error messages that might appear
-            post_error = self.page.locator("text=error, text=Error, text=failed, text=Failed").first
-            if post_error.count() > 0 and post_error.is_visible():
-                return BookingResult(
-                    success=False,
-                    room=slot.room,
-                    message="Booking failed after save"
-                )
+            # Check if we're back on calendar (startDate input no longer visible)
+            start_input = self.page.locator("#startDate").first
+            if start_input.count() > 0 and start_input.is_visible():
+                # Still on booking page - save may have failed
+                post_error = self.page.locator("text=error, text=Error, text=failed, text=Failed, text=not allowed").first
+                if post_error.count() > 0 and post_error.is_visible():
+                    error_text = post_error.text_content() or "Unknown error"
+                    back_btn = self.page.locator("mat-icon:text('chevron_left')").first
+                    if back_btn.count() > 0:
+                        back_btn.click()
+                    self.page.wait_for_timeout(2000)
+                    return BookingResult(
+                        success=False,
+                        room=slot.room,
+                        message=f"Booking failed: {error_text[:50]}"
+                    )
 
-            logger.info("Successfully booked %s at %s on %s", slot.room, slot.start_time, date_str)
+            # Success! Add to tracked bookings
+            if slot.date:
+                self.rules.add_existing_booking(ExistingBooking(
+                    room=slot.room,
+                    date=slot.date,
+                    start_time=slot.start_time,
+                    end_time=book_end_time
+                ))
+
+            logger.info("Successfully booked %s at %s-%s on %s",
+                       slot.room, slot.start_time, book_end_time, date_str)
             return BookingResult(
                 success=True,
                 room=slot.room,
                 date=date_str,
                 start_time=slot.start_time,
-                end_time=slot.end_time,
+                end_time=book_end_time,
                 message="Booking confirmed",
             )
 
