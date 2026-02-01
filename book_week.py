@@ -24,6 +24,7 @@ from playwright.sync_api import sync_playwright
 
 state_file = Path("data/browser_state/state.json")
 history_file = Path("data/booking_history.json")
+settings_file = Path("data/settings.json")
 
 # ntfy.sh notification settings
 # Change this to your own unique topic name (like "asimut-yourname-secret123")
@@ -31,6 +32,7 @@ NTFY_TOPIC = "asimut-loxty"
 NTFY_ENABLED = True  # Set to False to disable notifications
 
 # Booking rules
+MAX_ROLLING_QUOTA_HOURS = 28  # Maximum hours per rolling week
 MAX_BOOKING_HOURS = 2
 MIN_BOOKING_MINUTES = 30
 PREFERRED_MIN_MINUTES = 60  # Prefer slots at least 1 hour
@@ -38,14 +40,14 @@ PEAK_START = 9   # 9am
 PEAK_END = 16    # 4pm
 MAX_PEAK_HOURS = 2
 SAME_ROOM_GAP_MINUTES = 60
-MAX_BOOKINGS_PER_DAY = 3  # Limit per day to spread across week
+DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted based on enabled days
 
 # Priority rooms in order (including all rooms with different booking horizons)
 PRIORITY_ROOMS = [
     "B0.29", "B1.09", "B0.11", "B1.16", "B0.15", "B0.13", "B0.14", "B0.27",
     "B1.14", "B1.17", "B1.20", "B1.18", "B1.21", "B1.19",
     "B1.06", "B1.07", "B1.08", "B1.10", "B1.11", "B1.15",
-    "B0.23", "B0.24"  # Added missing rooms
+    "B0.23"
 ]
 
 # Room booking horizons (how many days in advance each room can be booked)
@@ -202,47 +204,129 @@ def adjust_slot_for_peak_quota(slot_start, slot_end, target_date, remaining_peak
     return slot_start, slot_end, False, ""
 
 
+def load_disabled_dates():
+    """Load list of disabled dates from settings file."""
+    if settings_file.exists():
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                return set(settings.get("disabled_dates", []))
+        except:
+            pass
+    return set()
+
+
+def is_date_disabled(target_date, disabled_dates):
+    """Check if a date is disabled for booking."""
+    date_str = target_date.strftime('%Y-%m-%d')
+    return date_str in disabled_dates
+
+
+def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
+    """
+    Calculate maximum bookings per day based on remaining quota and enabled days.
+
+    This dynamically adjusts bookings per day so that if you have fewer days enabled,
+    you can book more hours per day (up to the quota limit).
+
+    Args:
+        remaining_quota_hours: Hours left in the weekly quota (28h max)
+        enabled_days_count: Number of days that are enabled for booking (1-8)
+
+    Returns:
+        Maximum bookings per day (integer, minimum 1, maximum based on quota)
+    """
+    if enabled_days_count <= 0:
+        return 0
+
+    # Calculate target hours per day
+    hours_per_day = remaining_quota_hours / enabled_days_count
+
+    # Each booking is up to MAX_BOOKING_HOURS (2 hours)
+    # We want to spread bookings across the day, so calculate how many 2-hour blocks we need
+    bookings_per_day = hours_per_day / MAX_BOOKING_HOURS
+
+    # Round up to ensure we fill the quota, but at least 1 booking per day
+    bookings_per_day = max(1, int(bookings_per_day + 0.5))
+
+    # Cap at a reasonable maximum (e.g., 6 bookings = 12 hours per day max)
+    # This prevents trying to book unreasonably many slots on a single day
+    return min(bookings_per_day, 6)
+
+
 class BookingTracker:
     """Tracks bookings and enforces rules."""
 
     def __init__(self):
         self.bookings = []  # List of (room, date, start_hour, end_hour)
         self.conflict_ranges = {}  # Per-day conflict ranges: {date: [(start, end), ...]}
-        self.peak_hours_used = 0  # Total minutes of peak time used (from existing + new bookings)
+        self.peak_hours_by_day = {}  # Per-day peak minutes: {date_key: minutes}
+        self.existing_reservation_hours = 0.0  # Total hours from existing reservations
 
-    def add_existing_event(self, date, start_hour, end_hour):
-        """Record an existing event from agenda scan (tracks peak hours + conflicts)."""
-        # Add to conflict ranges
+    def add_existing_event(self, date, start_hour, end_hour, is_reservation=False):
+        """Record an existing event from agenda scan.
+
+        Args:
+            date: The date of the event
+            start_hour: Start time as decimal hour (e.g., 9.5 for 9:30)
+            end_hour: End time as decimal hour
+            is_reservation: True if this is a practice room booking ("Reservation"),
+                           False for classes/rehearsals/other events
+
+        Only reservations (practice room bookings) count toward peak hours quota.
+        All events are added as conflicts to avoid double-booking.
+        """
         date_key = date.strftime('%Y-%m-%d')
+
+        # Add to conflict ranges (all events block the time slot)
         if date_key not in self.conflict_ranges:
             self.conflict_ranges[date_key] = []
         self.conflict_ranges[date_key].append((start_hour, end_hour))
 
-        # Track peak hours if this is a weekday event during peak hours
-        if date.weekday() < 5:  # Monday-Friday
+        # Only track peak hours for reservations (practice room bookings)
+        peak_info = ""
+        if is_reservation and date.weekday() < 5:  # Monday-Friday
             overlap_start = max(start_hour, PEAK_START)
             overlap_end = min(end_hour, PEAK_END)
             if overlap_end > overlap_start:
                 peak_mins = (overlap_end - overlap_start) * 60
-                self.peak_hours_used += peak_mins
-                print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f} (+{peak_mins:.0f}min peak)")
-                return
+                if date_key not in self.peak_hours_by_day:
+                    self.peak_hours_by_day[date_key] = 0
+                self.peak_hours_by_day[date_key] += peak_mins
+                peak_info = f" (+{peak_mins:.0f}min peak)"
 
-        print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f}")
+        # Track reservation hours for rolling quota (28 hours per week)
+        if is_reservation:
+            duration_hours = end_hour - start_hour
+            self.existing_reservation_hours += duration_hours
+
+        event_type = "reservation" if is_reservation else "conflict"
+        print(f"  [Tracker] Added {event_type}: {date_key} {start_hour:.2f}-{end_hour:.2f}{peak_info}")
 
     def add_booking(self, room, date, start_hour, end_hour):
         """Record a successful booking."""
         self.bookings.append((room, date, start_hour, end_hour))
+        date_key = date.strftime('%Y-%m-%d')
 
-        # Update peak hours if applicable
+        # Update peak hours if applicable (only bookings count, not existing events)
+        peak_mins_added = 0
         if date.weekday() < 5:  # Monday-Friday
             overlap_start = max(start_hour, PEAK_START)
             overlap_end = min(end_hour, PEAK_END)
             if overlap_end > overlap_start:
-                self.peak_hours_used += (overlap_end - overlap_start) * 60
+                peak_mins_added = (overlap_end - overlap_start) * 60
+                if date_key not in self.peak_hours_by_day:
+                    self.peak_hours_by_day[date_key] = 0
+                self.peak_hours_by_day[date_key] += peak_mins_added
 
-        print(f"  [Tracker] Added booking: {room} {date.strftime('%Y-%m-%d')} {start_hour:.2f}-{end_hour:.2f}")
-        print(f"  [Tracker] Total bookings: {len(self.bookings)}, Peak hours used: {self.peak_hours_used:.0f} min")
+        # Also add to conflict ranges so we don't double-book
+        if date_key not in self.conflict_ranges:
+            self.conflict_ranges[date_key] = []
+        self.conflict_ranges[date_key].append((start_hour, end_hour))
+
+        print(f"  [Tracker] Added booking: {room} {date_key} {start_hour:.2f}-{end_hour:.2f}")
+        day_peak = self.peak_hours_by_day.get(date_key, 0)
+        print(f"  [Tracker] Total bookings: {len(self.bookings)}, Peak hours for {date_key}: {day_peak:.0f}/{MAX_PEAK_HOURS * 60} min")
 
     def add_conflict(self, date, start_hour, end_hour):
         """Record a discovered conflict range (during booking, not from agenda)."""
@@ -252,13 +336,35 @@ class BookingTracker:
         self.conflict_ranges[date_key].append((start_hour, end_hour))
         print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f}")
 
-    def get_remaining_peak_minutes(self):
-        """Get remaining peak minutes available."""
-        return max(0, MAX_PEAK_HOURS * 60 - self.peak_hours_used)
+    def get_remaining_peak_minutes(self, date):
+        """Get remaining peak minutes available for a specific date."""
+        date_key = date.strftime('%Y-%m-%d')
+        used = self.peak_hours_by_day.get(date_key, 0)
+        return max(0, MAX_PEAK_HOURS * 60 - used)
 
-    def is_peak_quota_exceeded(self):
-        """Check if peak hours quota is exceeded."""
-        return self.peak_hours_used >= MAX_PEAK_HOURS * 60
+    def get_peak_used_for_day(self, date):
+        """Get peak minutes used for a specific date."""
+        date_key = date.strftime('%Y-%m-%d')
+        return self.peak_hours_by_day.get(date_key, 0)
+
+    def is_peak_quota_exceeded(self, date):
+        """Check if peak hours quota is exceeded for a specific date."""
+        date_key = date.strftime('%Y-%m-%d')
+        used = self.peak_hours_by_day.get(date_key, 0)
+        return used >= MAX_PEAK_HOURS * 60
+
+    def get_total_booking_hours(self):
+        """Get total booking hours (existing reservations + new bookings this session)."""
+        new_booking_hours = sum(end - start for _, _, start, end in self.bookings)
+        return self.existing_reservation_hours + new_booking_hours
+
+    def get_remaining_quota_hours(self):
+        """Get remaining rolling quota hours."""
+        return max(0, MAX_ROLLING_QUOTA_HOURS - self.get_total_booking_hours())
+
+    def is_quota_full(self):
+        """Check if rolling quota is exceeded."""
+        return self.get_total_booking_hours() >= MAX_ROLLING_QUOTA_HOURS
 
     def overlaps_conflict(self, date, start_hour, end_hour):
         """Check if a time overlaps with known conflicts."""
@@ -273,6 +379,7 @@ class BookingTracker:
     def can_book(self, room, date, start_hour, duration_minutes):
         """Check if a booking is allowed by all rules."""
         end_hour = start_hour + duration_minutes / 60
+        duration_hours = duration_minutes / 60
 
         # Rule: Min duration
         if duration_minutes < MIN_BOOKING_MINUTES:
@@ -282,18 +389,24 @@ class BookingTracker:
         if duration_minutes > MAX_BOOKING_HOURS * 60:
             return False, "Duration too long"
 
+        # Rule: Rolling quota (28 hours per week)
+        remaining_hours = self.get_remaining_quota_hours()
+        if duration_hours > remaining_hours:
+            return False, f"Exceeds weekly quota ({remaining_hours:.1f}h remaining)"
+
         # Rule: Check conflict ranges
         if self.overlaps_conflict(date, start_hour, end_hour):
             return False, "Overlaps with your existing reservation"
 
-        # Rule: Peak hours limit
+        # Rule: Peak hours limit (per day)
         if date.weekday() < 5:  # Weekday
             overlap_start = max(start_hour, PEAK_START)
             overlap_end = min(end_hour, PEAK_END)
             if overlap_end > overlap_start:
                 new_peak = (overlap_end - overlap_start) * 60
-                if self.peak_hours_used + new_peak > MAX_PEAK_HOURS * 60:
-                    return False, f"Peak hours limit ({self.peak_hours_used:.0f}/{MAX_PEAK_HOURS * 60} min used)"
+                day_peak_used = self.get_peak_used_for_day(date)
+                if day_peak_used + new_peak > MAX_PEAK_HOURS * 60:
+                    return False, f"Peak hours limit for {date.strftime('%Y-%m-%d')} ({day_peak_used:.0f}/{MAX_PEAK_HOURS * 60} min used)"
 
         # Rule: Same room gap
         for b_room, b_date, b_start, b_end in self.bookings:
@@ -457,7 +570,9 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
     # Calculate click percentage for the target time
     grid_start_hour = 7.0
     pct_per_hour = 6.25
-    click_pct = ((start_hour + end_hour) / 2 - grid_start_hour) * pct_per_hour
+    target_center = (start_hour + end_hour) / 2
+    click_pct = (target_center - grid_start_hour) * pct_per_hour
+    print(f"  [DEBUG] Click calculation: slot={start_hour:.2f}-{end_hour:.2f}, center={target_center:.2f}, click_pct={click_pct:.2f}%")
 
     # Find the room row and get fresh click coordinates
     coords = page.evaluate(f"""() => {{
@@ -474,8 +589,11 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         }}
         if (!targetRow) return null;
 
-        // Scroll row into view
+        // Scroll row into view and wait for layout to settle
         targetRow.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+
+        // Force a reflow to ensure scroll completes
+        void targetRow.offsetHeight;
 
         // Find the matching location-day for this row
         const rowRect = targetRow.getBoundingClientRect();
@@ -495,7 +613,13 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         const clickX = dayRect.left + ({click_pct} / 100) * dayRect.width;
         const clickY = (rowRect.top + rowRect.bottom) / 2;
 
-        return {{ x: clickX, y: clickY }};
+        return {{
+            x: clickX,
+            y: clickY,
+            dayLeft: dayRect.left,
+            dayWidth: dayRect.width,
+            dayRight: dayRect.right
+        }};
     }}""")
 
     if not coords:
@@ -508,6 +632,7 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
     # Log viewport info
     viewport = page.evaluate("() => ({ width: window.innerWidth, height: window.innerHeight, scrollY: window.scrollY })")
     print(f"  [DEBUG] Viewport: {viewport['width']}x{viewport['height']}, scrollY={viewport['scrollY']:.0f}")
+    print(f"  [DEBUG] Day grid: left={coords.get('dayLeft', 0):.0f}, width={coords.get('dayWidth', 0):.0f}, right={coords.get('dayRight', 0):.0f}")
     print(f"  [DEBUG] Click target: x={coords['x']:.0f}, y={coords['y']:.0f} (target time: {start_hour:.2f}-{end_hour:.2f})")
 
     # Check if click is within viewport
@@ -572,6 +697,16 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
                         print(f"  [DEBUG] Overlay {i}: {text[:150]}...")
                 else:
                     print("  [DEBUG] No dialog or overlay visible after click")
+                    # Check what element is at the click position
+                    element_at_point = page.evaluate(f"""() => {{
+                        const el = document.elementFromPoint({coords['x']}, {coords['y']});
+                        if (!el) return 'null';
+                        const classes = el.className || '';
+                        const tag = el.tagName;
+                        const text = (el.textContent || '').slice(0, 50);
+                        return `${{tag}}.${{classes}} - "${{text}}"`;
+                    }}""")
+                    print(f"  [DEBUG] Element at click point: {element_at_point}")
 
                 # Log current page state
                 current_url = page.url
@@ -713,6 +848,53 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
             disabled_icons = ["remove", "block", "close", "cancel", "error", "warning"]
             if any(disabled in icon_text.lower() for disabled in disabled_icons):
                 print(f"  Save disabled (icon: {icon_text})")
+
+                # Try to capture the actual error message from the booking form
+                error_reason = "Unknown reason"
+
+                # Look for common Asimut error messages
+                error_selectors = [
+                    "text=You are not allowed",
+                    "text=not allowed to book",
+                    "text=maximum number",
+                    "text=quota",
+                    "text=peak hours",
+                    "text=already booked",
+                    "text=conflict",
+                    "text=overlaps",
+                    ".mat-error",
+                    ".error-message",
+                    "[class*='error']",
+                    "[class*='warning']",
+                    "mat-hint.mat-error",
+                ]
+
+                for selector in error_selectors:
+                    try:
+                        error_el = page.locator(selector).first
+                        if error_el.count() > 0 and error_el.is_visible():
+                            error_text = error_el.text_content() or ""
+                            if error_text.strip() and len(error_text) > 5:
+                                error_reason = error_text.strip()[:100]
+                                break
+                    except:
+                        pass
+
+                # Also check the page for any visible text containing error keywords
+                if error_reason == "Unknown reason":
+                    try:
+                        page_text = page.locator("body").text_content() or ""
+                        # Look for quota-related messages
+                        if "maximum" in page_text.lower() and ("booking" in page_text.lower() or "hour" in page_text.lower()):
+                            # Extract the relevant sentence
+                            for line in page_text.split('\n'):
+                                if "maximum" in line.lower() or "quota" in line.lower() or "limit" in line.lower():
+                                    error_reason = line.strip()[:100]
+                                    break
+                    except:
+                        pass
+
+                print(f"  [DEBUG] Rejection reason: {error_reason}")
                 go_back(page, days_ahead)
                 return False
 
@@ -844,6 +1026,8 @@ def scan_agenda(page, tracker, today):
     max_scrolls = 50  # Safety limit
     scroll_count = 0
     last_height = 0
+    stalled_count = 0  # Track consecutive scrolls with no height change
+    max_stalled = 3  # Allow a few stalled scrolls before giving up (lazy loading)
 
     while scroll_count < max_scrolls:
         # Check if target date is visible on page
@@ -858,34 +1042,45 @@ def scan_agenda(page, tracker, today):
             print(f"  [DEBUG] Found target date '{alt_date_str}' after {scroll_count} scrolls")
             break
 
-        # Scroll down
-        page.evaluate("window.scrollBy(0, window.innerHeight)")
-        page.wait_for_timeout(800)
+        # Scroll down - use scrollTo for more reliable scrolling
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(1000)  # Wait longer for lazy loading
 
         # Check if we've reached the bottom (no new content)
         new_height = page.evaluate("() => document.body.scrollHeight")
         if new_height == last_height:
-            print(f"  [DEBUG] Reached end of agenda page after {scroll_count} scrolls (height: {new_height})")
-            break
+            stalled_count += 1
+            if stalled_count >= max_stalled:
+                print(f"  [DEBUG] Reached end of agenda page after {scroll_count} scrolls (height: {new_height})")
+                break
+            # Try scrolling again - content might still be loading
+            page.wait_for_timeout(500)
+        else:
+            stalled_count = 0  # Reset if we got new content
         last_height = new_height
         scroll_count += 1
-        if scroll_count % 10 == 0:
+        if scroll_count % 5 == 0:
             print(f"  [DEBUG] Still scrolling... ({scroll_count} scrolls, height: {new_height})")
 
     # Scroll back to top to ensure we capture everything
     page.evaluate("window.scrollTo(0, 0)")
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(1000)
 
     # Now scroll through the entire page once more to ensure all content is in DOM
-    print("  Final pass to capture all events...")
-    for _ in range(scroll_count + 5):
+    # Use a minimum of 10 scrolls to ensure we cover at least a week
+    min_scrolls = max(scroll_count + 5, 10)
+    print(f"  Final pass to capture all events ({min_scrolls} scrolls)...")
+    for i in range(min_scrolls):
         page.evaluate("window.scrollBy(0, window.innerHeight)")
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(400)
+        if i % 5 == 4:
+            # Extra wait every 5 scrolls for lazy loading
+            page.wait_for_timeout(300)
 
     page.wait_for_timeout(1000)
 
     # Extract events using JavaScript to get structured data
-    # This version checks for cancelled events (strikethrough/red styling) and filters them out
+    # This version checks for cancelled events and also captures event titles to identify reservations
     events_data = page.evaluate("""() => {
         const events = [];
         const today = new Date();
@@ -912,7 +1107,6 @@ def scan_agenda(page, tracker, today):
                 }
                 // Check for red background/color that might indicate cancellation
                 const bgColor = style.backgroundColor;
-                const textColor = style.color;
                 // Parse RGB values - look for predominantly red colors
                 const redBgMatch = bgColor.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
                 if (redBgMatch) {
@@ -927,6 +1121,66 @@ def scan_agenda(page, tracker, today):
                 el = el.parentElement;
             }
             return false;
+        }
+
+        // Helper to get the event title from the event container
+        // Asimut uses app-as-event components with specific data-cy attributes
+        function getEventTitle(element) {
+            // Find the closest app-as-event container (the event card)
+            let container = element;
+            for (let i = 0; i < 10 && container; i++) {
+                // Check if we found the event container
+                if (container.tagName === 'APP-AS-EVENT' ||
+                    container.classList.contains('as-event-panel') ||
+                    container.classList.contains('event-details-expanded')) {
+
+                    // Look for the event-display-name element
+                    const displayName = container.querySelector('[data-cy="event-display-name"]');
+                    if (displayName) {
+                        const nameText = (displayName.textContent || '').trim();
+                        if (nameText === 'Reservation' || nameText.includes('Reservation')) {
+                            return 'Reservation';
+                        }
+                    }
+
+                    // Also check for location-link with room pattern (B0.xx or B1.xx)
+                    const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
+                    if (locationLink) {
+                        const locText = locationLink.textContent || '';
+                        if (/B[01]\\.[0-9]{2}/.test(locText)) {
+                            // Has a practice room location - likely a reservation
+                            // But only if the event name suggests it's a booking
+                            const displayName = container.querySelector('[data-cy="event-display-name"]');
+                            if (displayName) {
+                                const nameText = (displayName.textContent || '').trim();
+                                // Only count as reservation if it's actually titled "Reservation"
+                                if (nameText === 'Reservation') {
+                                    return 'Reservation';
+                                }
+                            }
+                        }
+                    }
+
+                    // Found the container but no reservation indicators
+                    return 'Other';
+                }
+                container = container.parentElement;
+            }
+
+            // Fallback: check immediate parent context
+            const parent = element.parentElement;
+            if (parent) {
+                // Look for Reservation text in a span nearby
+                const spans = parent.querySelectorAll('span');
+                for (const span of spans) {
+                    const text = (span.textContent || '').trim();
+                    if (text === 'Reservation') {
+                        return 'Reservation';
+                    }
+                }
+            }
+
+            return 'Other';
         }
 
         // Find all elements that contain time patterns
@@ -965,6 +1219,7 @@ def scan_agenda(page, tracker, today):
 
                 const startTime = timeMatch[1];
                 const endTime = timeMatch[2];
+                const eventTitle = getEventTitle(element);
 
                 const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
                 if (daysDiff >= 0 && daysDiff <= 7) {
@@ -973,7 +1228,8 @@ def scan_agenda(page, tracker, today):
                         daysDiff: daysDiff,
                         startTime: startTime,
                         endTime: endTime,
-                        cancelled: false
+                        title: eventTitle,
+                        isReservation: eventTitle === 'Reservation'
                     });
                 }
             }
@@ -996,11 +1252,13 @@ def scan_agenda(page, tracker, today):
     print(f"\n  Found {len(unique_events)} unique events in agenda (deduplicated from {len(events_data)}):")
 
     events_found = 0
+    reservations_found = 0
     for event in unique_events:
         date_str = event['date']
         start_time = event['startTime']
         end_time = event['endTime']
         days_diff = event['daysDiff']
+        is_reservation = event.get('isReservation', False)
 
         # Parse times to hours
         start_parts = start_time.split(':')
@@ -1011,15 +1269,32 @@ def scan_agenda(page, tracker, today):
         # Calculate the target date
         target_date = datetime.combine(today + timedelta(days=days_diff), datetime.min.time())
 
-        # Add to conflict ranges for this date (also tracks peak hours)
-        tracker.add_existing_event(target_date, start_hour, end_hour)
+        # Add to conflict ranges (reservations also track peak hours)
+        tracker.add_existing_event(target_date, start_hour, end_hour, is_reservation=is_reservation)
         events_found += 1
+        if is_reservation:
+            reservations_found += 1
 
         day_name = target_date.strftime("%A")
-        print(f"    {date_str} ({day_name}): {start_time} - {end_time}")
+        event_marker = "[R]" if is_reservation else "   "
+        print(f"  {event_marker} {date_str} ({day_name}): {start_time} - {end_time}")
 
-    print(f"\n  Total conflicts added: {events_found}")
-    print(f"  Peak hours used from existing events: {tracker.peak_hours_used:.0f} min / {MAX_PEAK_HOURS * 60} min")
+    print(f"\n  Total events: {events_found} ({reservations_found} reservations, {events_found - reservations_found} other)")
+
+    # Show rolling quota status (28 hours per week)
+    used_hours = tracker.get_total_booking_hours()
+    remaining_hours = tracker.get_remaining_quota_hours()
+    print(f"\n  Rolling quota: {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS} hours this week")
+    if remaining_hours > 0:
+        print(f"  [OK] Can book {remaining_hours:.1f} more hours")
+    else:
+        print(f"  [FULL] QUOTA FULL - cannot make new bookings until existing ones expire!")
+
+    # Show peak hours summary per day
+    if tracker.peak_hours_by_day:
+        print("  Peak hours from existing reservations:")
+        for date_key, mins in sorted(tracker.peak_hours_by_day.items()):
+            print(f"    {date_key}: {mins:.0f}/{MAX_PEAK_HOURS * 60} min")
     print("="*60)
     return events_found
 
@@ -1118,7 +1393,7 @@ def main():
     print("ASIMUT WEEK BOOKER")
     print("="*60)
     print(f"Today: {today}")
-    print(f"Booking for: {today + timedelta(days=1)} to {today + timedelta(days=7)}")
+    print(f"Booking for: {today} to {today + timedelta(days=7)}")
     print(f"Mode: {'Headless' if args.headless else 'Visible browser'}")
     print("="*60)
 
@@ -1137,6 +1412,45 @@ def main():
 
         # First, scan the agenda to learn about existing events
         events_detected = scan_agenda(page, tracker, today)
+
+        # Check if we can make any bookings at all
+        if tracker.is_quota_full():
+            used_hours = tracker.get_total_booking_hours()
+            print("\n" + "="*60)
+            print("QUOTA FULL - SKIPPING ALL BOOKING ATTEMPTS")
+            print("="*60)
+            print(f"You have {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS} hours booked this week.")
+            print("Cannot make new bookings until existing ones expire.")
+            print("="*60)
+
+            # Save to history and exit early
+            history = {"runs": []}
+            if history_file.exists():
+                try:
+                    with open(history_file, 'r') as f:
+                        history = json.load(f)
+                except:
+                    pass
+            history["runs"].insert(0, {
+                "timestamp": datetime.now().isoformat(),
+                "bookings_made": 0,
+                "events_detected": events_detected,
+                "details": f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)"
+            })
+            history["runs"] = history["runs"][:100]
+            with open(history_file, 'w') as f:
+                json.dump(history, f, indent=2)
+
+            send_notification("AsimutBooker - Quota Full",
+                            f"Cannot book: {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h used this week")
+
+            if not headless:
+                print("\nKeeping browser open for 10 seconds...")
+                page.wait_for_timeout(10000)
+
+            context.close()
+            browser.close()
+            return
 
         # Navigate to practice rooms
         print("\nNavigating to practice rooms...")
@@ -1164,112 +1478,154 @@ def main():
         current_header = page.locator("h1, h2, .title").first.text_content() if page.locator("h1, h2, .title").first.count() > 0 else "Unknown"
         print(f"  Currently showing: {current_header}")
 
-        # Process each day
-        for days_ahead in range(1, 8):
+        # Load disabled dates from settings
+        disabled_dates = load_disabled_dates()
+        if disabled_dates:
+            print(f"\n  Disabled dates (will skip): {sorted(disabled_dates)}")
+
+        # Calculate dynamic max bookings per day based on enabled days
+        # Count how many days are enabled (not in disabled_dates) in the booking window
+        enabled_days_count = 0
+        for d in range(0, 8):
+            check_date = today + timedelta(days=d)
+            if not is_date_disabled(check_date, disabled_dates):
+                enabled_days_count += 1
+
+        remaining_quota = tracker.get_remaining_quota_hours()
+        max_bookings_per_day = calculate_max_bookings_per_day(remaining_quota, enabled_days_count)
+        print(f"\n  Dynamic booking calculation:")
+        print(f"    Enabled days: {enabled_days_count}/8")
+        print(f"    Remaining quota: {remaining_quota:.1f}h")
+        print(f"    Target hours/day: {remaining_quota / max(1, enabled_days_count):.1f}h")
+        print(f"    Max bookings/day: {max_bookings_per_day}")
+
+        # Get current time for filtering today's slots
+        current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
+
+        # Process each day (0 = today, 7 = 7 days from now)
+        for days_ahead in range(0, 8):
             target_date = datetime.combine(today + timedelta(days=days_ahead), datetime.min.time())
             day_name = target_date.strftime("%A")
 
             print(f"\n{'#'*60}")
             print(f"# DAY {days_ahead}: {target_date.strftime('%Y-%m-%d')} ({day_name})")
             print(f"{'#'*60}")
-            print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak hours used: {tracker.peak_hours_used:.0f}min")
 
-            # Navigate forward one day (just click right arrow once)
-            print(f"  Navigating forward...")
-            clicked = False
-            for attempt in range(5):
-                try:
-                    # Dismiss any dialogs/modals
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(300)
+            # Check if this date is disabled in settings
+            skip_this_day = is_date_disabled(target_date, disabled_dates)
+            if skip_this_day:
+                print(f"  SKIPPED - Date disabled in settings")
+            else:
+                day_peak_used = tracker.get_peak_used_for_day(target_date)
+                print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak for this day: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60}min")
 
-                    # Scroll to absolute top to ensure arrow is visible
-                    page.evaluate("window.scrollTo(0, 0)")
-                    page.wait_for_timeout(500)
-
-                    # Wait for page to stabilize
+            # Navigate forward one day (skip for day 0 - we're already on today)
+            # Navigate forward one day (skip for day 0 - we're already on today)
+            if days_ahead > 0:
+                # Navigate forward one day (just click right arrow once)
+                # We always need to navigate even for skipped days to keep calendar in sync
+                print(f"  Navigating forward...")
+                clicked = False
+                for attempt in range(5):
                     try:
-                        page.wait_for_load_state("networkidle", timeout=3000)
-                    except:
-                        pass  # Continue even if timeout
+                        # Dismiss any dialogs/modals
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(300)
 
-                    # Debug: Check current URL and page state
-                    current_url = page.url
-                    if attempt == 0:
-                        print(f"  [DEBUG] Current URL: {current_url[:60]}...")
+                        # Scroll to absolute top to ensure arrow is visible
+                        page.evaluate("window.scrollTo(0, 0)")
+                        page.wait_for_timeout(500)
 
-                    # Find and click the right arrow - try several methods
-                    arrow = None
+                        # Wait for page to stabilize
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=3000)
+                        except:
+                            pass  # Continue even if timeout
 
-                    # Method 1: mat-icon with chevron_right text
-                    try:
-                        arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                        arrow_count = arrow.count()
-                        arrow_visible = arrow.is_visible() if arrow_count > 0 else False
-                        if arrow_count > 0 and arrow_visible:
-                            arrow.click(force=True)
-                            page.wait_for_timeout(2000)
-                            clicked = True
-                            break
-                    except Exception as e:
+                        # Debug: Check current URL and page state
+                        current_url = page.url
                         if attempt == 0:
-                            print(f"  [DEBUG] Method 1 failed: {e}")
+                            print(f"  [DEBUG] Current URL: {current_url[:60]}...")
 
-                    # Method 2: Button containing chevron_right
-                    try:
-                        arrow = page.locator("button:has(mat-icon:text('chevron_right'))").first
-                        if arrow.count() > 0 and arrow.is_visible():
-                            arrow.click(force=True)
+                        # Find and click the right arrow - try several methods
+                        arrow = None
+
+                        # Method 1: mat-icon with chevron_right text
+                        try:
+                            arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
+                            arrow_count = arrow.count()
+                            arrow_visible = arrow.is_visible() if arrow_count > 0 else False
+                            if arrow_count > 0 and arrow_visible:
+                                arrow.click(force=True)
+                                page.wait_for_timeout(2000)
+                                clicked = True
+                                break
+                        except Exception as e:
+                            if attempt == 0:
+                                print(f"  [DEBUG] Method 1 failed: {e}")
+
+                        # Method 2: Button containing chevron_right
+                        try:
+                            arrow = page.locator("button:has(mat-icon:text('chevron_right'))").first
+                            if arrow.count() > 0 and arrow.is_visible():
+                                arrow.click(force=True)
+                                page.wait_for_timeout(2000)
+                                clicked = True
+                                break
+                        except:
+                            pass
+
+                        # Method 3: Any element with chevron_right
+                        try:
+                            arrow = page.locator("text=chevron_right").first
+                            if arrow.count() > 0 and arrow.is_visible():
+                                arrow.click(force=True)
+                                page.wait_for_timeout(2000)
+                                clicked = True
+                                break
+                        except:
+                            pass
+
+                        # After 2 failed attempts, try reloading the page
+                        if attempt == 2:
+                            print(f"  [DEBUG] Reloading calendar page after failed navigation...")
+                            page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
                             page.wait_for_timeout(2000)
+                            # Click forward the correct number of times
+                            print(f"  [DEBUG] Clicking forward {days_ahead} times...")
+                            for click_num in range(days_ahead):
+                                try:
+                                    page.evaluate("window.scrollTo(0, 0)")
+                                    page.wait_for_timeout(300)
+                                    arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
+                                    if arrow.count() > 0:
+                                        arrow.click(force=True)
+                                        page.wait_for_timeout(1500)
+                                except Exception as e:
+                                    print(f"  [DEBUG] Forward click {click_num + 1} failed: {e}")
                             clicked = True
                             break
-                    except:
-                        pass
 
-                    # Method 3: Any element with chevron_right
-                    try:
-                        arrow = page.locator("text=chevron_right").first
-                        if arrow.count() > 0 and arrow.is_visible():
-                            arrow.click(force=True)
-                            page.wait_for_timeout(2000)
-                            clicked = True
-                            break
-                    except:
-                        pass
+                        print(f"    Arrow not found (attempt {attempt + 1}), waiting...")
+                        page.wait_for_timeout(1500)
+                    except Exception as e:
+                        print(f"    Arrow click failed: {e}")
+                        page.wait_for_timeout(1000)
 
-                    # After 2 failed attempts, try reloading the page
-                    if attempt == 2:
-                        print(f"  [DEBUG] Reloading calendar page after failed navigation...")
-                        page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
-                        page.wait_for_timeout(2000)
-                        # Click forward the correct number of times
-                        print(f"  [DEBUG] Clicking forward {days_ahead} times...")
-                        for click_num in range(days_ahead):
-                            try:
-                                page.evaluate("window.scrollTo(0, 0)")
-                                page.wait_for_timeout(300)
-                                arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                                if arrow.count() > 0:
-                                    arrow.click(force=True)
-                                    page.wait_for_timeout(1500)
-                            except Exception as e:
-                                print(f"  [DEBUG] Forward click {click_num + 1} failed: {e}")
-                        clicked = True
-                        break
+                if not clicked:
+                    print(f"  [DEBUG] Navigation failed after all attempts")
+                    print(f"  Failed to navigate forward, skipping...")
+                    continue
 
-                    print(f"    Arrow not found (attempt {attempt + 1}), waiting...")
-                    page.wait_for_timeout(1500)
-                except Exception as e:
-                    print(f"    Arrow click failed: {e}")
-                    page.wait_for_timeout(1000)
+                print(f"  [DEBUG] Navigation succeeded, waiting for page to stabilize...")
+                page.wait_for_timeout(1000)
+            else:
+                print(f"  Today - no navigation needed (already on current day)")
 
-            if not clicked:
-                print(f"  [DEBUG] Navigation failed after all attempts")
-                print(f"  Failed to navigate forward, skipping...")
+            # If this day is disabled, skip to next day after navigation
+            if skip_this_day:
+                print(f"\n  Day summary: 0 bookings made (skipped)")
                 continue
-
-            print(f"  [DEBUG] Navigation succeeded, waiting for page to stabilize...")
-            page.wait_for_timeout(1000)
 
             # Verify the actual displayed date
             displayed_date = page.evaluate("""() => {
@@ -1299,6 +1655,10 @@ def main():
                     slot_duration = slot['endHour'] - slot['startHour']
                     if slot_duration * 60 < MIN_BOOKING_MINUTES:
                         continue  # Too short
+
+                    # For today (days_ahead == 0), skip slots that have already started
+                    if days_ahead == 0 and slot['startHour'] <= current_time_hour:
+                        continue  # Slot is in the past
 
                     # Check if room is available based on booking horizon
                     is_available, horizon_reason = is_room_available_to_book(room_name, target_date, slot['startHour'])
@@ -1343,9 +1703,10 @@ def main():
             attempts = 0
             max_attempts = 15  # Reduce to avoid too many failed attempts
 
-            # Log peak quota status
-            remaining_peak = tracker.get_remaining_peak_minutes()
-            print(f"  [DEBUG] Peak quota: {tracker.peak_hours_used:.0f}/{MAX_PEAK_HOURS * 60} min used, {remaining_peak:.0f} min remaining")
+            # Log peak quota status for this specific day
+            remaining_peak = tracker.get_remaining_peak_minutes(target_date)
+            day_peak_used = tracker.get_peak_used_for_day(target_date)
+            print(f"  [DEBUG] Peak quota for {target_date.strftime('%Y-%m-%d')}: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60} min used, {remaining_peak:.0f} min remaining")
 
             # Adjust slots to avoid conflicts AND peak zone if quota exceeded
             adjusted_slots = []
@@ -1416,9 +1777,9 @@ def main():
             all_slots = adjusted_slots
             all_slots.sort(key=lambda s: (not s.get('is_good', False), s['start_hour'], s['room_priority']))
 
-            print(f"  [DEBUG] Starting booking attempts. Max per day: {MAX_BOOKINGS_PER_DAY}, slots available: {len(all_slots)}")
+            print(f"  [DEBUG] Starting booking attempts. Max per day: {max_bookings_per_day}, slots available: {len(all_slots)}")
 
-            while day_booked < MAX_BOOKINGS_PER_DAY and attempts < max_attempts:
+            while day_booked < max_bookings_per_day and attempts < max_attempts:
                 # Check if we have valid slots to try
                 valid_slots = [s for s in all_slots if not tracker.overlaps_conflict(
                     target_date, s['start_hour'], s['start_hour'] + min(s['duration'], MAX_BOOKING_HOURS)
@@ -1458,18 +1819,28 @@ def main():
                     start_m = int((slot['start_hour'] % 1) * 60)
                     booking_details.append(f"{target_date.strftime('%Y-%m-%d')} {room_name} {start_h:02d}:{start_m:02d}")
 
-                    # After successful booking, refresh slot coordinates
-                    page.wait_for_timeout(2000)
+                    # After successful booking, navigate back to calendar and refresh slots
+                    page.wait_for_timeout(1000)
+
+                    # Navigate back to calendar (we're on the booking confirmation page)
+                    print("  [DEBUG] Navigating back to calendar...")
+                    go_back(page, days_ahead)
+                    page.wait_for_timeout(1500)
 
                     # Re-fetch available slots since the calendar has changed
                     print("  [DEBUG] Refreshing slot data after successful booking...")
                     available_data = get_available_slots(page)
+                    total_raw_slots = sum(len(r["slots"]) for r in available_data)
+                    print(f"  [DEBUG] Raw slots from page: {total_raw_slots} (from {len(available_data)} rooms)")
 
-                    # Recalculate remaining peak quota after booking
-                    remaining_peak = tracker.get_remaining_peak_minutes()
-                    print(f"  [DEBUG] Updated peak quota: {remaining_peak:.0f} min remaining")
+                    # Recalculate remaining peak quota after booking for this day
+                    remaining_peak = tracker.get_remaining_peak_minutes(target_date)
+                    print(f"  [DEBUG] Updated peak quota for {target_date.strftime('%Y-%m-%d')}: {remaining_peak:.0f} min remaining")
 
-                    # Rebuild slot list with peak adjustment
+                    # Get updated conflict list (includes the booking we just made)
+                    conflicts = tracker.conflict_ranges.get(target_date.strftime('%Y-%m-%d'), [])
+
+                    # Rebuild slot list with conflict and peak adjustment
                     all_slots = []
                     for room_data in available_data:
                         room_name = room_data["room"]
@@ -1486,7 +1857,28 @@ def main():
                             if slot_duration * 60 < MIN_BOOKING_MINUTES:
                                 continue
 
-                            # Apply peak adjustment
+                            # Check room horizon availability
+                            is_available, _ = is_room_available_to_book(room_name, target_date, slot_start)
+                            if not is_available:
+                                continue
+
+                            # Step 1: Check if slot overlaps with any conflict
+                            for c_start, c_end in conflicts:
+                                if slot_start < c_end and slot_end > c_start:
+                                    # Slot overlaps with conflict - try to use the part after the conflict
+                                    if c_end < slot_end:
+                                        slot_start = c_end
+                                    else:
+                                        slot_start = slot_end  # Will be filtered out below
+                                        break
+
+                            # Skip if slot was fully consumed by conflict
+                            if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
+                                continue
+
+                            slot_duration = slot_end - slot_start
+
+                            # Step 2: Apply peak adjustment
                             adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
                                 slot_start, slot_end, target_date, remaining_peak
                             )
@@ -1522,7 +1914,12 @@ def main():
         print("BOOKING COMPLETE")
         print("="*60)
         print(f"Total bookings made: {total_booked}")
-        print(f"Peak hours used: {tracker.peak_hours_used:.0f} minutes")
+        if tracker.peak_hours_by_day:
+            print("Peak hours used (per day):")
+            for date_key, mins in sorted(tracker.peak_hours_by_day.items()):
+                print(f"  {date_key}: {mins:.0f}/{MAX_PEAK_HOURS * 60} min")
+        else:
+            print("Peak hours used: 0 minutes")
         print("\nAll bookings:")
         for room, date, start, end in tracker.bookings:
             start_str = f"{int(start):02d}:{int((start % 1) * 60):02d}"

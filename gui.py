@@ -16,6 +16,7 @@ STATE_FILE = APP_DIR / "data" / "browser_state" / "state.json"
 LOGS_DIR = APP_DIR / "logs"
 CONFIG_FILE = APP_DIR / "config" / "config.yaml"
 HISTORY_FILE = APP_DIR / "data" / "booking_history.json"
+SETTINGS_FILE = APP_DIR / "data" / "settings.json"
 
 
 class AsimutBookerGUI:
@@ -155,6 +156,43 @@ class AsimutBookerGUI:
         # Progress indicator
         self.progress_var = tk.StringVar(value="")
         ttk.Label(controls_frame, textvariable=self.progress_var, foreground="blue", font=("Segoe UI", 11)).pack(anchor=tk.W, pady=(8, 0))
+
+        # Booking Days section
+        days_frame = ttk.LabelFrame(main_frame, text="Booking Days (today + next 7 days)", padding="15")
+        days_frame.pack(fill=tk.X, pady=(0, 15))
+
+        days_inner = ttk.Frame(days_frame)
+        days_inner.pack(fill=tk.X)
+
+        # Create checkboxes for each of the next 8 days (today through 7 days ahead)
+        self.day_vars = {}  # {date_str: BooleanVar}
+        self.day_checkboxes = {}
+
+        today = datetime.now().date()
+        for i in range(0, 8):  # Days 0-7 (today through 7 days ahead)
+            target_date = today + timedelta(days=i)
+            date_str = target_date.strftime('%Y-%m-%d')
+            day_name = target_date.strftime('%A')
+            # Mark today specially
+            if i == 0:
+                display_text = f"Today ({target_date.strftime('%d/%m')})"
+            else:
+                display_text = f"{day_name} {target_date.strftime('%d/%m')}"
+
+            var = tk.BooleanVar(value=True)  # Default to enabled
+            self.day_vars[date_str] = var
+
+            cb = ttk.Checkbutton(
+                days_inner,
+                text=display_text,
+                variable=var,
+                command=self.save_booking_days
+            )
+            cb.pack(side=tk.LEFT, padx=10, pady=5)
+            self.day_checkboxes[date_str] = cb
+
+        # Load saved settings
+        self.load_booking_days()
 
         # Bottom section - Output Log
         log_frame = ttk.LabelFrame(main_frame, text="Output Log", padding="15")
@@ -560,6 +598,47 @@ class AsimutBookerGUI:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(HISTORY_FILE, 'w') as f:
             json.dump(history, f, indent=2)
+
+    def load_settings(self):
+        """Load settings from file."""
+        if SETTINGS_FILE.exists():
+            try:
+                with open(SETTINGS_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+
+    def save_settings(self, settings):
+        """Save settings to file."""
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+
+    def load_booking_days(self):
+        """Load enabled booking days from settings."""
+        settings = self.load_settings()
+        disabled_dates = settings.get("disabled_dates", [])
+
+        # Update checkboxes based on saved settings
+        for date_str, var in self.day_vars.items():
+            if date_str in disabled_dates:
+                var.set(False)
+            else:
+                var.set(True)
+
+    def save_booking_days(self):
+        """Save enabled booking days to settings."""
+        settings = self.load_settings()
+
+        # Get list of disabled dates
+        disabled_dates = []
+        for date_str, var in self.day_vars.items():
+            if not var.get():
+                disabled_dates.append(date_str)
+
+        settings["disabled_dates"] = disabled_dates
+        self.save_settings(settings)
 
     def add_history_entry(self, bookings_made, events_detected, details=""):
         """Add a new entry to booking history."""
