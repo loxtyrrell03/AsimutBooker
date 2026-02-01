@@ -22,6 +22,12 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
 state_file = Path("data/browser_state/state.json")
 history_file = Path("data/booking_history.json")
 settings_file = Path("data/settings.json")
@@ -31,51 +37,90 @@ settings_file = Path("data/settings.json")
 NTFY_TOPIC = "asimut-loxty"
 NTFY_ENABLED = True  # Set to False to disable notifications
 
-# Booking rules
-MAX_ROLLING_QUOTA_HOURS = 28  # Maximum hours per rolling week
+# Default values (used as fallback if config.yaml is missing or invalid)
+_DEFAULT_CONFIG = {
+    'rolling_quota': 28,
+    'peak_start': 9,
+    'peak_end': 16,
+    'max_peak_hours': 2,
+    'same_room_gap_minutes': 60,
+    'priority_rooms': [
+        "B0.29", "B1.09", "B0.11", "B1.16", "B0.15", "B0.13", "B0.14", "B0.27",
+        "B1.14", "B1.17", "B1.20", "B1.18", "B1.21", "B1.19",
+        "B1.06", "B1.07", "B1.08", "B1.10", "B1.11", "B1.15",
+        "B0.23"
+    ],
+    'room_horizons': {
+        "B1.09": 3, "B1.16": 3,
+        "B0.23": 5, "B0.24": 5, "B0.27": 5, "B0.29": 5,
+        "B1.06": 5, "B1.07": 5, "B1.08": 5, "B1.10": 5, "B1.11": 5,
+        "B1.14": 5, "B1.15": 5, "B1.17": 5, "B1.18": 5, "B1.19": 5,
+        "B1.20": 5, "B1.21": 5,
+    },
+    'default_horizon': 7,
+}
+
+
+def load_config():
+    """Load configuration from config.yaml with fallback to hardcoded defaults."""
+    config_file = Path("config/config.yaml")
+
+    if not config_file.exists():
+        return _DEFAULT_CONFIG.copy()
+
+    if not YAML_AVAILABLE:
+        print("Warning: PyYAML not installed, using default configuration")
+        return _DEFAULT_CONFIG.copy()
+
+    try:
+        with open(config_file, 'r') as f:
+            cfg = yaml.safe_load(f)
+
+        result = _DEFAULT_CONFIG.copy()
+
+        # Load rules
+        if cfg and 'rules' in cfg:
+            rules = cfg['rules']
+            result['rolling_quota'] = rules.get('rolling_quota', _DEFAULT_CONFIG['rolling_quota'])
+            result['same_room_gap_minutes'] = rules.get('same_room_gap_minutes', _DEFAULT_CONFIG['same_room_gap_minutes'])
+            if 'peak_hours' in rules:
+                peak = rules['peak_hours']
+                result['max_peak_hours'] = peak.get('max_hours', _DEFAULT_CONFIG['max_peak_hours'])
+                if 'start' in peak:
+                    result['peak_start'] = int(peak['start'].split(':')[0])
+                if 'end' in peak:
+                    result['peak_end'] = int(peak['end'].split(':')[0])
+
+        # Load rooms from config
+        if cfg and 'rooms' in cfg and 'priority' in cfg['rooms']:
+            rooms = cfg['rooms']['priority']
+            result['priority_rooms'] = [r['room'] for r in rooms]
+            # Start with default horizons, then apply config overrides
+            result['room_horizons'] = _DEFAULT_CONFIG['room_horizons'].copy()
+            for r in rooms:
+                if 'horizon' in r:
+                    result['room_horizons'][r['room']] = r['horizon']
+
+        return result
+    except Exception as e:
+        print(f"Warning: Could not load config.yaml ({e}), using defaults")
+        return _DEFAULT_CONFIG.copy()
+
+
+# Load config and set module-level constants
+_CONFIG = load_config()
+MAX_ROLLING_QUOTA_HOURS = _CONFIG['rolling_quota']
 MAX_BOOKING_HOURS = 2
 MIN_BOOKING_MINUTES = 30
 PREFERRED_MIN_MINUTES = 60  # Prefer slots at least 1 hour
-PEAK_START = 9   # 9am
-PEAK_END = 16    # 4pm
-MAX_PEAK_HOURS = 2
-SAME_ROOM_GAP_MINUTES = 60
+PEAK_START = _CONFIG['peak_start']
+PEAK_END = _CONFIG['peak_end']
+MAX_PEAK_HOURS = _CONFIG['max_peak_hours']
+SAME_ROOM_GAP_MINUTES = _CONFIG['same_room_gap_minutes']
 DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted based on enabled days
-
-# Priority rooms in order (including all rooms with different booking horizons)
-PRIORITY_ROOMS = [
-    "B0.29", "B1.09", "B0.11", "B1.16", "B0.15", "B0.13", "B0.14", "B0.27",
-    "B1.14", "B1.17", "B1.20", "B1.18", "B1.21", "B1.19",
-    "B1.06", "B1.07", "B1.08", "B1.10", "B1.11", "B1.15",
-    "B0.23"
-]
-
-# Room booking horizons (how many days in advance each room can be booked)
-# Rooms become available exactly X days later, by the minute
-ROOM_HORIZONS = {
-    # 3 days in advance
-    "B1.09": 3,
-    "B1.16": 3,
-    # 5 days in advance
-    "B0.23": 5,
-    "B0.24": 5,
-    "B0.27": 5,
-    "B0.29": 5,
-    "B1.06": 5,
-    "B1.07": 5,
-    "B1.08": 5,
-    "B1.10": 5,
-    "B1.11": 5,
-    "B1.14": 5,
-    "B1.15": 5,
-    "B1.17": 5,
-    "B1.18": 5,
-    "B1.19": 5,
-    "B1.20": 5,
-    "B1.21": 5,
-    # All other rooms default to 7 days
-}
-DEFAULT_HORIZON = 7  # Default for rooms not in ROOM_HORIZONS
+PRIORITY_ROOMS = _CONFIG['priority_rooms']
+ROOM_HORIZONS = _CONFIG['room_horizons']
+DEFAULT_HORIZON = _CONFIG['default_horizon']
 
 
 def is_room_available_to_book(room, target_date, slot_start_hour):
@@ -260,10 +305,11 @@ class BookingTracker:
     def __init__(self):
         self.bookings = []  # List of (room, date, start_hour, end_hour)
         self.conflict_ranges = {}  # Per-day conflict ranges: {date: [(start, end), ...]}
+        self.reservation_ranges = {}  # Per-day reservation ranges (for same-room gap buffer): {date: [(start, end), ...]}
         self.peak_hours_by_day = {}  # Per-day peak minutes: {date_key: minutes}
         self.existing_reservation_hours = 0.0  # Total hours from existing reservations
 
-    def add_existing_event(self, date, start_hour, end_hour, is_reservation=False):
+    def add_existing_event(self, date, start_hour, end_hour, is_reservation=False, room=None):
         """Record an existing event from agenda scan.
 
         Args:
@@ -272,16 +318,24 @@ class BookingTracker:
             end_hour: End time as decimal hour
             is_reservation: True if this is a practice room booking ("Reservation"),
                            False for classes/rehearsals/other events
+            room: Room name (e.g., "B0.27") if available, for same-room gap enforcement
 
         Only reservations (practice room bookings) count toward peak hours quota.
         All events are added as conflicts to avoid double-booking.
         """
         date_key = date.strftime('%Y-%m-%d')
 
-        # Add to conflict ranges (all events block the time slot)
+        # ALL events block you from booking at the same time (you can't be in two places at once)
+        # This includes both classes AND reservations
         if date_key not in self.conflict_ranges:
             self.conflict_ranges[date_key] = []
         self.conflict_ranges[date_key].append((start_hour, end_hour))
+
+        # Also track reservation ranges with room info for same-room gap enforcement
+        if is_reservation:
+            if date_key not in self.reservation_ranges:
+                self.reservation_ranges[date_key] = []
+            self.reservation_ranges[date_key].append((start_hour, end_hour, room))
 
         # Only track peak hours for reservations (practice room bookings)
         peak_info = ""
@@ -408,14 +462,68 @@ class BookingTracker:
                 if day_peak_used + new_peak > MAX_PEAK_HOURS * 60:
                     return False, f"Peak hours limit for {date.strftime('%Y-%m-%d')} ({day_peak_used:.0f}/{MAX_PEAK_HOURS * 60} min used)"
 
-        # Rule: Same room gap
+        # Rule: Same room gap (must have 60min gap before AND after existing bookings)
+        # Check against bookings made during this session
         for b_room, b_date, b_start, b_end in self.bookings:
             if b_room == room and b_date.date() == date.date():
-                gap = (start_hour - b_end) * 60
-                if 0 < gap < SAME_ROOM_GAP_MINUTES:
-                    return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap (only {gap:.0f}min)"
+                # Forward gap: new booking starts after existing ends
+                gap_after = (start_hour - b_end) * 60
+                # Backward gap: new booking ends before existing starts
+                gap_before = (b_start - end_hour) * 60
+
+                if 0 < gap_after < SAME_ROOM_GAP_MINUTES:
+                    return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap (only {gap_after:.0f}min after existing)"
+                if 0 < gap_before < SAME_ROOM_GAP_MINUTES:
+                    return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap (only {gap_before:.0f}min before existing)"
+
+        # Also check against existing reservations from agenda (if room is known)
+        date_key = date.strftime('%Y-%m-%d')
+        if date_key in self.reservation_ranges:
+            for r_start, r_end, r_room in self.reservation_ranges[date_key]:
+                if r_room and r_room == room:
+                    # Same room - check gaps
+                    gap_after = (start_hour - r_end) * 60
+                    gap_before = (r_start - end_hour) * 60
+
+                    if 0 < gap_after < SAME_ROOM_GAP_MINUTES:
+                        return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap from existing reservation (only {gap_after:.0f}min after)"
+                    if 0 < gap_before < SAME_ROOM_GAP_MINUTES:
+                        return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap from existing reservation (only {gap_before:.0f}min before)"
 
         return True, ""
+
+    def get_same_room_blocked_ranges(self, date, room):
+        """Get time ranges blocked for a specific room on a date.
+
+        Returns list of (blocked_start, blocked_end) tuples representing times that
+        cannot be booked due to:
+        1. Existing reservation in the same room
+        2. 60-minute same-room gap rule before/after reservations
+        """
+        date_key = date.strftime('%Y-%m-%d')
+        blocked = []
+        gap_hours = SAME_ROOM_GAP_MINUTES / 60
+
+        # Check existing reservations from agenda
+        if date_key in self.reservation_ranges:
+            for r_start, r_end, r_room in self.reservation_ranges[date_key]:
+                if r_room and r_room == room:
+                    # Block the reservation time itself
+                    blocked.append((r_start, r_end))
+                    # Block the gap period after this reservation ends
+                    blocked.append((r_end, r_end + gap_hours))
+                    # Block the gap period before this reservation starts
+                    blocked.append((r_start - gap_hours, r_start))
+
+        # Check bookings made during this session
+        for b_room, b_date, b_start, b_end in self.bookings:
+            if b_room == room and b_date.date() == date.date():
+                # Block the booking time itself
+                blocked.append((b_start, b_end))
+                blocked.append((b_end, b_end + gap_hours))
+                blocked.append((b_start - gap_hours, b_start))
+
+        return blocked
 
     def bookings_today(self, date):
         """Count bookings on a specific date."""
@@ -639,83 +747,134 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
     if coords['y'] < 0 or coords['y'] > viewport['height']:
         print(f"  [DEBUG] WARNING: Click Y={coords['y']:.0f} is outside viewport (0-{viewport['height']})")
 
-    print(f"  Clicking at ({coords['x']:.0f}, {coords['y']:.0f}) for {room_name}...")
-    page.mouse.click(coords['x'], coords['y'])
-    page.wait_for_timeout(2000)
+    # Try clicking at different positions if needed - start with center, then try offset positions
+    click_positions = [
+        (coords['x'], coords['y'], "center"),
+        (coords['x'] + 15, coords['y'] + 5, "offset right-bottom"),
+        (coords['x'] - 15, coords['y'] - 5, "offset left-top"),
+    ]
 
-    # Check if we accidentally clicked on an existing reservation
-    # The unique indicator is "Events where I participate" or "Choose which events to display"
-    events_participate = page.locator("text=Events where I participate").first
-    choose_events = page.locator("text=Choose which events to display").first
+    popup_found = False
+    current_url = page.url
 
-    ep_visible = events_participate.count() > 0 and events_participate.is_visible()
-    ce_visible = choose_events.count() > 0 and choose_events.is_visible()
+    for click_x, click_y, pos_desc in click_positions:
+        print(f"  Clicking at ({click_x:.0f}, {click_y:.0f}) for {room_name} ({pos_desc})...")
+        page.mouse.click(click_x, click_y)
 
-    if ep_visible or ce_visible:
-        print(f"  [DEBUG] Clicked on existing reservation (events_participate={ep_visible}, choose_events={ce_visible})")
-        print("  Clicked on existing reservation - clicking back button...")
+        # Wait for popup or navigation with retry
+        for wait_attempt in range(2):
+            page.wait_for_timeout(1000)  # Wait 1s between checks
 
-        # Click the back button with aria-label="Back to previous page"
-        back_btn = page.locator("button[aria-label='Back to previous page']").first
-        if back_btn.count() > 0 and back_btn.is_visible():
-            back_btn.click()
-            page.wait_for_timeout(2000)
-            print("    Clicked back button")
+            # Check if clicking directly navigated to booking form (URL contains /event?eventId=0)
+            current_url = page.url
+            if '/event?eventId=0' in current_url:
+                print(f"  [DEBUG] Click navigated directly to booking form")
+                popup_found = True
+                break
+
+            # Check if popup with booking option appeared
+            student_btn = page.locator("mat-list-item:has-text('Student booking provisional')").first
+            if student_btn.count() > 0 and student_btn.is_visible():
+                popup_found = True
+                break
+
+            # Check for overlay WITH "Student booking provisional" text
+            overlays = page.locator(".cdk-overlay-pane, .mat-menu-panel, mat-bottom-sheet-container").all()
+            for overlay in overlays:
+                if overlay.is_visible():
+                    text = overlay.text_content() or ""
+                    if 'Student booking provisional' in text:
+                        popup_found = True
+                        break
+            if popup_found:
+                break
+
+        if popup_found:
+            break
+
+        # If we got a tooltip but not the booking menu, dismiss it and try another position
+        overlays = page.locator(".cdk-overlay-pane, .mat-menu-panel, mat-bottom-sheet-container").all()
+        visible_overlays = [o for o in overlays if o.is_visible()]
+        if visible_overlays:
+            # Got a tooltip, not the booking menu - dismiss and try again
+            tooltip_text = visible_overlays[0].text_content() or ""
+            print(f"  [DEBUG] Got tooltip instead of menu: {tooltip_text[:80]}...")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
         else:
-            # Fallback: use browser back
-            page.go_back()
-            page.wait_for_timeout(2000)
-            print("    Used browser back")
-        return False
+            print(f"  [DEBUG] No popup at {pos_desc} position")
 
-    # Step 2: Click "Student booking provisional"
-    print(f"  [DEBUG] Looking for 'Student booking provisional' button...")
-    student_btn = page.locator("mat-list-item:has-text('Student booking provisional')").first
-    if student_btn.count() > 0 and student_btn.is_visible():
-        print("  Found 'Student booking provisional' button")
-        student_btn.click()
-        page.wait_for_timeout(3000)
+    if '/event?eventId=0' in current_url:
+        print(f"  [DEBUG] Click navigated directly to booking form")
+        # Already on booking form, skip popup handling and go to Step 3
+        pass  # Continue to Step 3 below
+    elif not popup_found:
+        # Check if we accidentally clicked on an existing reservation
+        # The unique indicator is "Events where I participate" or "Choose which events to display"
+        events_participate = page.locator("text=Events where I participate").first
+        choose_events = page.locator("text=Choose which events to display").first
+
+        ep_visible = events_participate.count() > 0 and events_participate.is_visible()
+        ce_visible = choose_events.count() > 0 and choose_events.is_visible()
+
+        if ep_visible or ce_visible:
+            print(f"  [DEBUG] Clicked on existing reservation (events_participate={ep_visible}, choose_events={ce_visible})")
+            print("  Clicked on existing reservation - clicking back button...")
+
+            # Click the back button with aria-label="Back to previous page"
+            back_btn = page.locator("button[aria-label='Back to previous page']").first
+            if back_btn.count() > 0 and back_btn.is_visible():
+                back_btn.click()
+                page.wait_for_timeout(2000)
+                print("    Clicked back button")
+            else:
+                # Fallback: use browser back
+                page.go_back()
+                page.wait_for_timeout(2000)
+                print("    Used browser back")
+            return False
+
+        # No booking popup found after trying all positions
+        print("  No booking popup found after trying multiple click positions - skipping")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+        return False
     else:
-        alt_btn = page.locator("text=Student booking provisional").first
-        if alt_btn.count() > 0 and alt_btn.is_visible():
-            print("  Found alt 'Student booking provisional' text")
-            alt_btn.click()
+        # Step 2: Click "Student booking provisional" - we know the popup is visible
+        print(f"  [DEBUG] Looking for 'Student booking provisional' button...")
+        student_btn = page.locator("mat-list-item:has-text('Student booking provisional')").first
+        if student_btn.count() > 0 and student_btn.is_visible():
+            print("  Found 'Student booking provisional' button")
+            student_btn.click()
             page.wait_for_timeout(3000)
         else:
-            # Debug: Log what IS visible in any dialog
-            dialog = page.locator("mat-dialog-container").first
-            if dialog.count() > 0:
-                dialog_text = dialog.text_content() or ""
-                print(f"  [DEBUG] Dialog found, content: {dialog_text[:200]}...")
+            # Try alternative locators
+            alt_btn = page.locator("text=Student booking provisional").first
+            if alt_btn.count() > 0 and alt_btn.is_visible():
+                print("  Found alt 'Student booking provisional' text")
+                alt_btn.click()
+                page.wait_for_timeout(3000)
             else:
-                # Check for any visible popup/menu/overlay
+                # Check overlays for the button
                 overlays = page.locator(".cdk-overlay-pane, .mat-menu-panel, mat-bottom-sheet-container").all()
-                visible_overlays = [o for o in overlays if o.is_visible()]
-                if visible_overlays:
-                    for i, overlay in enumerate(visible_overlays[:2]):
+                found_in_overlay = False
+                for overlay in overlays:
+                    if overlay.is_visible():
                         text = overlay.text_content() or ""
-                        print(f"  [DEBUG] Overlay {i}: {text[:150]}...")
-                else:
-                    print("  [DEBUG] No dialog or overlay visible after click")
-                    # Check what element is at the click position
-                    element_at_point = page.evaluate(f"""() => {{
-                        const el = document.elementFromPoint({coords['x']}, {coords['y']});
-                        if (!el) return 'null';
-                        const classes = el.className || '';
-                        const tag = el.tagName;
-                        const text = (el.textContent || '').slice(0, 50);
-                        return `${{tag}}.${{classes}} - "${{text}}"`;
-                    }}""")
-                    print(f"  [DEBUG] Element at click point: {element_at_point}")
+                        if 'Student booking provisional' in text:
+                            overlay_btn = overlay.locator("text=Student booking provisional").first
+                            if overlay_btn.count() > 0:
+                                print("  Found 'Student booking provisional' in overlay, clicking...")
+                                overlay_btn.click()
+                                page.wait_for_timeout(3000)
+                                found_in_overlay = True
+                                break
 
-                # Log current page state
-                current_url = page.url
-                print(f"  [DEBUG] Current URL: {current_url[:60]}...")
-
-            print("  No booking popup - skipping")
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(1000)
-            return False
+                if not found_in_overlay:
+                    print("  [DEBUG] Could not find 'Student booking provisional' button despite popup_found=True")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+                    return False
 
     # Step 3: Set times
     print(f"  [DEBUG] Setting times: {book_start} to {book_end}")
@@ -1183,6 +1342,32 @@ def scan_agenda(page, tracker, today):
             return 'Other';
         }
 
+        // Helper to get the room name from the event container
+        function getEventRoom(element) {
+            // Find the closest app-as-event container
+            let container = element;
+            for (let i = 0; i < 10 && container; i++) {
+                if (container.tagName === 'APP-AS-EVENT' ||
+                    container.classList.contains('as-event-panel') ||
+                    container.classList.contains('event-details-expanded')) {
+
+                    // Look for location-link with room pattern
+                    const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
+                    if (locationLink) {
+                        const locText = (locationLink.textContent || '').trim();
+                        // Match room patterns like B0.27, B1.09, etc.
+                        const roomMatch = locText.match(/B[01]\\.[0-9]{2}/);
+                        if (roomMatch) {
+                            return roomMatch[0];
+                        }
+                    }
+                    return null;
+                }
+                container = container.parentElement;
+            }
+            return null;
+        }
+
         // Find all elements that contain time patterns
         const allElements = document.querySelectorAll('*');
         let currentDate = null;
@@ -1220,6 +1405,7 @@ def scan_agenda(page, tracker, today):
                 const startTime = timeMatch[1];
                 const endTime = timeMatch[2];
                 const eventTitle = getEventTitle(element);
+                const eventRoom = getEventRoom(element);
 
                 const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
                 if (daysDiff >= 0 && daysDiff <= 7) {
@@ -1229,7 +1415,8 @@ def scan_agenda(page, tracker, today):
                         startTime: startTime,
                         endTime: endTime,
                         title: eventTitle,
-                        isReservation: eventTitle === 'Reservation'
+                        isReservation: eventTitle === 'Reservation',
+                        room: eventRoom
                     });
                 }
             }
@@ -1259,6 +1446,7 @@ def scan_agenda(page, tracker, today):
         end_time = event['endTime']
         days_diff = event['daysDiff']
         is_reservation = event.get('isReservation', False)
+        room = event.get('room')  # Room name if available (e.g., "B0.27")
 
         # Parse times to hours
         start_parts = start_time.split(':')
@@ -1269,15 +1457,16 @@ def scan_agenda(page, tracker, today):
         # Calculate the target date
         target_date = datetime.combine(today + timedelta(days=days_diff), datetime.min.time())
 
-        # Add to conflict ranges (reservations also track peak hours)
-        tracker.add_existing_event(target_date, start_hour, end_hour, is_reservation=is_reservation)
+        # Add to conflict ranges (reservations also track peak hours and room for same-room gap)
+        tracker.add_existing_event(target_date, start_hour, end_hour, is_reservation=is_reservation, room=room)
         events_found += 1
         if is_reservation:
             reservations_found += 1
 
         day_name = target_date.strftime("%A")
         event_marker = "[R]" if is_reservation else "   "
-        print(f"  {event_marker} {date_str} ({day_name}): {start_time} - {end_time}")
+        room_info = f" in {room}" if room else ""
+        print(f"  {event_marker} {date_str} ({day_name}): {start_time} - {end_time}{room_info}")
 
     print(f"\n  Total events: {events_found} ({reservations_found} reservations, {events_found - reservations_found} other)")
 
@@ -1397,6 +1586,26 @@ def main():
     print(f"Mode: {'Headless' if args.headless else 'Visible browser'}")
     print("="*60)
 
+    # Validate state file before starting browser
+    if not state_file.exists():
+        print(f"\nERROR: Browser session file not found: {state_file}")
+        print("Please run 'python book_week.py' with a visible browser first to complete login.")
+        return
+
+    try:
+        with open(state_file, 'r') as f:
+            state_data = json.load(f)
+        if not isinstance(state_data, dict) or 'cookies' not in state_data:
+            raise ValueError("Invalid state file format - missing 'cookies' key")
+    except json.JSONDecodeError as e:
+        print(f"\nERROR: Browser session file is not valid JSON: {e}")
+        print(f"Please delete {state_file} and run login setup again.")
+        return
+    except ValueError as e:
+        print(f"\nERROR: Browser session file is invalid: {e}")
+        print(f"Please delete {state_file} and run login setup again.")
+        return
+
     tracker = BookingTracker()
     total_booked = 0
     events_detected = 0
@@ -1444,7 +1653,7 @@ def main():
             send_notification("AsimutBooker - Quota Full",
                             f"Cannot book: {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h used this week")
 
-            if not headless:
+            if not args.headless:
                 print("\nKeeping browser open for 10 seconds...")
                 page.wait_for_timeout(10000)
 
@@ -1738,6 +1947,23 @@ def main():
                             break
 
                 # Skip if slot was fully consumed by conflict
+                if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
+                    conflict_removed += 1
+                    continue
+
+                # Step 1.5: Check same-room gap rule against existing reservations
+                room_blocked = tracker.get_same_room_blocked_ranges(target_date, s['room'])
+                for b_start, b_end in room_blocked:
+                    if slot_start < b_end and slot_end > b_start:
+                        # Slot overlaps with blocked gap range
+                        if b_end < slot_end:
+                            # Try to use time after the blocked range
+                            slot_start = max(slot_start, b_end)
+                        else:
+                            slot_start = slot_end  # Will be filtered out
+                            break
+
+                # Skip if slot was blocked by same-room gap
                 if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
                     conflict_removed += 1
                     continue
