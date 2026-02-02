@@ -1796,6 +1796,9 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         start_m = int((start_hour % 1) * 60)
         book_start = f"{start_h:02d}:{start_m:02d}"
         print(f"  Skipping {room} {book_start}: Only {horizon_limited_duration:.0f}min past horizon (need {MIN_BOOKING_MINUTES}min, wait {mins_until_bookable:.0f}min)")
+        # Extra debug for horizon issues
+        print(f"    [DEBUG] Horizon calc: now={now.strftime('%H:%M:%S')}, slot={slot_datetime.strftime('%Y-%m-%d %H:%M')}, "
+              f"available_from={available_from.strftime('%Y-%m-%d %H:%M')}, mins_since={time_since_available_mins:.1f}")
         return False
 
     end_hour = start_hour + booking_duration / 60
@@ -2316,6 +2319,305 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
     else:
         print(f"  [DEBUG] Save button not found: count={save_btn.count()}, visible={save_btn.is_visible() if save_btn.count() > 0 else 'N/A'}")
         print("  Save button not found")
+        go_back(page, days_ahead)
+        return False
+
+
+def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
+    """
+    Find a slot that's about to become bookable (currently <30min past horizon).
+
+    Returns: (slot_info, seconds_until_bookable) or (None, None) if no candidate found.
+    """
+    now = datetime.now()
+
+    if hasattr(target_date, 'date'):
+        target_date_obj = target_date.date()
+    else:
+        target_date_obj = target_date
+
+    best_candidate = None
+    best_wait_seconds = float('inf')
+
+    for room_data in available_data:
+        room_name = room_data["room"]
+        if room_name not in PRIORITY_ROOMS:
+            continue
+
+        horizon_days = ROOM_HORIZONS.get(room_name, DEFAULT_HORIZON)
+        room_priority = PRIORITY_ROOMS.index(room_name)
+
+        for slot in room_data["slots"]:
+            start_hour = slot['startHour']
+            slot_duration = (slot['endHour'] - slot['startHour']) * 60
+
+            if slot_duration < MIN_BOOKING_MINUTES:
+                continue
+
+            # Check time preferences if strict mode is on
+            if time_prefs["enabled"] and time_prefs["strict_mode"]:
+                if not is_preferred_time(start_hour, time_prefs):
+                    continue
+
+            # Calculate when this slot becomes bookable (30 min past horizon)
+            slot_datetime = datetime.combine(target_date_obj, datetime.min.time())
+            slot_datetime = slot_datetime.replace(
+                hour=int(start_hour),
+                minute=int((start_hour % 1) * 60)
+            )
+            available_from = slot_datetime - timedelta(days=horizon_days)
+            bookable_from = available_from + timedelta(minutes=MIN_BOOKING_MINUTES)
+
+            # How long until this slot is bookable?
+            seconds_until_bookable = (bookable_from - now).total_seconds()
+
+            # We want slots that will become bookable soon (within 3 minutes)
+            # but aren't bookable yet
+            if 0 < seconds_until_bookable <= 180:  # 0 to 3 minutes away
+                # Check if we can actually book this (quota, conflicts, etc.)
+                can_book, reason = tracker.can_book(room_name, target_date, start_hour, MIN_BOOKING_MINUTES)
+                if not can_book:
+                    continue
+
+                # Prefer slots that become available soonest, then by room priority
+                if seconds_until_bookable < best_wait_seconds or \
+                   (seconds_until_bookable == best_wait_seconds and room_priority < (best_candidate['room_priority'] if best_candidate else 999)):
+                    best_candidate = {
+                        "room": room_name,
+                        "start_hour": start_hour,
+                        "end_hour": slot['endHour'],
+                        "duration": slot_duration,
+                        "room_priority": room_priority,
+                        "click_x": slot["clickX"],
+                        "click_y": slot["clickY"],
+                        "bookable_from": bookable_from,
+                        "horizon_days": horizon_days
+                    }
+                    best_wait_seconds = seconds_until_bookable
+
+    if best_candidate:
+        return best_candidate, best_wait_seconds
+    return None, None
+
+
+def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
+    """
+    Prepare a booking form for a slot that's about to become bookable,
+    then click Save at the exact moment it becomes available.
+
+    This "snipes" the slot by having everything ready before other users.
+
+    Returns: True if successful, False otherwise.
+    """
+    room = slot['room']
+    start_hour = slot['start_hour']
+    bookable_from = slot['bookable_from']
+    horizon_days = slot['horizon_days']
+
+    # Calculate the 30-minute booking window
+    end_hour = start_hour + MIN_BOOKING_MINUTES / 60
+
+    # Format times
+    start_h = int(start_hour)
+    start_m = int((start_hour % 1) * 60)
+    end_h = int(end_hour)
+    end_m = int((end_hour % 1) * 60)
+    book_start = f"{start_h:02d}:{start_m:02d}"
+    book_end = f"{end_h:02d}:{end_m:02d}"
+
+    now = datetime.now()
+    seconds_to_wait = (bookable_from - now).total_seconds()
+
+    print(f"\n{'='*60}")
+    print(f"HORIZON SNIPE: {room} at {book_start}-{book_end}")
+    print(f"{'='*60}")
+    print(f"  Slot becomes bookable at: {bookable_from.strftime('%H:%M:%S')}")
+    print(f"  Current time: {now.strftime('%H:%M:%S')}")
+    print(f"  Seconds until bookable: {seconds_to_wait:.1f}")
+    print(f"  Strategy: Open form now, wait, click Save at exact moment")
+
+    # Step 1: Click on the slot to open booking form
+    room_name = slot['room']
+    grid_start_hour = 7.0
+    pct_per_hour = 6.25
+    target_center = (start_hour + end_hour) / 2
+    click_pct = (target_center - grid_start_hour) * pct_per_hour
+
+    print(f"\n  [SNIPE] Step 1: Opening booking form...")
+
+    # Find the room row and get click coordinates
+    coords = page.evaluate(f"""() => {{
+        const rows = document.querySelectorAll('.location-name-container .location-row');
+        const locationDays = document.querySelectorAll('.location-day');
+
+        let targetRow = null;
+        for (const row of rows) {{
+            if (row.textContent.trim() === '{room_name}') {{
+                targetRow = row;
+                break;
+            }}
+        }}
+        if (!targetRow) return null;
+
+        targetRow.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+        void targetRow.offsetHeight;
+
+        const rowRect = targetRow.getBoundingClientRect();
+        const rowMidY = (rowRect.top + rowRect.bottom) / 2;
+
+        let dayRect = null;
+        for (const day of locationDays) {{
+            const dRect = day.getBoundingClientRect();
+            const dayMidY = (dRect.top + dRect.bottom) / 2;
+            if (Math.abs(dayMidY - rowMidY) < 30) {{
+                dayRect = dRect;
+                break;
+            }}
+        }}
+        if (!dayRect) return null;
+
+        const clickX = dayRect.left + ({click_pct} / 100) * dayRect.width;
+        const clickY = (rowRect.top + rowRect.bottom) / 2;
+
+        return {{ x: clickX, y: clickY }};
+    }}""")
+
+    if not coords:
+        print(f"  [SNIPE] Could not find room '{room_name}' - aborting snipe")
+        return False
+
+    page.wait_for_timeout(200)
+
+    # Click to open booking form
+    print(f"  [SNIPE] Clicking at ({coords['x']:.0f}, {coords['y']:.0f})...")
+    page.mouse.click(coords['x'], coords['y'])
+    page.wait_for_timeout(500)
+
+    # Look for "Student booking provisional" button
+    student_booking_btn = page.locator("mat-list-item").filter(has_text="Student booking provisional")
+    if student_booking_btn.count() > 0 and student_booking_btn.is_visible():
+        print(f"  [SNIPE] Found booking type button, clicking...")
+        student_booking_btn.click()
+        page.wait_for_timeout(800)
+    else:
+        print(f"  [SNIPE] No booking type button found, checking if form opened...")
+
+    # Step 2: Fill in the times
+    print(f"  [SNIPE] Step 2: Pre-filling times ({book_start} to {book_end})...")
+
+    time_inputs = page.locator("input[type='time'], input[formcontrolname*='time'], input[data-cy*='time']")
+    if time_inputs.count() >= 2:
+        # Fill start time
+        start_input = time_inputs.nth(0)
+        start_input.click()
+        start_input.fill(book_start)
+        page.wait_for_timeout(200)
+
+        # Fill end time
+        end_input = time_inputs.nth(1)
+        end_input.click()
+        end_input.fill(book_end)
+        page.wait_for_timeout(200)
+
+        # Verify times
+        actual_start = start_input.input_value()
+        actual_end = end_input.input_value()
+        print(f"  [SNIPE] Times set: {actual_start} to {actual_end}")
+    else:
+        print(f"  [SNIPE] Could not find time inputs (found {time_inputs.count()}) - aborting")
+        go_back(page, days_ahead)
+        return False
+
+    # Step 3: Locate Save button
+    print(f"  [SNIPE] Step 3: Locating Save button...")
+    save_btn = page.locator("button").filter(has_text="Save").first
+
+    if save_btn.count() == 0 or not save_btn.is_visible():
+        print(f"  [SNIPE] Save button not found - aborting")
+        go_back(page, days_ahead)
+        return False
+
+    save_box = save_btn.bounding_box()
+    if not save_box:
+        print(f"  [SNIPE] Could not get Save button position - aborting")
+        go_back(page, days_ahead)
+        return False
+
+    save_x = save_box['x'] + save_box['width'] / 2
+    save_y = save_box['y'] + save_box['height'] / 2
+    print(f"  [SNIPE] Save button located at ({save_x:.0f}, {save_y:.0f})")
+
+    # Step 4: Wait until the exact moment, then click Save
+    print(f"\n  [SNIPE] Step 4: Waiting for bookable moment...")
+
+    # Update timing
+    now = datetime.now()
+    seconds_to_wait = (bookable_from - now).total_seconds()
+
+    if seconds_to_wait > 0:
+        print(f"  [SNIPE] Waiting {seconds_to_wait:.1f} seconds...")
+
+        # Countdown in the final seconds
+        while True:
+            now = datetime.now()
+            remaining = (bookable_from - now).total_seconds()
+
+            if remaining <= 0:
+                break
+            elif remaining <= 10:
+                print(f"  [SNIPE] T-{remaining:.1f}s...")
+                time.sleep(0.1)  # Check every 100ms in final 10 seconds
+            elif remaining <= 30:
+                print(f"  [SNIPE] T-{remaining:.0f}s...")
+                time.sleep(1)
+            else:
+                time.sleep(1)
+
+    # Wait 1 second after bookable time to ensure system is ready
+    print(f"  [SNIPE] Adding 1 second safety buffer...")
+    time.sleep(1)
+
+    # Click Save!
+    click_time = datetime.now()
+    print(f"\n  >>> CLICKING SAVE NOW: {click_time.strftime('%H:%M:%S.%f')[:-3]} <<<")
+
+    page.mouse.click(save_x, save_y)
+
+    # Wait for result
+    page.wait_for_timeout(2000)
+
+    # Check if booking succeeded
+    current_url = page.url
+    booking_form = page.locator("app-arrangement-upsert, .booking-form, [class*='upsert']")
+
+    if "eventId" in current_url or (booking_form.count() == 0 or not booking_form.is_visible()):
+        # Success!
+        result_time = datetime.now()
+        print(f"  [SNIPE] SUCCESS! Booked at {result_time.strftime('%H:%M:%S.%f')[:-3]}")
+        print(f"  [SNIPE] Latency from bookable time: {(result_time - bookable_from).total_seconds()*1000:.0f}ms")
+
+        # Add to tracker
+        tracker.add_booking(room, target_date, start_hour, end_hour)
+        print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
+
+        # Save as extendable (we booked minimum 30 min, can extend later)
+        max_possible_duration = min(slot['duration'], MAX_BOOKING_HOURS * 60)
+        if max_possible_duration > MIN_BOOKING_MINUTES:
+            target_end_hour = start_hour + max_possible_duration / 60
+            save_extendable_booking(room, target_date, start_hour, end_hour, target_end_hour)
+            target_end_h = int(target_end_hour)
+            target_end_m = int((target_end_hour % 1) * 60)
+            print(f"  [EXTEND] Marked for extension: target {book_start}-{target_end_h:02d}:{target_end_m:02d}")
+
+        return True
+    else:
+        # Check for error messages
+        page_text = page.locator("body").inner_text()
+        if "conflict" in page_text.lower() or "error" in page_text.lower():
+            print(f"  [SNIPE] FAILED - Conflict or error detected")
+        else:
+            print(f"  [SNIPE] FAILED - Still on booking form")
+
         go_back(page, days_ahead)
         return False
 
@@ -3008,7 +3310,115 @@ def main():
 
         # Wait for target time if specified (prep is done, ready to book)
         if args.target_time:
+            # =================================================================
+            # HORIZON SNIPE: Check for slots about to become bookable
+            # =================================================================
+            # Before waiting, check if there's a slot that will become bookable
+            # right at target time. If so, we can "snipe" it by opening the
+            # booking form early and clicking Save at the exact moment.
+
+            # Get current slot data to look for snipe candidates
+            print("\n" + "="*60)
+            print("CHECKING FOR HORIZON SNIPE OPPORTUNITIES")
+            print("="*60)
+
+            snipe_target_date = today + timedelta(days=day_order[0]) if day_order else today
+            available_data = get_available_slots(page)
+            snipe_candidate, seconds_until_bookable = find_horizon_snipe_candidate(
+                available_data, snipe_target_date, tracker, time_prefs
+            )
+
+            if snipe_candidate:
+                print(f"  [SNIPE] Found candidate: {snipe_candidate['room']} at {snipe_candidate['start_hour']:.2f}")
+                print(f"  [SNIPE] Becomes bookable in {seconds_until_bookable:.1f} seconds")
+                print(f"  [SNIPE] Bookable at: {snipe_candidate['bookable_from'].strftime('%H:%M:%S')}")
+
+                # Attempt the snipe
+                snipe_success = try_horizon_snipe(
+                    page, snipe_candidate, snipe_target_date, tracker, day_order[0]
+                )
+
+                if snipe_success:
+                    total_booked += 1
+                    booking_details.append(
+                        f"{snipe_target_date.strftime('%Y-%m-%d')} {snipe_candidate['room']} "
+                        f"{int(snipe_candidate['start_hour']):02d}:{int((snipe_candidate['start_hour'] % 1) * 60):02d} "
+                        f"{int(snipe_candidate['start_hour'] + 0.5):02d}:{int(((snipe_candidate['start_hour'] + 0.5) % 1) * 60):02d} "
+                        f"{MIN_BOOKING_MINUTES}"
+                    )
+                    print(f"\n  [SNIPE] Horizon snipe successful!")
+
+                    # Navigate back to calendar for normal booking flow
+                    go_back(page, day_order[0])
+                    page.wait_for_timeout(1000)
+                else:
+                    print(f"\n  [SNIPE] Horizon snipe failed, continuing with normal flow...")
+            else:
+                print(f"  No snipe candidates found (no slots becoming bookable within 3 minutes)")
+
+            print("="*60)
+
+            # Now wait for remaining time (if any) and refresh for normal booking
             wait_until_target_time(args.target_time, page)
+
+            # =================================================================
+            # REFRESH PAGE FOR UPDATED SLOT AVAILABILITY
+            # =================================================================
+            print("\n" + "="*60)
+            print("REFRESHING PAGE FOR UPDATED SLOT AVAILABILITY")
+            print("="*60)
+            pre_refresh_time = datetime.now()
+            print(f"  [DEBUG] Pre-refresh time: {pre_refresh_time.strftime('%H:%M:%S.%f')[:-3]}")
+            print(f"  [DEBUG] Current URL: {page.url[:80]}...")
+
+            # Store current calendar day position before refresh
+            pre_refresh_calendar_day = current_calendar_day
+            print(f"  [DEBUG] Calendar position before refresh: day {pre_refresh_calendar_day}")
+
+            # Refresh the current page to get fresh slot data
+            page.reload(wait_until="networkidle")
+            page.wait_for_timeout(1500)
+
+            post_refresh_time = datetime.now()
+            refresh_duration = (post_refresh_time - pre_refresh_time).total_seconds()
+            print(f"  [DEBUG] Post-refresh time: {post_refresh_time.strftime('%H:%M:%S.%f')[:-3]}")
+            print(f"  [DEBUG] Refresh took: {refresh_duration:.2f}s")
+            print(f"  [DEBUG] Post-refresh URL: {page.url[:80]}...")
+
+            # Verify we're still on the correct day after refresh
+            print(f"  [DEBUG] Calendar position after refresh: day {current_calendar_day} (unchanged)")
+
+            # Debug: Sample what slots look like now
+            try:
+                sample_slots = page.evaluate("""() => {
+                    const locationDays = document.querySelectorAll('.location-day');
+                    if (!locationDays.length) return 'No location-day elements found';
+
+                    // Find first room with gaps
+                    for (const day of locationDays) {
+                        const roomName = day.closest('.location-row')?.querySelector('.room-name-line')?.textContent?.trim();
+                        const gaps = day.querySelectorAll('.gap');
+                        if (gaps.length > 0 && roomName) {
+                            const firstGap = gaps[0];
+                            const style = firstGap.getAttribute('style') || '';
+                            const leftMatch = style.match(/left:\\s*([\\d.]+)%/);
+                            const widthMatch = style.match(/width:\\s*([\\d.]+)%/);
+                            if (leftMatch && widthMatch) {
+                                const left = parseFloat(leftMatch[1]);
+                                const startHour = 7.5 + (left / 100) * 15;  // 7:30 to 22:30 = 15 hours
+                                const startH = Math.floor(startHour);
+                                const startM = Math.round((startHour % 1) * 60);
+                                return `First slot: ${roomName} starts at ${startH}:${startM.toString().padStart(2, '0')} (left=${left.toFixed(1)}%)`;
+                            }
+                        }
+                    }
+                    return 'Could not extract slot times';
+                }""")
+                print(f"  [DEBUG] {sample_slots}")
+            except Exception as e:
+                print(f"  [DEBUG] Could not sample slots: {e}")
+
+            print("="*60)
 
         # =================================================================
         # PROCESS PENDING BOOKING EXTENSIONS
@@ -3172,6 +3582,9 @@ def main():
             else:
                 print(f"  Already on correct day (day {days_ahead}) - no navigation needed")
 
+            # Debug: Log current time when scanning slots for this day
+            scan_time = datetime.now()
+            print(f"  [DEBUG] Slot scan time: {scan_time.strftime('%H:%M:%S')}")
 
             # Verify the actual displayed date
             displayed_date = page.evaluate("""() => {
@@ -3186,6 +3599,24 @@ def main():
 
             # Get available slots
             available_data = get_available_slots(page)
+
+            # Debug: Show earliest slot start times for 7-day horizon rooms
+            # This helps verify the page refresh is working correctly
+            seven_day_rooms = [r for r, h in ROOM_HORIZONS.items() if h == 7]
+            earliest_by_room = {}
+            for room_data in available_data:
+                room_name = room_data["room"]
+                if room_name in seven_day_rooms and room_data["slots"]:
+                    earliest_start = min(s['startHour'] for s in room_data["slots"])
+                    earliest_h = int(earliest_start)
+                    earliest_m = int((earliest_start % 1) * 60)
+                    earliest_by_room[room_name] = f"{earliest_h:02d}:{earliest_m:02d}"
+            if earliest_by_room:
+                print(f"  [DEBUG] Earliest slots for 7-day horizon rooms: {earliest_by_room}")
+                # Calculate what time SHOULD be the earliest based on current time
+                expected_earliest = scan_time - timedelta(days=7)
+                expected_earliest_str = expected_earliest.strftime('%H:%M')
+                print(f"  [DEBUG] Expected earliest (now - 7 days): ~{expected_earliest_str} on target date")
 
             # Build sorted slot list - prefer longer slots
             all_slots = []
@@ -3548,6 +3979,10 @@ def main():
                                 "click_x": slot_data["clickX"],
                                 "click_y": slot_data["clickY"]
                             })
+
+                    # Apply strict mode filter if enabled
+                    if time_prefs["enabled"] and time_prefs["strict_mode"]:
+                        all_slots = [s for s in all_slots if is_preferred_time(s['start_hour'], time_prefs)]
 
                     all_slots.sort(key=lambda s: (
                         0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
