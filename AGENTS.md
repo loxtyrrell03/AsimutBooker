@@ -137,7 +137,7 @@ The booker automatically handles this in two phases:
 
 1. **Initial Booking**: At the first possible moment (30 min after horizon), books the minimum 30-minute slot and saves it to `extendable_bookings` in settings.json
 
-2. **Extension Runs**: Every 30 minutes, the scheduled task runs again and:
+2. **Extension Runs**: Every 15 minutes, the scheduled task runs again and:
    - Loads pending extendable bookings
    - Calculates how much more time is now available (based on time since horizon, not time since booking)
    - Extends each booking by the available amount (in 15-minute increments)
@@ -148,11 +148,11 @@ The booker automatically handles this in two phases:
 ```
 10:00  Horizon edge - slot becomes visible but not bookable
 10:30  Book 10:00-10:30 (first possible moment)
-10:45  Extend to 10:00-10:45
+10:45  Extend to 10:00-10:45  (scheduled task runs)
 11:00  Extend to 10:00-11:00  (scheduled task runs)
-11:15  Extend to 10:00-11:15
+11:15  Extend to 10:00-11:15  (scheduled task runs)
 11:30  Extend to 10:00-11:30  (scheduled task runs)
-11:45  Extend to 10:00-11:45
+11:45  Extend to 10:00-11:45  (scheduled task runs)
 12:00  Extend to 10:00-12:00  (scheduled task runs) - DONE
 ```
 
