@@ -1117,14 +1117,43 @@ def edit_reservation_end_time(page, booking, new_end_time):
                 page.mouse.click(viewport['width'] - 100, viewport['height'] // 2)
             page.wait_for_timeout(500)
 
-            # 6. Click Save button
-            save_btn = page.locator("button:has-text('Save')").first
+            # 6. Check for yellow warning boxes before saving
+            # Look for warning/error/conflict elements that indicate extension isn't allowed
+            warning_elements = page.locator(".warning, .error, [class*='conflict'], [class*='clash'], [class*='warning']").all()
+            has_warning = False
+            for warn in warning_elements:
+                if warn.is_visible():
+                    text = warn.text_content() or ""
+                    if text.strip() and len(text.strip()) > 3:
+                        print(f"    Warning found: {text.strip()[:80]}")
+                        has_warning = True
+                        break
 
+            # Also check for disabled Save button (icon shows remove/block/error)
+            save_btn = page.locator("button:has-text('Save')").first
+            if save_btn.count() > 0 and save_btn.is_visible():
+                save_icon = save_btn.locator("mat-icon").first
+                if save_icon.count() > 0:
+                    icon_text = save_icon.text_content() or ""
+                    disabled_icons = ["remove", "block", "close", "cancel", "error", "warning"]
+                    if any(disabled in icon_text.lower() for disabled in disabled_icons):
+                        print(f"    Save disabled (icon: {icon_text})")
+                        has_warning = True
+
+            if has_warning:
+                # Extension not allowed - cancel and return to agenda
+                print(f"    Extension blocked by warning, cancelling...")
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+                return False
+
+            # 7. Click Save button
             if save_btn.count() > 0 and save_btn.is_visible():
                 save_btn.click()
                 page.wait_for_timeout(2000)
 
-                # 7. Navigate back to agenda
+                # 8. Navigate back to agenda
                 page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
 
                 print(f"    SUCCESS: Extended to {new_end_time}")
