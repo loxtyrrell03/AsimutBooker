@@ -1900,26 +1900,9 @@ def main():
             browser.close()
             return
 
-        # Navigate to practice rooms
-        print("\nNavigating to practice rooms...")
-        page.goto("https://rwcmd.asimut.net/", wait_until="networkidle")
-        page.wait_for_timeout(2000)
-
-        for loc in page.locator("text=Locations").all():
-            if loc.is_visible():
-                loc.click()
-                page.wait_for_timeout(2000)
-                break
-
-        for loc in page.locator("text=Music Practice Rooms - AHC").all():
-            if loc.is_visible():
-                loc.click()
-                page.wait_for_timeout(3000)
-                break
-
-        # Navigate to day 1 first (tomorrow)
-        print("\n  Starting navigation from today...")
-        page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+        # Navigate directly to Grand Piano practice rooms
+        print("\nNavigating to practice rooms (Grand Piano)...")
+        page.goto("https://rwcmd.asimut.net/overview?locationGroupId=17", wait_until="networkidle")
         page.wait_for_timeout(3000)
 
         # Log what date is currently showing
@@ -2104,7 +2087,7 @@ def main():
                             # After 2 failed attempts, try reloading the page and navigating from scratch
                             if attempt == 2:
                                 print(f"  [DEBUG] Reloading calendar page after failed navigation...")
-                                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+                                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=17", wait_until="networkidle")
                                 page.wait_for_timeout(1000)
                                 # Navigate to the target day from today
                                 print(f"  [DEBUG] Navigating to day {days_ahead} from today...")
