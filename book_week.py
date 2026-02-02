@@ -15,6 +15,7 @@ Usage:
 import re
 import sys
 import json
+import time
 import argparse
 import urllib.request
 import urllib.error
@@ -46,7 +47,7 @@ _DEFAULT_CONFIG = {
     'same_room_gap_minutes': 60,
     'priority_rooms': [
         "B0.29", "B1.09", "B0.11", "B1.16", "B0.15", "B0.13", "B0.14", "B0.27",
-        "B1.14", "B1.17", "B1.20", "B1.18", "B1.21", "B1.19",
+        "B1.14", "B1.17", "A3.39", "B0.16", "B1.20", "B1.18", "B1.21", "B1.19",
         "B1.06", "B1.07", "B1.08", "B1.10", "B1.11", "B1.15",
         "B0.23"
     ],
@@ -56,6 +57,7 @@ _DEFAULT_CONFIG = {
         "B1.06": 5, "B1.07": 5, "B1.08": 5, "B1.10": 5, "B1.11": 5,
         "B1.14": 5, "B1.15": 5, "B1.17": 5, "B1.18": 5, "B1.19": 5,
         "B1.20": 5, "B1.21": 5,
+        "A3.39": 7, "B0.16": 7,
     },
     'default_horizon': 7,
 }
@@ -121,6 +123,57 @@ DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted base
 PRIORITY_ROOMS = _CONFIG['priority_rooms']
 ROOM_HORIZONS = _CONFIG['room_horizons']
 DEFAULT_HORIZON = _CONFIG['default_horizon']
+
+
+def wait_until_target_time(target_time_str, page=None):
+    """Wait until the specified time (HH:MM format) before proceeding.
+
+    Keeps browser session alive with periodic small interactions.
+    """
+    target_hour, target_minute = map(int, target_time_str.split(':'))
+    now = datetime.now()
+    target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+
+    # If target time already passed, proceed immediately
+    if now >= target:
+        print(f"Target time {target_time_str} already passed, proceeding immediately")
+        return
+
+    wait_seconds = (target - now).total_seconds()
+    print(f"\n{'='*60}")
+    print(f"READY - Waiting for target time: {target_time_str}")
+    print(f"{'='*60}")
+    print(f"Current time: {now.strftime('%H:%M:%S')}")
+    print(f"Seconds to wait: {wait_seconds:.0f}")
+
+    last_log_second = -1
+    last_keepalive_second = -1
+
+    # Wait with periodic status updates and session keepalive
+    while datetime.now() < target:
+        remaining = (target - datetime.now()).total_seconds()
+        if remaining <= 0:
+            break
+
+        remaining_int = int(remaining)
+
+        # Log countdown every 10 seconds (avoid duplicate logs)
+        if remaining_int % 10 == 0 and remaining_int != last_log_second:
+            print(f"  T-{remaining_int}s...")
+            last_log_second = remaining_int
+
+        # Keep browser session alive every 30 seconds
+        if page and remaining_int % 30 == 0 and remaining_int != last_keepalive_second:
+            try:
+                page.evaluate("1")  # Minimal JS to keep session active
+            except:
+                pass
+            last_keepalive_second = remaining_int
+
+        time.sleep(0.5)
+
+    print(f"\n>>> TARGET TIME REACHED: {datetime.now().strftime('%H:%M:%S')} <<<")
+    print(f"{'='*60}\n")
 
 
 def is_room_available_to_book(room, target_date, slot_start_hour):
@@ -1999,6 +2052,8 @@ def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Book practice rooms for the week")
     parser.add_argument("--headless", action="store_true", help="Run without browser window")
+    parser.add_argument("--target-time", type=str, metavar="HH:MM",
+        help="Wait until this time before starting bookings (e.g., 10:00)")
     args = parser.parse_args()
 
     today = datetime.now().date()
@@ -2281,6 +2336,10 @@ def main():
             # Normal order: process enabled days from nearest to furthest
             day_order = sorted(enabled_day_order)
             current_calendar_day = 0  # Calendar starts on today
+
+        # Wait for target time if specified (prep is done, ready to book)
+        if args.target_time:
+            wait_until_target_time(args.target_time, page)
 
         # Process each day in the determined order
         for day_index, days_ahead in enumerate(day_order):
