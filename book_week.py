@@ -165,6 +165,69 @@ def is_room_available_to_book(room, target_date, slot_start_hour):
     return True, ""
 
 
+# Booking window opens at 7:30 AM
+BOOKING_WINDOW_OPEN_HOUR = 7.5  # 7:30 AM
+
+
+def is_any_room_bookable_on_day(target_date):
+    """
+    Check if ANY room from PRIORITY_ROOMS is bookable on a given day.
+
+    Rooms become bookable at 7:30 AM on their horizon day. If no rooms
+    are bookable yet (e.g., it's midnight and we're checking 7 days ahead),
+    we should skip that day to avoid wasted navigation.
+
+    Args:
+        target_date: The date to check (date or datetime object)
+
+    Returns:
+        Tuple of (any_bookable, reason_if_none)
+    """
+    # Normalize to date object
+    if hasattr(target_date, 'date'):
+        target_date_obj = target_date.date()
+    else:
+        target_date_obj = target_date
+
+    # Convert to datetime for is_room_available_to_book
+    target_datetime = datetime.combine(target_date_obj, datetime.min.time())
+
+    # Check if any priority room is bookable at the earliest slot time (7:30 AM)
+    earliest_slot_hour = BOOKING_WINDOW_OPEN_HOUR
+
+    for room in PRIORITY_ROOMS:
+        is_available, _ = is_room_available_to_book(room, target_datetime, earliest_slot_hour)
+        if is_available:
+            return True, ""
+
+    # Find the shortest wait time across all rooms
+    min_wait = None
+    for room in PRIORITY_ROOMS:
+        horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+        slot_datetime = datetime.combine(target_date_obj, datetime.min.time())
+        slot_datetime = slot_datetime.replace(hour=7, minute=30)
+        available_from = slot_datetime - timedelta(days=horizon_days)
+
+        now = datetime.now()
+        if now < available_from:
+            wait = available_from - now
+            if min_wait is None or wait < min_wait:
+                min_wait = wait
+
+    if min_wait:
+        hours_until = min_wait.total_seconds() / 3600
+        if hours_until < 1:
+            mins_until = int(min_wait.total_seconds() / 60)
+            return False, f"No rooms bookable yet (opens in {mins_until}min)"
+        elif hours_until < 24:
+            return False, f"No rooms bookable yet (opens in {hours_until:.1f}h)"
+        else:
+            days_until = hours_until / 24
+            return False, f"No rooms bookable yet (opens in {days_until:.1f}d)"
+
+    return False, "No rooms bookable"
+
+
 def adjust_slot_for_peak_quota(slot_start, slot_end, target_date, remaining_peak_mins):
     """
     Adjust a slot to avoid the peak zone (9am-4pm) when peak quota is exceeded or limited.
@@ -1901,33 +1964,56 @@ def main():
         current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
 
         # Determine the order to process days based on strategy
+        # Filter out disabled dates AND days with no bookable rooms (horizon not reached)
+        enabled_day_order = []
+        skipped_horizon_days = []
+        for d in range(0, 8):
+            check_date = today + timedelta(days=d)
+            if is_date_disabled(check_date, disabled_dates):
+                continue
+            # Check if any room is bookable on this day
+            any_bookable, horizon_reason = is_any_room_bookable_on_day(check_date)
+            if any_bookable:
+                enabled_day_order.append(d)
+            else:
+                skipped_horizon_days.append((d, check_date.strftime('%Y-%m-%d'), horizon_reason))
+
+        if skipped_horizon_days:
+            print(f"\n  Days skipped (horizon not reached):")
+            for d, date_str, reason in skipped_horizon_days:
+                print(f"    Day {d} ({date_str}): {reason}")
+
         if reverse_date_order:
-            # Process from day 7 down to day 0 (furthest first)
-            day_order = list(range(7, -1, -1))  # [7, 6, 5, 4, 3, 2, 1, 0]
-            # First, navigate forward to day 7
-            print(f"\n  Navigating to day 7 first (reverse order strategy)...")
-            for nav_step in range(7):
-                clicked = False
-                for attempt in range(3):
-                    try:
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(300)
-                        page.evaluate("window.scrollTo(0, 0)")
-                        page.wait_for_timeout(300)
-                        arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                        if arrow.count() > 0 and arrow.is_visible():
-                            arrow.click(force=True)
-                            page.wait_for_timeout(1500)
-                            clicked = True
-                            break
-                    except Exception as e:
-                        pass
-                if not clicked:
-                    print(f"  [DEBUG] Forward navigation step {nav_step + 1} failed")
-            current_calendar_day = 7  # Calendar is now showing day 7
+            # Process from furthest enabled day down to nearest (furthest first)
+            day_order = sorted(enabled_day_order, reverse=True)
+            if day_order:
+                first_day = day_order[0]
+                print(f"\n  Navigating to day {first_day} first (reverse order strategy)...")
+                for nav_step in range(first_day):
+                    clicked = False
+                    for attempt in range(3):
+                        try:
+                            page.keyboard.press("Escape")
+                            page.wait_for_timeout(200)
+                            page.evaluate("window.scrollTo(0, 0)")
+                            page.wait_for_timeout(200)
+                            arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
+                            if arrow.count() > 0 and arrow.is_visible():
+                                arrow.click(force=True)
+                                page.wait_for_timeout(1000)
+                                clicked = True
+                                break
+                        except Exception as e:
+                            pass
+                    if not clicked:
+                        print(f"  [DEBUG] Forward navigation step {nav_step + 1} failed")
+                current_calendar_day = first_day  # Calendar is now showing first enabled day
+            else:
+                print(f"\n  No bookable days available!")
+                current_calendar_day = 0
         else:
-            # Normal order: process from day 0 to day 7
-            day_order = list(range(0, 8))  # [0, 1, 2, 3, 4, 5, 6, 7]
+            # Normal order: process enabled days from nearest to furthest
+            day_order = sorted(enabled_day_order)
             current_calendar_day = 0  # Calendar starts on today
 
         # Process each day in the determined order
@@ -1939,13 +2025,8 @@ def main():
             print(f"# DAY {days_ahead}: {target_date.strftime('%Y-%m-%d')} ({day_name})")
             print(f"{'#'*60}")
 
-            # Check if this date is disabled in settings
-            skip_this_day = is_date_disabled(target_date, disabled_dates)
-            if skip_this_day:
-                print(f"  SKIPPED - Date disabled in settings")
-            else:
-                day_peak_used = tracker.get_peak_used_for_day(target_date)
-                print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak for this day: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60}min")
+            day_peak_used = tracker.get_peak_used_for_day(target_date)
+            print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak for this day: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60}min")
 
             # Navigate to the correct day based on current calendar position
             # Calculate how many steps we need to navigate
@@ -1991,7 +2072,7 @@ def main():
                                 arrow_visible = arrow.is_visible() if arrow_count > 0 else False
                                 if arrow_count > 0 and arrow_visible:
                                     arrow.click(force=True)
-                                    page.wait_for_timeout(2000)
+                                    page.wait_for_timeout(1000)
                                     clicked = True
                                     break
                             except Exception as e:
@@ -2003,7 +2084,7 @@ def main():
                                 arrow = page.locator(f"button:has(mat-icon:text('{arrow_icon}'))").first
                                 if arrow.count() > 0 and arrow.is_visible():
                                     arrow.click(force=True)
-                                    page.wait_for_timeout(2000)
+                                    page.wait_for_timeout(1000)
                                     clicked = True
                                     break
                             except:
@@ -2014,7 +2095,7 @@ def main():
                                 arrow = page.locator(f"text={arrow_icon}").first
                                 if arrow.count() > 0 and arrow.is_visible():
                                     arrow.click(force=True)
-                                    page.wait_for_timeout(2000)
+                                    page.wait_for_timeout(1000)
                                     clicked = True
                                     break
                             except:
@@ -2024,17 +2105,17 @@ def main():
                             if attempt == 2:
                                 print(f"  [DEBUG] Reloading calendar page after failed navigation...")
                                 page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
-                                page.wait_for_timeout(2000)
+                                page.wait_for_timeout(1000)
                                 # Navigate to the target day from today
                                 print(f"  [DEBUG] Navigating to day {days_ahead} from today...")
                                 for click_num in range(days_ahead):
                                     try:
                                         page.evaluate("window.scrollTo(0, 0)")
-                                        page.wait_for_timeout(300)
+                                        page.wait_for_timeout(200)
                                         nav_arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
                                         if nav_arrow.count() > 0:
                                             nav_arrow.click(force=True)
-                                            page.wait_for_timeout(1500)
+                                            page.wait_for_timeout(1000)
                                     except Exception as e:
                                         print(f"  [DEBUG] Forward click {click_num + 1} failed: {e}")
                                 current_calendar_day = days_ahead  # We jumped directly
@@ -2042,7 +2123,7 @@ def main():
                                 break
 
                             print(f"    Arrow not found (attempt {attempt + 1}), waiting...")
-                            page.wait_for_timeout(1500)
+                            page.wait_for_timeout(1000)
                         except Exception as e:
                             print(f"    Arrow click failed: {e}")
                             page.wait_for_timeout(1000)
@@ -2059,10 +2140,6 @@ def main():
             else:
                 print(f"  Already on correct day (day {days_ahead}) - no navigation needed")
 
-            # If this day is disabled, skip to next day after navigation
-            if skip_this_day:
-                print(f"\n  Day summary: 0 bookings made (skipped)")
-                continue
 
             # Verify the actual displayed date
             displayed_date = page.evaluate("""() => {
@@ -2347,7 +2424,7 @@ def main():
                     # Navigate back to calendar (we're on the booking confirmation page)
                     print("  [DEBUG] Navigating back to calendar...")
                     go_back(page, days_ahead)
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(1000)
 
                     # Re-fetch available slots since the calendar has changed
                     print("  [DEBUG] Refreshing slot data after successful booking...")
