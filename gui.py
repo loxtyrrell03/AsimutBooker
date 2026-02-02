@@ -24,8 +24,8 @@ class AsimutBookerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("AsimutBooker Control Panel")
-        self.root.geometry("1200x850")
-        self.root.minsize(1000, 750)
+        self.root.geometry("1400x950")
+        self.root.minsize(1100, 800)
 
         # Configure default font sizes - larger for better readability
         default_font = ("Segoe UI", 13)
@@ -1114,14 +1114,28 @@ class AsimutBookerGUI:
         calendar_scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
         self.calendar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Frame inside canvas for calendar content
-        self.calendar_frame = ttk.Frame(self.calendar_canvas)
+        # Frame inside canvas for calendar content - use tk.Frame for bg color support
+        self.calendar_frame = tk.Frame(self.calendar_canvas, bg="white")
         self.calendar_canvas_window = self.calendar_canvas.create_window((0, 0), window=self.calendar_frame, anchor="nw")
 
         # Update scroll region when frame changes
         def on_frame_configure(e):
             self.calendar_canvas.configure(scrollregion=self.calendar_canvas.bbox("all"))
         self.calendar_frame.bind("<Configure>", on_frame_configure)
+
+        # Resize calendar frame to match canvas size
+        def on_canvas_configure(e):
+            # Make the frame fill the canvas
+            canvas_width = e.width
+            canvas_height = e.height
+            self.calendar_canvas.itemconfig(self.calendar_canvas_window, width=canvas_width, height=canvas_height)
+            # Store canvas height for cell sizing and refresh
+            if hasattr(self, '_last_canvas_height') and self._last_canvas_height != canvas_height:
+                self._last_canvas_height = canvas_height
+                self._refresh_calendar()
+            else:
+                self._last_canvas_height = canvas_height
+        self.calendar_canvas.bind("<Configure>", on_canvas_configure)
 
         # Enable mousewheel scrolling
         def _on_mousewheel(event):
@@ -1152,11 +1166,58 @@ class AsimutBookerGUI:
             dialog.destroy()
         dialog.protocol("WM_DELETE_WINDOW", on_close)
 
-        # Initial render
+        # Load cached events first (instant display)
+        self._load_cached_events()
+
+        # Initial render with cached data
         self._refresh_calendar()
 
-        # Scan events in background
+        # Scan events in background (will update when complete)
         self._scan_calendar_events()
+
+    def _load_cached_events(self):
+        """Load cached events from settings for instant display."""
+        settings = self.load_settings()
+        cached_events = settings.get("cached_events", [])
+        cache_timestamp = settings.get("cached_events_timestamp")
+
+        if cached_events:
+            # Group events by date
+            events_by_date = {}
+            for event in cached_events:
+                date = event.get('date')
+                if date:
+                    if date not in events_by_date:
+                        events_by_date[date] = []
+                    events_by_date[date].append(event)
+
+            self.calendar_events = events_by_date
+            total_events = sum(len(events) for events in events_by_date.values())
+
+            # Format cache age for display
+            cache_info = ""
+            if cache_timestamp:
+                try:
+                    cache_time = datetime.fromisoformat(cache_timestamp)
+                    age = datetime.now() - cache_time
+                    if age.total_seconds() < 60:
+                        cache_info = " (from just now)"
+                    elif age.total_seconds() < 3600:
+                        mins = int(age.total_seconds() / 60)
+                        cache_info = f" (from {mins}m ago)"
+                    elif age.total_seconds() < 86400:
+                        hours = int(age.total_seconds() / 3600)
+                        cache_info = f" (from {hours}h ago)"
+                    else:
+                        days = int(age.total_seconds() / 86400)
+                        cache_info = f" (from {days}d ago)"
+                except:
+                    pass
+
+            self.calendar_scan_var.set(f"Showing {total_events} cached events{cache_info} - updating...")
+        else:
+            self.calendar_events = {}
+            self.calendar_scan_var.set("No cached events. Scanning...")
 
     def _navigate_calendar(self, direction):
         """Navigate calendar forward or backward."""
@@ -1215,16 +1276,27 @@ class AsimutBookerGUI:
         view = self.calendar_view.get()
         today = datetime.now().date()
 
-        if view == "month":
-            self._render_month_view(today)
-        elif view == "fortnight":
-            self._render_days_view(14, today)
-        elif view == "week":
-            self._render_days_view(7, today)
-        else:  # 3days
-            self._render_days_view(3, today)
+        # Get available height for calendar content
+        self.calendar_canvas.update_idletasks()
+        available_height = getattr(self, '_last_canvas_height', None)
+        if not available_height or available_height < 100:
+            available_height = self.calendar_canvas.winfo_height()
+        if available_height < 100:
+            available_height = 450  # Default fallback
 
-    def _render_month_view(self, today):
+        # Set the frame to fill canvas and not shrink
+        self.calendar_frame.grid_propagate(False)
+
+        if view == "month":
+            self._render_month_view(today, available_height)
+        elif view == "fortnight":
+            self._render_days_view(14, today, available_height)
+        elif view == "week":
+            self._render_days_view(7, today, available_height)
+        else:  # 3days
+            self._render_days_view(3, today, available_height)
+
+    def _render_month_view(self, today, available_height):
         """Render month view calendar."""
         start_date = self.calendar_start_date
         year = start_date.year
@@ -1236,6 +1308,7 @@ class AsimutBookerGUI:
 
         # Day headers
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        header_height = 30
         for col, day in enumerate(days):
             lbl = tk.Label(
                 self.calendar_frame,
@@ -1252,6 +1325,13 @@ class AsimutBookerGUI:
         first_day_weekday = cal.monthrange(year, month)[0]  # 0=Monday
         num_days = cal.monthrange(year, month)[1]
 
+        # Calculate number of rows needed
+        total_cells = first_day_weekday + num_days
+        num_rows = (total_cells + 6) // 7  # Ceiling division
+
+        # Calculate cell height based on available space
+        cell_height = max(80, (available_height - header_height - 20) // num_rows)
+
         # Render days
         row = 1
         col = first_day_weekday
@@ -1260,18 +1340,21 @@ class AsimutBookerGUI:
             current_date = datetime(year, month, day).date()
             date_str = current_date.strftime('%Y-%m-%d')
 
-            self._render_day_cell(row, col, current_date, date_str, today)
+            self._render_day_cell(row, col, current_date, date_str, today, cell_height=cell_height)
 
             col += 1
             if col > 6:
                 col = 0
                 row += 1
 
-        # Configure grid weights
+        # Configure grid weights and row heights
+        self.calendar_frame.rowconfigure(0, weight=0, minsize=header_height)  # Header row fixed
         for c in range(7):
             self.calendar_frame.columnconfigure(c, weight=1)
+        for r in range(1, num_rows + 1):
+            self.calendar_frame.rowconfigure(r, weight=1, minsize=cell_height)
 
-    def _render_days_view(self, num_days, today):
+    def _render_days_view(self, num_days, today, available_height):
         """Render days view (week, fortnight, 3days)."""
         start_date = self.calendar_start_date
         end_date = start_date + timedelta(days=num_days - 1)
@@ -1285,6 +1368,9 @@ class AsimutBookerGUI:
         cols_per_row = min(num_days, 7)
         rows_needed = (num_days + cols_per_row - 1) // cols_per_row
 
+        # Calculate cell height based on available space
+        cell_height = max(100, (available_height - 20) // rows_needed)
+
         day_index = 0
         for row in range(rows_needed):
             for col in range(cols_per_row):
@@ -1294,15 +1380,17 @@ class AsimutBookerGUI:
                 current_date = start_date + timedelta(days=day_index)
                 date_str = current_date.strftime('%Y-%m-%d')
 
-                self._render_day_cell(row, col, current_date, date_str, today, show_day_name=True)
+                self._render_day_cell(row, col, current_date, date_str, today, show_day_name=True, cell_height=cell_height)
 
                 day_index += 1
 
-        # Configure grid weights
+        # Configure grid weights and row heights
         for c in range(cols_per_row):
             self.calendar_frame.columnconfigure(c, weight=1)
+        for r in range(rows_needed):
+            self.calendar_frame.rowconfigure(r, weight=1, minsize=cell_height)
 
-    def _render_day_cell(self, row, col, current_date, date_str, today, show_day_name=False):
+    def _render_day_cell(self, row, col, current_date, date_str, today, show_day_name=False, cell_height=100):
         """Render a single day cell."""
         # Check if selected
         is_selected = date_str in self.day_vars and self.day_vars[date_str].get()
@@ -1324,7 +1412,7 @@ class AsimutBookerGUI:
             bg_color = "#e0e0e0"  # Gray for past days
             fg_color = "#888888"
 
-        # Create cell frame
+        # Create cell frame - use sticky="nsew" to fill grid cell
         cell = tk.Frame(
             self.calendar_frame,
             bg=bg_color,
@@ -1333,10 +1421,6 @@ class AsimutBookerGUI:
             cursor="hand2" if not is_past else ""
         )
         cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
-
-        # Minimum size for cells
-        cell.configure(width=140, height=100)
-        cell.grid_propagate(False)
 
         # Day number and name
         day_num = current_date.day
@@ -1357,12 +1441,20 @@ class AsimutBookerGUI:
         )
         day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
 
+        # Calculate how many events can fit based on cell height
+        # Header takes ~25px, each event line ~18px, "+more" line ~16px
+        header_space = 30
+        event_line_height = 18
+        available_for_events = cell_height - header_space
+        max_events_to_show = max(1, (available_for_events - 16) // event_line_height)
+
         # Events display
         if events:
             events_frame = tk.Frame(cell, bg=bg_color)
             events_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
 
-            for event in events[:3]:  # Show max 3 events
+            events_to_display = min(len(events), max_events_to_show)
+            for event in events[:events_to_display]:
                 time_str = f"{event['startTime']}-{event['endTime']}"
                 title = event.get('title', 'Event')
                 if len(title) > 15:
@@ -1381,10 +1473,10 @@ class AsimutBookerGUI:
                 )
                 event_lbl.pack(fill=tk.X)
 
-            if len(events) > 3:
+            if len(events) > events_to_display:
                 more_lbl = tk.Label(
                     events_frame,
-                    text=f"  +{len(events) - 3} more",
+                    text=f"  +{len(events) - events_to_display} more",
                     font=("Segoe UI", 8, "italic"),
                     bg=bg_color,
                     fg=fg_color,
@@ -1579,6 +1671,7 @@ class AsimutBookerGUI:
                     seen.add(key)
                     unique_events.append(event)
             settings["cached_events"] = unique_events
+            settings["cached_events_timestamp"] = datetime.now().isoformat()
             self.save_settings(settings)
 
             self.root.after(0, self._on_calendar_scan_complete)
@@ -1589,7 +1682,7 @@ class AsimutBookerGUI:
     def _on_calendar_scan_complete(self):
         """Called when calendar event scan completes."""
         total_events = sum(len(events) for events in self.calendar_events.values())
-        self.calendar_scan_var.set(f"✓ {total_events} events loaded")
+        self.calendar_scan_var.set(f"✓ {total_events} events (updated just now)")
         self._refresh_calendar()
 
     def _on_calendar_scan_error(self, error_msg):
