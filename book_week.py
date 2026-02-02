@@ -518,6 +518,257 @@ def load_booking_strategy():
     return default
 
 
+# =============================================================================
+# EXTENDABLE BOOKINGS TRACKING
+# =============================================================================
+# When booking at the horizon edge, only 30 min can be booked initially.
+# These functions track such bookings so they can be extended later.
+
+def load_extendable_bookings():
+    """Load bookings that may be extendable from settings.
+
+    Returns:
+        List of dicts with: date, startTime, endTime, room, created_at, target_end, horizon_days
+    """
+    if not settings_file.exists():
+        return []
+    try:
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+        bookings = settings.get("extendable_bookings", [])
+
+        # Clean up expired entries (older than 7 days or past dates)
+        now = datetime.now()
+        today = now.date()
+        valid_bookings = []
+        for b in bookings:
+            try:
+                booking_date = datetime.strptime(b["date"], '%Y-%m-%d').date()
+                created_at = datetime.fromisoformat(b["created_at"])
+                # Keep if: date is today or future, and created within last 7 days
+                if booking_date >= today and (now - created_at).days < 7:
+                    valid_bookings.append(b)
+            except:
+                continue
+        return valid_bookings
+    except:
+        return []
+
+
+def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_hour):
+    """Save a booking as potentially extendable.
+
+    Args:
+        room: Room name (e.g., "B0.29")
+        target_date: Date of the booking (datetime or date object)
+        start_hour: Start time as decimal (e.g., 9.5 for 9:30)
+        end_hour: Current end time as decimal
+        target_end_hour: Target end time we wanted but couldn't book
+    """
+    # Format times
+    if hasattr(target_date, 'strftime'):
+        date_str = target_date.strftime('%Y-%m-%d')
+    else:
+        date_str = str(target_date)
+
+    start_h = int(start_hour)
+    start_m = int((start_hour % 1) * 60)
+    end_h = int(end_hour)
+    end_m = int((end_hour % 1) * 60)
+    target_h = int(target_end_hour)
+    target_m = int((target_end_hour % 1) * 60)
+
+    booking = {
+        "date": date_str,
+        "startTime": f"{start_h:02d}:{start_m:02d}",
+        "endTime": f"{end_h:02d}:{end_m:02d}",
+        "room": room,
+        "created_at": datetime.now().isoformat(),
+        "target_end": f"{target_h:02d}:{target_m:02d}",
+        "horizon_days": ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+    }
+
+    # Load existing settings
+    settings = {}
+    if settings_file.exists():
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+        except:
+            pass
+
+    if "extendable_bookings" not in settings:
+        settings["extendable_bookings"] = []
+
+    # Check if this booking already exists (same room, date, start time)
+    existing = [b for b in settings["extendable_bookings"]
+                if b["date"] == booking["date"]
+                and b["room"] == booking["room"]
+                and b["startTime"] == booking["startTime"]]
+    if existing:
+        # Update the existing entry
+        for b in settings["extendable_bookings"]:
+            if (b["date"] == booking["date"] and b["room"] == booking["room"]
+                and b["startTime"] == booking["startTime"]):
+                b["endTime"] = booking["endTime"]
+                b["target_end"] = booking["target_end"]
+                break
+    else:
+        # Add new booking
+        settings["extendable_bookings"].append(booking)
+
+    # Clean up old entries (older than 7 days or past dates)
+    now = datetime.now()
+    today = now.date()
+    settings["extendable_bookings"] = [
+        b for b in settings["extendable_bookings"]
+        if datetime.strptime(b["date"], '%Y-%m-%d').date() >= today
+        and (now - datetime.fromisoformat(b["created_at"])).days < 7
+    ]
+
+    with open(settings_file, 'w') as f:
+        json.dump(settings, f, indent=2)
+
+    print(f"  [EXTEND] Saved for extension: {room} {date_str} {booking['startTime']}->{booking['target_end']}")
+
+
+def remove_extendable_booking(room, date_str, start_time):
+    """Remove a booking from extendable list after successful extension.
+
+    Args:
+        room: Room name
+        date_str: Date string (YYYY-MM-DD)
+        start_time: Start time string (HH:MM)
+    """
+    if not settings_file.exists():
+        return
+
+    try:
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+    except:
+        return
+
+    if "extendable_bookings" not in settings:
+        return
+
+    # Filter out the matching booking
+    original_count = len(settings["extendable_bookings"])
+    settings["extendable_bookings"] = [
+        b for b in settings["extendable_bookings"]
+        if not (b["date"] == date_str and b["room"] == room and b["startTime"] == start_time)
+    ]
+
+    if len(settings["extendable_bookings"]) < original_count:
+        with open(settings_file, 'w') as f:
+            json.dump(settings, f, indent=2)
+
+
+def update_extendable_booking_end_time(room, date_str, start_time, new_end_time):
+    """Update the end time of an extendable booking after successful extension.
+
+    Args:
+        room: Room name
+        date_str: Date string (YYYY-MM-DD)
+        start_time: Start time string (HH:MM)
+        new_end_time: New end time string (HH:MM)
+    """
+    if not settings_file.exists():
+        return
+
+    try:
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+    except:
+        return
+
+    if "extendable_bookings" not in settings:
+        return
+
+    # Find and update the matching booking
+    for b in settings["extendable_bookings"]:
+        if b["date"] == date_str and b["room"] == room and b["startTime"] == start_time:
+            b["endTime"] = new_end_time
+            # If we've reached the target, remove from list
+            if new_end_time == b["target_end"]:
+                settings["extendable_bookings"] = [
+                    x for x in settings["extendable_bookings"]
+                    if not (x["date"] == date_str and x["room"] == room and x["startTime"] == start_time)
+                ]
+            break
+
+    with open(settings_file, 'w') as f:
+        json.dump(settings, f, indent=2)
+
+
+def calculate_max_extension(room, date_str, start_hour, current_end_hour, booking_timestamp, target_end_hour):
+    """Calculate maximum possible extension for a booking made at horizon edge.
+
+    When booking at the exact horizon time, only MIN_BOOKING_MINUTES can be booked.
+    As time passes, more of the slot becomes available for booking.
+
+    Args:
+        room: Room name (e.g., "B0.29")
+        date_str: Date string (YYYY-MM-DD)
+        start_hour: Start time as decimal (e.g., 9.0 for 9:00)
+        current_end_hour: Current end time as decimal (e.g., 9.5 for 9:30)
+        booking_timestamp: ISO format timestamp when booking was created
+        target_end_hour: The end time we ultimately want (e.g., 11.0 for 11:00)
+
+    Returns:
+        Tuple of (can_extend: bool, max_end_hour: float, reason: str)
+    """
+    try:
+        booking_time = datetime.fromisoformat(booking_timestamp)
+    except:
+        return False, current_end_hour, "Invalid booking timestamp"
+
+    now = datetime.now()
+    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+
+    # Time elapsed since booking was made
+    time_elapsed_mins = (now - booking_time).total_seconds() / 60
+
+    # The key insight: at horizon edge, the slot start time = current time
+    # So if we booked 9:00-9:30 at 9:00, after 15 mins (9:15), we can book up to 9:45
+    # After 30 mins (9:30), we can book up to 10:00, etc.
+
+    # Current duration in minutes
+    current_duration_mins = (current_end_hour - start_hour) * 60
+
+    # Maximum additional time we can book = time elapsed since we made the booking
+    # (because that time has now passed beyond the horizon edge)
+    max_additional_mins = time_elapsed_mins
+
+    # New possible duration = current + additional (capped at 2 hours total)
+    max_total_duration_mins = min(
+        current_duration_mins + max_additional_mins,
+        MAX_BOOKING_HOURS * 60
+    )
+
+    # Calculate max end hour
+    max_end_hour = start_hour + max_total_duration_mins / 60
+
+    # Also cap at target end (no point going beyond what we originally wanted)
+    max_end_hour = min(max_end_hour, target_end_hour)
+
+    # Round down to nearest 15-minute interval
+    max_end_mins = int((max_end_hour % 1) * 60)
+    max_end_mins = (max_end_mins // 15) * 15
+    max_end_hour = int(max_end_hour) + max_end_mins / 60
+
+    # Need at least 15 minutes of extension to be worth it
+    extension_mins = (max_end_hour - current_end_hour) * 60
+    if extension_mins < 15:
+        return False, current_end_hour, f"Only {extension_mins:.0f}min extension possible (need 15min)"
+
+    # Check if we've already reached the target
+    if current_end_hour >= target_end_hour:
+        return False, current_end_hour, "Already at target duration"
+
+    return True, max_end_hour, f"Can extend to {int(max_end_hour):02d}:{int((max_end_hour % 1) * 60):02d}"
+
+
 def is_preferred_time(start_hour, time_prefs):
     """Check if a slot's start time falls within the preferred range.
 
@@ -659,6 +910,249 @@ def is_preferred_time(start_hour, time_prefs):
 #
 #     return False
 # =============================================================================
+
+
+# =============================================================================
+# BOOKING EXTENSION FUNCTIONS
+# =============================================================================
+
+def edit_reservation_end_time(page, booking, new_end_time):
+    """Edit an existing reservation to extend its end time.
+
+    Uses Asimut's edit feature:
+    1. Navigate to agenda
+    2. Find the event using JavaScript (fast DOM search)
+    3. Click more_vert button
+    4. Click "Edit event"
+    5. Update end time
+    6. Click away to dismiss dropdown, then Save
+    7. Navigate back to agenda
+
+    Args:
+        page: Playwright page object
+        booking: Dict with date, startTime, endTime, room
+        new_end_time: New end time string (e.g., "10:00")
+
+    Returns:
+        True if successfully edited, False otherwise
+    """
+    date_str = booking['date']
+    start_time = booking['startTime']
+    current_end = booking['endTime']
+    room = booking.get('room', 'Unknown')
+
+    print(f"  Editing reservation: {room} on {date_str}")
+    print(f"    Current: {start_time}-{current_end}")
+    print(f"    New end: {new_end_time}")
+
+    try:
+        # 1. Navigate to agenda page
+        page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+        page.wait_for_timeout(2000)
+
+        # 2. Find the matching event card using JavaScript for efficiency
+        def find_matching_panel():
+            """Use JavaScript to search DOM for matching reservation panel."""
+            return page.evaluate("""(args) => {
+                const { room, time } = args;
+                const panels = document.querySelectorAll('.as-event-panel');
+
+                // Search from end (future events) to beginning
+                for (let i = panels.length - 1; i >= 0; i--) {
+                    const panel = panels[i];
+                    const text = panel.innerText || '';
+
+                    // Must be a Reservation
+                    if (!text.includes('Reservation')) continue;
+
+                    // Must match room (case insensitive)
+                    if (!text.toLowerCase().includes(room.toLowerCase())) continue;
+
+                    // Must match start time
+                    const timeMatch = text.match(/(\\d{2}):(\\d{2})\\s*-\\s*(\\d{2}):(\\d{2})/);
+                    if (!timeMatch) continue;
+
+                    const startTime = timeMatch[1] + ':' + timeMatch[2];
+                    if (startTime !== time) continue;
+
+                    // Check if cancelled (strikethrough)
+                    const allElements = panel.querySelectorAll('*');
+                    let isCancelled = false;
+                    for (const el of allElements) {
+                        const style = window.getComputedStyle(el);
+                        if (style.textDecoration.includes('line-through') ||
+                            style.textDecorationLine.includes('line-through')) {
+                            isCancelled = true;
+                            break;
+                        }
+                    }
+                    if (isCancelled) continue;
+
+                    // Found a valid match
+                    return i;
+                }
+                return -1;
+            }""", {"room": room, "time": start_time})
+
+        # First try without scrolling
+        matching_index = find_matching_panel()
+
+        # If not found, scroll down and try again (booking may be further in future)
+        if matching_index < 0:
+            print(f"    Not found in visible area, scrolling...")
+            for scroll_attempt in range(10):
+                page.evaluate("window.scrollBy(0, 2000)")
+                page.wait_for_timeout(300)
+                matching_index = find_matching_panel()
+                if matching_index >= 0:
+                    break
+
+        if matching_index < 0:
+            print(f"    Could not find event card for {room} {date_str} {start_time}")
+            return False
+
+        # Get the panel and scroll it into view
+        all_panels = page.locator('.as-event-panel').all()
+        reservation_card = all_panels[matching_index]
+        print(f"    Found matching event card (panel #{matching_index})")
+
+        reservation_card.scroll_into_view_if_needed()
+        page.wait_for_timeout(500)
+
+        # 3. Click the more_vert button on this specific card
+        more_btn = reservation_card.locator("button[data-cy='button_more']").first
+        if more_btn.count() == 0:
+            more_btn = reservation_card.locator(".as-event-options-button").first
+        if more_btn.count() == 0:
+            more_btn = reservation_card.locator("button:has(mat-icon:has-text('more_vert'))").first
+        if more_btn.count() == 0:
+            more_btn = reservation_card.locator("mat-icon:has-text('more_vert')").first
+
+        if more_btn.count() > 0 and more_btn.is_visible():
+            more_btn.click()
+            page.wait_for_timeout(500)
+        else:
+            print(f"    Could not find more options button")
+            return False
+
+        # 4. Click "Edit event" from the menu
+        edit_option = page.locator("mat-list-item").filter(has_text="Edit event").first
+        if edit_option.count() == 0:
+            edit_option = page.locator("mat-list-item:has(mat-icon:has-text('edit'))").first
+
+        if edit_option.count() > 0 and edit_option.is_visible():
+            edit_option.click()
+            page.wait_for_timeout(1500)
+        else:
+            print(f"    Could not find 'Edit event' option")
+            page.keyboard.press("Escape")
+            return False
+
+        # 5. Find the end time input and update it
+        end_input = page.locator("#endDate").first
+        if end_input.count() == 0:
+            end_input = page.locator("input[data-cy='time-range-end-time']").first
+
+        if end_input.count() > 0 and end_input.is_visible():
+            # Click and fill the new time
+            end_input.click()
+            end_input.fill(new_end_time)
+            page.wait_for_timeout(300)
+
+            # Click on the right side of the page to dismiss any dropdown
+            viewport = page.viewport_size
+            if viewport:
+                page.mouse.click(viewport['width'] - 100, viewport['height'] // 2)
+            page.wait_for_timeout(500)
+
+            # 6. Click Save button
+            save_btn = page.locator("button:has-text('Save')").first
+
+            if save_btn.count() > 0 and save_btn.is_visible():
+                save_btn.click()
+                page.wait_for_timeout(2000)
+
+                # 7. Navigate back to agenda
+                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+
+                print(f"    SUCCESS: Extended to {new_end_time}")
+                return True
+            else:
+                print(f"    Could not find Save button")
+                return False
+        else:
+            print(f"    Could not find end time input")
+            return False
+
+    except Exception as e:
+        print(f"    Error editing reservation: {e}")
+        return False
+
+    return False
+
+
+def try_extend_booking(page, booking):
+    """Attempt to extend an existing booking using Asimut's edit feature.
+
+    Args:
+        page: Playwright page object
+        booking: Dict from extendable_bookings with:
+            date, startTime, endTime, room, created_at, target_end, horizon_days
+
+    Returns:
+        Tuple of (success: bool, new_end_time: str or None, message: str)
+    """
+    room = booking["room"]
+    date_str = booking["date"]
+    start_time = booking["startTime"]
+    current_end = booking["endTime"]
+    target_end = booking["target_end"]
+    created_at = booking["created_at"]
+
+    # Parse times to decimals
+    start_parts = start_time.split(':')
+    start_hour = int(start_parts[0]) + int(start_parts[1]) / 60
+
+    end_parts = current_end.split(':')
+    current_end_hour = int(end_parts[0]) + int(end_parts[1]) / 60
+
+    target_parts = target_end.split(':')
+    target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
+
+    # Calculate if extension is possible
+    can_extend, max_end_hour, reason = calculate_max_extension(
+        room, date_str, start_hour, current_end_hour, created_at, target_end_hour
+    )
+
+    if not can_extend:
+        return False, None, reason
+
+    # Format new end time
+    new_end_h = int(max_end_hour)
+    new_end_m = int((max_end_hour % 1) * 60)
+    new_end_time = f"{new_end_h:02d}:{new_end_m:02d}"
+
+    print(f"\n{'='*60}")
+    print(f"EXTENDING BOOKING: {room} on {date_str}")
+    print(f"  Current: {start_time} - {current_end}")
+    print(f"  Target:  {start_time} - {new_end_time}")
+    print(f"{'='*60}")
+
+    # Perform the edit
+    success = edit_reservation_end_time(page, booking, new_end_time)
+
+    if success:
+        # Update or remove from extendable bookings
+        if new_end_time == target_end:
+            # Reached target, remove from tracking
+            remove_extendable_booking(room, date_str, start_time)
+        else:
+            # Partially extended, update the end time
+            update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
+
+        return True, new_end_time, "Extended successfully"
+
+    return False, None, "Edit operation failed"
 
 
 def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
@@ -1036,7 +1530,49 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
     room = slot['room']
     start_hour = slot['start_hour']
     slot_duration = (slot['end_hour'] - start_hour) * 60
-    booking_duration = min(slot_duration, MAX_BOOKING_HOURS * 60)
+
+    # Calculate maximum bookable duration based on horizon constraint
+    # At the horizon edge, you can only book time that has "passed" the edge
+    # E.g., at 9:30 AM, a 9:00 AM slot has 30 min past the horizon, so you can book 9:00-9:30
+    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+    now = datetime.now()
+
+    # Calculate when this slot became available
+    if hasattr(target_date, 'date'):
+        target_date_obj = target_date.date()
+    else:
+        target_date_obj = target_date
+    slot_datetime = datetime.combine(target_date_obj, datetime.min.time())
+    slot_datetime = slot_datetime.replace(
+        hour=int(start_hour),
+        minute=int((start_hour % 1) * 60)
+    )
+    available_from = slot_datetime - timedelta(days=horizon_days)
+
+    # How much time has passed since the slot became available?
+    time_since_available_mins = (now - available_from).total_seconds() / 60
+
+    # The bookable duration is limited by:
+    # 1. The slot's actual duration
+    # 2. The max booking duration (2 hours)
+    # 3. The time that has passed since horizon edge (for edge bookings)
+    horizon_limited_duration = time_since_available_mins
+
+    # Round down to nearest 15-minute interval for cleaner bookings
+    horizon_limited_duration = (int(horizon_limited_duration) // 15) * 15
+
+    # Take the minimum of all constraints
+    booking_duration = min(slot_duration, MAX_BOOKING_HOURS * 60, horizon_limited_duration)
+
+    # Check if we have at least 30 minutes to book
+    if booking_duration < MIN_BOOKING_MINUTES:
+        mins_until_bookable = MIN_BOOKING_MINUTES - horizon_limited_duration
+        start_h = int(start_hour)
+        start_m = int((start_hour % 1) * 60)
+        book_start = f"{start_h:02d}:{start_m:02d}"
+        print(f"  Skipping {room} {book_start}: Only {horizon_limited_duration:.0f}min past horizon (need {MIN_BOOKING_MINUTES}min, wait {mins_until_bookable:.0f}min)")
+        return False
+
     end_hour = start_hour + booking_duration / 60
 
     # Format times
@@ -1053,21 +1589,32 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         print(f"  Skipping {room} {book_start}: {reason}")
         return False
 
-    # Check if room is available based on its booking horizon
+    # Note: We no longer need is_room_available_to_book() here since we already
+    # calculated horizon availability above. But we keep it for safety.
     is_available, horizon_reason = is_room_available_to_book(room, target_date, start_hour)
     if not is_available:
         print(f"  Skipping {room} {book_start}: {horizon_reason}")
         return False
 
-    print(f"\n{'='*60}")
-    print(f"Trying: {room} at {book_start}-{book_end}")
-    print(f"{'='*60}")
+    # Log if this is a horizon-limited booking
+    max_possible_duration = min(slot_duration, MAX_BOOKING_HOURS * 60)
+    is_horizon_limited = booking_duration < max_possible_duration
+    if is_horizon_limited:
+        target_end_h = int(start_hour + max_possible_duration / 60)
+        target_end_m = int((start_hour + max_possible_duration / 60) % 1 * 60)
+        print(f"\n{'='*60}")
+        print(f"Trying: {room} at {book_start}-{book_end} (HORIZON LIMITED)")
+        print(f"  Will extend later: target {book_start}-{target_end_h:02d}:{target_end_m:02d}")
+        print(f"{'='*60}")
+    else:
+        print(f"\n{'='*60}")
+        print(f"Trying: {room} at {book_start}-{book_end}")
+        print(f"{'='*60}")
 
     # Step 1: Click on empty slot
     # Find the room row and scroll it into view, then get fresh coordinates
     room_name = slot['room']
-    start_hour = slot['start_hour']
-    end_hour = min(slot['end_hour'], start_hour + MAX_BOOKING_HOURS)
+    # Note: end_hour was already calculated above with horizon limits applied
 
     # Calculate click percentage for the target time
     grid_start_hour = 7.0
@@ -1484,6 +2031,27 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
             # Success!
             tracker.add_booking(room, target_date, start_hour, end_hour)
             print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
+
+            # Check if we booked less than the full slot due to horizon constraints
+            # If so, mark for later extension
+            original_slot_end = slot['end_hour']
+            max_possible_end = min(original_slot_end, start_hour + MAX_BOOKING_HOURS)
+            if end_hour < max_possible_end:
+                # Check if this is because we're at the horizon edge
+                horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+                slot_datetime = datetime.combine(target_date, datetime.min.time())
+                slot_datetime = slot_datetime.replace(
+                    hour=int(start_hour),
+                    minute=int((start_hour % 1) * 60)
+                )
+                available_from = slot_datetime - timedelta(days=horizon_days)
+                now = datetime.now()
+                time_since_available = (now - available_from).total_seconds() / 60
+
+                # If we just became available (within last 60 mins), mark for extension
+                if time_since_available < 60:
+                    save_extendable_booking(room, target_date, start_hour, end_hour, max_possible_end)
+
             return True
         else:
             # Check if there's an actual error or just delay
@@ -1494,6 +2062,24 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
                 # Success after extra wait
                 tracker.add_booking(room, target_date, start_hour, end_hour)
                 print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
+
+                # Check if we booked less than the full slot due to horizon constraints
+                original_slot_end = slot['end_hour']
+                max_possible_end = min(original_slot_end, start_hour + MAX_BOOKING_HOURS)
+                if end_hour < max_possible_end:
+                    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+                    slot_datetime = datetime.combine(target_date, datetime.min.time())
+                    slot_datetime = slot_datetime.replace(
+                        hour=int(start_hour),
+                        minute=int((start_hour % 1) * 60)
+                    )
+                    available_from = slot_datetime - timedelta(days=horizon_days)
+                    now = datetime.now()
+                    time_since_available = (now - available_from).total_seconds() / 60
+
+                    if time_since_available < 60:
+                        save_extendable_booking(room, target_date, start_hour, end_hour, max_possible_end)
+
                 return True
 
             # Log what's visible on the page
@@ -2198,6 +2784,41 @@ def main():
         # Wait for target time if specified (prep is done, ready to book)
         if args.target_time:
             wait_until_target_time(args.target_time, page)
+
+        # =================================================================
+        # PROCESS PENDING BOOKING EXTENSIONS
+        # =================================================================
+        # Before making new bookings, try to extend any bookings that were
+        # made at the horizon edge and can now be extended.
+        extendable_bookings = load_extendable_bookings()
+        if extendable_bookings:
+            print("\n" + "="*60)
+            print("PROCESSING BOOKING EXTENSIONS")
+            print("="*60)
+            print(f"Found {len(extendable_bookings)} potentially extendable booking(s)")
+
+            extensions_made = 0
+            for booking in extendable_bookings:
+                success, new_end, message = try_extend_booking(page, booking)
+                if success:
+                    extensions_made += 1
+                    booking_details.append(
+                        f"EXTENDED: {booking['room']} {booking['date']} "
+                        f"{booking['startTime']}-{new_end}"
+                    )
+                else:
+                    print(f"  Skipped {booking['room']} {booking['date']} {booking['startTime']}: {message}")
+
+            if extensions_made > 0:
+                total_booked += extensions_made
+                print(f"\nExtended {extensions_made} booking(s)")
+
+            print("="*60)
+
+            # Navigate back to booking overview after extensions
+            print("\nNavigating back to practice rooms...")
+            page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+            page.wait_for_timeout(2000)
 
         # Process each day in the determined order
         for day_index, days_ahead in enumerate(day_order):
