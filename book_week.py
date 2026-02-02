@@ -765,34 +765,46 @@ def calculate_max_extension(room, date_str, start_hour, current_end_hour, bookin
         Tuple of (can_extend: bool, max_end_hour: float, reason: str)
     """
     try:
-        booking_time = datetime.fromisoformat(booking_timestamp)
+        # Validate timestamp format (kept for compatibility with saved data)
+        datetime.fromisoformat(booking_timestamp)
     except:
         return False, current_end_hour, "Invalid booking timestamp"
 
     now = datetime.now()
     horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
 
-    # Time elapsed since booking was made
-    time_elapsed_mins = (now - booking_time).total_seconds() / 60
+    # Calculate when this slot became available (horizon edge)
+    try:
+        slot_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except:
+        return False, current_end_hour, "Invalid booking date"
 
-    # The key insight: at horizon edge, the slot start time = current time
-    # So if we booked 9:00-9:30 at 9:00, after 15 mins (9:15), we can book up to 9:45
-    # After 30 mins (9:30), we can book up to 10:00, etc.
+    slot_datetime = datetime.combine(slot_date, datetime.min.time())
+    slot_datetime = slot_datetime.replace(
+        hour=int(start_hour),
+        minute=int((start_hour % 1) * 60)
+    )
+    available_from = slot_datetime - timedelta(days=horizon_days)
+
+    # Time elapsed since the horizon edge (not since booking)
+    time_since_available_mins = (now - available_from).total_seconds() / 60
+    if time_since_available_mins < 0:
+        return False, current_end_hour, f"Not yet in horizon window ({-time_since_available_mins:.0f}min early)"
 
     # Current duration in minutes
     current_duration_mins = (current_end_hour - start_hour) * 60
 
-    # Maximum additional time we can book = time elapsed since we made the booking
-    # (because that time has now passed beyond the horizon edge)
-    max_additional_mins = time_elapsed_mins
-
-    # New possible duration = current + additional (capped at 2 hours total)
+    # Max total duration available at this moment (capped at 2 hours)
     max_total_duration_mins = min(
-        current_duration_mins + max_additional_mins,
+        time_since_available_mins,
         MAX_BOOKING_HOURS * 60
     )
 
-    # Calculate max end hour
+    # If horizon window hasn't advanced beyond current booking, no extension possible
+    if max_total_duration_mins < current_duration_mins:
+        return False, current_end_hour, "Horizon window hasn't advanced past current booking"
+
+    # Calculate max end hour (total duration from start)
     max_end_hour = start_hour + max_total_duration_mins / 60
 
     # Also cap at target end (no point going beyond what we originally wanted)
@@ -1394,6 +1406,84 @@ def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
     return min(bookings_per_day, 6)
 
 
+def calculate_target_hours_for_day(target_date, enabled_dates, tracker, total_quota=MAX_ROLLING_QUOTA_HOURS):
+    """
+    Calculate target hours for a specific day to achieve even distribution.
+
+    This function considers existing bookings across all enabled days and calculates
+    how many more hours should be booked on the target day to achieve a balanced week.
+
+    Args:
+        target_date: The date to calculate target hours for
+        enabled_dates: List of enabled dates in the booking window
+        tracker: BookingTracker with existing reservation data
+        total_quota: Total weekly quota (default 28 hours)
+
+    Returns:
+        Tuple of (target_hours, max_bookings) for the day
+    """
+    if not enabled_dates:
+        return 0.0, 0
+
+    # Calculate ideal hours per day for even distribution
+    ideal_per_day = total_quota / len(enabled_dates)
+
+    # Get current hours for each enabled day
+    hours_per_day = {}
+    total_existing = 0.0
+    for d in enabled_dates:
+        day_hours = tracker.get_hours_for_day(d)
+        hours_per_day[d.strftime('%Y-%m-%d')] = day_hours
+        total_existing += day_hours
+
+    remaining_quota = max(0, total_quota - total_existing)
+
+    # If no remaining quota, nothing to book
+    if remaining_quota <= 0:
+        return 0.0, 0
+
+    # Count days that still need more hours (below ideal)
+    days_needing_hours = []
+    for d in enabled_dates:
+        day_key = d.strftime('%Y-%m-%d')
+        day_hours = hours_per_day.get(day_key, 0.0)
+        if day_hours < ideal_per_day:
+            # Calculate how much this day is "behind" the ideal
+            deficit = ideal_per_day - day_hours
+            days_needing_hours.append((d, deficit))
+
+    target_date_key = target_date.strftime('%Y-%m-%d')
+    current_hours = hours_per_day.get(target_date_key, 0.0)
+
+    if not days_needing_hours:
+        # All days are at or above ideal - distribute remaining evenly
+        target_hours = remaining_quota / len(enabled_dates)
+    elif current_hours >= ideal_per_day:
+        # This day is already at or above ideal - don't add more
+        # Let the days with deficits catch up first
+        target_hours = 0.0
+    else:
+        # This day is below ideal - calculate its fair share of remaining quota
+        # Prioritize days with larger deficits proportionally
+        total_deficit = sum(deficit for _, deficit in days_needing_hours)
+        day_deficit = ideal_per_day - current_hours
+        # Proportional share based on how much this day needs relative to total need
+        proportion = day_deficit / total_deficit if total_deficit > 0 else 1.0 / len(days_needing_hours)
+        target_hours = min(remaining_quota * proportion, day_deficit)
+
+    # Cap at remaining quota and ensure positive
+    target_hours = max(0, min(target_hours, remaining_quota))
+
+    # Convert to number of bookings (each up to MAX_BOOKING_HOURS)
+    if target_hours <= 0:
+        max_bookings = 0
+    else:
+        max_bookings = max(1, int((target_hours / MAX_BOOKING_HOURS) + 0.5))
+        max_bookings = min(max_bookings, 6)  # Cap at 6 bookings per day
+
+    return target_hours, max_bookings
+
+
 class BookingTracker:
     """Tracks bookings and enforces rules."""
 
@@ -1402,6 +1492,7 @@ class BookingTracker:
         self.conflict_ranges = {}  # Per-day conflict ranges: {date: [(start, end), ...]}
         self.reservation_ranges = {}  # Per-day reservation ranges (for same-room gap buffer): {date: [(start, end), ...]}
         self.peak_hours_by_day = {}  # Per-day peak minutes: {date_key: minutes}
+        self.reservation_hours_by_day = {}  # Per-day reservation hours: {date_key: hours}
         self.existing_reservation_hours = 0.0  # Total hours from existing reservations
 
     def add_existing_event(self, date, start_hour, end_hour, is_reservation=False, room=None):
@@ -1448,6 +1539,10 @@ class BookingTracker:
         if is_reservation:
             duration_hours = end_hour - start_hour
             self.existing_reservation_hours += duration_hours
+            # Also track per-day for smart redistribution
+            if date_key not in self.reservation_hours_by_day:
+                self.reservation_hours_by_day[date_key] = 0.0
+            self.reservation_hours_by_day[date_key] += duration_hours
 
         event_type = "reservation" if is_reservation else "conflict"
         print(f"  [Tracker] Added {event_type}: {date_key} {start_hour:.2f}-{end_hour:.2f}{peak_info}")
@@ -1473,9 +1568,16 @@ class BookingTracker:
             self.conflict_ranges[date_key] = []
         self.conflict_ranges[date_key].append((start_hour, end_hour))
 
+        # Track per-day reservation hours for smart redistribution
+        booking_hours = end_hour - start_hour
+        if date_key not in self.reservation_hours_by_day:
+            self.reservation_hours_by_day[date_key] = 0.0
+        self.reservation_hours_by_day[date_key] += booking_hours
+
         print(f"  [Tracker] Added booking: {room} {date_key} {start_hour:.2f}-{end_hour:.2f}")
         day_peak = self.peak_hours_by_day.get(date_key, 0)
-        print(f"  [Tracker] Total bookings: {len(self.bookings)}, Peak hours for {date_key}: {day_peak:.0f}/{MAX_PEAK_HOURS * 60} min")
+        day_hours = self.reservation_hours_by_day.get(date_key, 0)
+        print(f"  [Tracker] Total bookings: {len(self.bookings)}, Day hours: {day_hours:.1f}h, Peak: {day_peak:.0f}/{MAX_PEAK_HOURS * 60} min")
 
     def add_conflict(self, date, start_hour, end_hour):
         """Record a discovered conflict range (during booking, not from agenda)."""
@@ -1524,6 +1626,11 @@ class BookingTracker:
         """Get total booking hours (existing reservations + new bookings this session)."""
         new_booking_hours = sum(end - start for _, _, start, end in self.bookings)
         return self.existing_reservation_hours + new_booking_hours
+
+    def get_hours_for_day(self, date):
+        """Get total reservation hours for a specific day."""
+        date_key = date.strftime('%Y-%m-%d')
+        return self.reservation_hours_by_day.get(date_key, 0.0)
 
     def get_remaining_quota_hours(self):
         """Get remaining rolling quota hours."""
@@ -3236,21 +3343,26 @@ def main():
         if reverse_date_order:
             print(f"\n  Booking strategy: REVERSE ORDER (furthest dates first)")
 
-        # Calculate dynamic max bookings per day based on enabled days
-        # Count how many days are enabled (not in disabled_dates) in the booking window
-        enabled_days_count = 0
+        # Build list of enabled dates for smart redistribution
+        enabled_dates = []
         for d in range(0, 8):
             check_date = today + timedelta(days=d)
             if not is_date_disabled(check_date, disabled_dates):
-                enabled_days_count += 1
+                enabled_dates.append(check_date)
 
         remaining_quota = tracker.get_remaining_quota_hours()
-        max_bookings_per_day = calculate_max_bookings_per_day(remaining_quota, enabled_days_count)
-        print(f"\n  Dynamic booking calculation:")
-        print(f"    Enabled days: {enabled_days_count}/8")
+        ideal_per_day = MAX_ROLLING_QUOTA_HOURS / len(enabled_dates) if enabled_dates else 0
+
+        print(f"\n  Smart redistribution calculation:")
+        print(f"    Enabled days: {len(enabled_dates)}/8")
         print(f"    Remaining quota: {remaining_quota:.1f}h")
-        print(f"    Target hours/day: {remaining_quota / max(1, enabled_days_count):.1f}h")
-        print(f"    Max bookings/day: {max_bookings_per_day}")
+        print(f"    Ideal hours/day: {ideal_per_day:.1f}h")
+        print(f"    Current hours per day:")
+        for d in enabled_dates:
+            day_hours = tracker.get_hours_for_day(d)
+            deficit = ideal_per_day - day_hours
+            status = "✓" if day_hours >= ideal_per_day else f"needs +{deficit:.1f}h"
+            print(f"      {d.strftime('%Y-%m-%d')} ({d.strftime('%a')}): {day_hours:.1f}h [{status}]")
 
         # Get current time for filtering today's slots
         current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
@@ -3466,6 +3578,13 @@ def main():
             print(f"\n{'#'*60}")
             print(f"# DAY {days_ahead}: {target_date.strftime('%Y-%m-%d')} ({day_name})")
             print(f"{'#'*60}")
+
+            # Calculate dynamic target for this specific day based on current distribution
+            target_hours, max_bookings_per_day = calculate_target_hours_for_day(
+                target_date, enabled_dates, tracker
+            )
+            current_day_hours = tracker.get_hours_for_day(target_date)
+            print(f"  [Smart redistribution] Current: {current_day_hours:.1f}h, Target: +{target_hours:.1f}h, Max bookings: {max_bookings_per_day}")
 
             day_peak_used = tracker.get_peak_used_for_day(target_date)
             print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak for this day: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60}min")
