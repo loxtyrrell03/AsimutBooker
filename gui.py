@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
+import calendar as cal
 
 # Constants
 APP_DIR = Path(__file__).parent
@@ -23,20 +24,22 @@ class AsimutBookerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("AsimutBooker Control Panel")
-        self.root.geometry("1200x900")
-        self.root.minsize(1000, 700)
+        self.root.geometry("1200x850")
+        self.root.minsize(1000, 750)
 
-        # Configure default font sizes
-        default_font = ("Segoe UI", 11)
-        heading_font = ("Segoe UI", 12, "bold")
+        # Configure default font sizes - larger for better readability
+        default_font = ("Segoe UI", 13)
+        heading_font = ("Segoe UI", 14, "bold")
 
         # Apply to all ttk widgets
         style = ttk.Style()
         style.configure(".", font=default_font)
         style.configure("TLabel", font=default_font)
-        style.configure("TButton", font=default_font, padding=6)
+        style.configure("TButton", font=default_font, padding=8)
         style.configure("TLabelframe.Label", font=heading_font)
         style.configure("TCheckbutton", font=default_font)
+        style.configure("TCombobox", font=default_font)
+        style.configure("TEntry", font=default_font)
 
         # Set icon if available
         try:
@@ -157,53 +160,161 @@ class AsimutBookerGUI:
         self.progress_var = tk.StringVar(value="")
         ttk.Label(controls_frame, textvariable=self.progress_var, foreground="blue", font=("Segoe UI", 11)).pack(anchor=tk.W, pady=(8, 0))
 
-        # Booking Days section
-        days_frame = ttk.LabelFrame(main_frame, text="Booking Days (today + next 7 days)", padding="15")
+        # Booking Days section - collapsible calendar
+        days_frame = ttk.LabelFrame(main_frame, text="Booking Days", padding="15")
         days_frame.pack(fill=tk.X, pady=(0, 15))
 
         days_inner = ttk.Frame(days_frame)
         days_inner.pack(fill=tk.X)
 
-        # Create checkboxes for each of the next 8 days (today through 7 days ahead)
+        # Summary label showing selected days count
+        self.days_summary_var = tk.StringVar(value="Loading...")
+        ttk.Label(days_inner, textvariable=self.days_summary_var, font=("Segoe UI", 12)).pack(side=tk.LEFT, padx=(0, 20))
+
+        # Open calendar button
+        ttk.Button(
+            days_inner,
+            text="📅 Open Calendar",
+            command=self.show_calendar_dialog,
+            width=18
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Initialize day vars (will be populated by load_booking_days)
         self.day_vars = {}  # {date_str: BooleanVar}
-        self.day_checkboxes = {}
 
-        today = datetime.now().date()
-        for i in range(0, 8):  # Days 0-7 (today through 7 days ahead)
-            target_date = today + timedelta(days=i)
-            date_str = target_date.strftime('%Y-%m-%d')
-            day_name = target_date.strftime('%A')
-            # Mark today specially
-            if i == 0:
-                display_text = f"Today ({target_date.strftime('%d/%m')})"
-            else:
-                display_text = f"{day_name} {target_date.strftime('%d/%m')}"
-
-            var = tk.BooleanVar(value=True)  # Default to enabled
-            self.day_vars[date_str] = var
-
-            cb = ttk.Checkbutton(
-                days_inner,
-                text=display_text,
-                variable=var,
-                command=self.save_booking_days
-            )
-            cb.pack(side=tk.LEFT, padx=10, pady=5)
-            self.day_checkboxes[date_str] = cb
-
-        # Load saved settings
+        # Load saved settings and update summary
         self.load_booking_days()
+        self._update_days_summary()
+
+        # Time Preferences section
+        time_prefs_frame = ttk.LabelFrame(main_frame, text="Time Preferences", padding="15")
+        time_prefs_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Row 1: Enable checkbox and preset dropdown
+        time_prefs_row1 = ttk.Frame(time_prefs_frame)
+        time_prefs_row1.pack(fill=tk.X, pady=(0, 10))
+
+        # Enable checkbox
+        self.time_prefs_enabled = tk.BooleanVar(value=False)
+        self.time_prefs_enable_cb = ttk.Checkbutton(
+            time_prefs_row1,
+            text="Enable time preferences",
+            variable=self.time_prefs_enabled,
+            command=self.on_time_prefs_changed
+        )
+        self.time_prefs_enable_cb.pack(side=tk.LEFT, padx=(0, 30))
+
+        # Preset dropdown
+        ttk.Label(time_prefs_row1, text="Prefer:").pack(side=tk.LEFT, padx=(0, 10))
+
+        self.time_prefs_preset = tk.StringVar(value="afternoon_evening")
+        self.time_prefs_presets = {
+            "Morning (07:00-12:00)": "morning",
+            "Afternoon (12:00-18:00)": "afternoon",
+            "Evening (18:00-22:00)": "evening",
+            "Afternoon/Evening (14:00-22:00)": "afternoon_evening",
+            "Custom...": "custom",
+        }
+        self.time_prefs_dropdown = ttk.Combobox(
+            time_prefs_row1,
+            textvariable=self.time_prefs_preset,
+            values=list(self.time_prefs_presets.keys()),
+            state="disabled",
+            width=28,
+            font=("Segoe UI", 13)
+        )
+        self.time_prefs_dropdown.set("Afternoon/Evening (14:00-22:00)")
+        self.time_prefs_dropdown.pack(side=tk.LEFT, padx=(0, 30))
+        self.time_prefs_dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_time_prefs_changed())
+
+        # Strict mode checkbox (on same row)
+        self.time_prefs_strict = tk.BooleanVar(value=False)
+        self.time_prefs_strict_cb = ttk.Checkbutton(
+            time_prefs_row1,
+            text="Strict mode (only book preferred times)",
+            variable=self.time_prefs_strict,
+            command=self.on_time_prefs_changed,
+            state=tk.DISABLED
+        )
+        self.time_prefs_strict_cb.pack(side=tk.LEFT)
+
+        # Row 2: Custom time range (hidden by default)
+        self.custom_time_frame = ttk.Frame(time_prefs_frame)
+        # Don't pack yet - will be shown/hidden based on selection
+
+        ttk.Label(self.custom_time_frame, text="From:").pack(side=tk.LEFT, padx=(0, 10))
+
+        # Start hour entry
+        self.custom_start_hour = tk.StringVar(value="14")
+        self.custom_start_hour_entry = ttk.Entry(
+            self.custom_time_frame,
+            textvariable=self.custom_start_hour,
+            width=3,
+            font=("Segoe UI", 13),
+            justify="center"
+        )
+        self.custom_start_hour_entry.pack(side=tk.LEFT)
+        self.custom_start_hour_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
+        self.custom_start_hour_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
+
+        ttk.Label(self.custom_time_frame, text=":").pack(side=tk.LEFT)
+
+        # Start minute entry
+        self.custom_start_min = tk.StringVar(value="00")
+        self.custom_start_min_entry = ttk.Entry(
+            self.custom_time_frame,
+            textvariable=self.custom_start_min,
+            width=3,
+            font=("Segoe UI", 13),
+            justify="center"
+        )
+        self.custom_start_min_entry.pack(side=tk.LEFT)
+        self.custom_start_min_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
+        self.custom_start_min_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
+
+        ttk.Label(self.custom_time_frame, text="To:").pack(side=tk.LEFT, padx=(30, 10))
+
+        # End hour entry
+        self.custom_end_hour = tk.StringVar(value="22")
+        self.custom_end_hour_entry = ttk.Entry(
+            self.custom_time_frame,
+            textvariable=self.custom_end_hour,
+            width=3,
+            font=("Segoe UI", 13),
+            justify="center"
+        )
+        self.custom_end_hour_entry.pack(side=tk.LEFT)
+        self.custom_end_hour_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
+        self.custom_end_hour_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
+
+        ttk.Label(self.custom_time_frame, text=":").pack(side=tk.LEFT)
+
+        # End minute entry
+        self.custom_end_min = tk.StringVar(value="00")
+        self.custom_end_min_entry = ttk.Entry(
+            self.custom_time_frame,
+            textvariable=self.custom_end_min,
+            width=3,
+            font=("Segoe UI", 13),
+            justify="center"
+        )
+        self.custom_end_min_entry.pack(side=tk.LEFT)
+        self.custom_end_min_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
+        self.custom_end_min_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
+
+        # Load saved time preferences
+        self.load_time_preferences()
 
         # Bottom section - Output Log
         log_frame = ttk.LabelFrame(main_frame, text="Output Log", padding="15")
         log_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Log text area
+        # Log text area - reduced height so buttons are visible on open
         self.log_text = scrolledtext.ScrolledText(
             log_frame,
             wrap=tk.WORD,
-            font=("Consolas", 12),
-            height=25
+            font=("Consolas", 13),
+            height=8
         )
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
@@ -220,6 +331,7 @@ class AsimutBookerGUI:
         ttk.Button(log_controls, text="Clear Log", command=self.clear_log).pack(side=tk.LEFT, padx=5)
         ttk.Button(log_controls, text="Open Today's Log File", command=self.open_todays_log).pack(side=tk.LEFT, padx=5)
         ttk.Button(log_controls, text="View Booking History", command=self.show_history_dialog).pack(side=tk.LEFT, padx=5)
+        ttk.Button(log_controls, text="Manage Events", command=self.show_events_dialog).pack(side=tk.LEFT, padx=5)
 
     def log(self, message, tag=None):
         """Add message to log with optional tag for coloring."""
@@ -618,14 +730,17 @@ class AsimutBookerGUI:
     def load_booking_days(self):
         """Load enabled booking days from settings."""
         settings = self.load_settings()
-        disabled_dates = settings.get("disabled_dates", [])
+        disabled_dates = set(settings.get("disabled_dates", []))
 
-        # Update checkboxes based on saved settings
-        for date_str, var in self.day_vars.items():
-            if date_str in disabled_dates:
-                var.set(False)
-            else:
-                var.set(True)
+        # Initialize day_vars for next 60 days (to cover month view)
+        today = datetime.now().date()
+        self.day_vars = {}
+        for i in range(60):
+            target_date = today + timedelta(days=i)
+            date_str = target_date.strftime('%Y-%m-%d')
+            # Default to enabled unless in disabled list
+            var = tk.BooleanVar(value=(date_str not in disabled_dates))
+            self.day_vars[date_str] = var
 
     def save_booking_days(self):
         """Save enabled booking days to settings."""
@@ -639,6 +754,123 @@ class AsimutBookerGUI:
 
         settings["disabled_dates"] = disabled_dates
         self.save_settings(settings)
+        self._update_days_summary()
+
+    def _update_days_summary(self):
+        """Update the days summary label."""
+        today = datetime.now().date()
+        enabled_count = 0
+        total_count = 8  # Today + 7 days
+
+        for i in range(total_count):
+            target_date = today + timedelta(days=i)
+            date_str = target_date.strftime('%Y-%m-%d')
+            if date_str in self.day_vars and self.day_vars[date_str].get():
+                enabled_count += 1
+
+        if enabled_count == total_count:
+            self.days_summary_var.set(f"All {total_count} days enabled for booking")
+        elif enabled_count == 0:
+            self.days_summary_var.set("No days enabled for booking")
+        else:
+            self.days_summary_var.set(f"{enabled_count}/{total_count} days enabled for booking")
+
+    def load_time_preferences(self):
+        """Load time preferences from settings."""
+        settings = self.load_settings()
+        prefs = settings.get("time_preferences", {})
+
+        # Set enabled state
+        enabled = prefs.get("enabled", False)
+        self.time_prefs_enabled.set(enabled)
+
+        # Set preset
+        preset = prefs.get("preset", "afternoon_evening")
+        # Find the display name for this preset
+        for display_name, preset_key in self.time_prefs_presets.items():
+            if preset_key == preset:
+                self.time_prefs_dropdown.set(display_name)
+                break
+
+        # Set custom hours and minutes
+        self.custom_start_hour.set(str(prefs.get("custom_start_hour", 14)))
+        self.custom_start_min.set(str(prefs.get("custom_start_min", 0)).zfill(2))
+        self.custom_end_hour.set(str(prefs.get("custom_end_hour", 22)))
+        self.custom_end_min.set(str(prefs.get("custom_end_min", 0)).zfill(2))
+
+        # Set strict mode
+        self.time_prefs_strict.set(prefs.get("strict_mode", False))
+
+        # Update UI state
+        self._update_time_prefs_ui_state()
+
+    def save_time_preferences(self):
+        """Save time preferences to settings."""
+        settings = self.load_settings()
+
+        # Get the preset key from the display name
+        display_name = self.time_prefs_dropdown.get()
+        preset_key = self.time_prefs_presets.get(display_name, "afternoon_evening")
+
+        # Get custom hours and minutes (validate)
+        try:
+            start_hour = max(0, min(23, int(self.custom_start_hour.get())))
+            start_min = max(0, min(59, int(self.custom_start_min.get())))
+            end_hour = max(0, min(24, int(self.custom_end_hour.get())))
+            end_min = max(0, min(59, int(self.custom_end_min.get())))
+
+            # Ensure end > start
+            start_total = start_hour * 60 + start_min
+            end_total = end_hour * 60 + end_min
+            if end_total <= start_total:
+                end_hour = min(start_hour + 1, 24)
+                end_min = start_min
+                self.custom_end_hour.set(str(end_hour))
+                self.custom_end_min.set(str(end_min).zfill(2))
+
+            # Update display with validated values
+            self.custom_start_hour.set(str(start_hour))
+            self.custom_start_min.set(str(start_min).zfill(2))
+            self.custom_end_hour.set(str(end_hour))
+            self.custom_end_min.set(str(end_min).zfill(2))
+        except ValueError:
+            start_hour, start_min = 14, 0
+            end_hour, end_min = 22, 0
+
+        settings["time_preferences"] = {
+            "enabled": self.time_prefs_enabled.get(),
+            "preset": preset_key,
+            "custom_start_hour": start_hour,
+            "custom_start_min": start_min,
+            "custom_end_hour": end_hour,
+            "custom_end_min": end_min,
+            "strict_mode": self.time_prefs_strict.get()
+        }
+
+        self.save_settings(settings)
+
+    def on_time_prefs_changed(self):
+        """Handle changes to time preferences."""
+        self._update_time_prefs_ui_state()
+        self.save_time_preferences()
+
+    def _update_time_prefs_ui_state(self):
+        """Update enabled/disabled state of time preference controls."""
+        enabled = self.time_prefs_enabled.get()
+        is_custom = self.time_prefs_dropdown.get() == "Custom..."
+
+        if enabled:
+            self.time_prefs_dropdown.config(state="readonly")
+            self.time_prefs_strict_cb.config(state=tk.NORMAL)
+        else:
+            self.time_prefs_dropdown.config(state="disabled")
+            self.time_prefs_strict_cb.config(state=tk.DISABLED)
+
+        # Show/hide custom time frame (it's on a separate row now)
+        if enabled and is_custom:
+            self.custom_time_frame.pack(fill=tk.X, pady=(5, 0))
+        else:
+            self.custom_time_frame.pack_forget()
 
     def add_history_entry(self, bookings_made, events_detected, details=""):
         """Add a new entry to booking history."""
@@ -745,6 +977,1059 @@ class AsimutBookerGUI:
             self.save_history({"runs": []})
             self._refresh_history_list(tree)
             self.log("Booking history cleared.", "info")
+
+    def show_calendar_dialog(self):
+        """Show calendar dialog for selecting booking days."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Booking Calendar")
+        dialog.geometry("1100x750")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Store dialog reference for updates
+        self.calendar_dialog = dialog
+
+        # Calendar state
+        self.calendar_view = tk.StringVar(value="month")  # month, fortnight, week, 3days
+        self.calendar_start_date = datetime.now().date()
+        self.calendar_events = {}  # {date_str: [events]}
+
+        # Header frame
+        header_frame = ttk.Frame(dialog, padding="10")
+        header_frame.pack(fill=tk.X)
+
+        ttk.Label(
+            header_frame,
+            text="Booking Calendar",
+            font=("Segoe UI", 16, "bold")
+        ).pack(side=tk.LEFT)
+
+        # View selector
+        view_frame = ttk.Frame(header_frame)
+        view_frame.pack(side=tk.RIGHT)
+
+        ttk.Label(view_frame, text="View:", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=(0, 10))
+
+        views = [("Month", "month"), ("Fortnight", "fortnight"), ("Week", "week"), ("3 Days", "3days")]
+        for text, value in views:
+            rb = ttk.Radiobutton(
+                view_frame,
+                text=text,
+                variable=self.calendar_view,
+                value=value,
+                command=self._refresh_calendar
+            )
+            rb.pack(side=tk.LEFT, padx=5)
+
+        # Navigation frame
+        nav_frame = ttk.Frame(dialog, padding="10")
+        nav_frame.pack(fill=tk.X)
+
+        ttk.Button(
+            nav_frame,
+            text="◀ Previous",
+            command=lambda: self._navigate_calendar(-1),
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            nav_frame,
+            text="Today",
+            command=self._go_to_today,
+            width=10
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            nav_frame,
+            text="Next ▶",
+            command=lambda: self._navigate_calendar(1),
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Current period label
+        self.calendar_period_var = tk.StringVar(value="")
+        ttk.Label(
+            nav_frame,
+            textvariable=self.calendar_period_var,
+            font=("Segoe UI", 14, "bold")
+        ).pack(side=tk.LEFT, padx=30)
+
+        # Selection buttons
+        ttk.Button(
+            nav_frame,
+            text="Select All Visible",
+            command=lambda: self._select_visible_days(True),
+            width=16
+        ).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(
+            nav_frame,
+            text="Deselect All Visible",
+            command=lambda: self._select_visible_days(False),
+            width=18
+        ).pack(side=tk.RIGHT, padx=5)
+
+        # Scan status
+        self.calendar_scan_var = tk.StringVar(value="Scanning events...")
+        ttk.Label(
+            nav_frame,
+            textvariable=self.calendar_scan_var,
+            foreground="blue"
+        ).pack(side=tk.RIGHT, padx=20)
+
+        # Legend
+        legend_frame = ttk.Frame(dialog, padding="5")
+        legend_frame.pack(fill=tk.X)
+
+        ttk.Label(legend_frame, text="Legend:", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(10, 15))
+
+        # Blue = selected
+        legend_selected = tk.Frame(legend_frame, bg="#4a90d9", width=20, height=20)
+        legend_selected.pack(side=tk.LEFT, padx=(0, 5))
+        legend_selected.pack_propagate(False)
+        ttk.Label(legend_frame, text="= Selected for booking", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 20))
+
+        # White = deselected
+        legend_deselected = tk.Frame(legend_frame, bg="white", width=20, height=20, highlightbackground="gray", highlightthickness=1)
+        legend_deselected.pack(side=tk.LEFT, padx=(0, 5))
+        legend_deselected.pack_propagate(False)
+        ttk.Label(legend_frame, text="= Not selected", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 20))
+
+        # Event indicator
+        ttk.Label(legend_frame, text="•", font=("Segoe UI", 14), foreground="#e67e22").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(legend_frame, text="= Has events", font=("Segoe UI", 10)).pack(side=tk.LEFT)
+
+        # Calendar container with scrollbar
+        calendar_container = ttk.Frame(dialog, padding="10")
+        calendar_container.pack(fill=tk.BOTH, expand=True)
+
+        # Canvas for calendar grid
+        self.calendar_canvas = tk.Canvas(calendar_container, bg="white", highlightthickness=1, highlightbackground="gray")
+        calendar_scrollbar_y = ttk.Scrollbar(calendar_container, orient="vertical", command=self.calendar_canvas.yview)
+        calendar_scrollbar_x = ttk.Scrollbar(calendar_container, orient="horizontal", command=self.calendar_canvas.xview)
+
+        self.calendar_canvas.configure(yscrollcommand=calendar_scrollbar_y.set, xscrollcommand=calendar_scrollbar_x.set)
+
+        calendar_scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        calendar_scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self.calendar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Frame inside canvas for calendar content
+        self.calendar_frame = ttk.Frame(self.calendar_canvas)
+        self.calendar_canvas_window = self.calendar_canvas.create_window((0, 0), window=self.calendar_frame, anchor="nw")
+
+        # Update scroll region when frame changes
+        def on_frame_configure(e):
+            self.calendar_canvas.configure(scrollregion=self.calendar_canvas.bbox("all"))
+        self.calendar_frame.bind("<Configure>", on_frame_configure)
+
+        # Enable mousewheel scrolling
+        def _on_mousewheel(event):
+            self.calendar_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.calendar_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Bottom buttons
+        bottom_frame = ttk.Frame(dialog, padding="10")
+        bottom_frame.pack(fill=tk.X)
+
+        ttk.Button(
+            bottom_frame,
+            text="Save & Close",
+            command=lambda: self._save_calendar_and_close(dialog),
+            width=15
+        ).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(
+            bottom_frame,
+            text="Cancel",
+            command=dialog.destroy,
+            width=10
+        ).pack(side=tk.RIGHT, padx=5)
+
+        # Cleanup on close
+        def on_close():
+            self.calendar_canvas.unbind_all("<MouseWheel>")
+            dialog.destroy()
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Initial render
+        self._refresh_calendar()
+
+        # Scan events in background
+        self._scan_calendar_events()
+
+    def _navigate_calendar(self, direction):
+        """Navigate calendar forward or backward."""
+        view = self.calendar_view.get()
+        if view == "month":
+            # Move by ~30 days
+            self.calendar_start_date += timedelta(days=30 * direction)
+            # Snap to first of month
+            self.calendar_start_date = self.calendar_start_date.replace(day=1)
+        elif view == "fortnight":
+            self.calendar_start_date += timedelta(days=14 * direction)
+        elif view == "week":
+            self.calendar_start_date += timedelta(days=7 * direction)
+        else:  # 3days
+            self.calendar_start_date += timedelta(days=3 * direction)
+        self._refresh_calendar()
+
+    def _go_to_today(self):
+        """Go to today's date."""
+        self.calendar_start_date = datetime.now().date()
+        if self.calendar_view.get() == "month":
+            self.calendar_start_date = self.calendar_start_date.replace(day=1)
+        self._refresh_calendar()
+
+    def _select_visible_days(self, select: bool):
+        """Select or deselect all visible days."""
+        view = self.calendar_view.get()
+        today = datetime.now().date()
+
+        if view == "month":
+            # Get all days in the month
+            year = self.calendar_start_date.year
+            month = self.calendar_start_date.month
+            _, num_days = cal.monthrange(year, month)
+            dates = [datetime(year, month, d).date() for d in range(1, num_days + 1)]
+        elif view == "fortnight":
+            dates = [self.calendar_start_date + timedelta(days=i) for i in range(14)]
+        elif view == "week":
+            dates = [self.calendar_start_date + timedelta(days=i) for i in range(7)]
+        else:  # 3days
+            dates = [self.calendar_start_date + timedelta(days=i) for i in range(3)]
+
+        for d in dates:
+            date_str = d.strftime('%Y-%m-%d')
+            if date_str in self.day_vars:
+                self.day_vars[date_str].set(select)
+
+        self._refresh_calendar()
+
+    def _refresh_calendar(self):
+        """Refresh the calendar display."""
+        # Clear existing content
+        for widget in self.calendar_frame.winfo_children():
+            widget.destroy()
+
+        view = self.calendar_view.get()
+        today = datetime.now().date()
+
+        if view == "month":
+            self._render_month_view(today)
+        elif view == "fortnight":
+            self._render_days_view(14, today)
+        elif view == "week":
+            self._render_days_view(7, today)
+        else:  # 3days
+            self._render_days_view(3, today)
+
+    def _render_month_view(self, today):
+        """Render month view calendar."""
+        start_date = self.calendar_start_date
+        year = start_date.year
+        month = start_date.month
+
+        # Update period label
+        month_name = cal.month_name[month]
+        self.calendar_period_var.set(f"{month_name} {year}")
+
+        # Day headers
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        for col, day in enumerate(days):
+            lbl = tk.Label(
+                self.calendar_frame,
+                text=day,
+                font=("Segoe UI", 12, "bold"),
+                width=14,
+                bg="#f0f0f0",
+                relief="solid",
+                borderwidth=1
+            )
+            lbl.grid(row=0, column=col, sticky="nsew", padx=1, pady=1)
+
+        # Get first day of month and number of days
+        first_day_weekday = cal.monthrange(year, month)[0]  # 0=Monday
+        num_days = cal.monthrange(year, month)[1]
+
+        # Render days
+        row = 1
+        col = first_day_weekday
+
+        for day in range(1, num_days + 1):
+            current_date = datetime(year, month, day).date()
+            date_str = current_date.strftime('%Y-%m-%d')
+
+            self._render_day_cell(row, col, current_date, date_str, today)
+
+            col += 1
+            if col > 6:
+                col = 0
+                row += 1
+
+        # Configure grid weights
+        for c in range(7):
+            self.calendar_frame.columnconfigure(c, weight=1)
+
+    def _render_days_view(self, num_days, today):
+        """Render days view (week, fortnight, 3days)."""
+        start_date = self.calendar_start_date
+        end_date = start_date + timedelta(days=num_days - 1)
+
+        # Update period label
+        start_str = start_date.strftime("%d %b")
+        end_str = end_date.strftime("%d %b %Y")
+        self.calendar_period_var.set(f"{start_str} - {end_str}")
+
+        # Determine columns (max 7 per row for readability)
+        cols_per_row = min(num_days, 7)
+        rows_needed = (num_days + cols_per_row - 1) // cols_per_row
+
+        day_index = 0
+        for row in range(rows_needed):
+            for col in range(cols_per_row):
+                if day_index >= num_days:
+                    break
+
+                current_date = start_date + timedelta(days=day_index)
+                date_str = current_date.strftime('%Y-%m-%d')
+
+                self._render_day_cell(row, col, current_date, date_str, today, show_day_name=True)
+
+                day_index += 1
+
+        # Configure grid weights
+        for c in range(cols_per_row):
+            self.calendar_frame.columnconfigure(c, weight=1)
+
+    def _render_day_cell(self, row, col, current_date, date_str, today, show_day_name=False):
+        """Render a single day cell."""
+        # Check if selected
+        is_selected = date_str in self.day_vars and self.day_vars[date_str].get()
+        is_today = current_date == today
+        is_past = current_date < today
+
+        # Get events for this day
+        events = self.calendar_events.get(date_str, [])
+
+        # Background color
+        if is_selected:
+            bg_color = "#4a90d9"  # Blue for selected
+            fg_color = "white"
+        else:
+            bg_color = "white"
+            fg_color = "black"
+
+        if is_past:
+            bg_color = "#e0e0e0"  # Gray for past days
+            fg_color = "#888888"
+
+        # Create cell frame
+        cell = tk.Frame(
+            self.calendar_frame,
+            bg=bg_color,
+            relief="solid",
+            borderwidth=1,
+            cursor="hand2" if not is_past else ""
+        )
+        cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
+
+        # Minimum size for cells
+        cell.configure(width=140, height=100)
+        cell.grid_propagate(False)
+
+        # Day number and name
+        day_num = current_date.day
+        header_text = str(day_num)
+        if show_day_name:
+            header_text = f"{current_date.strftime('%a')} {day_num}"
+
+        if is_today:
+            header_text += " (Today)"
+
+        day_label = tk.Label(
+            cell,
+            text=header_text,
+            font=("Segoe UI", 12, "bold" if is_today else "normal"),
+            bg=bg_color,
+            fg=fg_color,
+            anchor="w"
+        )
+        day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
+
+        # Events display
+        if events:
+            events_frame = tk.Frame(cell, bg=bg_color)
+            events_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
+
+            for event in events[:3]:  # Show max 3 events
+                time_str = f"{event['startTime']}-{event['endTime']}"
+                title = event.get('title', 'Event')
+                if len(title) > 15:
+                    title = title[:14] + "…"
+
+                is_reservation = event.get('isReservation', False)
+                event_color = "#e67e22" if not is_reservation else "#27ae60"
+
+                event_lbl = tk.Label(
+                    events_frame,
+                    text=f"• {time_str} {title}",
+                    font=("Segoe UI", 9),
+                    bg=bg_color,
+                    fg=event_color if is_selected else event_color,
+                    anchor="w"
+                )
+                event_lbl.pack(fill=tk.X)
+
+            if len(events) > 3:
+                more_lbl = tk.Label(
+                    events_frame,
+                    text=f"  +{len(events) - 3} more",
+                    font=("Segoe UI", 8, "italic"),
+                    bg=bg_color,
+                    fg=fg_color,
+                    anchor="w"
+                )
+                more_lbl.pack(fill=tk.X)
+
+        # Click handler for day selection (only for future days)
+        if not is_past:
+            def toggle_day(ds=date_str, c=cell):
+                if ds in self.day_vars:
+                    current = self.day_vars[ds].get()
+                    self.day_vars[ds].set(not current)
+                    self._refresh_calendar()
+
+            cell.bind("<Button-1>", lambda e: toggle_day())
+            day_label.bind("<Button-1>", lambda e: toggle_day())
+            for child in cell.winfo_children():
+                child.bind("<Button-1>", lambda e, ds=date_str: toggle_day())
+
+    def _scan_calendar_events(self):
+        """Scan events for calendar display in background."""
+        self.calendar_scan_var.set("Scanning events...")
+
+        thread = threading.Thread(target=self._scan_calendar_events_thread)
+        thread.daemon = True
+        thread.start()
+
+    def _scan_calendar_events_thread(self):
+        """Background thread to scan events for calendar."""
+        try:
+            from playwright.sync_api import sync_playwright
+
+            today = datetime.now().date()
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(storage_state=str(STATE_FILE)) if STATE_FILE.exists() else browser.new_context()
+                page = context.new_page()
+
+                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+                page.wait_for_timeout(3000)
+
+                # Scroll to load events
+                target_date = today + timedelta(days=45)
+                target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
+
+                max_scrolls = 60
+                scroll_count = 0
+                last_height = 0
+                stalled_count = 0
+
+                while scroll_count < max_scrolls:
+                    page_text = page.evaluate("() => document.body.innerText")
+                    if target_date_str in page_text:
+                        break
+
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(800)
+
+                    new_height = page.evaluate("() => document.body.scrollHeight")
+                    if new_height == last_height:
+                        stalled_count += 1
+                        if stalled_count >= 3:
+                            break
+                    else:
+                        stalled_count = 0
+                    last_height = new_height
+                    scroll_count += 1
+
+                # Final pass
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(500)
+                for _ in range(max(scroll_count + 5, 15)):
+                    page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    page.wait_for_timeout(300)
+
+                # Extract events (same JS as before)
+                events_data = page.evaluate("""() => {
+                    const events = [];
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+
+                    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                                      'July', 'August', 'September', 'October', 'November', 'December'];
+
+                    function isCancelled(element) {
+                        let el = element;
+                        while (el && el !== document.body) {
+                            const style = window.getComputedStyle(el);
+                            if (style.textDecoration.includes('line-through') ||
+                                style.textDecorationLine.includes('line-through')) return true;
+                            el = el.parentElement;
+                        }
+                        return false;
+                    }
+
+                    function getEventTitle(element) {
+                        let container = element;
+                        for (let i = 0; i < 10 && container; i++) {
+                            if (container.tagName === 'APP-AS-EVENT' ||
+                                container.classList.contains('as-event-panel')) {
+                                const displayName = container.querySelector('[data-cy="event-display-name"]');
+                                if (displayName) {
+                                    const nameText = (displayName.textContent || '').trim();
+                                    return nameText === 'Reservation' ? 'Reservation' : nameText;
+                                }
+                                return 'Event';
+                            }
+                            container = container.parentElement;
+                        }
+                        return 'Event';
+                    }
+
+                    function getEventRoom(element) {
+                        let container = element;
+                        for (let i = 0; i < 10 && container; i++) {
+                            if (container.tagName === 'APP-AS-EVENT' ||
+                                container.classList.contains('as-event-panel')) {
+                                const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
+                                if (locationLink) {
+                                    const roomMatch = (locationLink.textContent || '').match(/B[01]\\.[0-9]{2}/);
+                                    if (roomMatch) return roomMatch[0];
+                                }
+                                return null;
+                            }
+                            container = container.parentElement;
+                        }
+                        return null;
+                    }
+
+                    const allElements = document.querySelectorAll('*');
+                    let currentDate = null;
+
+                    for (const element of allElements) {
+                        if (element.children.length > 0) {
+                            const hasTextChild = Array.from(element.children).some(child =>
+                                child.textContent.trim().length > 0);
+                            if (hasTextChild) continue;
+                        }
+
+                        const text = element.textContent.trim();
+
+                        const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
+                        if (dateMatch) {
+                            const day = parseInt(dateMatch[2]);
+                            const month = monthNames.indexOf(dateMatch[3]);
+                            const year = parseInt(dateMatch[4]);
+                            currentDate = new Date(year, month, day);
+                            continue;
+                        }
+
+                        const timeMatch = text.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
+                        if (timeMatch && currentDate) {
+                            if (isCancelled(element)) continue;
+
+                            const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
+                            if (daysDiff >= 0 && daysDiff <= 60) {
+                                events.push({
+                                    date: currentDate.toISOString().split('T')[0],
+                                    startTime: timeMatch[1],
+                                    endTime: timeMatch[2],
+                                    title: getEventTitle(element),
+                                    isReservation: getEventTitle(element) === 'Reservation',
+                                    room: getEventRoom(element)
+                                });
+                            }
+                        }
+                    }
+                    return events;
+                }""")
+
+                browser.close()
+
+            # Group events by date
+            events_by_date = {}
+            for event in events_data:
+                date = event['date']
+                if date not in events_by_date:
+                    events_by_date[date] = []
+                events_by_date[date].append(event)
+
+            self.calendar_events = events_by_date
+
+            # Also update cached_events in settings
+            settings = self.load_settings()
+            seen = set()
+            unique_events = []
+            for event in events_data:
+                key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_events.append(event)
+            settings["cached_events"] = unique_events
+            self.save_settings(settings)
+
+            self.root.after(0, self._on_calendar_scan_complete)
+
+        except Exception as e:
+            self.root.after(0, lambda: self._on_calendar_scan_error(str(e)))
+
+    def _on_calendar_scan_complete(self):
+        """Called when calendar event scan completes."""
+        total_events = sum(len(events) for events in self.calendar_events.values())
+        self.calendar_scan_var.set(f"✓ {total_events} events loaded")
+        self._refresh_calendar()
+
+    def _on_calendar_scan_error(self, error_msg):
+        """Called when calendar event scan fails."""
+        self.calendar_scan_var.set(f"⚠ Scan failed: {error_msg[:30]}")
+        self.log(f"Calendar scan error: {error_msg}", "error")
+
+    def _save_calendar_and_close(self, dialog):
+        """Save calendar selections and close."""
+        self.save_booking_days()
+        self.calendar_canvas.unbind_all("<MouseWheel>")
+        dialog.destroy()
+        self.log("Calendar settings saved", "info")
+
+    def show_events_dialog(self):
+        """Show dialog to manage events (ignore/include for booking conflicts)."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Manage Events")
+        dialog.geometry("900x650")
+        dialog.transient(self.root)
+
+        # Header
+        header_frame = ttk.Frame(dialog, padding="10")
+        header_frame.pack(fill=tk.X)
+
+        ttk.Label(
+            header_frame,
+            text="Manage Events",
+            font=("Segoe UI", 14, "bold")
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(
+            header_frame,
+            text="Uncheck events to ignore them (allow booking over them)",
+            font=("Segoe UI", 10),
+            foreground="gray"
+        ).pack(side=tk.LEFT, padx=(20, 0))
+
+        # Button frame
+        btn_frame = ttk.Frame(dialog, padding="10")
+        btn_frame.pack(fill=tk.X)
+
+        self.scan_btn = ttk.Button(
+            btn_frame,
+            text="🔄 Scan My Agenda",
+            command=lambda: self._scan_events(dialog, events_frame)
+        )
+        self.scan_btn.pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            btn_frame,
+            text="Select All",
+            command=lambda: self._select_all_events(True)
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            btn_frame,
+            text="Deselect All",
+            command=lambda: self._select_all_events(False)
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Progress label
+        self.events_progress_var = tk.StringVar(value="")
+        ttk.Label(btn_frame, textvariable=self.events_progress_var, foreground="blue").pack(side=tk.LEFT, padx=20)
+
+        # Scrollable frame for events
+        container = ttk.Frame(dialog, padding="10")
+        container.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(container)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        events_frame = ttk.Frame(canvas)
+
+        events_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=events_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Enable mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Store reference to events frame and checkboxes
+        self.events_frame = events_frame
+        self.event_vars = {}  # {event_key: BooleanVar}
+
+        # Load existing ignored events and display them
+        self._load_and_display_events(events_frame)
+
+        # Bottom buttons
+        bottom_frame = ttk.Frame(dialog, padding="10")
+        bottom_frame.pack(fill=tk.X)
+
+        ttk.Button(
+            bottom_frame,
+            text="Save",
+            command=lambda: self._save_events_and_close(dialog)
+        ).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(
+            bottom_frame,
+            text="Cancel",
+            command=dialog.destroy
+        ).pack(side=tk.RIGHT, padx=5)
+
+        # Cleanup mousewheel binding when dialog closes
+        def on_close():
+            canvas.unbind_all("<MouseWheel>")
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+
+    def _load_and_display_events(self, events_frame):
+        """Load cached events and ignored events from settings, display in frame."""
+        settings = self.load_settings()
+        cached_events = settings.get("cached_events", [])
+        ignored_events = set(settings.get("ignored_events", []))
+
+        # Clear existing widgets
+        for widget in events_frame.winfo_children():
+            widget.destroy()
+        self.event_vars = {}
+
+        if not cached_events:
+            ttk.Label(
+                events_frame,
+                text="No events cached. Click 'Scan My Agenda' to load events.",
+                font=("Segoe UI", 11),
+                foreground="gray"
+            ).pack(pady=20)
+            return
+
+        # Group events by date
+        events_by_date = {}
+        for event in cached_events:
+            date = event.get("date", "Unknown")
+            if date not in events_by_date:
+                events_by_date[date] = []
+            events_by_date[date].append(event)
+
+        # Display events grouped by date
+        for date in sorted(events_by_date.keys()):
+            # Date header
+            try:
+                date_obj = datetime.strptime(date, "%Y-%m-%d")
+                day_name = date_obj.strftime("%A")
+                date_display = f"{day_name}, {date_obj.strftime('%d %B %Y')}"
+            except:
+                date_display = date
+
+            date_frame = ttk.LabelFrame(events_frame, text=date_display, padding="10")
+            date_frame.pack(fill=tk.X, pady=5, padx=5)
+
+            for event in events_by_date[date]:
+                event_key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
+                is_reservation = event.get("isReservation", False)
+                room = event.get("room", "")
+                title = event.get("title", "Event")
+
+                # Create checkbox - default checked unless in ignored list
+                var = tk.BooleanVar(value=(event_key not in ignored_events))
+                self.event_vars[event_key] = var
+
+                # Format display text
+                time_str = f"{event['startTime']} - {event['endTime']}"
+                if is_reservation:
+                    display_text = f"[Reservation] {time_str}"
+                    if room:
+                        display_text += f" in {room}"
+                else:
+                    display_text = f"{time_str} - {title}"
+                    if room:
+                        display_text += f" in {room}"
+
+                cb = ttk.Checkbutton(
+                    date_frame,
+                    text=display_text,
+                    variable=var
+                )
+                cb.pack(anchor=tk.W, pady=2)
+
+    def _select_all_events(self, select: bool):
+        """Select or deselect all event checkboxes."""
+        for var in self.event_vars.values():
+            var.set(select)
+
+    def _scan_events(self, dialog, events_frame):
+        """Scan the agenda for events using Playwright."""
+        self.scan_btn.config(state=tk.DISABLED)
+        self.events_progress_var.set("Scanning agenda (this may take a moment)...")
+
+        # Run scan in background thread
+        thread = threading.Thread(target=self._scan_events_thread, args=(dialog, events_frame))
+        thread.daemon = True
+        thread.start()
+
+    def _scan_events_thread(self, dialog, events_frame):
+        """Background thread to scan events."""
+        try:
+            # Import here to avoid startup delay
+            from playwright.sync_api import sync_playwright
+
+            events = []
+            today = datetime.now().date()
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(storage_state=str(STATE_FILE)) if STATE_FILE.exists() else browser.new_context()
+                page = context.new_page()
+
+                # Navigate to agenda
+                self.root.after(0, lambda: self.events_progress_var.set("Loading agenda page..."))
+                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+                page.wait_for_timeout(3000)
+
+                # Scroll to load all events for the next 7 days
+                target_date = today + timedelta(days=7)
+                target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
+
+                self.root.after(0, lambda: self.events_progress_var.set("Scrolling to load events..."))
+
+                max_scrolls = 50
+                scroll_count = 0
+                last_height = 0
+                stalled_count = 0
+
+                while scroll_count < max_scrolls:
+                    page_text = page.evaluate("() => document.body.innerText")
+                    if target_date_str in page_text:
+                        break
+
+                    alt_date_str = target_date.strftime("%d %B %Y")
+                    if alt_date_str in page_text:
+                        break
+
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_timeout(1000)
+
+                    new_height = page.evaluate("() => document.body.scrollHeight")
+                    if new_height == last_height:
+                        stalled_count += 1
+                        if stalled_count >= 3:
+                            break
+                        page.wait_for_timeout(500)
+                    else:
+                        stalled_count = 0
+                    last_height = new_height
+                    scroll_count += 1
+
+                # Scroll back to top and do final pass
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(1000)
+
+                min_scrolls = max(scroll_count + 5, 10)
+                for i in range(min_scrolls):
+                    page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    page.wait_for_timeout(400)
+
+                page.wait_for_timeout(1000)
+
+                self.root.after(0, lambda: self.events_progress_var.set("Extracting events..."))
+
+                # Extract events using same JavaScript as book_week.py
+                events_data = page.evaluate("""() => {
+                    const events = [];
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+
+                    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                                      'July', 'August', 'September', 'October', 'November', 'December'];
+
+                    function isCancelled(element) {
+                        let el = element;
+                        while (el && el !== document.body) {
+                            const style = window.getComputedStyle(el);
+                            if (style.textDecoration.includes('line-through') ||
+                                style.textDecorationLine.includes('line-through')) {
+                                return true;
+                            }
+                            const className = el.className || '';
+                            if (className.includes('cancelled') || className.includes('canceled') ||
+                                className.includes('deleted') || className.includes('removed')) {
+                                return true;
+                            }
+                            el = el.parentElement;
+                        }
+                        return false;
+                    }
+
+                    function getEventTitle(element) {
+                        let container = element;
+                        for (let i = 0; i < 10 && container; i++) {
+                            if (container.tagName === 'APP-AS-EVENT' ||
+                                container.classList.contains('as-event-panel') ||
+                                container.classList.contains('event-details-expanded')) {
+
+                                const displayName = container.querySelector('[data-cy="event-display-name"]');
+                                if (displayName) {
+                                    const nameText = (displayName.textContent || '').trim();
+                                    if (nameText === 'Reservation' || nameText.includes('Reservation')) {
+                                        return 'Reservation';
+                                    }
+                                    return nameText;
+                                }
+                                return 'Event';
+                            }
+                            container = container.parentElement;
+                        }
+                        return 'Event';
+                    }
+
+                    function getEventRoom(element) {
+                        let container = element;
+                        for (let i = 0; i < 10 && container; i++) {
+                            if (container.tagName === 'APP-AS-EVENT' ||
+                                container.classList.contains('as-event-panel') ||
+                                container.classList.contains('event-details-expanded')) {
+
+                                const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
+                                if (locationLink) {
+                                    const locText = (locationLink.textContent || '').trim();
+                                    const roomMatch = locText.match(/B[01]\\.[0-9]{2}/);
+                                    if (roomMatch) {
+                                        return roomMatch[0];
+                                    }
+                                }
+                                return null;
+                            }
+                            container = container.parentElement;
+                        }
+                        return null;
+                    }
+
+                    const allElements = document.querySelectorAll('*');
+                    let currentDate = null;
+
+                    for (const element of allElements) {
+                        if (element.children.length > 0) {
+                            const hasTextChild = Array.from(element.children).some(child =>
+                                child.textContent.trim().length > 0
+                            );
+                            if (hasTextChild) continue;
+                        }
+
+                        const text = element.textContent.trim();
+
+                        const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
+                        if (dateMatch) {
+                            const day = parseInt(dateMatch[2]);
+                            const month = monthNames.indexOf(dateMatch[3]);
+                            const year = parseInt(dateMatch[4]);
+                            currentDate = new Date(year, month, day);
+                            continue;
+                        }
+
+                        const timeMatch = text.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
+                        if (timeMatch && currentDate) {
+                            if (isCancelled(element)) {
+                                continue;
+                            }
+
+                            const startTime = timeMatch[1];
+                            const endTime = timeMatch[2];
+                            const eventTitle = getEventTitle(element);
+                            const eventRoom = getEventRoom(element);
+
+                            const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
+                            if (daysDiff >= 0 && daysDiff <= 7) {
+                                events.push({
+                                    date: currentDate.toISOString().split('T')[0],
+                                    daysDiff: daysDiff,
+                                    startTime: startTime,
+                                    endTime: endTime,
+                                    title: eventTitle,
+                                    isReservation: eventTitle === 'Reservation',
+                                    room: eventRoom
+                                });
+                            }
+                        }
+                    }
+
+                    return events;
+                }""")
+
+                browser.close()
+
+            # Deduplicate events
+            seen = set()
+            unique_events = []
+            for event in events_data:
+                key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_events.append(event)
+
+            # Save to settings
+            settings = self.load_settings()
+            settings["cached_events"] = unique_events
+            self.save_settings(settings)
+
+            # Update UI
+            self.root.after(0, lambda: self._on_scan_complete(events_frame, len(unique_events)))
+
+        except Exception as e:
+            self.root.after(0, lambda: self._on_scan_error(str(e)))
+
+    def _on_scan_complete(self, events_frame, count):
+        """Called when event scan completes."""
+        self.scan_btn.config(state=tk.NORMAL)
+        self.events_progress_var.set(f"Found {count} events")
+        self._load_and_display_events(events_frame)
+        self.log(f"Event scan complete: found {count} events", "info")
+
+    def _on_scan_error(self, error_msg):
+        """Called when event scan fails."""
+        self.scan_btn.config(state=tk.NORMAL)
+        self.events_progress_var.set(f"Error: {error_msg[:50]}")
+        self.log(f"Event scan error: {error_msg}", "error")
+        messagebox.showerror("Scan Error", f"Failed to scan events:\n{error_msg}")
+
+    def _save_events_and_close(self, dialog):
+        """Save ignored events to settings and close dialog."""
+        ignored_events = []
+        for event_key, var in self.event_vars.items():
+            if not var.get():  # Unchecked = ignored
+                ignored_events.append(event_key)
+
+        settings = self.load_settings()
+        settings["ignored_events"] = ignored_events
+        self.save_settings(settings)
+
+        self.log(f"Saved {len(ignored_events)} ignored events", "info")
+        dialog.destroy()
 
 
 def main():

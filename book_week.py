@@ -261,10 +261,97 @@ def load_disabled_dates():
     return set()
 
 
+def load_ignored_events():
+    """Load list of ignored event keys from settings file.
+
+    Ignored events are events the user wants to allow booking over
+    (they won't be treated as conflicts).
+
+    Returns:
+        Set of event keys in format "YYYY-MM-DD_HH:MM_HH:MM"
+    """
+    if settings_file.exists():
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                return set(settings.get("ignored_events", []))
+        except:
+            pass
+    return set()
+
+
 def is_date_disabled(target_date, disabled_dates):
     """Check if a date is disabled for booking."""
     date_str = target_date.strftime('%Y-%m-%d')
     return date_str in disabled_dates
+
+
+# Time preference presets: name -> (start_hour, end_hour)
+TIME_PREFERENCE_PRESETS = {
+    "morning": (7, 12),
+    "afternoon": (12, 18),
+    "evening": (18, 22),
+    "afternoon_evening": (14, 22),
+}
+
+
+def load_time_preferences():
+    """Load time preferences from settings file.
+
+    Returns:
+        dict with keys: enabled, start_hour, end_hour, strict_mode
+        Hours are decimal (e.g., 14.5 = 14:30)
+    """
+    default = {"enabled": False, "start_hour": 14.0, "end_hour": 22.0, "strict_mode": False}
+
+    if settings_file.exists():
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                prefs = settings.get("time_preferences", {})
+
+                if not prefs.get("enabled", False):
+                    return default
+
+                # Get preset or custom hours
+                preset = prefs.get("preset", "afternoon_evening")
+                if preset in TIME_PREFERENCE_PRESETS:
+                    start_hour, end_hour = TIME_PREFERENCE_PRESETS[preset]
+                else:
+                    # Custom preset - use saved hour:minute values, convert to decimal
+                    start_h = prefs.get("custom_start_hour", prefs.get("custom_start", 14))
+                    start_m = prefs.get("custom_start_min", 0)
+                    end_h = prefs.get("custom_end_hour", prefs.get("custom_end", 22))
+                    end_m = prefs.get("custom_end_min", 0)
+                    start_hour = start_h + start_m / 60.0
+                    end_hour = end_h + end_m / 60.0
+
+                return {
+                    "enabled": True,
+                    "start_hour": start_hour,
+                    "end_hour": end_hour,
+                    "strict_mode": prefs.get("strict_mode", False)
+                }
+        except:
+            pass
+
+    return default
+
+
+def is_preferred_time(start_hour, time_prefs):
+    """Check if a slot's start time falls within the preferred range.
+
+    Args:
+        start_hour: Slot start time as decimal hour (e.g., 14.5 for 2:30 PM)
+        time_prefs: Dict from load_time_preferences()
+
+    Returns:
+        True if the time is preferred (or if preferences are disabled)
+    """
+    if not time_prefs["enabled"]:
+        return True  # All times preferred if disabled
+
+    return time_prefs["start_hour"] <= start_hour < time_prefs["end_hour"]
 
 
 def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
@@ -1438,8 +1525,14 @@ def scan_agenda(page, tracker, today):
 
     print(f"\n  Found {len(unique_events)} unique events in agenda (deduplicated from {len(events_data)}):")
 
+    # Load ignored events from settings
+    ignored_events = load_ignored_events()
+    if ignored_events:
+        print(f"  ({len(ignored_events)} events marked as ignored - will allow booking over them)")
+
     events_found = 0
     reservations_found = 0
+    ignored_count = 0
     for event in unique_events:
         date_str = event['date']
         start_time = event['startTime']
@@ -1447,6 +1540,15 @@ def scan_agenda(page, tracker, today):
         days_diff = event['daysDiff']
         is_reservation = event.get('isReservation', False)
         room = event.get('room')  # Room name if available (e.g., "B0.27")
+
+        # Check if this event is ignored
+        event_key = f"{date_str}_{start_time}_{end_time}"
+        if event_key in ignored_events:
+            ignored_count += 1
+            day_name = (today + timedelta(days=days_diff)).strftime("%A")
+            room_info = f" in {room}" if room else ""
+            print(f"  [IGNORED] {date_str} ({day_name}): {start_time} - {end_time}{room_info}")
+            continue
 
         # Parse times to hours
         start_parts = start_time.split(':')
@@ -1468,7 +1570,8 @@ def scan_agenda(page, tracker, today):
         room_info = f" in {room}" if room else ""
         print(f"  {event_marker} {date_str} ({day_name}): {start_time} - {end_time}{room_info}")
 
-    print(f"\n  Total events: {events_found} ({reservations_found} reservations, {events_found - reservations_found} other)")
+    ignored_str = f", {ignored_count} ignored" if ignored_count > 0 else ""
+    print(f"\n  Total events: {events_found} ({reservations_found} reservations, {events_found - reservations_found} other{ignored_str})")
 
     # Show rolling quota status (28 hours per week)
     used_hours = tracker.get_total_booking_hours()
@@ -1692,6 +1795,13 @@ def main():
         if disabled_dates:
             print(f"\n  Disabled dates (will skip): {sorted(disabled_dates)}")
 
+        # Load time preferences from settings
+        time_prefs = load_time_preferences()
+        if time_prefs["enabled"]:
+            print(f"\n  Time preferences: Prioritizing {time_prefs['start_hour']:02d}:00 - {time_prefs['end_hour']:02d}:00")
+            if time_prefs["strict_mode"]:
+                print(f"  Strict mode: ON (only booking preferred times)")
+
         # Calculate dynamic max bookings per day based on enabled days
         # Count how many days are enabled (not in disabled_dates) in the booking window
         enabled_days_count = 0
@@ -1894,8 +2004,13 @@ def main():
             if horizon_skipped:
                 print(f"  [DEBUG] Rooms skipped (not yet available): {', '.join(f'{r} ({reason})' for r, reason in horizon_skipped.items())}")
 
-            # Sort: good slots first (longer), then by time, then by room priority
-            all_slots.sort(key=lambda s: (not s['is_good'], s['start_hour'], s['room_priority']))
+            # Sort: preferred times first, then good slots (longer), then by time, then by room priority
+            all_slots.sort(key=lambda s: (
+                0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
+                not s['is_good'],
+                s['start_hour'],
+                s['room_priority']
+            ))
 
             if not all_slots:
                 print("  No available slots found")
@@ -1928,80 +2043,120 @@ def main():
             slots_adjusted = 0
             peak_adjusted = 0
             conflict_removed = 0
+
+            def split_slot_around_blocks(slot_start, slot_end, blocked_ranges):
+                """Split a slot into valid sub-slots that don't overlap with blocked ranges.
+
+                Returns list of (start, end) tuples representing usable time segments.
+                """
+                if not blocked_ranges:
+                    return [(slot_start, slot_end)]
+
+                # Sort blocked ranges by start time
+                sorted_blocks = sorted(blocked_ranges, key=lambda x: x[0])
+
+                # Find all usable gaps
+                usable = []
+                current_start = slot_start
+
+                for b_start, b_end in sorted_blocks:
+                    # If there's usable time before this block
+                    if b_start > current_start:
+                        gap_start = current_start
+                        gap_end = min(b_start, slot_end)
+                        if gap_end > gap_start and (gap_end - gap_start) * 60 >= MIN_BOOKING_MINUTES:
+                            usable.append((gap_start, gap_end))
+
+                    # Move past this block
+                    current_start = max(current_start, b_end)
+
+                    # If we've moved past the slot end, stop
+                    if current_start >= slot_end:
+                        break
+
+                # Check for usable time after all blocks
+                if current_start < slot_end and (slot_end - current_start) * 60 >= MIN_BOOKING_MINUTES:
+                    usable.append((current_start, slot_end))
+
+                return usable
+
             for s in all_slots:
                 slot_start = s['start_hour']
                 slot_end = s['end_hour']
                 original_start = slot_start
                 original_end = slot_end
 
-                # Step 1: Check if slot overlaps with any conflict
-                for c_start, c_end in conflicts:
-                    if slot_start < c_end and slot_end > c_start:
-                        # Slot overlaps with conflict - try to use the part after the conflict
-                        if c_end < slot_end:
-                            # There's usable time after the conflict
-                            slot_start = c_end
-                        else:
-                            # Entire slot is within conflict
-                            slot_start = slot_end  # Will be filtered out below
-                            break
+                # Step 1: Split slot around conflicts (get all usable sub-slots)
+                conflict_blocks = [(c_start, c_end) for c_start, c_end in conflicts
+                                   if slot_start < c_end and slot_end > c_start]
+                usable_segments = split_slot_around_blocks(slot_start, slot_end, conflict_blocks)
 
-                # Skip if slot was fully consumed by conflict
-                if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
+                if not usable_segments:
                     conflict_removed += 1
                     continue
 
-                # Step 1.5: Check same-room gap rule against existing reservations
+                # Step 1.5: For each usable segment, also split around same-room gap blocks
                 room_blocked = tracker.get_same_room_blocked_ranges(target_date, s['room'])
-                for b_start, b_end in room_blocked:
-                    if slot_start < b_end and slot_end > b_start:
-                        # Slot overlaps with blocked gap range
-                        if b_end < slot_end:
-                            # Try to use time after the blocked range
-                            slot_start = max(slot_start, b_end)
-                        else:
-                            slot_start = slot_end  # Will be filtered out
-                            break
+                final_segments = []
+                for seg_start, seg_end in usable_segments:
+                    room_blocks = [(b_start, b_end) for b_start, b_end in room_blocked
+                                   if seg_start < b_end and seg_end > b_start]
+                    sub_segments = split_slot_around_blocks(seg_start, seg_end, room_blocks)
+                    final_segments.extend(sub_segments)
 
-                # Skip if slot was blocked by same-room gap
-                if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
+                if not final_segments:
                     conflict_removed += 1
                     continue
 
-                # Step 2: Adjust for peak hours quota (only on weekdays)
-                adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
-                    slot_start, slot_end, target_date, remaining_peak
-                )
+                # Add ALL valid segments as separate slots (not just the longest one)
+                # This ensures we don't skip earlier bookable time
+                for seg_start, seg_end in final_segments:
+                    # Step 2: Adjust each segment for peak hours quota (only on weekdays)
+                    adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
+                        seg_start, seg_end, target_date, remaining_peak
+                    )
 
-                if adj_start is None:
-                    # Slot should be skipped (fully in peak zone with no quota)
-                    print(f"  [DEBUG] Skipping {s['room']} {slot_start:.2f}-{slot_end:.2f}: {reason}")
-                    slots_removed += 1
-                    continue
+                    if adj_start is None:
+                        # Slot should be skipped (fully in peak zone with no quota)
+                        slots_removed += 1
+                        continue
 
-                if was_adjusted:
-                    slot_start = adj_start
-                    slot_end = adj_end
-                    peak_adjusted += 1
-                    print(f"  [DEBUG] Peak-adjusted {s['room']}: {original_start:.2f}-{original_end:.2f} -> {slot_start:.2f}-{slot_end:.2f}")
+                    if was_adjusted:
+                        seg_start = adj_start
+                        seg_end = adj_end
+                        peak_adjusted += 1
 
-                # Final validation
-                if slot_start < slot_end and (slot_end - slot_start) * 60 >= MIN_BOOKING_MINUTES:
-                    s = s.copy()
-                    s['start_hour'] = slot_start
-                    s['duration'] = slot_end - slot_start
-                    s['end_hour'] = slot_end
-                    adjusted_slots.append(s)
-                    if slot_start != original_start or slot_end != original_end:
-                        slots_adjusted += 1
-                else:
-                    slots_removed += 1
+                    # Final validation and add as new slot
+                    if seg_start < seg_end and (seg_end - seg_start) * 60 >= MIN_BOOKING_MINUTES:
+                        new_slot = s.copy()
+                        new_slot['start_hour'] = seg_start
+                        new_slot['duration'] = seg_end - seg_start
+                        new_slot['end_hour'] = seg_end
+                        adjusted_slots.append(new_slot)
+                        if seg_start != original_start or seg_end != original_end:
+                            slots_adjusted += 1
+                    else:
+                        slots_removed += 1
 
             if conflict_removed > 0 or slots_removed > 0 or slots_adjusted > 0 or peak_adjusted > 0:
                 print(f"  [DEBUG] Slot adjustment: {conflict_removed} conflict-removed, {slots_removed} peak-removed, {slots_adjusted} adjusted, {peak_adjusted} peak-adjusted")
 
             all_slots = adjusted_slots
-            all_slots.sort(key=lambda s: (not s.get('is_good', False), s['start_hour'], s['room_priority']))
+
+            # Filter out non-preferred slots if strict mode is enabled
+            if time_prefs["enabled"] and time_prefs["strict_mode"]:
+                before_count = len(all_slots)
+                all_slots = [s for s in all_slots if is_preferred_time(s['start_hour'], time_prefs)]
+                filtered_count = before_count - len(all_slots)
+                if filtered_count > 0:
+                    print(f"  [DEBUG] Strict mode: Filtered out {filtered_count} non-preferred slots")
+
+            all_slots.sort(key=lambda s: (
+                0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
+                not s.get('is_good', False),
+                s['start_hour'],
+                s['room_priority']
+            ))
 
             print(f"  [DEBUG] Starting booking attempts. Max per day: {max_bookings_per_day}, slots available: {len(all_slots)}")
 
@@ -2130,7 +2285,12 @@ def main():
                                 "click_y": slot_data["clickY"]
                             })
 
-                    all_slots.sort(key=lambda s: (not s['is_good'], s['start_hour'], s['room_priority']))
+                    all_slots.sort(key=lambda s: (
+                        0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
+                        not s['is_good'],
+                        s['start_hour'],
+                        s['room_priority']
+                    ))
                     print(f"  [DEBUG] Rebuilt slot list: {len(all_slots)} slots remaining")
 
             print(f"\n  Day summary: {day_booked} bookings made, {attempts} attempts total")
