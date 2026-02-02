@@ -983,7 +983,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
         True if successfully edited, False otherwise
     """
     date_str = booking['date']
-    start_time = booking['startTime']
+    start_time = normalize_time_string(booking['startTime'])
     current_end = booking['endTime']
     room = booking.get('room', 'Unknown')
 
@@ -1055,6 +1055,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
 
         if matching_index < 0:
             print(f"    Could not find event card for {room} {date_str} {start_time}")
+            # Already on agenda page, no need to navigate
             return False
 
         # Get the panel and scroll it into view
@@ -1079,6 +1080,8 @@ def edit_reservation_end_time(page, booking, new_end_time):
             page.wait_for_timeout(500)
         else:
             print(f"    Could not find more options button")
+            # Navigate back to clean state
+            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
             return False
 
         # 4. Click "Edit event" from the menu
@@ -1092,6 +1095,9 @@ def edit_reservation_end_time(page, booking, new_end_time):
         else:
             print(f"    Could not find 'Edit event' option")
             page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+            # Navigate back to clean state
+            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
             return False
 
         # 5. Find the end time input and update it
@@ -1125,13 +1131,28 @@ def edit_reservation_end_time(page, booking, new_end_time):
                 return True
             else:
                 print(f"    Could not find Save button")
+                # Press Escape and navigate back to clean state
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
                 return False
         else:
             print(f"    Could not find end time input")
+            # Press Escape and navigate back to clean state
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
             return False
 
     except Exception as e:
         print(f"    Error editing reservation: {e}")
+        # Try to recover to a clean state
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+        except:
+            pass
         return False
 
     return False
@@ -1283,6 +1304,21 @@ def try_extend_booking(page, booking, tracker=None):
                     if date_str not in tracker.peak_hours_by_day:
                         tracker.peak_hours_by_day[date_str] = 0
                     tracker.peak_hours_by_day[date_str] += new_peak_mins
+
+            # Update reservation_ranges with the new end time (for same-room gap calculations)
+            if date_str in tracker.reservation_ranges:
+                updated = False
+                for i, (r_start, r_end, r_room) in enumerate(tracker.reservation_ranges[date_str]):
+                    if r_room == room and abs(r_start - start_hour) < 0.01:
+                        # Found the matching reservation, update its end time
+                        tracker.reservation_ranges[date_str][i] = (r_start, max_end_hour, r_room)
+                        updated = True
+                        print(f"  [Tracker] Updated reservation_ranges: {room} now ends at {new_end_time}")
+                        break
+                if not updated:
+                    # Reservation not found in ranges (shouldn't happen), add it
+                    tracker.reservation_ranges[date_str].append((start_hour, max_end_hour, room))
+                    print(f"  [Tracker] Added to reservation_ranges: {room} {start_time}-{new_end_time}")
 
         # Update or remove from extendable bookings
         if new_end_time == target_end_normalized:
@@ -2961,6 +2997,9 @@ def main():
             print("\nNavigating back to practice rooms...")
             page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
             page.wait_for_timeout(2000)
+
+            # Reset calendar position - overview page shows today (day 0)
+            current_calendar_day = 0
 
         # Process each day in the determined order
         for day_index, days_ahead in enumerate(day_order):
