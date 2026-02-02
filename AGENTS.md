@@ -113,6 +113,55 @@ The script enforces these rules:
 - **Same-Room Gap**: 60-minute gap required between bookings in same room
 - **Room Horizons**: Different rooms have different advance booking windows (3, 5, or 7 days)
 - **Dynamic Allocation**: Bookings per day adjust based on enabled days to maximize quota usage
+- **Smart Redistribution**: Hours are distributed evenly across enabled days - days with existing bookings get fewer new slots
+
+## Horizon Edge Booking & Extension
+
+Rooms become bookable exactly X days before the slot time (where X is the room's horizon: 3, 5, or 7 days). Due to the 30-minute minimum booking rule, this creates a staggered booking pattern:
+
+### How It Works
+
+**Example**: Room B0.27 (5-day horizon), slot at 10:00 on Feb 7
+
+1. **Horizon edge** = Feb 2 at 10:00 (exactly 5 days before)
+2. **At 10:00**: Slot just became visible, but only 0 minutes are "past" the horizon - cannot book yet
+3. **At 10:30**: 30 minutes past horizon - can now book **10:00-10:30** (minimum 30 min)
+4. **At 10:45**: 45 minutes past - can extend to **10:00-10:45**
+5. **At 11:00**: 60 minutes past - can extend to **10:00-11:00**
+6. **...continues in 15-minute increments...**
+7. **At 12:00**: 120 minutes past - can extend to **10:00-12:00** (maximum 2 hours)
+
+### Extension Flow
+
+The booker automatically handles this in two phases:
+
+1. **Initial Booking**: At the first possible moment (30 min after horizon), books the minimum 30-minute slot and saves it to `extendable_bookings` in settings.json
+
+2. **Extension Runs**: Every 30 minutes, the scheduled task runs again and:
+   - Loads pending extendable bookings
+   - Calculates how much more time is now available (based on time since horizon, not time since booking)
+   - Extends each booking by the available amount (in 15-minute increments)
+   - Continues until reaching 2 hours or the target duration
+
+### Timeline Example
+
+```
+10:00  Horizon edge - slot becomes visible but not bookable
+10:30  Book 10:00-10:30 (first possible moment)
+10:45  Extend to 10:00-10:45
+11:00  Extend to 10:00-11:00  (scheduled task runs)
+11:15  Extend to 10:00-11:15
+11:30  Extend to 10:00-11:30  (scheduled task runs)
+11:45  Extend to 10:00-11:45
+12:00  Extend to 10:00-12:00  (scheduled task runs) - DONE
+```
+
+### Key Functions
+
+- `is_room_available_to_book()`: Checks if a slot is past its horizon edge
+- `save_extendable_booking()`: Saves a booking for later extension
+- `calculate_max_extension()`: Determines how much a booking can be extended based on current time vs horizon
+- `try_extend_booking()`: Attempts to extend a booking via Asimut's edit feature
 
 ## Configuration
 
