@@ -9,6 +9,8 @@ from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from datetime import datetime, timedelta
 import json
+import csv
+import io
 import calendar as cal
 
 # Constants
@@ -153,6 +155,14 @@ class AsimutBookerGUI:
             controls_inner,
             text="🔐 Login Setup",
             command=self.run_login_setup,
+            width=18
+        ).pack(side=tk.RIGHT, padx=8, pady=5)
+
+        # Scheduled Tasks button
+        ttk.Button(
+            controls_inner,
+            text="⏰ Scheduled Tasks",
+            command=self.view_scheduled_tasks,
             width=18
         ).pack(side=tk.RIGHT, padx=8, pady=5)
 
@@ -688,11 +698,402 @@ class AsimutBookerGUI:
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
 
     def view_scheduled_tasks(self):
-        """Open Task Scheduler to view tasks."""
+        """Show scheduled tasks manager dialog."""
+        self._show_scheduled_tasks_dialog()
+
+    def _show_scheduled_tasks_dialog(self):
+        """Show dialog for managing scheduled tasks."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Scheduled Tasks Manager")
+        dialog.geometry("900x600")
+        dialog.transient(self.root)
+
+        # Main container
+        main_frame = ttk.Frame(dialog, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Header
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(header_frame, text="AsimutBooker Scheduled Tasks", font=("Segoe UI", 14, "bold")).pack(side=tk.LEFT)
+
+        # Task count label
+        self.task_count_var = tk.StringVar(value="Loading...")
+        ttk.Label(header_frame, textvariable=self.task_count_var, foreground="gray").pack(side=tk.RIGHT)
+
+        # Treeview for tasks
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        # Scrollbars
+        tree_scroll_y = ttk.Scrollbar(tree_frame)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
+        tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Treeview with columns
+        columns = ("task_name", "trigger_time", "target_time", "status", "next_run")
+        self.tasks_tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=tree_scroll_y.set,
+            xscrollcommand=tree_scroll_x.set
+        )
+
+        # Configure columns
+        self.tasks_tree.heading("task_name", text="Task Name")
+        self.tasks_tree.heading("trigger_time", text="Trigger Time")
+        self.tasks_tree.heading("target_time", text="Booking Time")
+        self.tasks_tree.heading("status", text="Status")
+        self.tasks_tree.heading("next_run", text="Next Run")
+
+        self.tasks_tree.column("task_name", width=180, minwidth=120)
+        self.tasks_tree.column("trigger_time", width=100, minwidth=80)
+        self.tasks_tree.column("target_time", width=100, minwidth=80)
+        self.tasks_tree.column("status", width=80, minwidth=60)
+        self.tasks_tree.column("next_run", width=180, minwidth=120)
+
+        self.tasks_tree.pack(fill=tk.BOTH, expand=True)
+
+        tree_scroll_y.config(command=self.tasks_tree.yview)
+        tree_scroll_x.config(command=self.tasks_tree.xview)
+
+        # Button frame
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=tk.X, pady=(10, 0))
+
+        # Left side buttons
+        left_btns = ttk.Frame(btn_frame)
+        left_btns.pack(side=tk.LEFT)
+
+        ttk.Button(left_btns, text="➕ Add Task", command=lambda: self._add_scheduled_task(dialog)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(left_btns, text="✏️ Edit Selected", command=lambda: self._edit_scheduled_task(dialog)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(left_btns, text="🗑️ Delete Selected", command=lambda: self._delete_scheduled_task(dialog)).pack(side=tk.LEFT, padx=5)
+
+        # Right side buttons
+        right_btns = ttk.Frame(btn_frame)
+        right_btns.pack(side=tk.RIGHT)
+
+        ttk.Button(right_btns, text="🔄 Refresh", command=self._refresh_tasks_list).pack(side=tk.LEFT, padx=5)
+        ttk.Button(right_btns, text="Open Task Scheduler", command=lambda: subprocess.Popen(["taskschd.msc"], shell=True)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(right_btns, text="Close", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+
+        # Store dialog reference
+        self.tasks_dialog = dialog
+
+        # Populate the list
+        self._refresh_tasks_list()
+
+    def _refresh_tasks_list(self):
+        """Refresh the scheduled tasks list."""
+        # Clear existing items
+        for item in self.tasks_tree.get_children():
+            self.tasks_tree.delete(item)
+
         try:
-            subprocess.Popen(["taskschd.msc"], shell=True)
+            # Use schtasks command which is more reliable
+            result = subprocess.run(
+                ["schtasks", "/query", "/fo", "CSV", "/v"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+            tasks = []
+            lines = result.stdout.strip().split('\n')
+
+            # Parse CSV output - find AsimutBooker tasks
+            # CSV columns: HostName, TaskName, Next Run Time, Status, ... (many more)
+            for line in lines[1:]:  # Skip header
+                if 'AsimutBooker' not in line:
+                    continue
+
+                # Parse CSV (handle quoted fields)
+                reader = csv.reader(io.StringIO(line))
+                try:
+                    fields = next(reader)
+                    if len(fields) < 4:
+                        continue
+
+                    task_name = fields[1].replace('\\', '')  # Remove leading backslash
+                    next_run = fields[2]
+                    status = fields[3]
+
+                    # Extract trigger time from task name (e.g., AsimutBooker_1000 -> calculate 09:58)
+                    trigger_time = ""
+                    target_time = ""
+                    if '_' in task_name:
+                        time_part = task_name.split('_')[-1]
+                        if len(time_part) == 4 and time_part.isdigit():
+                            target_hour = int(time_part[:2])
+                            target_min = int(time_part[2:])
+                            target_time = f"{target_hour:02d}:{target_min:02d}"
+
+                            # Calculate trigger time (2 min before)
+                            trigger_min = target_min - 2
+                            trigger_hour = target_hour
+                            if trigger_min < 0:
+                                trigger_min += 60
+                                trigger_hour -= 1
+                            trigger_time = f"{trigger_hour:02d}:{trigger_min:02d}"
+
+                    tasks.append((task_name, trigger_time, target_time, status, next_run))
+                except:
+                    continue
+
+            # Sort by task name
+            tasks.sort(key=lambda x: x[0])
+
+            for task in tasks:
+                self.tasks_tree.insert("", tk.END, values=task)
+
+            self.task_count_var.set(f"{len(tasks)} task(s)")
+
+        except subprocess.TimeoutExpired:
+            self.task_count_var.set("Error: Timeout")
         except Exception as e:
-            messagebox.showerror("Error", f"Could not open Task Scheduler: {e}")
+            self.task_count_var.set(f"Error: {str(e)[:30]}")
+
+    def _add_scheduled_task(self, parent_dialog):
+        """Show dialog to add a new scheduled task."""
+        dialog = tk.Toplevel(parent_dialog)
+        dialog.title("Add Scheduled Task")
+        dialog.geometry("400x250")
+        dialog.transient(parent_dialog)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Add New Scheduled Task", font=("Segoe UI", 12, "bold")).pack(pady=(0, 20))
+
+        # Booking time input
+        time_frame = ttk.Frame(frame)
+        time_frame.pack(fill=tk.X, pady=10)
+
+        ttk.Label(time_frame, text="Booking Time (HH:MM):").pack(side=tk.LEFT)
+
+        # Hour dropdown
+        hour_var = tk.StringVar(value="10")
+        hour_combo = ttk.Combobox(time_frame, textvariable=hour_var,
+                                   values=[f"{h:02d}" for h in range(7, 23)],
+                                   width=4, state="readonly")
+        hour_combo.pack(side=tk.LEFT, padx=(10, 2))
+
+        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
+
+        # Minute dropdown (00 or 30)
+        minute_var = tk.StringVar(value="00")
+        minute_combo = ttk.Combobox(time_frame, textvariable=minute_var,
+                                     values=["00", "30"],
+                                     width=4, state="readonly")
+        minute_combo.pack(side=tk.LEFT, padx=2)
+
+        # Info label
+        info_label = ttk.Label(frame, text="Task will trigger 2 minutes before this time\nto prepare for booking.",
+                               foreground="gray", justify=tk.CENTER)
+        info_label.pack(pady=20)
+
+        # Buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=(20, 0))
+
+        def create_task():
+            booking_time = f"{hour_var.get()}:{minute_var.get()}"
+            task_name = f"AsimutBooker_{hour_var.get()}{minute_var.get()}"
+
+            # Check if task already exists
+            result = subprocess.run(
+                ["powershell", "-Command", f"Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue"],
+                capture_output=True, text=True
+            )
+            if task_name in result.stdout:
+                messagebox.showerror("Error", f"Task '{task_name}' already exists!", parent=dialog)
+                return
+
+            # Calculate trigger time (2 minutes before)
+            trigger_hour = int(hour_var.get())
+            trigger_minute = int(minute_var.get()) - 2
+            if trigger_minute < 0:
+                trigger_minute += 60
+                trigger_hour -= 1
+            trigger_time = f"{trigger_hour:02d}:{trigger_minute:02d}"
+
+            # Create the task
+            script_path = APP_DIR / "run_booker.bat"
+            ps_command = f'''
+                $Action = New-ScheduledTaskAction -Execute '{script_path}' -Argument '--target-time {booking_time}' -WorkingDirectory '{APP_DIR}'
+                $Trigger = New-ScheduledTaskTrigger -Daily -At '{trigger_time}'
+                $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+                $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                Register-ScheduledTask -TaskName '{task_name}' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description 'AsimutBooker automatic room booking at {booking_time} (starts at {trigger_time})'
+            '''
+
+            try:
+                result = subprocess.run(
+                    ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    messagebox.showinfo("Success", f"Task '{task_name}' created successfully!\n\nTriggers at {trigger_time}, books at {booking_time}", parent=dialog)
+                    dialog.destroy()
+                    self._refresh_tasks_list()
+                else:
+                    messagebox.showerror("Error", f"Failed to create task:\n{result.stderr}", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create task: {e}", parent=dialog)
+
+        ttk.Button(btn_frame, text="Create Task", command=create_task).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _edit_scheduled_task(self, parent_dialog):
+        """Edit the selected scheduled task."""
+        selection = self.tasks_tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a task to edit.", parent=parent_dialog)
+            return
+
+        item = selection[0]
+        values = self.tasks_tree.item(item, "values")
+        task_name = values[0]
+        current_trigger = values[1]
+        current_target = values[2]
+
+        dialog = tk.Toplevel(parent_dialog)
+        dialog.title(f"Edit Task: {task_name}")
+        dialog.geometry("400x250")
+        dialog.transient(parent_dialog)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text=f"Edit: {task_name}", font=("Segoe UI", 12, "bold")).pack(pady=(0, 20))
+
+        # Booking time input
+        time_frame = ttk.Frame(frame)
+        time_frame.pack(fill=tk.X, pady=10)
+
+        ttk.Label(time_frame, text="Booking Time (HH:MM):").pack(side=tk.LEFT)
+
+        # Parse current target time
+        current_hour = current_target.split(':')[0] if current_target else "10"
+        current_minute = current_target.split(':')[1] if current_target and ':' in current_target else "00"
+
+        # Hour dropdown
+        hour_var = tk.StringVar(value=current_hour)
+        hour_combo = ttk.Combobox(time_frame, textvariable=hour_var,
+                                   values=[f"{h:02d}" for h in range(7, 23)],
+                                   width=4, state="readonly")
+        hour_combo.pack(side=tk.LEFT, padx=(10, 2))
+
+        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
+
+        # Minute dropdown
+        minute_var = tk.StringVar(value=current_minute)
+        minute_combo = ttk.Combobox(time_frame, textvariable=minute_var,
+                                     values=["00", "30"],
+                                     width=4, state="readonly")
+        minute_combo.pack(side=tk.LEFT, padx=2)
+
+        # Info label
+        info_label = ttk.Label(frame, text=f"Current: triggers at {current_trigger}, books at {current_target}",
+                               foreground="gray")
+        info_label.pack(pady=20)
+
+        # Buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=(20, 0))
+
+        def update_task():
+            new_booking_time = f"{hour_var.get()}:{minute_var.get()}"
+            new_task_name = f"AsimutBooker_{hour_var.get()}{minute_var.get()}"
+
+            # Calculate new trigger time
+            trigger_hour = int(hour_var.get())
+            trigger_minute = int(minute_var.get()) - 2
+            if trigger_minute < 0:
+                trigger_minute += 60
+                trigger_hour -= 1
+            new_trigger_time = f"{trigger_hour:02d}:{trigger_minute:02d}"
+
+            script_path = APP_DIR / "run_booker.bat"
+
+            # Delete old task and create new one
+            ps_command = f'''
+                Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false -ErrorAction SilentlyContinue
+                $Action = New-ScheduledTaskAction -Execute '{script_path}' -Argument '--target-time {new_booking_time}' -WorkingDirectory '{APP_DIR}'
+                $Trigger = New-ScheduledTaskTrigger -Daily -At '{new_trigger_time}'
+                $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+                $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+                Register-ScheduledTask -TaskName '{new_task_name}' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description 'AsimutBooker automatic room booking at {new_booking_time} (starts at {new_trigger_time})'
+            '''
+
+            try:
+                result = subprocess.run(
+                    ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    messagebox.showinfo("Success", f"Task updated!\n\nNew schedule: triggers at {new_trigger_time}, books at {new_booking_time}", parent=dialog)
+                    dialog.destroy()
+                    self._refresh_tasks_list()
+                else:
+                    messagebox.showerror("Error", f"Failed to update task:\n{result.stderr}", parent=dialog)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update task: {e}", parent=dialog)
+
+        ttk.Button(btn_frame, text="Update Task", command=update_task).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def _delete_scheduled_task(self, parent_dialog):
+        """Delete the selected scheduled task(s)."""
+        selection = self.tasks_tree.selection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select task(s) to delete.", parent=parent_dialog)
+            return
+
+        # Get task names
+        task_names = [self.tasks_tree.item(item, "values")[0] for item in selection]
+
+        if len(task_names) == 1:
+            msg = f"Are you sure you want to delete '{task_names[0]}'?"
+        else:
+            msg = f"Are you sure you want to delete {len(task_names)} tasks?\n\n" + "\n".join(task_names[:5])
+            if len(task_names) > 5:
+                msg += f"\n... and {len(task_names) - 5} more"
+
+        if not messagebox.askyesno("Confirm Delete", msg, parent=parent_dialog):
+            return
+
+        # Delete tasks
+        deleted = 0
+        errors = []
+        for task_name in task_names:
+            try:
+                result = subprocess.run(
+                    ["powershell", "-Command", f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false"],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode == 0:
+                    deleted += 1
+                else:
+                    errors.append(f"{task_name}: {result.stderr}")
+            except Exception as e:
+                errors.append(f"{task_name}: {e}")
+
+        if errors:
+            messagebox.showwarning("Partial Success",
+                                   f"Deleted {deleted} task(s).\n\nErrors:\n" + "\n".join(errors[:3]),
+                                   parent=parent_dialog)
+        else:
+            messagebox.showinfo("Success", f"Deleted {deleted} task(s).", parent=parent_dialog)
+
+        self._refresh_tasks_list()
 
     def run_setup_script(self):
         """Run the PowerShell setup script (requires admin)."""

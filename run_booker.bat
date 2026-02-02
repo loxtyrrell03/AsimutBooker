@@ -21,9 +21,10 @@ if exist "venv\Scripts\activate.bat" (
 )
 
 REM Run the booking script (headless for scheduled runs) and capture output
+REM %* passes any additional arguments (e.g., --target-time 10:00)
 echo [%date% %time%] Starting scheduled booking run... > "%LOGFILE%"
 echo ============================================================ >> "%LOGFILE%"
-python book_week.py --headless >> "%LOGFILE%" 2>&1
+python book_week.py --headless %* >> "%LOGFILE%" 2>&1
 echo ============================================================ >> "%LOGFILE%"
 echo [%date% %time%] Booking run completed >> "%LOGFILE%"
 

@@ -51,9 +51,7 @@ Get-ScheduledTask | Where-Object { $_.TaskName -like "AsimutBooker*" } | ForEach
 
 Write-Host ""
 Write-Host "Creating scheduled tasks..." -ForegroundColor Yellow
-
-# Create action
-$Action = New-ScheduledTaskAction -Execute $ScriptPath -WorkingDirectory $WorkingDir
+Write-Host "  Tasks will start 2 minutes early and wait for target time" -ForegroundColor Gray
 
 # Create settings
 $Settings = New-ScheduledTaskSettingsSet `
@@ -73,8 +71,19 @@ $count = 0
 foreach ($time in $RunTimes) {
     $TaskFullName = "${TaskName}_$($time.Replace(':', ''))"
 
-    # Create trigger for this specific time, daily
-    $Trigger = New-ScheduledTaskTrigger -Daily -At $time
+    # Calculate trigger time (2 minutes before target)
+    $TargetTime = [datetime]::Parse($time)
+    $TriggerTime = $TargetTime.AddMinutes(-2)
+    $TriggerTimeStr = $TriggerTime.ToString("HH:mm")
+
+    # Create action with target time argument
+    $Action = New-ScheduledTaskAction `
+        -Execute $ScriptPath `
+        -Argument "--target-time $time" `
+        -WorkingDirectory $WorkingDir
+
+    # Create trigger for 2 minutes before target time, daily
+    $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTimeStr
 
     # Register the task
     Register-ScheduledTask `
@@ -83,10 +92,10 @@ foreach ($time in $RunTimes) {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "AsimutBooker automatic room booking at $time" | Out-Null
+        -Description "AsimutBooker automatic room booking at $time (starts at $TriggerTimeStr)" | Out-Null
 
     $count++
-    Write-Host "  Created: $TaskFullName (runs at $time daily, wakes PC)" -ForegroundColor Green
+    Write-Host "  Created: $TaskFullName (triggers $TriggerTimeStr, books at $time)" -ForegroundColor Green
 }
 
 Write-Host ""
