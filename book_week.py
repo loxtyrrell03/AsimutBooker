@@ -375,6 +375,28 @@ def load_time_preferences():
     return default
 
 
+def load_booking_strategy():
+    """Load booking strategy settings from settings file.
+
+    Returns:
+        dict with keys: reverse_date_order (bool)
+    """
+    default = {"reverse_date_order": False}
+
+    if settings_file.exists():
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                strategy = settings.get("booking_strategy", {})
+                return {
+                    "reverse_date_order": strategy.get("reverse_date_order", False)
+                }
+        except:
+            pass
+
+    return default
+
+
 def is_preferred_time(start_hour, time_prefs):
     """Check if a slot's start time falls within the preferred range.
 
@@ -1680,19 +1702,33 @@ def save_history(bookings_made, events_detected, booking_details):
         # Send push notification
         if bookings_made > 0:
             title = f"Booked {bookings_made} room{'s' if bookings_made > 1 else ''}"
-            # Format each booking nicely: "2026-02-04 B1.09 13:00" -> "Wed 4 Feb: B1.09 @ 13:00"
+            # Format: "2026-02-04 B1.09 13:00 15:00 120" -> "Wed 4 Feb: B1.09 13:00-15:00 (2 hours)"
             formatted = []
             for detail in booking_details[:5]:
                 parts = detail.split()
-                if len(parts) >= 3:
+                if len(parts) >= 5:
                     try:
                         date_obj = datetime.strptime(parts[0], "%Y-%m-%d")
                         day_name = date_obj.strftime("%a")
                         day_num = date_obj.day
                         month = date_obj.strftime("%b")
                         room = parts[1]
-                        time = parts[2]
-                        formatted.append(f"{day_name} {day_num} {month}: {room} @ {time}")
+                        start_time = parts[2]
+                        end_time = parts[3]
+                        duration_mins = int(parts[4])
+                        # Format duration nicely
+                        if duration_mins == 60:
+                            duration_str = "1 hour"
+                        elif duration_mins < 60:
+                            duration_str = f"{duration_mins} minutes"
+                        elif duration_mins % 60 == 0:
+                            hours = duration_mins // 60
+                            duration_str = f"{hours} hours"
+                        else:
+                            hours = duration_mins // 60
+                            mins = duration_mins % 60
+                            duration_str = f"{hours} hour{'s' if hours > 1 else ''} and {mins} minutes"
+                        formatted.append(f"{day_name} {day_num} {month}: {room} {start_time}-{end_time} ({duration_str})")
                     except:
                         formatted.append(detail)
                 else:
@@ -1835,9 +1871,15 @@ def main():
         # Load time preferences from settings
         time_prefs = load_time_preferences()
         if time_prefs["enabled"]:
-            print(f"\n  Time preferences: Prioritizing {time_prefs['start_hour']:02d}:00 - {time_prefs['end_hour']:02d}:00")
+            print(f"\n  Time preferences: Prioritizing {int(time_prefs['start_hour']):02d}:00 - {int(time_prefs['end_hour']):02d}:00")
             if time_prefs["strict_mode"]:
                 print(f"  Strict mode: ON (only booking preferred times)")
+
+        # Load booking strategy settings
+        booking_strategy = load_booking_strategy()
+        reverse_date_order = booking_strategy["reverse_date_order"]
+        if reverse_date_order:
+            print(f"\n  Booking strategy: REVERSE ORDER (furthest dates first)")
 
         # Calculate dynamic max bookings per day based on enabled days
         # Count how many days are enabled (not in disabled_dates) in the booking window
@@ -1858,8 +1900,38 @@ def main():
         # Get current time for filtering today's slots
         current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
 
-        # Process each day (0 = today, 7 = 7 days from now)
-        for days_ahead in range(0, 8):
+        # Determine the order to process days based on strategy
+        if reverse_date_order:
+            # Process from day 7 down to day 0 (furthest first)
+            day_order = list(range(7, -1, -1))  # [7, 6, 5, 4, 3, 2, 1, 0]
+            # First, navigate forward to day 7
+            print(f"\n  Navigating to day 7 first (reverse order strategy)...")
+            for nav_step in range(7):
+                clicked = False
+                for attempt in range(3):
+                    try:
+                        page.keyboard.press("Escape")
+                        page.wait_for_timeout(300)
+                        page.evaluate("window.scrollTo(0, 0)")
+                        page.wait_for_timeout(300)
+                        arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
+                        if arrow.count() > 0 and arrow.is_visible():
+                            arrow.click(force=True)
+                            page.wait_for_timeout(1500)
+                            clicked = True
+                            break
+                    except Exception as e:
+                        pass
+                if not clicked:
+                    print(f"  [DEBUG] Forward navigation step {nav_step + 1} failed")
+            current_calendar_day = 7  # Calendar is now showing day 7
+        else:
+            # Normal order: process from day 0 to day 7
+            day_order = list(range(0, 8))  # [0, 1, 2, 3, 4, 5, 6, 7]
+            current_calendar_day = 0  # Calendar starts on today
+
+        # Process each day in the determined order
+        for day_index, days_ahead in enumerate(day_order):
             target_date = datetime.combine(today + timedelta(days=days_ahead), datetime.min.time())
             day_name = target_date.strftime("%A")
 
@@ -1875,108 +1947,117 @@ def main():
                 day_peak_used = tracker.get_peak_used_for_day(target_date)
                 print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak for this day: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60}min")
 
-            # Navigate forward one day (skip for day 0 - we're already on today)
-            # Navigate forward one day (skip for day 0 - we're already on today)
-            if days_ahead > 0:
-                # Navigate forward one day (just click right arrow once)
-                # We always need to navigate even for skipped days to keep calendar in sync
-                print(f"  Navigating forward...")
-                clicked = False
-                for attempt in range(5):
-                    try:
-                        # Dismiss any dialogs/modals
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(300)
+            # Navigate to the correct day based on current calendar position
+            # Calculate how many steps we need to navigate
+            steps_needed = days_ahead - current_calendar_day
 
-                        # Scroll to absolute top to ensure arrow is visible
-                        page.evaluate("window.scrollTo(0, 0)")
-                        page.wait_for_timeout(500)
+            if steps_needed != 0:
+                direction = "forward" if steps_needed > 0 else "backward"
+                arrow_icon = "chevron_right" if steps_needed > 0 else "chevron_left"
+                steps_abs = abs(steps_needed)
 
-                        # Wait for page to stabilize
+                print(f"  Navigating {direction} {steps_abs} day(s)...")
+
+                for step in range(steps_abs):
+                    clicked = False
+                    for attempt in range(5):
                         try:
-                            page.wait_for_load_state("networkidle", timeout=3000)
-                        except:
-                            pass  # Continue even if timeout
+                            # Dismiss any dialogs/modals
+                            page.keyboard.press("Escape")
+                            page.wait_for_timeout(300)
 
-                        # Debug: Check current URL and page state
-                        current_url = page.url
-                        if attempt == 0:
-                            print(f"  [DEBUG] Current URL: {current_url[:60]}...")
+                            # Scroll to absolute top to ensure arrow is visible
+                            page.evaluate("window.scrollTo(0, 0)")
+                            page.wait_for_timeout(500)
 
-                        # Find and click the right arrow - try several methods
-                        arrow = None
+                            # Wait for page to stabilize
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=3000)
+                            except:
+                                pass  # Continue even if timeout
 
-                        # Method 1: mat-icon with chevron_right text
-                        try:
-                            arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                            arrow_count = arrow.count()
-                            arrow_visible = arrow.is_visible() if arrow_count > 0 else False
-                            if arrow_count > 0 and arrow_visible:
-                                arrow.click(force=True)
+                            # Debug: Check current URL and page state
+                            current_url = page.url
+                            if attempt == 0 and step == 0:
+                                print(f"  [DEBUG] Current URL: {current_url[:60]}...")
+
+                            # Find and click the appropriate arrow
+                            arrow = None
+
+                            # Method 1: mat-icon with arrow text
+                            try:
+                                arrow = page.locator("mat-icon").filter(has_text=arrow_icon).first
+                                arrow_count = arrow.count()
+                                arrow_visible = arrow.is_visible() if arrow_count > 0 else False
+                                if arrow_count > 0 and arrow_visible:
+                                    arrow.click(force=True)
+                                    page.wait_for_timeout(2000)
+                                    clicked = True
+                                    break
+                            except Exception as e:
+                                if attempt == 0:
+                                    print(f"  [DEBUG] Method 1 failed: {e}")
+
+                            # Method 2: Button containing arrow
+                            try:
+                                arrow = page.locator(f"button:has(mat-icon:text('{arrow_icon}'))").first
+                                if arrow.count() > 0 and arrow.is_visible():
+                                    arrow.click(force=True)
+                                    page.wait_for_timeout(2000)
+                                    clicked = True
+                                    break
+                            except:
+                                pass
+
+                            # Method 3: Any element with arrow text
+                            try:
+                                arrow = page.locator(f"text={arrow_icon}").first
+                                if arrow.count() > 0 and arrow.is_visible():
+                                    arrow.click(force=True)
+                                    page.wait_for_timeout(2000)
+                                    clicked = True
+                                    break
+                            except:
+                                pass
+
+                            # After 2 failed attempts, try reloading the page and navigating from scratch
+                            if attempt == 2:
+                                print(f"  [DEBUG] Reloading calendar page after failed navigation...")
+                                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
                                 page.wait_for_timeout(2000)
+                                # Navigate to the target day from today
+                                print(f"  [DEBUG] Navigating to day {days_ahead} from today...")
+                                for click_num in range(days_ahead):
+                                    try:
+                                        page.evaluate("window.scrollTo(0, 0)")
+                                        page.wait_for_timeout(300)
+                                        nav_arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
+                                        if nav_arrow.count() > 0:
+                                            nav_arrow.click(force=True)
+                                            page.wait_for_timeout(1500)
+                                    except Exception as e:
+                                        print(f"  [DEBUG] Forward click {click_num + 1} failed: {e}")
+                                current_calendar_day = days_ahead  # We jumped directly
                                 clicked = True
                                 break
+
+                            print(f"    Arrow not found (attempt {attempt + 1}), waiting...")
+                            page.wait_for_timeout(1500)
                         except Exception as e:
-                            if attempt == 0:
-                                print(f"  [DEBUG] Method 1 failed: {e}")
+                            print(f"    Arrow click failed: {e}")
+                            page.wait_for_timeout(1000)
 
-                        # Method 2: Button containing chevron_right
-                        try:
-                            arrow = page.locator("button:has(mat-icon:text('chevron_right'))").first
-                            if arrow.count() > 0 and arrow.is_visible():
-                                arrow.click(force=True)
-                                page.wait_for_timeout(2000)
-                                clicked = True
-                                break
-                        except:
-                            pass
+                    if not clicked:
+                        print(f"  [DEBUG] Navigation step {step + 1} failed after all attempts")
 
-                        # Method 3: Any element with chevron_right
-                        try:
-                            arrow = page.locator("text=chevron_right").first
-                            if arrow.count() > 0 and arrow.is_visible():
-                                arrow.click(force=True)
-                                page.wait_for_timeout(2000)
-                                clicked = True
-                                break
-                        except:
-                            pass
+                # Update current calendar day after all navigation steps
+                current_calendar_day = days_ahead
 
-                        # After 2 failed attempts, try reloading the page
-                        if attempt == 2:
-                            print(f"  [DEBUG] Reloading calendar page after failed navigation...")
-                            page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
-                            page.wait_for_timeout(2000)
-                            # Click forward the correct number of times
-                            print(f"  [DEBUG] Clicking forward {days_ahead} times...")
-                            for click_num in range(days_ahead):
-                                try:
-                                    page.evaluate("window.scrollTo(0, 0)")
-                                    page.wait_for_timeout(300)
-                                    arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                                    if arrow.count() > 0:
-                                        arrow.click(force=True)
-                                        page.wait_for_timeout(1500)
-                                except Exception as e:
-                                    print(f"  [DEBUG] Forward click {click_num + 1} failed: {e}")
-                            clicked = True
-                            break
-
-                        print(f"    Arrow not found (attempt {attempt + 1}), waiting...")
-                        page.wait_for_timeout(1500)
-                    except Exception as e:
-                        print(f"    Arrow click failed: {e}")
-                        page.wait_for_timeout(1000)
-
-                if not clicked:
-                    print(f"  [DEBUG] Navigation failed after all attempts")
-                    print(f"  Failed to navigate forward, skipping...")
-                    continue
-
-                print(f"  [DEBUG] Navigation succeeded, waiting for page to stabilize...")
-                page.wait_for_timeout(1000)
+                if steps_needed != 0:
+                    print(f"  [DEBUG] Navigation complete, now on day {current_calendar_day}")
+                    page.wait_for_timeout(1000)
             else:
-                print(f"  Today - no navigation needed (already on current day)")
+                print(f"  Already on correct day (day {days_ahead}) - no navigation needed")
 
             # If this day is disabled, skip to next day after navigation
             if skip_this_day:
@@ -2248,11 +2329,17 @@ def main():
                     total_booked += 1
                     print(f"  [DEBUG] Booking successful! Day total: {day_booked}, session total: {total_booked}")
 
-                    # Record booking detail
+                    # Record booking detail with start, end, and duration
                     room_name = slot['room']
                     start_h = int(slot['start_hour'])
                     start_m = int((slot['start_hour'] % 1) * 60)
-                    booking_details.append(f"{target_date.strftime('%Y-%m-%d')} {room_name} {start_h:02d}:{start_m:02d}")
+                    # Calculate actual booked end time (capped at MAX_BOOKING_HOURS)
+                    booked_duration = min(slot['duration'], MAX_BOOKING_HOURS)
+                    booked_end_hour = slot['start_hour'] + booked_duration
+                    end_h = int(booked_end_hour)
+                    end_m = int((booked_end_hour % 1) * 60)
+                    duration_mins = int(booked_duration * 60)
+                    booking_details.append(f"{target_date.strftime('%Y-%m-%d')} {room_name} {start_h:02d}:{start_m:02d} {end_h:02d}:{end_m:02d} {duration_mins}")
 
                     # After successful booking, navigate back to calendar and refresh slots
                     page.wait_for_timeout(1000)
