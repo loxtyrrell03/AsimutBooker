@@ -26,8 +26,8 @@ class AsimutBookerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("AsimutBooker Control Panel")
-        self.root.geometry("1400x950")
-        self.root.minsize(1100, 800)
+        self.root.geometry("1400x1150")
+        self.root.minsize(1100, 1050)
 
         # Configure default font sizes - larger for better readability
         default_font = ("Segoe UI", 13)
