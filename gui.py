@@ -1461,14 +1461,18 @@ class AsimutBookerGUI:
                     title = title[:14] + "…"
 
                 is_reservation = event.get('isReservation', False)
-                event_color = "#e67e22" if not is_reservation else "#27ae60"
+                # Use lighter colors on blue background for better contrast
+                if is_selected:
+                    event_color = "#ffcc80" if not is_reservation else "#a5d6a7"  # Light orange/green on blue
+                else:
+                    event_color = "#e67e22" if not is_reservation else "#27ae60"  # Standard orange/green
 
                 event_lbl = tk.Label(
                     events_frame,
                     text=f"• {time_str} {title}",
                     font=("Segoe UI", 9),
                     bg=bg_color,
-                    fg=event_color if is_selected else event_color,
+                    fg=event_color,
                     anchor="w"
                 )
                 event_lbl.pack(fill=tk.X)

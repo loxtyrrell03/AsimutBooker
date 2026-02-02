@@ -249,6 +249,43 @@ def adjust_slot_for_peak_quota(slot_start, slot_end, target_date, remaining_peak
     return slot_start, slot_end, False, ""
 
 
+def adjust_slot_for_weekly_quota(slot_start, slot_end, remaining_quota_hours):
+    """
+    Adjust a slot to fit within the remaining weekly quota.
+
+    If the slot duration exceeds the remaining quota, trim the slot to use
+    the remaining quota (similar to peak quota trimming).
+
+    Args:
+        slot_start: Start hour (e.g., 8.0 for 8am)
+        slot_end: End hour (e.g., 10.0 for 10am)
+        remaining_quota_hours: How many hours are left in the weekly quota
+
+    Returns:
+        Tuple of (adjusted_start, adjusted_end, was_adjusted, reason)
+        If the slot should be skipped entirely, returns (None, None, True, reason)
+    """
+    slot_duration_hours = slot_end - slot_start
+    slot_duration_mins = slot_duration_hours * 60
+
+    # If we have enough quota, no adjustment needed
+    if slot_duration_hours <= remaining_quota_hours:
+        return slot_start, slot_end, False, ""
+
+    # Not enough quota - can we trim?
+    remaining_quota_mins = remaining_quota_hours * 60
+
+    if remaining_quota_mins < MIN_BOOKING_MINUTES:
+        return None, None, True, f"Weekly quota too low ({remaining_quota_hours:.1f}h remaining)"
+
+    # Trim the slot to fit the remaining quota
+    new_end = slot_start + remaining_quota_hours
+    if (new_end - slot_start) * 60 >= MIN_BOOKING_MINUTES:
+        return slot_start, new_end, True, f"Trimmed to {remaining_quota_hours:.1f}h (weekly quota)"
+
+    return None, None, True, f"Cannot fit in remaining weekly quota ({remaining_quota_hours:.1f}h)"
+
+
 def load_disabled_dates():
     """Load list of disabled dates from settings file."""
     if settings_file.exists():
@@ -2042,6 +2079,7 @@ def main():
             slots_removed = 0
             slots_adjusted = 0
             peak_adjusted = 0
+            weekly_adjusted = 0
             conflict_removed = 0
 
             def split_slot_around_blocks(slot_start, slot_end, blocked_ranges):
@@ -2126,6 +2164,22 @@ def main():
                         seg_end = adj_end
                         peak_adjusted += 1
 
+                    # Step 3: Adjust for weekly quota (trim if exceeds remaining hours)
+                    remaining_weekly = tracker.get_remaining_quota_hours()
+                    adj_start, adj_end, was_weekly_adj, weekly_reason = adjust_slot_for_weekly_quota(
+                        seg_start, seg_end, remaining_weekly
+                    )
+
+                    if adj_start is None:
+                        # Not enough weekly quota remaining
+                        slots_removed += 1
+                        continue
+
+                    if was_weekly_adj:
+                        seg_start = adj_start
+                        seg_end = adj_end
+                        weekly_adjusted += 1
+
                     # Final validation and add as new slot
                     if seg_start < seg_end and (seg_end - seg_start) * 60 >= MIN_BOOKING_MINUTES:
                         new_slot = s.copy()
@@ -2138,8 +2192,8 @@ def main():
                     else:
                         slots_removed += 1
 
-            if conflict_removed > 0 or slots_removed > 0 or slots_adjusted > 0 or peak_adjusted > 0:
-                print(f"  [DEBUG] Slot adjustment: {conflict_removed} conflict-removed, {slots_removed} peak-removed, {slots_adjusted} adjusted, {peak_adjusted} peak-adjusted")
+            if conflict_removed > 0 or slots_removed > 0 or slots_adjusted > 0 or peak_adjusted > 0 or weekly_adjusted > 0:
+                print(f"  [DEBUG] Slot adjustment: {conflict_removed} conflict-removed, {slots_removed} removed, {slots_adjusted} adjusted, {peak_adjusted} peak-adjusted, {weekly_adjusted} weekly-adjusted")
 
             all_slots = adjusted_slots
 
@@ -2268,6 +2322,20 @@ def main():
                                 continue  # Skip slots fully in peak zone with no quota
 
                             if was_adjusted:
+                                slot_start = adj_start
+                                slot_end = adj_end
+                                slot_duration = slot_end - slot_start
+
+                            # Step 3: Apply weekly quota adjustment
+                            remaining_weekly = tracker.get_remaining_quota_hours()
+                            adj_start, adj_end, was_weekly_adj, weekly_reason = adjust_slot_for_weekly_quota(
+                                slot_start, slot_end, remaining_weekly
+                            )
+
+                            if adj_start is None:
+                                continue  # Not enough weekly quota remaining
+
+                            if was_weekly_adj:
                                 slot_start = adj_start
                                 slot_end = adj_end
                                 slot_duration = slot_end - slot_start
