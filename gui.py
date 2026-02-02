@@ -121,58 +121,71 @@ class AsimutBookerGUI:
         controls_frame = ttk.LabelFrame(main_frame, text="Run Booker", padding="15")
         controls_frame.pack(fill=tk.X, pady=(0, 15))
 
-        controls_inner = ttk.Frame(controls_frame)
-        controls_inner.pack(fill=tk.X)
+        # Row 1: Run/Stop buttons
+        controls_row1 = ttk.Frame(controls_frame)
+        controls_row1.pack(fill=tk.X, pady=(0, 8))
 
         # Run buttons
         self.run_visible_btn = ttk.Button(
-            controls_inner,
+            controls_row1,
             text="▶ Run with Visible Browser",
             command=lambda: self.run_booker(headless=False),
-            width=28
+            width=26
         )
-        self.run_visible_btn.pack(side=tk.LEFT, padx=8, pady=5)
+        self.run_visible_btn.pack(side=tk.LEFT, padx=5, pady=3)
 
         self.run_headless_btn = ttk.Button(
-            controls_inner,
+            controls_row1,
             text="▶ Run Headless (Background)",
             command=lambda: self.run_booker(headless=True),
-            width=28
+            width=26
         )
-        self.run_headless_btn.pack(side=tk.LEFT, padx=8, pady=5)
+        self.run_headless_btn.pack(side=tk.LEFT, padx=5, pady=3)
 
         self.stop_btn = ttk.Button(
-            controls_inner,
+            controls_row1,
             text="⏹ Stop",
             command=self.stop_booker,
-            width=12,
+            width=10,
             state=tk.DISABLED
         )
-        self.stop_btn.pack(side=tk.LEFT, padx=8, pady=5)
+        self.stop_btn.pack(side=tk.LEFT, padx=5, pady=3)
 
-        # Setup button
-        ttk.Button(
-            controls_inner,
-            text="🔐 Login Setup",
-            command=self.run_login_setup,
-            width=18
-        ).pack(side=tk.RIGHT, padx=8, pady=5)
+        # Row 2: Other tools
+        controls_row2 = ttk.Frame(controls_frame)
+        controls_row2.pack(fill=tk.X)
 
-        # Scheduled Tasks button
+        # Scan Available Rooms button - prominent placement
         ttk.Button(
-            controls_inner,
-            text="⏰ Scheduled Tasks",
-            command=self.view_scheduled_tasks,
-            width=18
-        ).pack(side=tk.RIGHT, padx=8, pady=5)
+            controls_row2,
+            text="🔍 Scan Available Rooms",
+            command=self.show_scan_rooms_dialog,
+            width=22
+        ).pack(side=tk.LEFT, padx=5, pady=3)
 
         # View Logs button
         ttk.Button(
-            controls_inner,
+            controls_row2,
             text="📋 View Logs",
             command=self.show_logs_viewer,
             width=14
-        ).pack(side=tk.RIGHT, padx=8, pady=5)
+        ).pack(side=tk.LEFT, padx=5, pady=3)
+
+        # Scheduled Tasks button
+        ttk.Button(
+            controls_row2,
+            text="⏰ Scheduled Tasks",
+            command=self.view_scheduled_tasks,
+            width=16
+        ).pack(side=tk.LEFT, padx=5, pady=3)
+
+        # Setup button
+        ttk.Button(
+            controls_row2,
+            text="🔐 Login Setup",
+            command=self.run_login_setup,
+            width=14
+        ).pack(side=tk.LEFT, padx=5, pady=3)
 
         # Progress indicator
         self.progress_var = tk.StringVar(value="")
@@ -2762,6 +2775,759 @@ class AsimutBookerGUI:
 
         self.log(f"Saved {len(ignored_events)} ignored events", "info")
         dialog.destroy()
+
+    # =========================================================================
+    # SCAN AVAILABLE ROOMS FEATURE
+    # =========================================================================
+
+    def show_scan_rooms_dialog(self):
+        """Show dialog for scanning available rooms with date range selection."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Scan Available Rooms")
+        dialog.geometry("900x700")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Store dialog reference
+        self.scan_rooms_dialog = dialog
+
+        # Header
+        header_frame = ttk.Frame(dialog, padding="15")
+        header_frame.pack(fill=tk.X)
+
+        ttk.Label(
+            header_frame,
+            text="Scan Available Rooms",
+            font=("Segoe UI", 14, "bold")
+        ).pack(anchor=tk.W)
+
+        ttk.Label(
+            header_frame,
+            text="Select which days to scan for available practice rooms",
+            font=("Segoe UI", 10),
+            foreground="gray"
+        ).pack(anchor=tk.W, pady=(5, 0))
+
+        # Date selection frame
+        dates_frame = ttk.LabelFrame(dialog, text="Select Days to Scan", padding="15")
+        dates_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+
+        # Initialize scan date vars
+        self.scan_date_vars = {}
+        today = datetime.now().date()
+
+        # Create scrollable frame for dates
+        canvas = tk.Canvas(dates_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(dates_frame, orient="vertical", command=canvas.yview)
+        dates_inner = ttk.Frame(canvas)
+
+        dates_inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=dates_inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Enable mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Create date checkboxes for next 8 days (today + 7)
+        for i in range(8):
+            target_date = today + timedelta(days=i)
+            date_str = target_date.strftime('%Y-%m-%d')
+            day_name = target_date.strftime('%A')
+
+            # Format display text
+            if i == 0:
+                display_text = f"Today - {day_name}, {target_date.strftime('%d %B %Y')}"
+            elif i == 1:
+                display_text = f"Tomorrow - {day_name}, {target_date.strftime('%d %B %Y')}"
+            else:
+                display_text = f"{day_name}, {target_date.strftime('%d %B %Y')}"
+
+            var = tk.BooleanVar(value=True)  # Default all selected
+            self.scan_date_vars[date_str] = var
+
+            cb = ttk.Checkbutton(
+                dates_inner,
+                text=display_text,
+                variable=var
+            )
+            cb.pack(anchor=tk.W, pady=3)
+
+        # Quick selection buttons
+        quick_frame = ttk.Frame(dialog, padding="15")
+        quick_frame.pack(fill=tk.X)
+
+        ttk.Button(
+            quick_frame,
+            text="Select All",
+            command=lambda: self._select_all_scan_dates(True),
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            quick_frame,
+            text="Deselect All",
+            command=lambda: self._select_all_scan_dates(False),
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            quick_frame,
+            text="Today Only",
+            command=self._select_today_only,
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            quick_frame,
+            text="Next 3 Days",
+            command=lambda: self._select_next_n_days(3),
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Progress indicator
+        self.scan_rooms_progress_var = tk.StringVar(value="")
+        ttk.Label(
+            dialog,
+            textvariable=self.scan_rooms_progress_var,
+            foreground="blue",
+            font=("Segoe UI", 10)
+        ).pack(pady=5)
+
+        # Action buttons
+        btn_frame = ttk.Frame(dialog, padding="15")
+        btn_frame.pack(fill=tk.X)
+
+        self.scan_rooms_btn = ttk.Button(
+            btn_frame,
+            text="🔍 Start Scan",
+            command=lambda: self._start_rooms_scan(dialog),
+            width=15
+        )
+        self.scan_rooms_btn.pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(
+            btn_frame,
+            text="Cancel",
+            command=dialog.destroy,
+            width=10
+        ).pack(side=tk.RIGHT, padx=5)
+
+        # Cleanup mousewheel binding on close
+        def on_close():
+            canvas.unbind_all("<MouseWheel>")
+            dialog.destroy()
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+
+    def _select_all_scan_dates(self, select: bool):
+        """Select or deselect all scan dates."""
+        for var in self.scan_date_vars.values():
+            var.set(select)
+
+    def _select_today_only(self):
+        """Select only today for scanning."""
+        today_str = datetime.now().date().strftime('%Y-%m-%d')
+        for date_str, var in self.scan_date_vars.items():
+            var.set(date_str == today_str)
+
+    def _select_next_n_days(self, n: int):
+        """Select the next N days for scanning."""
+        today = datetime.now().date()
+        selected_dates = set()
+        for i in range(n):
+            selected_dates.add((today + timedelta(days=i)).strftime('%Y-%m-%d'))
+
+        for date_str, var in self.scan_date_vars.items():
+            var.set(date_str in selected_dates)
+
+    def _start_rooms_scan(self, setup_dialog):
+        """Start the room scanning process."""
+        # Get selected dates
+        selected_dates = [date_str for date_str, var in self.scan_date_vars.items() if var.get()]
+
+        if not selected_dates:
+            messagebox.showwarning("No Dates Selected", "Please select at least one day to scan.", parent=setup_dialog)
+            return
+
+        # Disable scan button
+        self.scan_rooms_btn.config(state=tk.DISABLED)
+        self.scan_rooms_progress_var.set("Starting scan...")
+
+        # Run scan in background thread
+        thread = threading.Thread(target=self._scan_rooms_thread, args=(setup_dialog, sorted(selected_dates)))
+        thread.daemon = True
+        thread.start()
+
+    def _scan_rooms_thread(self, setup_dialog, selected_dates):
+        """Background thread to scan available rooms."""
+        try:
+            from playwright.sync_api import sync_playwright
+
+            all_slots = []  # List of {date, room, start_time, end_time, duration}
+            today = datetime.now().date()
+            current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    storage_state=str(STATE_FILE) if STATE_FILE.exists() else None,
+                    viewport={"width": 1920, "height": 1080}
+                )
+                page = context.new_page()
+
+                # Navigate to practice rooms page
+                self.root.after(0, lambda: self.scan_rooms_progress_var.set("Loading booking page..."))
+
+                # First load the base site to establish the session
+                page.goto("https://rwcmd.asimut.net/", wait_until="networkidle")
+                page.wait_for_timeout(2000)
+
+                # Now navigate to the overview page
+                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+                page.wait_for_timeout(3000)
+
+                # Check current URL
+                current_url = page.url
+                page_title = page.title()
+                self.root.after(0, lambda u=current_url, t=page_title:
+                    self.log(f"[Scan Debug] Initial load: {u[:80]}", "info"))
+
+                # If redirected to login, we need to abort
+                if "login" in current_url.lower() or "microsoft" in current_url.lower():
+                    self.root.after(0, lambda: self.log("[Scan Error] Not logged in - redirected to login page", "error"))
+                    browser.close()
+                    self.root.after(0, lambda: self._on_scan_rooms_error(setup_dialog, "Not logged in. Please use 'Login Setup' first."))
+                    return
+
+                # If we got redirected away from overview, try again with JavaScript
+                if "/overview" not in current_url:
+                    self.root.after(0, lambda: self.log("[Scan Debug] Redirected away, trying JS navigation...", "warning"))
+                    page.evaluate("window.location.href = '/overview?locationGroupId=10'")
+                    page.wait_for_timeout(5000)
+                    current_url = page.url
+                    self.root.after(0, lambda u=current_url: self.log(f"[Scan Debug] After JS nav: {u[:80]}", "info"))
+
+                # Wait for the location grid to appear
+                try:
+                    page.wait_for_selector(".location-name-container", timeout=15000)
+                    self.root.after(0, lambda: self.log("[Scan Debug] Found location container", "info"))
+                except:
+                    self.root.after(0, lambda: self.log("[Scan Warning] location-name-container not found", "warning"))
+
+                # Scroll down to ensure all rooms are loaded, then back to top
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(1000)
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(500)
+
+                # Debug: Log what elements exist on the page
+                page_debug = page.evaluate("""() => {
+                    return {
+                        url: window.location.href,
+                        hasLocationContainer: !!document.querySelector('.location-name-container'),
+                        hasLocationRow: !!document.querySelector('.location-row'),
+                        hasLocationDay: !!document.querySelector('.location-day'),
+                        bodySnippet: document.body.innerText.substring(0, 200)
+                    };
+                }""")
+                self.root.after(0, lambda pd=page_debug:
+                    self.log(f"[Scan Debug] Final: {pd.get('url', '?')[:60]} | container={pd.get('hasLocationContainer')}, row={pd.get('hasLocationRow')}, day={pd.get('hasLocationDay')}", "info"))
+
+                current_calendar_day = 0  # Start at today
+
+                for date_idx, date_str in enumerate(selected_dates):
+                    target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    days_ahead = (target_date - today).days
+
+                    if days_ahead < 0:
+                        continue  # Skip past dates
+
+                    self.root.after(0, lambda d=date_str, idx=date_idx, total=len(selected_dates):
+                        self.scan_rooms_progress_var.set(f"Scanning {d} ({idx + 1}/{total})..."))
+
+                    # Navigate to the correct day
+                    steps_needed = days_ahead - current_calendar_day
+                    if steps_needed != 0:
+                        direction_arrow = "chevron_right" if steps_needed > 0 else "chevron_left"
+                        for _ in range(abs(steps_needed)):
+                            try:
+                                page.keyboard.press("Escape")
+                                page.wait_for_timeout(200)
+                                page.evaluate("window.scrollTo(0, 0)")
+                                page.wait_for_timeout(200)
+                                arrow = page.locator("mat-icon").filter(has_text=direction_arrow).first
+                                if arrow.count() > 0 and arrow.is_visible():
+                                    arrow.click(force=True)
+                                    page.wait_for_timeout(1000)
+                            except:
+                                pass
+                        current_calendar_day = days_ahead
+
+                    page.wait_for_timeout(500)
+
+                    # First check if page loaded correctly by looking for room elements
+                    page_check = page.evaluate("""() => {
+                        const rows = document.querySelectorAll('.location-name-container .location-row');
+                        const locationDays = document.querySelectorAll('.location-day');
+                        return {
+                            rowCount: rows.length,
+                            dayCount: locationDays.length,
+                            url: window.location.href,
+                            title: document.title
+                        };
+                    }""")
+
+                    # Log debug info
+                    self.root.after(0, lambda pc=page_check, d=date_str:
+                        self.log(f"[Scan Debug] {d}: {pc.get('rowCount', 0)} rooms, {pc.get('dayCount', 0)} day containers", "info"))
+
+                    # If no rooms found, the page might not have loaded correctly
+                    if page_check.get('rowCount', 0) == 0:
+                        self.root.after(0, lambda d=date_str:
+                            self.log(f"[Scan Warning] No room rows found for {d} - page may not have loaded", "warning"))
+                        continue
+
+                    # Extract available slots using JavaScript (same as book_week.py)
+                    slots_data = page.evaluate("""() => {
+                        const rows = document.querySelectorAll('.location-name-container .location-row');
+                        const locationDays = document.querySelectorAll('.location-day');
+
+                        function parseStylePct(style, prop) {
+                            const match = style.match(new RegExp(prop + ':\\\\s*calc\\\\(([\\\\d.]+)%'));
+                            return match ? parseFloat(match[1]) : null;
+                        }
+
+                        const pctPerHour = 6.25;
+                        let gridStartHour = 7.0;
+
+                        function pctToHour(pct) {
+                            return gridStartHour + (pct / pctPerHour);
+                        }
+
+                        const roomData = Array.from(rows).map((row, rowIdx) => {
+                            const rect = row.getBoundingClientRect();
+                            const roomName = row.textContent.trim();
+                            const midY = (rect.top + rect.bottom) / 2;
+
+                            let dayContainer = null;
+                            locationDays.forEach(day => {
+                                const dRect = day.getBoundingClientRect();
+                                if (Math.abs((dRect.top + dRect.bottom) / 2 - midY) < 30) {
+                                    dayContainer = day;
+                                }
+                            });
+
+                            if (!dayContainer) return { room: roomName, slots: [], debug: 'no dayContainer' };
+
+                            const events = dayContainer.querySelectorAll('.location-event');
+                            const blockedRanges = Array.from(events).map(ev => {
+                                const style = ev.getAttribute('style') || '';
+                                const leftPct = parseStylePct(style, 'left') || 0;
+                                const widthPct = parseStylePct(style, 'width') || 0;
+                                return {
+                                    startHour: pctToHour(leftPct),
+                                    endHour: pctToHour(leftPct + widthPct)
+                                };
+                            });
+
+                            const closedAreas = dayContainer.querySelectorAll('.location-closed');
+                            const closedRanges = Array.from(closedAreas).map(cl => {
+                                const style = cl.getAttribute('style') || '';
+                                const leftPct = parseStylePct(style, 'left') || 0;
+                                const widthPct = parseStylePct(style, 'width') || 0;
+                                return {
+                                    startHour: pctToHour(leftPct),
+                                    endHour: pctToHour(leftPct + widthPct)
+                                };
+                            });
+
+                            const allBlocked = [...blockedRanges, ...closedRanges]
+                                .sort((a, b) => a.startHour - b.startHour);
+
+                            const gaps = [];
+                            let lastEndHour = 7.25;  // Start at 7:15 to give a small buffer
+
+                            let dayEndHour = 22.0;  // Default end at 10pm
+                            closedRanges.forEach(r => {
+                                if (r.startHour > 20) {
+                                    dayEndHour = Math.min(dayEndHour, r.startHour);
+                                }
+                            });
+
+                            allBlocked.forEach(range => {
+                                if (range.startHour > lastEndHour + 0.25) {
+                                    const startHour = Math.round(lastEndHour * 4) / 4;
+                                    const endHour = Math.round(range.startHour * 4) / 4;
+                                    if (endHour > startHour) {
+                                        gaps.push({ startHour, endHour, roomName });
+                                    }
+                                }
+                                lastEndHour = Math.max(lastEndHour, range.endHour);
+                            });
+
+                            // Add final gap from last blocked to end of day
+                            if (lastEndHour < dayEndHour - 0.25) {
+                                const startHour = Math.round(lastEndHour * 4) / 4;
+                                const endHour = Math.round(dayEndHour * 4) / 4;
+                                if (endHour > startHour) {
+                                    gaps.push({ startHour, endHour, roomName });
+                                }
+                            }
+
+                            // If no blocks at all, the whole day is available
+                            if (allBlocked.length === 0) {
+                                gaps.push({ startHour: 7.5, endHour: dayEndHour, roomName });
+                            }
+
+                            return {
+                                room: roomName,
+                                slots: gaps,
+                                debug: { blockedCount: allBlocked.length, closedCount: closedRanges.length }
+                            };
+                        });
+
+                        return roomData.filter(r => r.slots.length > 0);
+                    }""")
+
+                    # Log how many rooms with slots were found
+                    self.root.after(0, lambda sd=slots_data, d=date_str:
+                        self.log(f"[Scan Debug] {d}: Found {len(sd)} rooms with available slots", "info"))
+
+                    # Process slots
+                    day_slot_count = 0
+                    for room_data in slots_data:
+                        room_name = room_data["room"]
+                        for slot in room_data["slots"]:
+                            start_hour = slot['startHour']
+                            end_hour = slot['endHour']
+                            duration_mins = (end_hour - start_hour) * 60
+
+                            # Skip slots shorter than 30 minutes
+                            if duration_mins < 30:
+                                continue
+
+                            # For today, skip slots that have already started
+                            if days_ahead == 0 and start_hour <= current_time_hour:
+                                continue
+
+                            # Format times
+                            start_h = int(start_hour)
+                            start_m = int((start_hour % 1) * 60)
+                            end_h = int(end_hour)
+                            end_m = int((end_hour % 1) * 60)
+
+                            all_slots.append({
+                                'date': date_str,
+                                'room': room_name,
+                                'start_time': f"{start_h:02d}:{start_m:02d}",
+                                'end_time': f"{end_h:02d}:{end_m:02d}",
+                                'start_hour': start_hour,
+                                'duration_mins': duration_mins
+                            })
+                            day_slot_count += 1
+
+                    self.root.after(0, lambda c=day_slot_count, d=date_str:
+                        self.log(f"[Scan Debug] {d}: Added {c} valid slots", "info"))
+
+                browser.close()
+
+            # Sort slots by date, then time, then room
+            all_slots.sort(key=lambda s: (s['date'], s['start_hour'], s['room']))
+
+            # Close setup dialog and show results
+            self.root.after(0, lambda: self._show_scan_results(setup_dialog, all_slots, selected_dates))
+
+        except Exception as e:
+            self.root.after(0, lambda: self._on_scan_rooms_error(setup_dialog, str(e)))
+
+    def _on_scan_rooms_error(self, setup_dialog, error_msg):
+        """Handle scan error."""
+        self.scan_rooms_btn.config(state=tk.NORMAL)
+        self.scan_rooms_progress_var.set(f"Error: {error_msg[:40]}")
+        self.log(f"Room scan error: {error_msg}", "error")
+        messagebox.showerror("Scan Error", f"Failed to scan rooms:\n{error_msg}", parent=setup_dialog)
+
+    def _show_scan_results(self, setup_dialog, all_slots, scanned_dates):
+        """Show the scan results in a new window."""
+        # Close the setup dialog
+        try:
+            setup_dialog.destroy()
+        except:
+            pass
+
+        # Create results window
+        results = tk.Toplevel(self.root)
+        results.title("Available Rooms")
+        results.geometry("1200x900")
+        results.transient(self.root)
+
+        # Store for filtering
+        self.scan_results_all_slots = all_slots
+        self.scan_results_scanned_dates = scanned_dates
+
+        # Header
+        header_frame = ttk.Frame(results, padding="15")
+        header_frame.pack(fill=tk.X)
+
+        ttk.Label(
+            header_frame,
+            text="Available Practice Rooms",
+            font=("Segoe UI", 16, "bold")
+        ).pack(side=tk.LEFT)
+
+        total_slots = len(all_slots)
+        total_hours = sum(s['duration_mins'] for s in all_slots) / 60
+        ttk.Label(
+            header_frame,
+            text=f"{total_slots} slots found ({total_hours:.1f} hours total)",
+            font=("Segoe UI", 11),
+            foreground="gray"
+        ).pack(side=tk.RIGHT)
+
+        # Filter frame
+        filter_frame = ttk.LabelFrame(results, text="Filter", padding="10")
+        filter_frame.pack(fill=tk.X, padx=15, pady=10)
+
+        filter_inner = ttk.Frame(filter_frame)
+        filter_inner.pack(fill=tk.X)
+
+        # Date filter
+        ttk.Label(filter_inner, text="Date:", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.scan_filter_date = tk.StringVar(value="All Dates")
+        date_options = ["All Dates"] + scanned_dates
+        date_combo = ttk.Combobox(
+            filter_inner,
+            textvariable=self.scan_filter_date,
+            values=date_options,
+            state="readonly",
+            width=15,
+            font=("Segoe UI", 11)
+        )
+        date_combo.pack(side=tk.LEFT, padx=(0, 20))
+        date_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_scan_filters(results_tree))
+
+        # Room filter
+        ttk.Label(filter_inner, text="Room:", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=(0, 10))
+
+        unique_rooms = sorted(set(s['room'] for s in all_slots))
+        self.scan_filter_room = tk.StringVar(value="All Rooms")
+        room_options = ["All Rooms"] + unique_rooms
+        room_combo = ttk.Combobox(
+            filter_inner,
+            textvariable=self.scan_filter_room,
+            values=room_options,
+            state="readonly",
+            width=12,
+            font=("Segoe UI", 11)
+        )
+        room_combo.pack(side=tk.LEFT, padx=(0, 20))
+        room_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_scan_filters(results_tree))
+
+        # Min duration filter
+        ttk.Label(filter_inner, text="Min Duration:", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.scan_filter_min_duration = tk.StringVar(value="Any")
+        duration_options = ["Any", "30 min", "1 hour", "1.5 hours", "2 hours"]
+        duration_combo = ttk.Combobox(
+            filter_inner,
+            textvariable=self.scan_filter_min_duration,
+            values=duration_options,
+            state="readonly",
+            width=10,
+            font=("Segoe UI", 11)
+        )
+        duration_combo.pack(side=tk.LEFT, padx=(0, 20))
+        duration_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_scan_filters(results_tree))
+
+        # Results count label
+        self.scan_results_count_var = tk.StringVar(value=f"Showing {total_slots} slots")
+        ttk.Label(
+            filter_inner,
+            textvariable=self.scan_results_count_var,
+            foreground="blue",
+            font=("Segoe UI", 10)
+        ).pack(side=tk.RIGHT)
+
+        # Results treeview
+        tree_frame = ttk.Frame(results, padding="15")
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("date", "day", "room", "time", "duration")
+        results_tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=20)
+
+        results_tree.heading("date", text="Date")
+        results_tree.heading("day", text="Day")
+        results_tree.heading("room", text="Room")
+        results_tree.heading("time", text="Time")
+        results_tree.heading("duration", text="Duration")
+
+        results_tree.column("date", width=100, anchor=tk.CENTER)
+        results_tree.column("day", width=100, anchor=tk.CENTER)
+        results_tree.column("room", width=100, anchor=tk.CENTER)
+        results_tree.column("time", width=150, anchor=tk.CENTER)
+        results_tree.column("duration", width=100, anchor=tk.CENTER)
+
+        # Scrollbars
+        tree_scroll_y = ttk.Scrollbar(tree_frame, orient="vertical", command=results_tree.yview)
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=results_tree.xview)
+        results_tree.configure(yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set)
+
+        results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Store tree reference
+        self.scan_results_tree = results_tree
+
+        # Populate results
+        self._populate_scan_results(results_tree, all_slots)
+
+        # Bottom buttons
+        bottom_frame = ttk.Frame(results, padding="15")
+        bottom_frame.pack(fill=tk.X)
+
+        ttk.Button(
+            bottom_frame,
+            text="Export to CSV",
+            command=lambda: self._export_scan_results_csv(all_slots),
+            width=15
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            bottom_frame,
+            text="New Scan",
+            command=lambda: self._new_scan_from_results(results),
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            bottom_frame,
+            text="Close",
+            command=results.destroy,
+            width=10
+        ).pack(side=tk.RIGHT, padx=5)
+
+        self.log(f"Room scan complete: found {total_slots} available slots", "success")
+
+    def _populate_scan_results(self, tree, slots):
+        """Populate the results treeview with slots."""
+        # Clear existing items
+        for item in tree.get_children():
+            tree.delete(item)
+
+        for slot in slots:
+            try:
+                date_obj = datetime.strptime(slot['date'], '%Y-%m-%d')
+                day_name = date_obj.strftime('%a')
+                date_display = date_obj.strftime('%d %b')
+            except:
+                day_name = ""
+                date_display = slot['date']
+
+            time_str = f"{slot['start_time']} - {slot['end_time']}"
+            duration_hrs = slot['duration_mins'] / 60
+
+            if duration_hrs == int(duration_hrs):
+                duration_str = f"{int(duration_hrs)} hour{'s' if duration_hrs != 1 else ''}"
+            else:
+                duration_str = f"{duration_hrs:.1f} hours"
+
+            tree.insert("", tk.END, values=(date_display, day_name, slot['room'], time_str, duration_str))
+
+    def _apply_scan_filters(self, tree):
+        """Apply filters to scan results."""
+        date_filter = self.scan_filter_date.get()
+        room_filter = self.scan_filter_room.get()
+        duration_filter = self.scan_filter_min_duration.get()
+
+        # Parse min duration
+        min_duration_mins = 0
+        if duration_filter == "30 min":
+            min_duration_mins = 30
+        elif duration_filter == "1 hour":
+            min_duration_mins = 60
+        elif duration_filter == "1.5 hours":
+            min_duration_mins = 90
+        elif duration_filter == "2 hours":
+            min_duration_mins = 120
+
+        # Filter slots
+        filtered_slots = []
+        for slot in self.scan_results_all_slots:
+            # Date filter
+            if date_filter != "All Dates" and slot['date'] != date_filter:
+                continue
+
+            # Room filter
+            if room_filter != "All Rooms" and slot['room'] != room_filter:
+                continue
+
+            # Duration filter
+            if slot['duration_mins'] < min_duration_mins:
+                continue
+
+            filtered_slots.append(slot)
+
+        # Update display
+        self._populate_scan_results(tree, filtered_slots)
+
+        # Update count
+        total_hours = sum(s['duration_mins'] for s in filtered_slots) / 60
+        self.scan_results_count_var.set(f"Showing {len(filtered_slots)} slots ({total_hours:.1f}h)")
+
+    def _export_scan_results_csv(self, slots):
+        """Export scan results to CSV file."""
+        from tkinter import filedialog
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfilename=f"available_rooms_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+        )
+
+        if not filename:
+            return
+
+        try:
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Date", "Day", "Room", "Start Time", "End Time", "Duration (mins)"])
+
+                for slot in slots:
+                    try:
+                        date_obj = datetime.strptime(slot['date'], '%Y-%m-%d')
+                        day_name = date_obj.strftime('%A')
+                    except:
+                        day_name = ""
+
+                    writer.writerow([
+                        slot['date'],
+                        day_name,
+                        slot['room'],
+                        slot['start_time'],
+                        slot['end_time'],
+                        int(slot['duration_mins'])
+                    ])
+
+            self.log(f"Exported {len(slots)} slots to {filename}", "success")
+            messagebox.showinfo("Export Complete", f"Exported {len(slots)} slots to:\n{filename}")
+
+        except Exception as e:
+            self.log(f"Export error: {e}", "error")
+            messagebox.showerror("Export Error", f"Failed to export:\n{e}")
+
+    def _new_scan_from_results(self, results_window):
+        """Close results and open new scan dialog."""
+        results_window.destroy()
+        self.show_scan_rooms_dialog()
 
 
 def main():
