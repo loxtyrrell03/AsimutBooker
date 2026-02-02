@@ -524,6 +524,23 @@ def load_booking_strategy():
 # When booking at the horizon edge, only 30 min can be booked initially.
 # These functions track such bookings so they can be extended later.
 
+def normalize_time_string(time_str):
+    """Normalize time string to HH:MM format.
+
+    Handles variations like "9:30" -> "09:30"
+
+    Args:
+        time_str: Time string like "9:30" or "09:30"
+
+    Returns:
+        Normalized time string "HH:MM"
+    """
+    parts = time_str.split(':')
+    hour = int(parts[0])
+    minute = int(parts[1]) if len(parts) > 1 else 0
+    return f"{hour:02d}:{minute:02d}"
+
+
 def load_extendable_bookings():
     """Load bookings that may be extendable from settings.
 
@@ -541,17 +558,26 @@ def load_extendable_bookings():
         now = datetime.now()
         today = now.date()
         valid_bookings = []
+        required_fields = ["date", "startTime", "endTime", "room", "created_at", "target_end"]
         for b in bookings:
             try:
+                # Validate all required fields exist
+                missing_fields = [f for f in required_fields if f not in b]
+                if missing_fields:
+                    print(f"  [WARN] Skipping extendable booking with missing fields: {missing_fields}")
+                    continue
+
                 booking_date = datetime.strptime(b["date"], '%Y-%m-%d').date()
                 created_at = datetime.fromisoformat(b["created_at"])
                 # Keep if: date is today or future, and created within last 7 days
-                if booking_date >= today and (now - created_at).days < 7:
+                if booking_date >= today and (now - created_at).total_seconds() / 86400 < 7:
                     valid_bookings.append(b)
-            except:
+            except Exception as e:
+                print(f"  [WARN] Skipping invalid extendable booking: {e}")
                 continue
         return valid_bookings
-    except:
+    except Exception as e:
+        print(f"  [ERROR] Failed to load extendable bookings: {e}")
         return []
 
 
@@ -672,33 +698,53 @@ def update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
         date_str: Date string (YYYY-MM-DD)
         start_time: Start time string (HH:MM)
         new_end_time: New end time string (HH:MM)
+
+    Returns:
+        bool: True if booking was found and updated, False otherwise
     """
     if not settings_file.exists():
-        return
+        print(f"  [WARN] Settings file not found, cannot update extendable booking")
+        return False
 
     try:
         with open(settings_file, 'r') as f:
             settings = json.load(f)
-    except:
-        return
+    except Exception as e:
+        print(f"  [WARN] Failed to load settings: {e}")
+        return False
 
     if "extendable_bookings" not in settings:
-        return
+        print(f"  [WARN] No extendable_bookings in settings")
+        return False
+
+    # Normalize time strings for comparison (ensure HH:MM format)
+    start_time_normalized = normalize_time_string(start_time)
+    new_end_normalized = normalize_time_string(new_end_time)
 
     # Find and update the matching booking
+    found = False
     for b in settings["extendable_bookings"]:
-        if b["date"] == date_str and b["room"] == room and b["startTime"] == start_time:
-            b["endTime"] = new_end_time
+        b_start_normalized = normalize_time_string(b["startTime"])
+        if b["date"] == date_str and b["room"] == room and b_start_normalized == start_time_normalized:
+            b["endTime"] = new_end_normalized
+            found = True
             # If we've reached the target, remove from list
-            if new_end_time == b["target_end"]:
+            target_normalized = normalize_time_string(b["target_end"])
+            if new_end_normalized == target_normalized:
                 settings["extendable_bookings"] = [
                     x for x in settings["extendable_bookings"]
-                    if not (x["date"] == date_str and x["room"] == room and x["startTime"] == start_time)
+                    if not (x["date"] == date_str and x["room"] == room
+                            and normalize_time_string(x["startTime"]) == start_time_normalized)
                 ]
             break
 
+    if not found:
+        print(f"  [WARN] Could not find extendable booking to update: {room} {date_str} {start_time}")
+        return False
+
     with open(settings_file, 'w') as f:
         json.dump(settings, f, indent=2)
+    return True
 
 
 def calculate_max_extension(room, date_str, start_hour, current_end_hour, booking_timestamp, target_end_hour):
@@ -1091,13 +1137,14 @@ def edit_reservation_end_time(page, booking, new_end_time):
     return False
 
 
-def try_extend_booking(page, booking):
+def try_extend_booking(page, booking, tracker=None):
     """Attempt to extend an existing booking using Asimut's edit feature.
 
     Args:
         page: Playwright page object
         booking: Dict from extendable_bookings with:
             date, startTime, endTime, room, created_at, target_end, horizon_days
+        tracker: BookingTracker instance for quota/gap validation (optional)
 
     Returns:
         Tuple of (success: bool, new_end_time: str or None, message: str)
@@ -1119,7 +1166,7 @@ def try_extend_booking(page, booking):
     target_parts = target_end.split(':')
     target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
 
-    # Calculate if extension is possible
+    # Calculate if extension is possible based on time elapsed
     can_extend, max_end_hour, reason = calculate_max_extension(
         room, date_str, start_hour, current_end_hour, created_at, target_end_hour
     )
@@ -1127,10 +1174,88 @@ def try_extend_booking(page, booking):
     if not can_extend:
         return False, None, reason
 
+    # Parse the booking date for tracker validation
+    booking_date = datetime.strptime(date_str, '%Y-%m-%d')
+
+    # If tracker is provided, validate against booking rules
+    if tracker is not None:
+        # Calculate the extension amount (what we're adding, not the total)
+        extension_hours = max_end_hour - current_end_hour
+
+        # Rule: Rolling weekly quota (28 hours per week)
+        remaining_quota_hours = tracker.get_remaining_quota_hours()
+        if extension_hours > remaining_quota_hours:
+            if remaining_quota_hours < 0.25:  # Less than 15 minutes
+                return False, None, f"Weekly quota full ({tracker.get_total_booking_hours():.1f}/{MAX_ROLLING_QUOTA_HOURS}h)"
+            # Limit extension to stay within weekly quota
+            max_end_hour = current_end_hour + remaining_quota_hours
+            # Round down to 15-minute interval
+            max_end_mins = int((max_end_hour % 1) * 60)
+            max_end_mins = (max_end_mins // 15) * 15
+            max_end_hour = int(max_end_hour) + max_end_mins / 60
+            extension_hours = max_end_hour - current_end_hour
+            if extension_hours < 0.25:  # Less than 15 minutes
+                return False, None, f"Weekly quota would only allow {extension_hours * 60:.0f}min extension"
+
+        # Rule: Peak hours limit (Mon-Fri 9am-4pm, max 2 hours per day)
+        if booking_date.weekday() < 5:  # Monday-Friday
+            # Calculate peak hours overlap for the EXTENSION portion only
+            # (the current booking's peak hours are already accounted for)
+            extension_peak_start = max(current_end_hour, PEAK_START)
+            extension_peak_end = min(max_end_hour, PEAK_END)
+            if extension_peak_end > extension_peak_start:
+                new_peak_mins = (extension_peak_end - extension_peak_start) * 60
+                day_peak_used = tracker.get_peak_used_for_day(booking_date)
+                if day_peak_used + new_peak_mins > MAX_PEAK_HOURS * 60:
+                    # Try to limit extension to stay within peak quota
+                    remaining_peak_mins = MAX_PEAK_HOURS * 60 - day_peak_used
+                    if remaining_peak_mins <= 0:
+                        return False, None, f"Peak hours limit reached for {date_str} ({day_peak_used:.0f}/{MAX_PEAK_HOURS * 60} min)"
+
+                    # Calculate max end hour that respects peak limit
+                    # We can only extend into peak by remaining_peak_mins
+                    max_peak_end = extension_peak_start + remaining_peak_mins / 60
+                    if max_peak_end < max_end_hour and max_peak_end > current_end_hour:
+                        # Limit extension to respect peak quota
+                        max_end_hour = min(max_end_hour, max_peak_end)
+                        # Round down to 15-minute interval
+                        max_end_mins = int((max_end_hour % 1) * 60)
+                        max_end_mins = (max_end_mins // 15) * 15
+                        max_end_hour = int(max_end_hour) + max_end_mins / 60
+                        # Check if extension is still worth it
+                        if (max_end_hour - current_end_hour) * 60 < 15:
+                            return False, None, f"Peak hours limit would only allow {(max_end_hour - current_end_hour) * 60:.0f}min extension"
+
+        # Rule: Same-room gap (60 minutes between bookings in same room)
+        # Check if extending would violate gap to another booking
+        if date_str in tracker.reservation_ranges:
+            for r_start, r_end, r_room in tracker.reservation_ranges[date_str]:
+                if r_room and r_room == room:
+                    # Skip if this is our own booking
+                    if abs(r_start - start_hour) < 0.01:
+                        continue
+                    # Check if extension would violate gap before another booking
+                    gap_before = (r_start - max_end_hour) * 60
+                    if 0 < gap_before < SAME_ROOM_GAP_MINUTES:
+                        # Limit extension to maintain gap
+                        safe_end = r_start - SAME_ROOM_GAP_MINUTES / 60
+                        if safe_end <= current_end_hour:
+                            return False, None, f"Same-room gap: another booking at {int(r_start):02d}:{int((r_start % 1) * 60):02d}"
+                        max_end_hour = safe_end
+                        # Round down to 15-minute interval
+                        max_end_mins = int((max_end_hour % 1) * 60)
+                        max_end_mins = (max_end_mins // 15) * 15
+                        max_end_hour = int(max_end_hour) + max_end_mins / 60
+                        if (max_end_hour - current_end_hour) * 60 < 15:
+                            return False, None, f"Same-room gap limits extension to <15min"
+
     # Format new end time
     new_end_h = int(max_end_hour)
     new_end_m = int((max_end_hour % 1) * 60)
     new_end_time = f"{new_end_h:02d}:{new_end_m:02d}"
+
+    # Normalize target_end for comparison
+    target_end_normalized = normalize_time_string(target_end)
 
     print(f"\n{'='*60}")
     print(f"EXTENDING BOOKING: {room} on {date_str}")
@@ -1142,8 +1267,25 @@ def try_extend_booking(page, booking):
     success = edit_reservation_end_time(page, booking, new_end_time)
 
     if success:
+        # Update tracker with the extended hours
+        if tracker is not None:
+            # Add extension hours to existing reservation hours (for weekly quota)
+            extension_hours = max_end_hour - current_end_hour
+            tracker.existing_reservation_hours += extension_hours
+            print(f"  [Tracker] Added {extension_hours:.2f}h extension to quota ({tracker.get_total_booking_hours():.1f}/{MAX_ROLLING_QUOTA_HOURS}h)")
+
+            # Update peak hours if applicable
+            if booking_date.weekday() < 5:
+                extension_peak_start = max(current_end_hour, PEAK_START)
+                extension_peak_end = min(max_end_hour, PEAK_END)
+                if extension_peak_end > extension_peak_start:
+                    new_peak_mins = (extension_peak_end - extension_peak_start) * 60
+                    if date_str not in tracker.peak_hours_by_day:
+                        tracker.peak_hours_by_day[date_str] = 0
+                    tracker.peak_hours_by_day[date_str] += new_peak_mins
+
         # Update or remove from extendable bookings
-        if new_end_time == target_end:
+        if new_end_time == target_end_normalized:
             # Reached target, remove from tracking
             remove_extendable_booking(room, date_str, start_time)
         else:
@@ -2799,7 +2941,7 @@ def main():
 
             extensions_made = 0
             for booking in extendable_bookings:
-                success, new_end, message = try_extend_booking(page, booking)
+                success, new_end, message = try_extend_booking(page, booking, tracker)
                 if success:
                     extensions_made += 1
                     booking_details.append(
