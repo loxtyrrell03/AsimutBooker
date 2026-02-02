@@ -5,14 +5,13 @@ REM This batch file is called by Task Scheduler
 cd /d "%~dp0"
 
 REM Create logs directory structure: logs/YYYY-MM-DD/
-set "TODAY=%date:~10,4%-%date:~4,2%-%date:~7,2%"
+REM Use PowerShell to get date in correct format (works regardless of locale)
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd'"`) do set "TODAY=%%i"
 set "LOGDIR=logs\%TODAY%"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 
 REM Generate timestamp for log filename: HH-MM-SS
-set "TIMESTAMP=%time:~0,2%-%time:~3,2%-%time:~6,2%"
-REM Remove leading space from hour if present
-set "TIMESTAMP=%TIMESTAMP: =0%"
+for /f "usebackq" %%i in (`powershell -NoProfile -Command "Get-Date -Format 'HH-mm-ss'"`) do set "TIMESTAMP=%%i"
 set "LOGFILE=%LOGDIR%\%TIMESTAMP%.log"
 
 REM Activate virtual environment if it exists

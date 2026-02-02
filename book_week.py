@@ -1486,18 +1486,36 @@ class BookingTracker:
         print(f"  [Tracker] Added conflict: {date_key} {start_hour:.2f}-{end_hour:.2f}")
 
     def get_remaining_peak_minutes(self, date):
-        """Get remaining peak minutes available for a specific date."""
+        """Get remaining peak minutes available for a specific date.
+
+        Returns unlimited (9999) for weekends since there's no daily peak quota.
+        """
+        # No peak quota restriction on weekends
+        if date.weekday() >= 5:  # Saturday=5, Sunday=6
+            return 9999  # Effectively unlimited
         date_key = date.strftime('%Y-%m-%d')
         used = self.peak_hours_by_day.get(date_key, 0)
         return max(0, MAX_PEAK_HOURS * 60 - used)
 
     def get_peak_used_for_day(self, date):
-        """Get peak minutes used for a specific date."""
+        """Get peak minutes used for a specific date.
+
+        Returns 0 for weekends since peak quota doesn't apply.
+        """
+        # No peak quota tracking on weekends
+        if date.weekday() >= 5:  # Saturday=5, Sunday=6
+            return 0
         date_key = date.strftime('%Y-%m-%d')
         return self.peak_hours_by_day.get(date_key, 0)
 
     def is_peak_quota_exceeded(self, date):
-        """Check if peak hours quota is exceeded for a specific date."""
+        """Check if peak hours quota is exceeded for a specific date.
+
+        Always returns False for weekends since there's no daily peak quota.
+        """
+        # No peak quota restriction on weekends
+        if date.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
         date_key = date.strftime('%Y-%m-%d')
         used = self.peak_hours_by_day.get(date_key, 0)
         return used >= MAX_PEAK_HOURS * 60
