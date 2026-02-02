@@ -156,6 +156,14 @@ class AsimutBookerGUI:
             width=18
         ).pack(side=tk.RIGHT, padx=8, pady=5)
 
+        # View Logs button
+        ttk.Button(
+            controls_inner,
+            text="📋 View Logs",
+            command=self.show_logs_viewer,
+            width=14
+        ).pack(side=tk.RIGHT, padx=8, pady=5)
+
         # Progress indicator
         self.progress_var = tk.StringVar(value="")
         ttk.Label(controls_frame, textvariable=self.progress_var, foreground="blue", font=("Segoe UI", 11)).pack(anchor=tk.W, pady=(8, 0))
@@ -304,6 +312,34 @@ class AsimutBookerGUI:
 
         # Load saved time preferences
         self.load_time_preferences()
+
+        # Booking Strategy section
+        strategy_frame = ttk.LabelFrame(main_frame, text="Booking Strategy", padding="15")
+        strategy_frame.pack(fill=tk.X, pady=(0, 15))
+
+        strategy_inner = ttk.Frame(strategy_frame)
+        strategy_inner.pack(fill=tk.X)
+
+        # Reverse date order toggle
+        self.reverse_date_order = tk.BooleanVar(value=False)
+        self.reverse_date_order_cb = ttk.Checkbutton(
+            strategy_inner,
+            text="Book furthest dates first (prioritize newly available rooms)",
+            variable=self.reverse_date_order,
+            command=self.on_strategy_changed
+        )
+        self.reverse_date_order_cb.pack(side=tk.LEFT, padx=(0, 20))
+
+        # Explanation label
+        ttk.Label(
+            strategy_inner,
+            text="(Start from 7 days ahead instead of today)",
+            foreground="gray",
+            font=("Segoe UI", 11)
+        ).pack(side=tk.LEFT)
+
+        # Load saved strategy settings
+        self.load_strategy_settings()
 
         # Bottom section - Output Log
         log_frame = ttk.LabelFrame(main_frame, text="Output Log", padding="15")
@@ -683,6 +719,160 @@ class AsimutBookerGUI:
         else:
             messagebox.showinfo("No Log", "No log file for today yet.")
 
+    def show_logs_viewer(self):
+        """Show log viewer dialog with date folders and log files."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Log Viewer")
+        dialog.geometry("1000x700")
+        dialog.transient(self.root)
+
+        # Main container
+        main_frame = ttk.Frame(dialog, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Left panel - date/file tree
+        left_frame = ttk.Frame(main_frame, width=250)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left_frame.pack_propagate(False)
+
+        ttk.Label(left_frame, text="Log Files", font=("Segoe UI", 12, "bold")).pack(anchor=tk.W, pady=(0, 10))
+
+        # Treeview for dates and log files
+        tree_frame = ttk.Frame(left_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        tree_scroll = ttk.Scrollbar(tree_frame)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.log_tree = ttk.Treeview(tree_frame, yscrollcommand=tree_scroll.set, show="tree")
+        self.log_tree.pack(fill=tk.BOTH, expand=True)
+        tree_scroll.config(command=self.log_tree.yview)
+
+        # Right panel - log content
+        right_frame = ttk.Frame(main_frame)
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Header with current file name
+        header_frame = ttk.Frame(right_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(header_frame, text="Log Content", font=("Segoe UI", 12, "bold")).pack(side=tk.LEFT)
+
+        self.current_log_var = tk.StringVar(value="Select a log file")
+        ttk.Label(header_frame, textvariable=self.current_log_var, foreground="gray").pack(side=tk.RIGHT)
+
+        # Log content text area
+        text_frame = ttk.Frame(right_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.log_text = scrolledtext.ScrolledText(
+            text_frame,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            state=tk.DISABLED
+        )
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+
+        # Bottom buttons
+        btn_frame = ttk.Frame(right_frame)
+        btn_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Button(btn_frame, text="Open in Explorer", command=self.open_logs_folder).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Refresh", command=lambda: self._populate_log_tree()).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+        # Bind tree selection
+        self.log_tree.bind("<<TreeviewSelect>>", self._on_log_select)
+
+        # Populate tree
+        self._populate_log_tree()
+
+    def _populate_log_tree(self):
+        """Populate the log tree with date folders and log files."""
+        # Clear existing items
+        for item in self.log_tree.get_children():
+            self.log_tree.delete(item)
+
+        if not LOGS_DIR.exists():
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            return
+
+        # Get all date folders (format: YYYY-MM-DD) and individual log files
+        items = []
+
+        for item in LOGS_DIR.iterdir():
+            if item.is_dir() and len(item.name) == 10 and item.name[4] == '-':
+                # Date folder
+                items.append(('folder', item.name, item))
+            elif item.is_file() and item.suffix == '.log':
+                # Individual log file at root level
+                items.append(('file', item.name, item))
+
+        # Sort by name descending (newest first)
+        items.sort(key=lambda x: x[1], reverse=True)
+
+        for item_type, name, path in items:
+            if item_type == 'folder':
+                # Format date nicely: 2026-02-02 -> "Sun 2 Feb 2026"
+                try:
+                    date_obj = datetime.strptime(name, "%Y-%m-%d")
+                    display_name = date_obj.strftime("%a %d %b %Y")
+                except:
+                    display_name = name
+
+                folder_id = self.log_tree.insert("", tk.END, text=f"📁 {display_name}", values=(str(path),), open=False)
+
+                # Add log files in this folder
+                log_files = sorted(path.glob("*.log"), reverse=True)
+                for log_file in log_files:
+                    # Format time: 07-30-00.log -> "07:30:00"
+                    time_name = log_file.stem.replace("-", ":")
+                    self.log_tree.insert(folder_id, tk.END, text=f"📄 {time_name}", values=(str(log_file),))
+
+            else:
+                # Root-level log file
+                self.log_tree.insert("", tk.END, text=f"📄 {name}", values=(str(path),))
+
+    def _on_log_select(self, event):
+        """Handle log tree selection."""
+        selection = self.log_tree.selection()
+        if not selection:
+            return
+
+        item = selection[0]
+        values = self.log_tree.item(item, "values")
+
+        if not values:
+            return
+
+        file_path = Path(values[0])
+
+        # Only load if it's a file, not a folder
+        if file_path.is_file():
+            self._load_log_content(file_path)
+
+    def _load_log_content(self, log_path):
+        """Load and display log file content."""
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+
+            self.log_text.config(state=tk.NORMAL)
+            self.log_text.delete(1.0, tk.END)
+            self.log_text.insert(tk.END, content)
+            self.log_text.config(state=tk.DISABLED)
+
+            # Update header with file info
+            rel_path = log_path.relative_to(LOGS_DIR) if LOGS_DIR in log_path.parents or log_path.parent == LOGS_DIR else log_path.name
+            self.current_log_var.set(str(rel_path))
+
+        except Exception as e:
+            self.log_text.config(state=tk.NORMAL)
+            self.log_text.delete(1.0, tk.END)
+            self.log_text.insert(tk.END, f"Error loading log: {e}")
+            self.log_text.config(state=tk.DISABLED)
+            self.current_log_var.set("Error")
+
     def show_about(self):
         """Show about dialog."""
         msg = "AsimutBooker Control Panel\n\n"
@@ -871,6 +1061,24 @@ class AsimutBookerGUI:
             self.custom_time_frame.pack(fill=tk.X, pady=(5, 0))
         else:
             self.custom_time_frame.pack_forget()
+
+    def load_strategy_settings(self):
+        """Load booking strategy settings from settings file."""
+        settings = self.load_settings()
+        strategy = settings.get("booking_strategy", {})
+        self.reverse_date_order.set(strategy.get("reverse_date_order", False))
+
+    def save_strategy_settings(self):
+        """Save booking strategy settings to settings file."""
+        settings = self.load_settings()
+        settings["booking_strategy"] = {
+            "reverse_date_order": self.reverse_date_order.get()
+        }
+        self.save_settings(settings)
+
+    def on_strategy_changed(self):
+        """Handle changes to booking strategy settings."""
+        self.save_strategy_settings()
 
     def add_history_entry(self, bookings_made, events_detected, details=""):
         """Add a new entry to booking history."""
