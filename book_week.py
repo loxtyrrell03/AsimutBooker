@@ -1010,10 +1010,41 @@ def edit_reservation_end_time(page, booking, new_end_time):
 
         # 2. Find the matching event card using JavaScript for efficiency
         def find_matching_panel():
-            """Use JavaScript to search DOM for matching reservation panel."""
+            """Use JavaScript to search DOM for matching reservation panel by date, room, and time."""
             return page.evaluate("""(args) => {
-                const { room, time } = args;
+                const { room, time, targetDate } = args;
                 const panels = document.querySelectorAll('.as-event-panel');
+
+                // Parse target date for comparison (YYYY-MM-DD format)
+                const [targetYear, targetMonth, targetDay] = targetDate.split('-').map(Number);
+
+                const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                                   'July', 'August', 'September', 'October', 'November', 'December'];
+
+                // Helper to find which date section a panel belongs to
+                function getPanelDate(panel) {
+                    // Walk backwards through previous siblings and parent to find date header
+                    let el = panel;
+                    while (el) {
+                        // Check previous siblings
+                        let sibling = el.previousElementSibling;
+                        while (sibling) {
+                            const text = (sibling.textContent || '').trim();
+                            // Match date headers like "Monday 3 February 2026"
+                            const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
+                            if (dateMatch) {
+                                const day = parseInt(dateMatch[2]);
+                                const month = monthNames.indexOf(dateMatch[3]);
+                                const year = parseInt(dateMatch[4]);
+                                return { year, month, day };
+                            }
+                            sibling = sibling.previousElementSibling;
+                        }
+                        // Move up to parent and continue
+                        el = el.parentElement;
+                    }
+                    return null;
+                }
 
                 // Search from end (future events) to beginning
                 for (let i = panels.length - 1; i >= 0; i--) {
@@ -1033,6 +1064,20 @@ def edit_reservation_end_time(page, booking, new_end_time):
                     const startTime = timeMatch[1] + ':' + timeMatch[2];
                     if (startTime !== time) continue;
 
+                    // Must match date
+                    const panelDate = getPanelDate(panel);
+                    if (!panelDate) {
+                        console.log('Could not determine date for panel', i);
+                        continue;
+                    }
+
+                    // Compare dates (month is 0-indexed from monthNames, so targetMonth-1)
+                    if (panelDate.year !== targetYear ||
+                        panelDate.month !== (targetMonth - 1) ||
+                        panelDate.day !== targetDay) {
+                        continue;
+                    }
+
                     // Check if cancelled (strikethrough)
                     const allElements = panel.querySelectorAll('*');
                     let isCancelled = false;
@@ -1050,7 +1095,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
                     return i;
                 }
                 return -1;
-            }""", {"room": room, "time": start_time})
+            }""", {"room": room, "time": start_time, "targetDate": date_str})
 
         # First try without scrolling
         matching_index = find_matching_panel()
