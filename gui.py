@@ -320,10 +320,13 @@ class AsimutBookerGUI:
         strategy_inner = ttk.Frame(strategy_frame)
         strategy_inner.pack(fill=tk.X)
 
-        # Reverse date order toggle
+        # Row 1: Reverse date order toggle
+        strategy_row1 = ttk.Frame(strategy_inner)
+        strategy_row1.pack(fill=tk.X, pady=(0, 8))
+
         self.reverse_date_order = tk.BooleanVar(value=False)
         self.reverse_date_order_cb = ttk.Checkbutton(
-            strategy_inner,
+            strategy_row1,
             text="Book furthest dates first (prioritize newly available rooms)",
             variable=self.reverse_date_order,
             command=self.on_strategy_changed
@@ -332,8 +335,29 @@ class AsimutBookerGUI:
 
         # Explanation label
         ttk.Label(
-            strategy_inner,
+            strategy_row1,
             text="(Start from 7 days ahead instead of today)",
+            foreground="gray",
+            font=("Segoe UI", 11)
+        ).pack(side=tk.LEFT)
+
+        # Row 2: Smart swap toggle
+        strategy_row2 = ttk.Frame(strategy_inner)
+        strategy_row2.pack(fill=tk.X)
+
+        self.smart_swap_enabled = tk.BooleanVar(value=False)
+        self.smart_swap_cb = ttk.Checkbutton(
+            strategy_row2,
+            text="Smart swap (cancel reservations outside preferred times to book better slots)",
+            variable=self.smart_swap_enabled,
+            command=self.on_strategy_changed
+        )
+        self.smart_swap_cb.pack(side=tk.LEFT, padx=(0, 20))
+
+        # Explanation label
+        ttk.Label(
+            strategy_row2,
+            text="(Only when < 4 hours quota remaining)",
             foreground="gray",
             font=("Segoe UI", 11)
         ).pack(side=tk.LEFT)
@@ -1067,12 +1091,14 @@ class AsimutBookerGUI:
         settings = self.load_settings()
         strategy = settings.get("booking_strategy", {})
         self.reverse_date_order.set(strategy.get("reverse_date_order", False))
+        self.smart_swap_enabled.set(strategy.get("smart_swap_enabled", False))
 
     def save_strategy_settings(self):
         """Save booking strategy settings to settings file."""
         settings = self.load_settings()
         settings["booking_strategy"] = {
-            "reverse_date_order": self.reverse_date_order.get()
+            "reverse_date_order": self.reverse_date_order.get(),
+            "smart_swap_enabled": self.smart_swap_enabled.get()
         }
         self.save_settings(settings)
 

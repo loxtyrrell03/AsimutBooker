@@ -460,6 +460,28 @@ def load_booking_strategy():
     return default
 
 
+def load_smart_swap_settings():
+    """Load smart swap settings from settings file.
+
+    Returns:
+        dict with keys: enabled (bool)
+    """
+    default = {"enabled": False}
+
+    if settings_file.exists():
+        try:
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                strategy = settings.get("booking_strategy", {})
+                return {
+                    "enabled": strategy.get("smart_swap_enabled", False)
+                }
+        except:
+            pass
+
+    return default
+
+
 def is_preferred_time(start_hour, time_prefs):
     """Check if a slot's start time falls within the preferred range.
 
@@ -474,6 +496,161 @@ def is_preferred_time(start_hour, time_prefs):
         return True  # All times preferred if disabled
 
     return time_prefs["start_hour"] <= start_hour < time_prefs["end_hour"]
+
+
+def is_outside_preferred_time(start_hour, end_hour, time_prefs):
+    """Check if a reservation is outside the preferred time window.
+
+    A reservation is considered outside if it does NOT overlap with the preferred window.
+
+    Args:
+        start_hour: Reservation start time as decimal hour (e.g., 9.5 for 9:30)
+        end_hour: Reservation end time as decimal hour
+        time_prefs: Dict from load_time_preferences()
+
+    Returns:
+        True if the reservation is completely outside the preferred window
+        False if any part overlaps with preferred times (or if preferences are disabled)
+    """
+    if not time_prefs["enabled"]:
+        return False  # If preferences disabled, nothing is "outside"
+
+    pref_start = time_prefs["start_hour"]
+    pref_end = time_prefs["end_hour"]
+
+    # Reservation is outside if it ends before preferred window starts
+    # OR if it starts after preferred window ends
+    return end_hour <= pref_start or start_hour >= pref_end
+
+
+def get_swappable_reservations(reservations, time_prefs):
+    """Get list of reservations that are outside the preferred time window.
+
+    Args:
+        reservations: List of reservation dicts with keys: date, startTime, endTime, room
+        time_prefs: Dict from load_time_preferences()
+
+    Returns:
+        List of reservations that are completely outside the preferred window,
+        each with added 'start_hour' and 'end_hour' keys for convenience
+    """
+    if not time_prefs["enabled"]:
+        return []  # If preferences disabled, no reservations are swappable
+
+    swappable = []
+    for res in reservations:
+        # Parse times to decimal hours
+        start_parts = res['startTime'].split(':')
+        end_parts = res['endTime'].split(':')
+        start_hour = int(start_parts[0]) + int(start_parts[1]) / 60
+        end_hour = int(end_parts[0]) + int(end_parts[1]) / 60
+
+        if is_outside_preferred_time(start_hour, end_hour, time_prefs):
+            swappable.append({
+                **res,
+                'start_hour': start_hour,
+                'end_hour': end_hour
+            })
+
+    return swappable
+
+
+def cancel_reservation(page, reservation):
+    """Cancel an existing reservation in Asimut.
+
+    Args:
+        page: Playwright page object
+        reservation: Dict with date, startTime, endTime, room
+
+    Returns:
+        True if successfully cancelled, False otherwise
+    """
+    date_str = reservation['date']
+    start_time = reservation['startTime']
+    end_time = reservation['endTime']
+    room = reservation.get('room', 'Unknown')
+
+    print(f"  Attempting to cancel: {room} on {date_str} at {start_time}-{end_time}")
+
+    try:
+        # Navigate to agenda page
+        page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+        page.wait_for_timeout(2000)
+
+        # Scroll to find the event - we need to scroll through the agenda
+        # to ensure lazy-loaded content is visible
+        max_scrolls = 20
+        event_found = False
+
+        for scroll in range(max_scrolls):
+            # Look for event cards that match our time
+            # Events show time range like "09:30 - 11:00"
+            time_text = f"{start_time} - {end_time}"
+
+            # Find all event panels and check if any match our reservation
+            event_cards = page.locator('.as-event-panel, app-as-event').all()
+
+            for card in event_cards:
+                try:
+                    card_text = card.inner_text(timeout=1000)
+                    # Check if this card contains our time AND is a Reservation
+                    if time_text in card_text and 'Reservation' in card_text:
+                        # Check if the room matches (if room info is in the card)
+                        if room and room in card_text:
+                            event_found = True
+                            print(f"  Found matching event card")
+
+                            # Click the more options button (3-dot menu)
+                            more_btn = card.locator('button[data-cy="button_more"], .as-event-options-button').first
+                            if more_btn.count() > 0:
+                                more_btn.click()
+                                page.wait_for_timeout(500)
+
+                                # Click "Cancel booking" in the dropdown menu
+                                # Look for the menu item with the cancel icon
+                                cancel_option = page.locator('mat-list-item:has(mat-icon:has-text("cancel"))').first
+
+                                if cancel_option.count() == 0:
+                                    # Try alternative selectors
+                                    cancel_option = page.locator('button:has-text("Cancel booking"), [role="menuitem"]:has-text("Cancel")').first
+
+                                if cancel_option.count() > 0 and cancel_option.is_visible():
+                                    cancel_option.click()
+                                    page.wait_for_timeout(1000)
+
+                                    # Handle confirmation dialog if it appears
+                                    confirm_btn = page.locator('button:has-text("Confirm"), button:has-text("Yes"), button:has-text("OK"), button:has-text("Delete")').first
+                                    if confirm_btn.count() > 0 and confirm_btn.is_visible():
+                                        confirm_btn.click()
+                                        page.wait_for_timeout(1000)
+
+                                    print(f"  Successfully cancelled reservation: {room} {date_str} {start_time}")
+                                    return True
+                                else:
+                                    print(f"  Could not find 'Cancel booking' option in menu")
+                                    page.keyboard.press("Escape")  # Close menu
+                            else:
+                                print(f"  Could not find more options button on event card")
+                            break
+                except Exception as e:
+                    continue
+
+            if event_found:
+                break
+
+            # Scroll down to load more content
+            page.evaluate("window.scrollBy(0, 300)")
+            page.wait_for_timeout(300)
+
+        if not event_found:
+            print(f"  Could not find event card for {room} {date_str} {start_time}")
+            return False
+
+    except Exception as e:
+        print(f"  Error cancelling reservation: {e}")
+        return False
+
+    return False
 
 
 def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
@@ -1655,6 +1832,7 @@ def scan_agenda(page, tracker, today):
     events_found = 0
     reservations_found = 0
     ignored_count = 0
+    all_reservations = []  # Track all reservations for smart swap feature
     for event in unique_events:
         date_str = event['date']
         start_time = event['startTime']
@@ -1686,6 +1864,14 @@ def scan_agenda(page, tracker, today):
         events_found += 1
         if is_reservation:
             reservations_found += 1
+            # Store reservation details for smart swap feature
+            all_reservations.append({
+                'date': date_str,
+                'startTime': start_time,
+                'endTime': end_time,
+                'room': room,
+                'daysDiff': days_diff
+            })
 
         day_name = target_date.strftime("%A")
         event_marker = "[R]" if is_reservation else "   "
@@ -1710,7 +1896,7 @@ def scan_agenda(page, tracker, today):
         for date_key, mins in sorted(tracker.peak_hours_by_day.items()):
             print(f"    {date_key}: {mins:.0f}/{MAX_PEAK_HOURS * 60} min")
     print("="*60)
-    return events_found
+    return events_found, all_reservations
 
 
 def send_notification(title, message, priority="default"):
@@ -1859,7 +2045,7 @@ def main():
         page = context.new_page()
 
         # First, scan the agenda to learn about existing events
-        events_detected = scan_agenda(page, tracker, today)
+        events_detected, all_reservations = scan_agenda(page, tracker, today)
 
         # Check if we can make any bookings at all
         if tracker.is_quota_full():
@@ -1900,6 +2086,104 @@ def main():
             browser.close()
             return
 
+        # Load time preferences early (needed for smart swap and later for booking)
+        time_prefs = load_time_preferences()
+
+        # Smart Swap: Check if we should swap any reservations
+        # This activates when quota is nearly full and there are reservations outside preferred times
+        swap_settings = load_smart_swap_settings()
+        remaining_hours = tracker.get_remaining_quota_hours()
+
+        if swap_settings["enabled"] and time_prefs["enabled"] and remaining_hours <= 4:
+            print("\n" + "="*60)
+            print("SMART SWAP: Evaluating reservation swaps")
+            print("="*60)
+            print(f"Remaining quota: {remaining_hours:.1f}h (threshold: 4h)")
+            print(f"Preferred time window: {int(time_prefs['start_hour']):02d}:00 - {int(time_prefs['end_hour']):02d}:00")
+
+            # Find reservations outside preferred time window
+            swappable = get_swappable_reservations(all_reservations, time_prefs)
+
+            if swappable:
+                print(f"\nFound {len(swappable)} reservation(s) outside preferred times:")
+                for res in swappable:
+                    print(f"  - {res['room']} on {res['date']} at {res['startTime']}-{res['endTime']}")
+
+                # Navigate to practice rooms to check for available slots within preferred times
+                print("\nChecking for available slots within preferred times...")
+                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=17", wait_until="networkidle")
+                page.wait_for_timeout(3000)
+
+                # Get available slots
+                available_slots = get_available_slots(page)
+
+                # Filter for slots within preferred time window
+                preferred_slots = []
+                for slot_data in available_slots:
+                    room = slot_data['room']
+                    for slot in slot_data.get('slots', []):
+                        start_hour = slot['startHour']
+                        end_hour = slot['endHour']
+                        duration_mins = (end_hour - start_hour) * 60
+
+                        # Check if slot is within preferred times and has minimum duration
+                        if (duration_mins >= MIN_BOOKING_MINUTES and
+                            time_prefs["start_hour"] <= start_hour and
+                            end_hour <= time_prefs["end_hour"]):
+                            preferred_slots.append({
+                                'room': room,
+                                'startHour': start_hour,
+                                'endHour': end_hour,
+                                'duration_mins': duration_mins
+                            })
+
+                if preferred_slots:
+                    print(f"\nFound {len(preferred_slots)} available slot(s) within preferred times")
+
+                    # Execute up to 2 swaps
+                    swaps_made = 0
+                    max_swaps = 2
+
+                    for res_to_cancel in swappable:
+                        if swaps_made >= max_swaps:
+                            break
+                        if not preferred_slots:
+                            break
+
+                        # Calculate hours that will be freed
+                        hours_freed = res_to_cancel['end_hour'] - res_to_cancel['start_hour']
+
+                        print(f"\nAttempting swap #{swaps_made + 1}:")
+                        print(f"  Cancel: {res_to_cancel['room']} {res_to_cancel['date']} {res_to_cancel['startTime']}-{res_to_cancel['endTime']} ({hours_freed:.1f}h)")
+
+                        # Cancel the reservation
+                        if cancel_reservation(page, res_to_cancel):
+                            swaps_made += 1
+                            # Update tracker - remove the cancelled reservation from quota
+                            tracker.existing_reservation_hours -= hours_freed
+
+                            print(f"  Freed {hours_freed:.1f}h quota. New remaining: {tracker.get_remaining_quota_hours():.1f}h")
+
+                            # Navigate back to practice rooms after cancellation
+                            page.goto("https://rwcmd.asimut.net/overview?locationGroupId=17", wait_until="networkidle")
+                            page.wait_for_timeout(2000)
+
+                            # Remove used slot from available list
+                            # (The actual booking will happen in the main booking loop)
+                        else:
+                            print(f"  Failed to cancel reservation")
+
+                    if swaps_made > 0:
+                        print(f"\n  Completed {swaps_made} swap(s). Quota freed for better bookings.")
+                    else:
+                        print(f"\n  No swaps completed.")
+                else:
+                    print("\nNo available slots within preferred times - skipping swap")
+            else:
+                print("\nNo reservations outside preferred times to swap")
+
+            print("="*60)
+
         # Navigate directly to Grand Piano practice rooms
         print("\nNavigating to practice rooms (Grand Piano)...")
         page.goto("https://rwcmd.asimut.net/overview?locationGroupId=17", wait_until="networkidle")
@@ -1914,8 +2198,7 @@ def main():
         if disabled_dates:
             print(f"\n  Disabled dates (will skip): {sorted(disabled_dates)}")
 
-        # Load time preferences from settings
-        time_prefs = load_time_preferences()
+        # Time preferences already loaded earlier (for smart swap check)
         if time_prefs["enabled"]:
             print(f"\n  Time preferences: Prioritizing {int(time_prefs['start_hour']):02d}:00 - {int(time_prefs['end_hour']):02d}:00")
             if time_prefs["strict_mode"]:
