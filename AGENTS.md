@@ -2,6 +2,8 @@
 
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.
 
+> **IMPORTANT FOR AI AGENTS**: When making changes to this codebase, always update this `CLAUDE.md` file to reflect new features, changed behavior, or updated architecture. Keep documentation in sync with code.
+
 ## Project Overview
 
 This tool automatically books music practice rooms on the RWCMD Asimut system before other students can claim them. It runs on a schedule via Windows Task Scheduler (with wake-from-sleep support) and books rooms as soon as they become available in the booking window.
@@ -163,6 +165,38 @@ The booker automatically handles this in two phases:
 - `calculate_max_extension()`: Determines how much a booking can be extended based on current time vs horizon
 - `try_extend_booking()`: Attempts to extend a booking via Asimut's edit feature
 
+## Multi-Day Horizon Snipe
+
+The booker scans **all** horizon days (7, 5, 3) for snipe candidates, not just the furthest day. This catches opportunities across different room horizons.
+
+### How Multi-Day Snipe Works
+
+1. **Pre-scan phase** (before target time):
+   - Navigate to Day 7 → scan for 7-day horizon rooms becoming bookable
+   - Navigate to Day 5 → scan for 5-day horizon rooms becoming bookable
+   - Navigate to Day 3 → scan for 3-day horizon rooms becoming bookable
+   - Collect all candidates within 3-minute snipe window
+
+2. **Sort candidates**: Furthest day first, then by room priority within each day
+
+3. **Sequential snipe**: Attempt each candidate in order
+   - Navigate to candidate's day
+   - Pre-fill form, wait for exact moment, click Save
+   - On success: record booking, continue to next
+   - On failure: skip, try next candidate
+
+4. **Resume normal booking**: Navigate back to furthest enabled day
+
+### Extension Priority
+
+Pending extensions take priority over new snipes. If a slot has a pending extension (from a previous horizon edge booking), the snipe scanner skips that slot to avoid conflicts.
+
+### Key Functions
+
+- `navigate_to_day()`: Helper to navigate calendar forward/backward
+- `find_all_snipe_candidates_multi_day()`: Scans all horizon days for snipe candidates
+- `find_horizon_snipe_candidate()`: Original single-day scanner (still used internally)
+
 ## Configuration
 
 The script loads settings from `config/config.yaml` with fallback to hardcoded defaults. Key configurable options:
@@ -206,4 +240,12 @@ python book_week.py --headless
 | `config/config.yaml` | User configuration (rooms, horizons, rules) |
 | `data/browser_state/state.json` | Saved browser session (cookies, localStorage) |
 | `data/booking_history.json` | JSON log of all booking runs |
-| `data/settings.json` | GUI settings including disabled dates |
+| `data/settings.json` | GUI settings including disabled dates and extendable bookings |
+
+## Maintenance Notes
+
+When modifying this codebase:
+- **Always update `CLAUDE.md`** when adding features, changing behavior, or modifying architecture
+- Keep the "Key Functions" sections current with new/changed functions
+- Document any new booking rules or constraints
+- Update the Files Overview table if adding new files
