@@ -2475,6 +2475,39 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         return False
 
 
+def navigate_to_day(page, target_day, current_day):
+    """
+    Navigate from current_day to target_day using chevron clicks.
+
+    Args:
+        page: Playwright page object
+        target_day: Day to navigate to (0 = today, 7 = 7 days ahead)
+        current_day: Current calendar position
+
+    Returns:
+        The new current_day position
+    """
+    if target_day == current_day:
+        return current_day
+
+    if target_day > current_day:
+        # Click forward
+        clicks_needed = target_day - current_day
+        print(f"    Navigating forward {clicks_needed} day(s) to Day {target_day}...")
+        for _ in range(clicks_needed):
+            page.locator("mat-icon").filter(has_text="chevron_right").first.click()
+            page.wait_for_timeout(500)
+    else:
+        # Click backward
+        clicks_needed = current_day - target_day
+        print(f"    Navigating backward {clicks_needed} day(s) to Day {target_day}...")
+        for _ in range(clicks_needed):
+            page.locator("mat-icon").filter(has_text="chevron_left").first.click()
+            page.wait_for_timeout(500)
+
+    return target_day
+
+
 def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
     """
     Find a slot that's about to become bookable (currently <30min past horizon).
@@ -2550,6 +2583,158 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
     if best_candidate:
         return best_candidate, best_wait_seconds
     return None, None
+
+
+def find_all_snipe_candidates_multi_day(page, tracker, time_prefs, current_calendar_day):
+    """
+    Scan all horizon days (7, 5, 3) for snipe candidates.
+
+    This navigates to each horizon day, collects available slots, and identifies
+    candidates that will become bookable within 3 minutes.
+
+    Prioritizes extensions: Skips snipe candidates that would conflict with
+    pending extensions (same room/date/time that's waiting to be extended).
+
+    Args:
+        page: Playwright page object
+        tracker: BookingTracker instance
+        time_prefs: Time preferences dict
+        current_calendar_day: Current calendar position (0 = today)
+
+    Returns:
+        Tuple of (candidates_list, new_calendar_day) where:
+        - candidates_list: List of candidate dicts sorted by (day desc, room priority)
+        - new_calendar_day: Updated calendar position after scanning
+    """
+    now = datetime.now()
+    today = now.date()
+    candidates = []
+
+    # Load pending extensions to avoid conflicts (prioritize extensions over new snipes)
+    extendable_bookings = load_extendable_bookings()
+    extension_keys = set()
+    if extendable_bookings:
+        for booking in extendable_bookings:
+            # Create a key for each pending extension: "date|room|start_hour"
+            ext_date = booking.get("date", "")
+            ext_room = booking.get("room", "")
+            ext_start = booking.get("startTime", "")
+            if ext_date and ext_room and ext_start:
+                # Convert start time "HH:MM" to hour float
+                try:
+                    h, m = map(int, ext_start.split(":"))
+                    ext_start_hour = h + m / 60.0
+                    extension_keys.add((ext_date, ext_room, ext_start_hour))
+                except:
+                    pass
+        if extension_keys:
+            print(f"\n  Found {len(extension_keys)} pending extension(s) - will skip conflicting snipe candidates")
+
+    # Get unique horizon values and sort in reverse order (furthest first): 7, 5, 3
+    horizon_days_to_check = sorted(set(ROOM_HORIZONS.values()), reverse=True)
+
+    print(f"\n  Scanning {len(horizon_days_to_check)} horizon days for snipe candidates: {horizon_days_to_check}")
+
+    for horizon_value in horizon_days_to_check:
+        # The day we need to check is "horizon_value" days ahead
+        # (e.g., 7-day horizon rooms become bookable on day 7)
+        days_ahead = horizon_value
+        target_date = today + timedelta(days=days_ahead)
+
+        print(f"\n    Scanning Day {days_ahead} ({target_date.strftime('%Y-%m-%d')}) for {horizon_value}-day horizon rooms...")
+
+        # Navigate to this day
+        current_calendar_day = navigate_to_day(page, days_ahead, current_calendar_day)
+        page.wait_for_timeout(500)  # Wait for calendar to update
+
+        # Get available slots for this day
+        available_data = get_available_slots(page)
+
+        # Find snipe candidates on this day
+        day_candidates = 0
+        for room_data in available_data:
+            room_name = room_data["room"]
+            if room_name not in PRIORITY_ROOMS:
+                continue
+
+            room_horizon = ROOM_HORIZONS.get(room_name, DEFAULT_HORIZON)
+
+            # Only check rooms whose horizon matches this day
+            # (e.g., on Day 7, only check 7-day horizon rooms)
+            if room_horizon != horizon_value:
+                continue
+
+            room_priority = PRIORITY_ROOMS.index(room_name)
+
+            for slot in room_data["slots"]:
+                start_hour = slot['startHour']
+                slot_duration = (slot['endHour'] - slot['startHour']) * 60
+
+                if slot_duration < MIN_BOOKING_MINUTES:
+                    continue
+
+                # Check time preferences if strict mode is on
+                if time_prefs["enabled"] and time_prefs["strict_mode"]:
+                    if not is_preferred_time(start_hour, time_prefs):
+                        continue
+
+                # Calculate when this slot becomes bookable (30 min past horizon)
+                slot_datetime = datetime.combine(target_date, datetime.min.time())
+                slot_datetime = slot_datetime.replace(
+                    hour=int(start_hour),
+                    minute=int((start_hour % 1) * 60)
+                )
+                available_from = slot_datetime - timedelta(days=room_horizon)
+                bookable_from = available_from + timedelta(minutes=MIN_BOOKING_MINUTES)
+
+                # How long until this slot is bookable?
+                seconds_until_bookable = (bookable_from - datetime.now()).total_seconds()
+
+                # We want slots that will become bookable soon (within 3 minutes)
+                # but aren't bookable yet
+                if 0 < seconds_until_bookable <= 180:  # 0 to 3 minutes away
+                    # Check if this conflicts with a pending extension (prioritize extensions)
+                    target_date_str = target_date.strftime('%Y-%m-%d')
+                    if (target_date_str, room_name, start_hour) in extension_keys:
+                        print(f"      Skipping {room_name} at {start_hour:.2f}: pending extension takes priority")
+                        continue
+
+                    # Check if we can actually book this (quota, conflicts, etc.)
+                    can_book, reason = tracker.can_book(room_name, target_date, start_hour, MIN_BOOKING_MINUTES)
+                    if not can_book:
+                        print(f"      Skipping {room_name} at {start_hour:.2f}: {reason}")
+                        continue
+
+                    candidates.append({
+                        "room": room_name,
+                        "start_hour": start_hour,
+                        "end_hour": slot['endHour'],
+                        "duration": slot_duration,
+                        "room_priority": room_priority,
+                        "click_x": slot["clickX"],
+                        "click_y": slot["clickY"],
+                        "bookable_from": bookable_from,
+                        "horizon_days": room_horizon,
+                        "days_ahead": days_ahead,
+                        "target_date": target_date,
+                        "seconds_until": seconds_until_bookable
+                    })
+                    day_candidates += 1
+                    print(f"      Found: {room_name} at {start_hour:.2f}, bookable in {seconds_until_bookable:.0f}s")
+
+        if day_candidates == 0:
+            print(f"      No snipe candidates found for Day {days_ahead}")
+
+    # Sort by: days_ahead (furthest first), then room_priority (best room)
+    candidates.sort(key=lambda c: (-c['days_ahead'], c['room_priority']))
+
+    print(f"\n  Total snipe candidates found: {len(candidates)}")
+    if candidates:
+        print(f"  Snipe order (furthest day first, then by room priority):")
+        for i, c in enumerate(candidates, 1):
+            print(f"    {i}. Day {c['days_ahead']} - {c['room']} at {c['start_hour']:.2f} (bookable in {c['seconds_until']:.0f}s)")
+
+    return candidates, current_calendar_day
 
 
 def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
@@ -3468,48 +3653,81 @@ def main():
         # Wait for target time if specified (prep is done, ready to book)
         if args.target_time:
             # =================================================================
-            # HORIZON SNIPE: Check for slots about to become bookable
+            # HORIZON SNIPE: Check ALL horizon days for slots about to become bookable
             # =================================================================
-            # Before waiting, check if there's a slot that will become bookable
-            # right at target time. If so, we can "snipe" it by opening the
-            # booking form early and clicking Save at the exact moment.
+            # Pre-scan all horizon days (7, 5, 3) to find snipe candidates.
+            # This happens BEFORE target time so we know all candidates upfront.
 
-            # Get current slot data to look for snipe candidates
             print("\n" + "="*60)
-            print("CHECKING FOR HORIZON SNIPE OPPORTUNITIES")
+            print("CHECKING FOR HORIZON SNIPE OPPORTUNITIES (MULTI-DAY)")
             print("="*60)
 
-            snipe_target_date = today + timedelta(days=day_order[0]) if day_order else today
-            available_data = get_available_slots(page)
-            snipe_candidate, seconds_until_bookable = find_horizon_snipe_candidate(
-                available_data, snipe_target_date, tracker, time_prefs
+            # Pre-scan ALL horizon days while we have time (before target time)
+            all_snipe_candidates, current_calendar_day = find_all_snipe_candidates_multi_day(
+                page, tracker, time_prefs, current_calendar_day
             )
 
-            if snipe_candidate:
-                print(f"  [SNIPE] Found candidate: {snipe_candidate['room']} at {snipe_candidate['start_hour']:.2f}")
-                print(f"  [SNIPE] Becomes bookable in {seconds_until_bookable:.1f} seconds")
-                print(f"  [SNIPE] Bookable at: {snipe_candidate['bookable_from'].strftime('%H:%M:%S')}")
+            if all_snipe_candidates:
+                # Navigate to the first candidate's day (highest priority)
+                first_candidate = all_snipe_candidates[0]
+                if current_calendar_day != first_candidate['days_ahead']:
+                    print(f"\n  Positioning for first snipe...")
+                    current_calendar_day = navigate_to_day(page, first_candidate['days_ahead'], current_calendar_day)
+                    page.wait_for_timeout(500)
 
-                # Attempt the snipe
-                snipe_success = try_horizon_snipe(
-                    page, snipe_candidate, snipe_target_date, tracker, day_order[0]
-                )
+                print(f"\n  Ready to snipe {len(all_snipe_candidates)} candidate(s)")
+                print(f"  First snipe: {first_candidate['room']} at {first_candidate['start_hour']:.2f} (Day {first_candidate['days_ahead']})")
+                print(f"  Bookable at: {first_candidate['bookable_from'].strftime('%H:%M:%S')}")
 
-                if snipe_success:
-                    total_booked += 1
-                    booking_details.append(
-                        f"{snipe_target_date.strftime('%Y-%m-%d')} {snipe_candidate['room']} "
-                        f"{int(snipe_candidate['start_hour']):02d}:{int((snipe_candidate['start_hour'] % 1) * 60):02d} "
-                        f"{int(snipe_candidate['start_hour'] + 0.5):02d}:{int(((snipe_candidate['start_hour'] + 0.5) % 1) * 60):02d} "
-                        f"{MIN_BOOKING_MINUTES}"
+                # =================================================================
+                # SEQUENTIAL SNIPE PHASE
+                # =================================================================
+                snipes_attempted = 0
+                snipes_successful = 0
+
+                for idx, candidate in enumerate(all_snipe_candidates):
+                    snipes_attempted += 1
+                    snipe_target_date = candidate['target_date']
+                    days_ahead = candidate['days_ahead']
+
+                    print(f"\n  [SNIPE {idx + 1}/{len(all_snipe_candidates)}] "
+                          f"Attempting {candidate['room']} at {candidate['start_hour']:.2f} (Day {days_ahead})")
+
+                    # Navigate to candidate's day if needed
+                    if current_calendar_day != days_ahead:
+                        print(f"    Navigating to Day {days_ahead}...")
+                        current_calendar_day = navigate_to_day(page, days_ahead, current_calendar_day)
+                        page.wait_for_timeout(500)
+
+                    # Attempt the snipe
+                    snipe_success = try_horizon_snipe(
+                        page, candidate, snipe_target_date, tracker, days_ahead
                     )
-                    print(f"\n  [SNIPE] Horizon snipe successful!")
 
-                    # Navigate back to calendar for normal booking flow
-                    go_back(page, day_order[0])
-                    page.wait_for_timeout(1000)
-                else:
-                    print(f"\n  [SNIPE] Horizon snipe failed, continuing with normal flow...")
+                    if snipe_success:
+                        snipes_successful += 1
+                        total_booked += 1
+                        booking_details.append(
+                            f"{snipe_target_date.strftime('%Y-%m-%d')} {candidate['room']} "
+                            f"{int(candidate['start_hour']):02d}:{int((candidate['start_hour'] % 1) * 60):02d} "
+                            f"{int(candidate['start_hour'] + 0.5):02d}:{int(((candidate['start_hour'] + 0.5) % 1) * 60):02d} "
+                            f"{MIN_BOOKING_MINUTES}"
+                        )
+                        print(f"    [SNIPE {idx + 1}] SUCCESS!")
+
+                        # Navigate back to calendar for next snipe
+                        go_back(page, days_ahead)
+                        page.wait_for_timeout(500)
+                    else:
+                        print(f"    [SNIPE {idx + 1}] FAILED, continuing to next candidate...")
+
+                print(f"\n  Snipe phase complete: {snipes_successful}/{snipes_attempted} successful")
+
+                # Navigate back to furthest enabled day for normal booking flow
+                if day_order and current_calendar_day != day_order[0]:
+                    print(f"\n  Returning to Day {day_order[0]} for normal booking flow...")
+                    current_calendar_day = navigate_to_day(page, day_order[0], current_calendar_day)
+                    page.wait_for_timeout(500)
             else:
                 print(f"  No snipe candidates found (no slots becoming bookable within 3 minutes)")
 
