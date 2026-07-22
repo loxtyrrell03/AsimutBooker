@@ -1,0 +1,340 @@
+[07/02/2026 17:58:03.55] Starting scheduled booking run... 
+============================================================ 
+============================================================
+ASIMUT WEEK BOOKER
+============================================================
+Today: 2026-02-07
+Booking for: 2026-02-07 to 2026-02-14
+Mode: Visible browser
+============================================================
+
+============================================================
+SCANNING MY AGENDA FOR EXISTING EVENTS
+============================================================
+  [DEBUG] Navigating to agenda page...
+  [DEBUG] Agenda page loaded, URL: https://rwcmd.asimut.net/agenda...
+  Scrolling until we reach 14 February 2026...
+  [DEBUG] Found target date '14 February 2026' after 2 scrolls
+  Final pass to capture all events (10 scrolls)...
+  [DEBUG] Raw events extracted: 29
+
+  Found 29 unique events in agenda (deduplicated from 29):
+  [Tracker] Added reservation: 2026-02-08 9.50-10.25
+  [R] 2026-02-08 (Sunday): 09:30 - 10:15 in B0.13
+  [Tracker] Added reservation: 2026-02-08 10.25-10.75
+  [R] 2026-02-08 (Sunday): 10:15 - 10:45 in B1.14
+  [Tracker] Added conflict: 2026-02-08 11.00-13.00
+      2026-02-08 (Sunday): 11:00 - 13:00
+  [Tracker] Added reservation: 2026-02-08 14.00-14.50
+  [R] 2026-02-08 (Sunday): 14:00 - 14:30 in B1.18
+  [Tracker] Added conflict: 2026-02-08 14.50-17.50
+      2026-02-08 (Sunday): 14:30 - 17:30
+  [Tracker] Added reservation: 2026-02-09 9.75-11.25 (+90min peak)
+  [R] 2026-02-09 (Monday): 09:45 - 11:15 in B0.13
+  [Tracker] Added reservation: 2026-02-09 12.25-12.75 (+30min peak)
+  [R] 2026-02-09 (Monday): 12:15 - 12:45 in B0.14
+  [Tracker] Added reservation: 2026-02-09 20.00-22.00
+  [R] 2026-02-09 (Monday): 20:00 - 22:00 in B0.16
+  [Tracker] Added reservation: 2026-02-10 9.00-10.00 (+60min peak)
+  [R] 2026-02-10 (Tuesday): 09:00 - 10:00 in B0.16
+  [Tracker] Added conflict: 2026-02-10 11.25-13.00
+      2026-02-10 (Tuesday): 11:15 - 13:00
+  [Tracker] Added conflict: 2026-02-10 13.00-14.00
+      2026-02-10 (Tuesday): 13:00 - 14:00
+  [Tracker] Added reservation: 2026-02-10 15.50-16.00 (+30min peak)
+  [R] 2026-02-10 (Tuesday): 15:30 - 16:00 in B1.18
+  [Tracker] Added reservation: 2026-02-10 17.00-17.50
+  [R] 2026-02-10 (Tuesday): 17:00 - 17:30 in B1.11
+  [Tracker] Added reservation: 2026-02-10 17.50-18.00
+  [R] 2026-02-10 (Tuesday): 17:30 - 18:00 in B0.23
+  [Tracker] Added conflict: 2026-02-10 18.00-21.00
+      2026-02-10 (Tuesday): 18:00 - 21:00 in B0.08
+  [Tracker] Added reservation: 2026-02-11 9.50-10.00 (+30min peak)
+  [R] 2026-02-11 (Wednesday): 09:30 - 10:00 in B0.23
+  [Tracker] Added conflict: 2026-02-11 16.00-17.50
+      2026-02-11 (Wednesday): 16:00 - 17:30 in B0.03
+  [Tracker] Added reservation: 2026-02-11 19.00-21.00
+  [R] 2026-02-11 (Wednesday): 19:00 - 21:00 in B1.10
+  [Tracker] Added reservation: 2026-02-12 9.50-10.00 (+30min peak)
+  [R] 2026-02-12 (Thursday): 09:30 - 10:00 in B1.15
+  [Tracker] Added conflict: 2026-02-12 10.00-11.00
+      2026-02-12 (Thursday): 10:00 - 11:00 in B1.09
+  [Tracker] Added conflict: 2026-02-12 17.00-18.00
+      2026-02-12 (Thursday): 17:00 - 18:00 in B0.03
+  [Tracker] Added reservation: 2026-02-12 20.00-22.00
+  [R] 2026-02-12 (Thursday): 20:00 - 22:00 in B0.11
+  [Tracker] Added reservation: 2026-02-13 17.00-18.00
+  [R] 2026-02-13 (Friday): 17:00 - 18:00 in B0.16
+  [Tracker] Added reservation: 2026-02-13 19.25-21.25
+  [R] 2026-02-13 (Friday): 19:15 - 21:15 in B0.14
+  [Tracker] Added reservation: 2026-02-14 12.00-12.50
+  [R] 2026-02-14 (Saturday): 12:00 - 12:30 in B0.13
+  [Tracker] Added reservation: 2026-02-14 12.50-13.00
+  [R] 2026-02-14 (Saturday): 12:30 - 13:00 in B0.14
+  [Tracker] Added reservation: 2026-02-14 13.50-14.00
+  [R] 2026-02-14 (Saturday): 13:30 - 14:00 in B0.16
+  [Tracker] Added reservation: 2026-02-14 14.50-16.50
+  [R] 2026-02-14 (Saturday): 14:30 - 16:30 in B0.14
+  [Tracker] Added reservation: 2026-02-14 16.75-17.25
+  [R] 2026-02-14 (Saturday): 16:45 - 17:15 in B0.11
+
+  Total events: 29 (21 reservations, 8 other)
+
+  Rolling quota: 20.2/28 hours this week
+  [OK] Can book 7.8 more hours
+  Peak hours from existing reservations:
+    2026-02-09: 120/120 min
+    2026-02-10: 90/120 min
+    2026-02-11: 30/120 min
+    2026-02-12: 30/120 min
+============================================================
+
+Navigating to practice rooms (AHC)...
+  Currently showing: Unknown
+
+  Disabled dates (will skip): ['2026-02-02', '2026-02-03', '2026-02-04', '2026-02-05', '2026-02-06', '2026-02-07', '2026-02-08', '2026-02-09']
+
+  Time preferences: Prioritizing 09:00 - 21:00
+  Strict mode: ON (only booking preferred times)
+
+  Booking strategy: REVERSE ORDER (furthest dates first)
+
+  Smart redistribution calculation:
+    Enabled days: 5/8
+    Remaining quota: 7.8h
+    Ideal hours/day: 5.6h
+    Current hours per day:
+      2026-02-10 (Tue): 2.5h [needs +3.1h]
+      2026-02-11 (Wed): 2.5h [needs +3.1h]
+      2026-02-12 (Thu): 2.5h [needs +3.1h]
+      2026-02-13 (Fri): 3.0h [needs +2.6h]
+      2026-02-14 (Sat): 4.0h [needs +1.6h]
+
+  Navigating to day 7 first (reverse order strategy)...
+
+============================================================
+CHECKING FOR HORIZON SNIPE OPPORTUNITIES (MULTI-DAY)
+============================================================
+
+  Found 11 pending extension(s) - will skip conflicting snipe candidates
+
+  Scanning 3 horizon days for snipe candidates: [7, 5, 3]
+
+    Scanning Day 7 (2026-02-14) for 7-day horizon rooms...
+      No snipe candidates found for Day 7
+
+    Scanning Day 5 (2026-02-12) for 5-day horizon rooms...
+    Navigating backward 2 day(s) to Day 5...
+      Skipping B0.23 at 17.50: Overlaps with your existing reservation
+      No snipe candidates found for Day 5
+
+    Scanning Day 3 (2026-02-10) for 3-day horizon rooms...
+    Navigating backward 2 day(s) to Day 3...
+      No snipe candidates found for Day 3
+
+  Total snipe candidates found: 0
+  No snipe candidates found (no slots becoming bookable within 3 minutes)
+============================================================
+
+============================================================
+READY - Waiting for target time: 18:00
+============================================================
+Current time: 17:58:40
+Seconds to wait: 80
+  T-70s...
+  T-60s...
+  T-50s...
+  T-40s...
+  T-30s...
+  T-20s...
+  T-10s...
+  T-0s...
+
+>>> TARGET TIME REACHED: 18:00:00 <<<
+============================================================
+
+
+============================================================
+REFRESHING PAGE FOR UPDATED SLOT AVAILABILITY
+============================================================
+  [DEBUG] Pre-refresh time: 18:00:00.099
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Calendar position before refresh: day 3
+  [DEBUG] Post-refresh time: 18:00:02.607
+  [DEBUG] Refresh took: 2.51s
+  [DEBUG] Post-refresh URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Calendar position after refresh: day 3 (unchanged)
+  [DEBUG] Could not extract slot times
+============================================================
+
+============================================================
+PROCESSING BOOKING EXTENSIONS
+============================================================
+Found 11 potentially extendable booking(s)
+
+============================================================
+EXTENDING BOOKING: B0.13 on 2026-02-12
+  Current: 19:30 - 20:00
+  Target:  19:30 - 21:30
+============================================================
+  Editing reservation: B0.13 on 2026-02-12
+    Current: 19:30-20:00
+    New end: 21:30
+    Not found in visible area, scrolling...
+    Could not find event card for B0.13 2026-02-12 19:30
+  Skipped B0.13 2026-02-12 19:30: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.16 on 2026-02-12
+  Current: 19:45 - 20:15
+  Target:  19:45 - 21:45
+============================================================
+  Editing reservation: B0.16 on 2026-02-12
+    Current: 19:45-20:15
+    New end: 21:45
+    Not found in visible area, scrolling...
+    Could not find event card for B0.16 2026-02-12 19:45
+  Skipped B0.16 2026-02-12 19:45: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.16 on 2026-02-12
+  Current: 20:00 - 20:30
+  Target:  20:00 - 22:00
+============================================================
+  Editing reservation: B0.16 on 2026-02-12
+    Current: 20:00-20:30
+    New end: 22:00
+    Not found in visible area, scrolling...
+    Could not find event card for B0.16 2026-02-12 20:00
+  Skipped B0.16 2026-02-12 20:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.13 on 2026-02-12
+  Current: 20:15 - 20:45
+  Target:  20:15 - 22:15
+============================================================
+  Editing reservation: B0.13 on 2026-02-12
+    Current: 20:15-20:45
+    New end: 22:15
+    Not found in visible area, scrolling...
+    Could not find event card for B0.13 2026-02-12 20:15
+  Skipped B0.13 2026-02-12 20:15: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.11 on 2026-02-13
+  Current: 19:15 - 19:45
+  Target:  19:15 - 21:15
+============================================================
+  Editing reservation: B0.11 on 2026-02-13
+    Current: 19:15-19:45
+    New end: 21:15
+    Error editing reservation: Page.wait_for_timeout: Target page, context or browser has been closed
+  Skipped B0.11 2026-02-13 19:15: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.17 on 2026-02-11
+  Current: 19:30 - 20:00
+  Target:  19:30 - 21:30
+============================================================
+  Editing reservation: B1.17 on 2026-02-11
+    Current: 19:30-20:00
+    New end: 21:30
+    Error editing reservation: Page.goto: Target page, context or browser has been closed
+  Skipped B1.17 2026-02-11 19:30: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.08 on 2026-02-11
+  Current: 19:30 - 20:00
+  Target:  19:30 - 21:30
+============================================================
+  Editing reservation: B1.08 on 2026-02-11
+    Current: 19:30-20:00
+    New end: 21:30
+    Error editing reservation: Page.goto: Target page, context or browser has been closed
+  Skipped B1.08 2026-02-11 19:30: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.20 on 2026-02-11
+  Current: 19:45 - 20:15
+  Target:  19:45 - 21:45
+============================================================
+  Editing reservation: B1.20 on 2026-02-11
+    Current: 19:45-20:15
+    New end: 21:45
+    Error editing reservation: Page.goto: Target page, context or browser has been closed
+  Skipped B1.20 2026-02-11 19:45: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.14 on 2026-02-12
+  Current: 15:00 - 15:30
+  Target:  15:00 - 16:00
+============================================================
+  Editing reservation: B1.14 on 2026-02-12
+    Current: 15:00-15:30
+    New end: 16:00
+    Error editing reservation: Page.goto: Target page, context or browser has been closed
+  Skipped B1.14 2026-02-12 15:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.08 on 2026-02-12
+  Current: 15:00 - 15:30
+  Target:  15:00 - 16:00
+============================================================
+  Editing reservation: B1.08 on 2026-02-12
+    Current: 15:00-15:30
+    New end: 16:00
+    Error editing reservation: Page.goto: Target page, context or browser has been closed
+  Skipped B1.08 2026-02-12 15:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.23 on 2026-02-12
+  Current: 16:00 - 16:30
+  Target:  16:00 - 18:00
+============================================================
+  Editing reservation: B0.23 on 2026-02-12
+    Current: 16:00-16:30
+    New end: 18:00
+    Error editing reservation: Page.goto: Target page, context or browser has been closed
+  Skipped B0.23 2026-02-12 16:00: Edit operation failed
+============================================================
+
+Navigating back to practice rooms...
+Traceback (most recent call last):
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 4409, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 3830, in main
+    page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\sync_api\_generated.py", line 9054, in goto
+    self._sync(
+    ~~~~~~~~~~^
+        self._impl_obj.goto(
+        ^^^^^^^^^^^^^^^^^^^^
+            url=url, timeout=timeout, waitUntil=wait_until, referer=referer
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        )
+        ^
+    )
+    ^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ~~~~~~~~~~~^^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_page.py", line 552, in goto
+    return await self._main_frame.goto(**locals_to_params(locals()))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_frame.py", line 153, in goto
+    await self._channel.send(
+        "goto", self._navigation_timeout, locals_to_params(locals())
+    )
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TargetClosedError: Page.goto: Target page, context or browser has been closed
+============================================================ 
+[07/02/2026 18:00:30.82] Booking run completed 

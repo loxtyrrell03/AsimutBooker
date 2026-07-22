@@ -1,0 +1,567 @@
+[07/02/2026 19:43:02.46] Starting scheduled booking run... 
+============================================================ 
+============================================================
+ASIMUT WEEK BOOKER
+============================================================
+Today: 2026-02-07
+Booking for: 2026-02-07 to 2026-02-14
+Mode: Visible browser
+============================================================
+
+============================================================
+SCANNING MY AGENDA FOR EXISTING EVENTS
+============================================================
+  [DEBUG] Navigating to agenda page...
+  [DEBUG] Agenda page loaded, URL: https://rwcmd.asimut.net/agenda...
+  Scrolling until we reach 14 February 2026...
+  [DEBUG] Found target date '14 February 2026' after 2 scrolls
+  Final pass to capture all events (10 scrolls)...
+  [DEBUG] Raw events extracted: 30
+
+  Found 30 unique events in agenda (deduplicated from 30):
+  [Tracker] Added reservation: 2026-02-08 9.50-10.25
+  [R] 2026-02-08 (Sunday): 09:30 - 10:15 in B0.13
+  [Tracker] Added reservation: 2026-02-08 10.25-10.75
+  [R] 2026-02-08 (Sunday): 10:15 - 10:45 in B1.14
+  [Tracker] Added conflict: 2026-02-08 11.00-13.00
+      2026-02-08 (Sunday): 11:00 - 13:00
+  [Tracker] Added reservation: 2026-02-08 14.00-14.50
+  [R] 2026-02-08 (Sunday): 14:00 - 14:30 in B1.18
+  [Tracker] Added conflict: 2026-02-08 14.50-17.50
+      2026-02-08 (Sunday): 14:30 - 17:30
+  [Tracker] Added reservation: 2026-02-09 9.75-11.25 (+90min peak)
+  [R] 2026-02-09 (Monday): 09:45 - 11:15 in B0.13
+  [Tracker] Added reservation: 2026-02-09 12.25-12.75 (+30min peak)
+  [R] 2026-02-09 (Monday): 12:15 - 12:45 in B0.14
+  [Tracker] Added reservation: 2026-02-09 20.00-22.00
+  [R] 2026-02-09 (Monday): 20:00 - 22:00 in B0.16
+  [Tracker] Added reservation: 2026-02-10 9.00-10.00 (+60min peak)
+  [R] 2026-02-10 (Tuesday): 09:00 - 10:00 in B0.16
+  [Tracker] Added conflict: 2026-02-10 11.25-13.00
+      2026-02-10 (Tuesday): 11:15 - 13:00
+  [Tracker] Added conflict: 2026-02-10 13.00-14.00
+      2026-02-10 (Tuesday): 13:00 - 14:00
+  [Tracker] Added reservation: 2026-02-10 15.50-16.00 (+30min peak)
+  [R] 2026-02-10 (Tuesday): 15:30 - 16:00 in B1.18
+  [Tracker] Added reservation: 2026-02-10 17.00-17.50
+  [R] 2026-02-10 (Tuesday): 17:00 - 17:30 in B1.11
+  [Tracker] Added reservation: 2026-02-10 17.50-18.00
+  [R] 2026-02-10 (Tuesday): 17:30 - 18:00 in B0.23
+  [Tracker] Added conflict: 2026-02-10 18.00-21.00
+      2026-02-10 (Tuesday): 18:00 - 21:00 in B0.08
+  [Tracker] Added reservation: 2026-02-11 9.50-10.00 (+30min peak)
+  [R] 2026-02-11 (Wednesday): 09:30 - 10:00 in B0.23
+  [Tracker] Added conflict: 2026-02-11 16.00-17.50
+      2026-02-11 (Wednesday): 16:00 - 17:30 in B0.03
+  [Tracker] Added reservation: 2026-02-11 19.00-21.00
+  [R] 2026-02-11 (Wednesday): 19:00 - 21:00 in B1.10
+  [Tracker] Added reservation: 2026-02-12 9.50-10.00 (+30min peak)
+  [R] 2026-02-12 (Thursday): 09:30 - 10:00 in B1.15
+  [Tracker] Added conflict: 2026-02-12 10.00-11.00
+      2026-02-12 (Thursday): 10:00 - 11:00 in B1.09
+  [Tracker] Added conflict: 2026-02-12 17.00-18.00
+      2026-02-12 (Thursday): 17:00 - 18:00 in B0.03
+  [Tracker] Added reservation: 2026-02-12 18.00-19.50
+  [R] 2026-02-12 (Thursday): 18:00 - 19:30 in B1.06
+  [Tracker] Added reservation: 2026-02-12 20.00-22.00
+  [R] 2026-02-12 (Thursday): 20:00 - 22:00 in B0.11
+  [Tracker] Added reservation: 2026-02-13 17.00-18.00
+  [R] 2026-02-13 (Friday): 17:00 - 18:00 in B0.16
+  [Tracker] Added reservation: 2026-02-13 19.25-21.25
+  [R] 2026-02-13 (Friday): 19:15 - 21:15 in B0.14
+  [Tracker] Added reservation: 2026-02-14 12.00-12.50
+  [R] 2026-02-14 (Saturday): 12:00 - 12:30 in B0.13
+  [Tracker] Added reservation: 2026-02-14 12.50-13.00
+  [R] 2026-02-14 (Saturday): 12:30 - 13:00 in B0.14
+  [Tracker] Added reservation: 2026-02-14 13.50-14.00
+  [R] 2026-02-14 (Saturday): 13:30 - 14:00 in B0.16
+  [Tracker] Added reservation: 2026-02-14 14.50-16.50
+  [R] 2026-02-14 (Saturday): 14:30 - 16:30 in B0.14
+  [Tracker] Added reservation: 2026-02-14 16.75-17.25
+  [R] 2026-02-14 (Saturday): 16:45 - 17:15 in B0.11
+
+  Total events: 30 (22 reservations, 8 other)
+
+  Rolling quota: 21.8/28 hours this week
+  [OK] Can book 6.2 more hours
+  Peak hours from existing reservations:
+    2026-02-09: 120/120 min
+    2026-02-10: 90/120 min
+    2026-02-11: 30/120 min
+    2026-02-12: 30/120 min
+============================================================
+
+Navigating to practice rooms (AHC)...
+  Currently showing: Unknown
+
+  Disabled dates (will skip): ['2026-02-02', '2026-02-03', '2026-02-04', '2026-02-05', '2026-02-06', '2026-02-07', '2026-02-08', '2026-02-09']
+
+  Time preferences: Prioritizing 09:00 - 21:00
+  Strict mode: ON (only booking preferred times)
+
+  Booking strategy: REVERSE ORDER (furthest dates first)
+
+  Smart redistribution calculation:
+    Enabled days: 5/8
+    Remaining quota: 6.2h
+    Ideal hours/day: 5.6h
+    Current hours per day:
+      2026-02-10 (Tue): 2.5h [needs +3.1h]
+      2026-02-11 (Wed): 2.5h [needs +3.1h]
+      2026-02-12 (Thu): 4.0h [needs +1.6h]
+      2026-02-13 (Fri): 3.0h [needs +2.6h]
+      2026-02-14 (Sat): 4.0h [needs +1.6h]
+
+  Navigating to day 7 first (reverse order strategy)...
+
+============================================================
+CHECKING FOR HORIZON SNIPE OPPORTUNITIES (MULTI-DAY)
+============================================================
+
+  Found 17 pending extension(s) - will skip conflicting snipe candidates
+
+  Scanning 3 horizon days for snipe candidates: [7, 5, 3]
+
+    Scanning Day 7 (2026-02-14) for 7-day horizon rooms...
+      No snipe candidates found for Day 7
+
+    Scanning Day 5 (2026-02-12) for 5-day horizon rooms...
+    Navigating backward 2 day(s) to Day 5...
+      Skipping B1.19 at 19.25: Overlaps with your existing reservation
+      Skipping B1.20 at 19.25: Overlaps with your existing reservation
+      No snipe candidates found for Day 5
+
+    Scanning Day 3 (2026-02-10) for 3-day horizon rooms...
+    Navigating backward 2 day(s) to Day 3...
+      No snipe candidates found for Day 3
+
+  Total snipe candidates found: 0
+  No snipe candidates found (no slots becoming bookable within 3 minutes)
+============================================================
+
+============================================================
+READY - Waiting for target time: 19:45
+============================================================
+Current time: 19:43:36
+Seconds to wait: 83
+  T-80s...
+  T-70s...
+  T-60s...
+  T-50s...
+  T-40s...
+  T-30s...
+  T-20s...
+  T-10s...
+  T-0s...
+
+>>> TARGET TIME REACHED: 19:45:00 <<<
+============================================================
+
+
+============================================================
+REFRESHING PAGE FOR UPDATED SLOT AVAILABILITY
+============================================================
+  [DEBUG] Pre-refresh time: 19:45:00.274
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Calendar position before refresh: day 3
+  [DEBUG] Post-refresh time: 19:45:02.787
+  [DEBUG] Refresh took: 2.51s
+  [DEBUG] Post-refresh URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Calendar position after refresh: day 3 (unchanged)
+  [DEBUG] Could not extract slot times
+============================================================
+
+============================================================
+PROCESSING BOOKING EXTENSIONS
+============================================================
+Found 17 potentially extendable booking(s)
+
+============================================================
+EXTENDING BOOKING: B0.13 on 2026-02-12
+  Current: 19:30 - 20:00
+  Target:  19:30 - 21:30
+============================================================
+  Editing reservation: B0.13 on 2026-02-12
+    Current: 19:30-20:00
+    New end: 21:30
+    Not found in visible area, scrolling...
+    Could not find event card for B0.13 2026-02-12 19:30
+  Skipped B0.13 2026-02-12 19:30: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.16 on 2026-02-12
+  Current: 19:45 - 20:15
+  Target:  19:45 - 21:45
+============================================================
+  Editing reservation: B0.16 on 2026-02-12
+    Current: 19:45-20:15
+    New end: 21:45
+    Not found in visible area, scrolling...
+    Could not find event card for B0.16 2026-02-12 19:45
+  Skipped B0.16 2026-02-12 19:45: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.16 on 2026-02-12
+  Current: 20:00 - 20:30
+  Target:  20:00 - 22:00
+============================================================
+  Editing reservation: B0.16 on 2026-02-12
+    Current: 20:00-20:30
+    New end: 22:00
+    Not found in visible area, scrolling...
+    Could not find event card for B0.16 2026-02-12 20:00
+  Skipped B0.16 2026-02-12 20:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.13 on 2026-02-12
+  Current: 20:15 - 20:45
+  Target:  20:15 - 22:15
+============================================================
+  Editing reservation: B0.13 on 2026-02-12
+    Current: 20:15-20:45
+    New end: 22:15
+    Not found in visible area, scrolling...
+    Could not find event card for B0.13 2026-02-12 20:15
+  Skipped B0.13 2026-02-12 20:15: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.11 on 2026-02-13
+  Current: 19:15 - 19:45
+  Target:  19:15 - 21:15
+============================================================
+  Editing reservation: B0.11 on 2026-02-13
+    Current: 19:15-19:45
+    New end: 21:15
+    Not found in visible area, scrolling...
+    Could not find event card for B0.11 2026-02-13 19:15
+  Skipped B0.11 2026-02-13 19:15: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.17 on 2026-02-11
+  Current: 19:30 - 20:00
+  Target:  19:30 - 21:30
+============================================================
+  Editing reservation: B1.17 on 2026-02-11
+    Current: 19:30-20:00
+    New end: 21:30
+    Not found in visible area, scrolling...
+    Could not find event card for B1.17 2026-02-11 19:30
+  Skipped B1.17 2026-02-11 19:30: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.08 on 2026-02-11
+  Current: 19:30 - 20:00
+  Target:  19:30 - 21:30
+============================================================
+  Editing reservation: B1.08 on 2026-02-11
+    Current: 19:30-20:00
+    New end: 21:30
+    Not found in visible area, scrolling...
+    Could not find event card for B1.08 2026-02-11 19:30
+  Skipped B1.08 2026-02-11 19:30: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.20 on 2026-02-11
+  Current: 19:45 - 20:15
+  Target:  19:45 - 21:45
+============================================================
+  Editing reservation: B1.20 on 2026-02-11
+    Current: 19:45-20:15
+    New end: 21:45
+    Not found in visible area, scrolling...
+    Could not find event card for B1.20 2026-02-11 19:45
+  Skipped B1.20 2026-02-11 19:45: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.14 on 2026-02-12
+  Current: 15:00 - 15:30
+  Target:  15:00 - 16:00
+============================================================
+  Editing reservation: B1.14 on 2026-02-12
+    Current: 15:00-15:30
+    New end: 16:00
+    Not found in visible area, scrolling...
+    Could not find event card for B1.14 2026-02-12 15:00
+  Skipped B1.14 2026-02-12 15:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.08 on 2026-02-12
+  Current: 15:00 - 15:30
+  Target:  15:00 - 16:00
+============================================================
+  Editing reservation: B1.08 on 2026-02-12
+    Current: 15:00-15:30
+    New end: 16:00
+    Not found in visible area, scrolling...
+    Could not find event card for B1.08 2026-02-12 15:00
+  Skipped B1.08 2026-02-12 15:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.23 on 2026-02-12
+  Current: 16:00 - 16:30
+  Target:  16:00 - 18:00
+============================================================
+  Editing reservation: B0.23 on 2026-02-12
+    Current: 16:00-16:30
+    New end: 18:00
+    Not found in visible area, scrolling...
+    Could not find event card for B0.23 2026-02-12 16:00
+  Skipped B0.23 2026-02-12 16:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B0.29 on 2026-02-12
+  Current: 18:00 - 18:30
+  Target:  18:00 - 19:45
+============================================================
+  Editing reservation: B0.29 on 2026-02-12
+    Current: 18:00-18:30
+    New end: 19:45
+    Not found in visible area, scrolling...
+    Could not find event card for B0.29 2026-02-12 18:00
+  Skipped B0.29 2026-02-12 18:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.14 on 2026-02-12
+  Current: 18:00 - 18:30
+  Target:  18:00 - 19:45
+============================================================
+  Editing reservation: B1.14 on 2026-02-12
+    Current: 18:00-18:30
+    New end: 19:45
+    Not found in visible area, scrolling...
+    Could not find event card for B1.14 2026-02-12 18:00
+  Skipped B1.14 2026-02-12 18:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.20 on 2026-02-12
+  Current: 18:00 - 18:30
+  Target:  18:00 - 19:45
+============================================================
+  Editing reservation: B1.20 on 2026-02-12
+    Current: 18:00-18:30
+    New end: 19:45
+    Not found in visible area, scrolling...
+    Could not find event card for B1.20 2026-02-12 18:00
+  Skipped B1.20 2026-02-12 18:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.21 on 2026-02-12
+  Current: 18:00 - 18:30
+  Target:  18:00 - 19:45
+============================================================
+  Editing reservation: B1.21 on 2026-02-12
+    Current: 18:00-18:30
+    New end: 19:45
+    Not found in visible area, scrolling...
+    Could not find event card for B1.21 2026-02-12 18:00
+  Skipped B1.21 2026-02-12 18:00: Edit operation failed
+
+============================================================
+EXTENDING BOOKING: B1.06 on 2026-02-12
+  Current: 18:00 - 19:30
+  Target:  18:00 - 19:45
+============================================================
+  Editing reservation: B1.06 on 2026-02-12
+    Current: 18:00-19:30
+    New end: 19:45
+    Not found in visible area, scrolling...
+    Found matching event card (panel #59)
+    SUCCESS: Extended to 19:45
+  [Tracker] Added 0.25h extension to quota (22.0/28h)
+  [Tracker] Updated reservation_ranges: B1.06 now ends at 19:45
+
+============================================================
+EXTENDING BOOKING: B1.10 on 2026-02-12
+  Current: 18:00 - 18:30
+  Target:  18:00 - 19:45
+============================================================
+  Editing reservation: B1.10 on 2026-02-12
+    Current: 18:00-18:30
+    New end: 19:45
+    Not found in visible area, scrolling...
+    Could not find event card for B1.10 2026-02-12 18:00
+  Skipped B1.10 2026-02-12 18:00: Edit operation failed
+
+Extended 1 booking(s)
+============================================================
+
+Navigating back to practice rooms...
+
+############################################################
+# DAY 7: 2026-02-14 (Saturday)
+############################################################
+  [Smart redistribution] Current: 4.0h, Target: +1.6h, Max bookings: 1
+  [DEBUG] Session stats: 1 bookings so far, peak for this day: 0/120min
+  Navigating forward 7 day(s)...
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Navigation complete, now on day 7
+  [DEBUG] Slot scan time: 19:47:14
+  Displayed date: Royal Welsh College of Music & Drama
+  [DEBUG] Earliest slots for 7-day horizon rooms: {'B0.11': '08:00', 'B0.13': '08:00', 'B0.14': '08:00', 'B0.16': '08:00'}
+  [DEBUG] Expected earliest (now - 7 days): ~19:47 on target date
+  [DEBUG] Rooms skipped (not yet available): B0.23 (Available in 1.5d (horizon: 5d)), B0.27 (Available in 1.5d (horizon: 5d)), B0.29 (Available in 1.5d (horizon: 5d)), B1.06 (Available in 1.5d (horizon: 5d)), B1.07 (Available in 1.5d (horizon: 5d)), B1.08 (Available in 1.5d (horizon: 5d)), B1.09 (Available in 3.5d (horizon: 3d)), B1.10 (Available in 1.5d (horizon: 5d)), B1.11 (Available in 1.5d (horizon: 5d)), B1.14 (Available in 1.5d (horizon: 5d)), B1.15 (Available in 1.5d (horizon: 5d)), B1.16 (Available in 3.5d (horizon: 3d)), B1.17 (Available in 1.5d (horizon: 5d)), B1.18 (Available in 1.5d (horizon: 5d)), B1.19 (Available in 1.5d (horizon: 5d)), B1.20 (Available in 1.5d (horizon: 5d)), B1.21 (Available in 1.5d (horizon: 5d))
+  Found 5 potential slots
+  [DEBUG] First 10 slots: [('B0.14', '16.50-17.25'), ('B0.11', '8.00-9.00'), ('B0.13', '8.00-10.00'), ('B0.14', '8.00-10.50'), ('B0.16', '8.00-12.00')]
+  [DEBUG] Peak quota for 2026-02-14: 0/120 min used, 9999 min remaining
+  [DEBUG] Known conflicts for this day: ['12.00-12.50', '12.50-13.00', '13.50-14.00', '14.50-16.50', '16.75-17.25']
+  [DEBUG] Slot adjustment: 1 conflict-removed, 0 removed, 0 adjusted, 0 peak-adjusted, 0 weekly-adjusted
+  [DEBUG] Strict mode: Filtered out 4 non-preferred slots
+  [DEBUG] Starting booking attempts. Max per day: 1, slots available: 0
+  [DEBUG] No more valid slots (all_slots=0, conflicts filtered all)
+  No more valid slots available
+
+  Day summary: 0 bookings made, 0 attempts total
+
+############################################################
+# DAY 6: 2026-02-13 (Friday)
+############################################################
+  [Smart redistribution] Current: 3.0h, Target: +2.6h, Max bookings: 1
+  [DEBUG] Session stats: 1 bookings so far, peak for this day: 0/120min
+  Navigating backward 1 day(s)...
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Navigation complete, now on day 6
+  [DEBUG] Slot scan time: 19:47:17
+  Displayed date: Royal Welsh College of Music & Drama
+  [DEBUG] Earliest slots for 7-day horizon rooms: {'B0.11': '07:30', 'B0.13': '07:30', 'B0.14': '07:30', 'B0.16': '07:30'}
+  [DEBUG] Expected earliest (now - 7 days): ~19:47 on target date
+  [DEBUG] Rooms skipped (not yet available): B0.23 (Available in 11.7h (horizon: 5d)), B0.27 (Available in 11.7h (horizon: 5d)), B0.29 (Available in 11.7h (horizon: 5d)), B1.06 (Available in 11.7h (horizon: 5d)), B1.07 (Available in 11.7h (horizon: 5d)), B1.08 (Available in 11.7h (horizon: 5d)), B1.09 (Available in 2.5d (horizon: 3d)), B1.10 (Available in 11.7h (horizon: 5d)), B1.11 (Available in 11.7h (horizon: 5d)), B1.14 (Available in 11.7h (horizon: 5d)), B1.15 (Available in 11.7h (horizon: 5d)), B1.16 (Available in 2.5d (horizon: 3d)), B1.17 (Available in 11.7h (horizon: 5d)), B1.18 (Available in 11.7h (horizon: 5d)), B1.19 (Available in 11.7h (horizon: 5d)), B1.20 (Available in 11.7h (horizon: 5d)), B1.21 (Available in 11.7h (horizon: 5d))
+  Found 8 potential slots
+  [DEBUG] First 10 slots: [('B0.14', '7.50-9.50'), ('B0.13', '21.00-22.25'), ('B0.14', '21.25-22.25'), ('B0.11', '7.50-8.00'), ('B0.13', '7.50-8.00'), ('B0.16', '7.50-8.25'), ('B0.11', '21.50-22.25'), ('B0.16', '21.50-22.25')]
+  [DEBUG] Peak quota for 2026-02-13: 0/120 min used, 120 min remaining
+  [DEBUG] Known conflicts for this day: ['17.00-18.00', '19.25-21.25']
+  [DEBUG] Slot adjustment: 1 conflict-removed, 0 removed, 1 adjusted, 0 peak-adjusted, 0 weekly-adjusted
+  [DEBUG] Strict mode: Filtered out 7 non-preferred slots
+  [DEBUG] Starting booking attempts. Max per day: 1, slots available: 0
+  [DEBUG] No more valid slots (all_slots=0, conflicts filtered all)
+  No more valid slots available
+
+  Day summary: 0 bookings made, 0 attempts total
+
+############################################################
+# DAY 5: 2026-02-12 (Thursday)
+############################################################
+  [Smart redistribution] Current: 4.0h, Target: +1.6h, Max bookings: 1
+  [DEBUG] Session stats: 1 bookings so far, peak for this day: 30/120min
+  Navigating backward 1 day(s)...
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Navigation complete, now on day 5
+  [DEBUG] Slot scan time: 19:47:19
+  Displayed date: Royal Welsh College of Music & Drama
+  [DEBUG] Earliest slots for 7-day horizon rooms: {'B0.11': '07:30', 'B0.13': '07:30', 'B0.14': '07:30', 'B0.16': '07:30'}
+  [DEBUG] Expected earliest (now - 7 days): ~19:47 on target date
+  [DEBUG] Rooms skipped (not yet available): B1.09 (Available in 1.5d (horizon: 3d)), B1.16 (Available in 1.5d (horizon: 3d))
+  Found 37 potential slots
+  [DEBUG] First 10 slots: [('B1.07', '17.00-22.25'), ('B1.08', '17.00-22.25'), ('B0.23', '17.00-22.25'), ('B1.10', '18.00-22.25'), ('B1.11', '19.00-22.25'), ('B0.29', '19.50-22.25'), ('B1.14', '19.50-22.25'), ('B1.17', '19.50-22.25'), ('B1.20', '19.50-22.25'), ('B1.18', '19.50-22.25')]
+  [DEBUG] Peak quota for 2026-02-12: 30/120 min used, 90 min remaining
+  [DEBUG] Known conflicts for this day: ['9.50-10.00', '10.00-11.00', '17.00-18.00', '18.00-19.50', '20.00-22.00']
+  [DEBUG] Slot adjustment: 6 conflict-removed, 0 removed, 13 adjusted, 0 peak-adjusted, 0 weekly-adjusted
+  [DEBUG] Strict mode: Filtered out 19 non-preferred slots
+  [DEBUG] Starting booking attempts. Max per day: 1, slots available: 12
+  [DEBUG] Attempt 1/15: B0.29 19.50-20.00 (duration: 0.50h)
+  Skipping B0.29 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 2/15: B1.14 19.50-20.00 (duration: 0.50h)
+  Skipping B1.14 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 3/15: B1.17 19.50-20.00 (duration: 0.50h)
+  Skipping B1.17 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 4/15: B1.20 19.50-20.00 (duration: 0.50h)
+  Skipping B1.20 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 5/15: B1.18 19.50-20.00 (duration: 0.50h)
+  Skipping B1.18 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 6/15: B1.21 19.50-20.00 (duration: 0.50h)
+  Skipping B1.21 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 7/15: B1.19 19.50-20.00 (duration: 0.50h)
+  Skipping B1.19 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 8/15: B1.07 19.50-20.00 (duration: 0.50h)
+  Skipping B1.07 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 9/15: B1.08 19.50-20.00 (duration: 0.50h)
+  Skipping B1.08 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 10/15: B1.10 19.50-20.00 (duration: 0.50h)
+  Skipping B1.10 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 11/15: B1.11 19.50-20.00 (duration: 0.50h)
+  Skipping B1.11 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] Attempt 12/15: B0.23 19.50-20.00 (duration: 0.50h)
+  Skipping B0.23 19:30: Only 15min past horizon (need 30min, wait 15min)
+    [DEBUG] Horizon calc: now=19:47:19, slot=2026-02-12 19:30, available_from=2026-02-07 19:30, mins_since=17.3
+  [DEBUG] No more valid slots (all_slots=0, conflicts filtered all)
+  No more valid slots available
+
+  Day summary: 0 bookings made, 12 attempts total
+
+############################################################
+# DAY 4: 2026-02-11 (Wednesday)
+############################################################
+  [Smart redistribution] Current: 2.5h, Target: +3.1h, Max bookings: 2
+  [DEBUG] Session stats: 1 bookings so far, peak for this day: 30/120min
+  Navigating backward 1 day(s)...
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Navigation complete, now on day 4
+  [DEBUG] Slot scan time: 19:47:22
+  Displayed date: Royal Welsh College of Music & Drama
+  [DEBUG] Earliest slots for 7-day horizon rooms: {'B0.11': '07:30', 'B0.13': '07:30', 'B0.14': '07:30', 'B0.16': '07:30'}
+  [DEBUG] Expected earliest (now - 7 days): ~19:47 on target date
+  [DEBUG] Rooms skipped (not yet available): B1.09 (Available in 11.7h (horizon: 3d)), B1.16 (Available in 11.7h (horizon: 3d))
+  Found 34 potential slots
+  [DEBUG] First 10 slots: [('B1.08', '20.00-22.25'), ('B1.11', '20.00-22.25'), ('B0.14', '7.50-9.25'), ('B1.14', '7.50-8.50'), ('B0.16', '7.50-9.00'), ('B1.21', '7.50-9.00'), ('B1.06', '7.50-9.00'), ('B1.07', '7.50-8.50'), ('B1.08', '7.50-9.00'), ('B1.10', '7.50-9.00')]
+  [DEBUG] Peak quota for 2026-02-11: 30/120 min used, 90 min remaining
+  [DEBUG] Known conflicts for this day: ['9.50-10.00', '16.00-17.50', '19.00-21.00']
+  [DEBUG] Slot adjustment: 1 conflict-removed, 0 removed, 2 adjusted, 0 peak-adjusted, 0 weekly-adjusted
+  [DEBUG] Strict mode: Filtered out 33 non-preferred slots
+  [DEBUG] Starting booking attempts. Max per day: 2, slots available: 0
+  [DEBUG] No more valid slots (all_slots=0, conflicts filtered all)
+  No more valid slots available
+
+  Day summary: 0 bookings made, 0 attempts total
+
+############################################################
+# DAY 3: 2026-02-10 (Tuesday)
+############################################################
+  [Smart redistribution] Current: 2.5h, Target: +3.1h, Max bookings: 2
+  [DEBUG] Session stats: 1 bookings so far, peak for this day: 90/120min
+  Navigating backward 1 day(s)...
+  [DEBUG] Current URL: https://rwcmd.asimut.net/overview?locationGroupId=10...
+  [DEBUG] Navigation complete, now on day 3
+  [DEBUG] Slot scan time: 19:47:25
+  Displayed date: Royal Welsh College of Music & Drama
+  [DEBUG] Earliest slots for 7-day horizon rooms: {'B0.11': '07:30', 'B0.13': '07:30', 'B0.14': '07:30', 'B0.16': '07:30'}
+  [DEBUG] Expected earliest (now - 7 days): ~19:47 on target date
+  Found 40 potential slots
+  [DEBUG] First 10 slots: [('B1.14', '18.50-20.50'), ('B1.06', '18.50-22.25'), ('B0.23', '19.00-22.25'), ('B1.07', '19.25-22.25'), ('B1.08', '19.25-22.25'), ('B1.16', '19.50-22.25'), ('B1.11', '19.50-22.25'), ('B1.09', '19.75-22.25'), ('B1.19', '20.50-22.25'), ('B1.10', '20.50-22.25')]
+  [DEBUG] Peak quota for 2026-02-10: 90/120 min used, 30 min remaining
+  [DEBUG] Known conflicts for this day: ['9.00-10.00', '11.25-13.00', '13.00-14.00', '15.50-16.00', '17.00-17.50', '17.50-18.00', '18.00-21.00']
+  [DEBUG] Slot adjustment: 5 conflict-removed, 0 removed, 13 adjusted, 0 peak-adjusted, 0 weekly-adjusted
+  [DEBUG] Strict mode: Filtered out 35 non-preferred slots
+  [DEBUG] Starting booking attempts. Max per day: 2, slots available: 0
+  [DEBUG] No more valid slots (all_slots=0, conflicts filtered all)
+  No more valid slots available
+
+  Day summary: 0 bookings made, 0 attempts total
+
+============================================================
+BOOKING COMPLETE
+============================================================
+Total bookings made: 1
+Peak hours used (per day):
+  2026-02-09: 120/120 min
+  2026-02-10: 90/120 min
+  2026-02-11: 30/120 min
+  2026-02-12: 30/120 min
+
+All bookings:
+============================================================
+History saved: 1 bookings, 30 events
+Notification sent: Booked 1 room
+
+Keeping browser open for 30 seconds to verify...
+============================================================ 
+[07/02/2026 19:47:56.67] Booking run completed 

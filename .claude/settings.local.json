@@ -3,7 +3,24 @@
     "allow": [
       "Bash(pip install:*)",
       "Bash(python -m playwright:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File create_shortcut.ps1:*)",
+      "Bash(git add:*)",
+      "Bash(schtasks /query /tn \"AsimutBooker\" /v /fo list:*)",
+      "Bash(findstr:*)",
+      "Bash(cmd /c \"schtasks /query /tn AsimutBooker /v /fo list\")",
+      "Bash(powershell.exe -Command \"Get-ScheduledTask | Where-Object TaskName -like ''*Asimut*'' | Select-Object TaskName, State\")",
+      "Bash(ls -la \"c:\\\\Users\\\\loxty\\\\Desktop\\\\Repos\\\\AsimutBooker\"\"*.py 2>/dev/null || dir /b \"c:UsersloxtyDesktopReposAsimutBooker*.py \")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nUpdate CLAUDE.md to reflect current codebase\n\n- Document book_week.py as main entry point \\(not src/main.py\\)\n- Add GUI control panel documentation\n- Document Windows Task Scheduler setup with wake timers\n- Add booking rules section \\(quota, peak hours, same-room gap\\)\n- Update directory structure to match actual files\n- Add files overview table\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(dir:*)",
+      "Bash(git init:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File setup_scheduled_tasks.ps1)",
+      "Bash(powershell -Command \"Get-ScheduledTask | Where-Object { $_.TaskName -like ''AsimutBooker*'' } | Select-Object TaskName, State | Format-Table -AutoSize\")",
+      "Bash(powershell -Command \"Get-ScheduledTask -TaskName ''AsimutBooker*'' | Select-Object TaskName, State | Format-Table -AutoSize\")",
+      "Bash(cmd /c \"schtasks /query /tn AsimutBooker_1000 /v /fo LIST\")",
+      "Bash(cmd /c \"schtasks /query /tn \"\"AsimutBooker_1000\"\" /v /fo LIST 2>&1\")",
+      "Bash(powershell \"schtasks /query /tn ''AsimutBooker_1000'' /v /fo LIST\")"
     ]
   }
 }

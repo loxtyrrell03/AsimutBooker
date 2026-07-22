@@ -1,0 +1,604 @@
+{
+  "runs": [
+    {
+      "timestamp": "2026-02-19T16:22:42.582320",
+      "bookings_made": 2,
+      "events_detected": 14,
+      "details": "2026-02-21 B1.07 19:45 21:45 120; 2026-02-19 B1.06 16:15 17:15 60"
+    },
+    {
+      "timestamp": "2026-02-16T13:51:16.616392",
+      "bookings_made": 12,
+      "events_detected": 11,
+      "details": "2026-02-23 B0.16 12:00 13:00 60; 2026-02-22 B0.11 09:30 11:30 120; 2026-02-22 B0.14 15:00 16:15 75; 2026-02-21 B1.21 10:00 12:00 120; 2026-02-21 B0.11 12:00 13:00 60"
+    },
+    {
+      "timestamp": "2026-02-16T12:51:16.576808",
+      "bookings_made": 3,
+      "events_detected": 8,
+      "details": "2026-02-20 B1.07 20:00 22:00 120; 2026-02-17 B0.23 12:00 12:30 30; 2026-02-16 B0.11 17:30 18:00 30"
+    },
+    {
+      "timestamp": "2026-02-15T22:06:48.498282",
+      "bookings_made": 0,
+      "events_detected": 8,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-15T21:51:50.188133",
+      "bookings_made": 1,
+      "events_detected": 7,
+      "details": "2026-02-20 B0.16 11:30 12:00 30"
+    },
+    {
+      "timestamp": "2026-02-15T21:19:44.114792",
+      "bookings_made": 3,
+      "events_detected": 4,
+      "details": "2026-02-21 B0.14 19:00 19:30 30; 2026-02-17 B1.08 20:30 22:15 105; 2026-02-16 B1.07 20:00 22:00 120"
+    },
+    {
+      "timestamp": "2026-02-15T21:09:16.482522",
+      "bookings_made": 2,
+      "events_detected": 2,
+      "details": "2026-02-20 B1.07 19:00 19:30 30; 2026-02-20 B1.20 20:00 20:30 30"
+    },
+    {
+      "timestamp": "2026-02-15T20:43:34.013769",
+      "bookings_made": 0,
+      "events_detected": 2,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-08T17:18:36.858711",
+      "bookings_made": 1,
+      "events_detected": 31,
+      "details": "2026-02-13 B1.10 12:00 12:30 30"
+    },
+    {
+      "timestamp": "2026-02-08T12:47:45.019917",
+      "bookings_made": 1,
+      "events_detected": 31,
+      "details": "EXTENDED: B0.16 2026-02-15 11:30-12:45"
+    },
+    {
+      "timestamp": "2026-02-08T12:33:55.495183",
+      "bookings_made": 2,
+      "events_detected": 28,
+      "details": "EXTENDED: B0.16 2026-02-15 11:30-12:30; 2026-02-13 B1.18 10:45 12:00 75"
+    },
+    {
+      "timestamp": "2026-02-07T20:02:33.716753",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "EXTENDED: B1.06 2026-02-12 18:00-20:00"
+    },
+    {
+      "timestamp": "2026-02-07T19:47:25.795629",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "EXTENDED: B1.06 2026-02-12 18:00-19:45"
+    },
+    {
+      "timestamp": "2026-02-07T19:33:56.829711",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "EXTENDED: B1.06 2026-02-12 18:00-19:30"
+    },
+    {
+      "timestamp": "2026-02-07T19:17:26.547349",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "EXTENDED: B1.06 2026-02-12 18:00-19:15"
+    },
+    {
+      "timestamp": "2026-02-07T19:02:32.797361",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "EXTENDED: B1.06 2026-02-12 18:00-19:00"
+    },
+    {
+      "timestamp": "2026-02-07T18:47:52.168291",
+      "bookings_made": 1,
+      "events_detected": 29,
+      "details": "2026-02-12 B1.06 18:00 20:00 120"
+    },
+    {
+      "timestamp": "2026-02-07T18:16:44.190006",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-07T17:47:03.587858",
+      "bookings_made": 1,
+      "events_detected": 27,
+      "details": "2026-02-14 B0.11 16:45 17:15 30"
+    },
+    {
+      "timestamp": "2026-02-07T17:45:08.247981",
+      "bookings_made": 1,
+      "events_detected": 27,
+      "details": "2026-02-14 B0.13 12:00 12:30 30"
+    },
+    {
+      "timestamp": "2026-02-07T16:16:56.126231",
+      "bookings_made": 1,
+      "events_detected": 28,
+      "details": "EXTENDED: B0.14 2026-02-14 14:30-16:15"
+    },
+    {
+      "timestamp": "2026-02-07T15:47:07.154957",
+      "bookings_made": 1,
+      "events_detected": 29,
+      "details": "EXTENDED: B0.14 2026-02-14 14:30-15:45"
+    },
+    {
+      "timestamp": "2026-02-07T15:19:19.174506",
+      "bookings_made": 7,
+      "events_detected": 23,
+      "details": "EXTENDED: B0.14 2026-02-13 19:15-21:15; 2026-02-14 B0.14 14:30 16:30 120; 2026-02-14 B0.14 12:30 13:00 30; 2026-02-14 B0.16 13:30 14:00 30; 2026-02-12 B1.15 09:30 10:00 30"
+    },
+    {
+      "timestamp": "2026-02-05T22:01:12.081648",
+      "bookings_made": 1,
+      "events_detected": 32,
+      "details": "EXTENDED: B0.11 2026-02-12 20:00-22:00"
+    },
+    {
+      "timestamp": "2026-02-05T21:31:04.075202",
+      "bookings_made": 1,
+      "events_detected": 32,
+      "details": "EXTENDED: B0.11 2026-02-12 20:00-21:30"
+    },
+    {
+      "timestamp": "2026-02-05T21:17:02.798294",
+      "bookings_made": 4,
+      "events_detected": 29,
+      "details": "EXTENDED: B0.11 2026-02-12 20:00-21:15; 2026-02-10 B1.18 15:30 16:00 30; 2026-02-10 B1.11 17:00 17:30 30; 2026-02-10 B0.23 17:30 18:00 30"
+    },
+    {
+      "timestamp": "2026-02-05T21:01:44.811578",
+      "bookings_made": 1,
+      "events_detected": 28,
+      "details": "2026-02-12 B0.11 20:00 22:00 120"
+    },
+    {
+      "timestamp": "2026-02-05T19:45:52.051065",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T19:30:52.044461",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T19:16:29.127313",
+      "bookings_made": 2,
+      "events_detected": 27,
+      "details": "2026-02-10 B1.18 14:00 14:30 30; 2026-02-10 B1.14 10:15 10:45 30"
+    },
+    {
+      "timestamp": "2026-02-05T19:01:04.025816",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T18:47:08.080308",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T18:31:43.434167",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T18:16:10.133779",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T18:01:34.421673",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-05T17:47:22.335540",
+      "bookings_made": 4,
+      "events_detected": 23,
+      "details": "2026-02-12 B0.14 12:15 12:45 30; 2026-02-10 B1.17 15:45 16:15 30; 2026-02-10 B1.08 10:00 10:30 30; 2026-02-10 B1.06 16:30 17:15 45"
+    },
+    {
+      "timestamp": "2026-02-05T17:00:56.658609",
+      "bookings_made": 0,
+      "events_detected": 23,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T21:46:14.850557",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T21:16:20.747691",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T17:15:43.982348",
+      "bookings_made": 0,
+      "events_detected": 27,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T17:00:43.218457",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T16:46:02.268999",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T16:30:47.513587",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T16:15:43.315723",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T15:45:50.816049",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T15:30:52.928153",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T15:00:30.173356",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T14:30:46.898891",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T14:15:24.517154",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-04T13:46:12.956680",
+      "bookings_made": 2,
+      "events_detected": 27,
+      "details": "2026-02-11 B0.13 09:30 10:15 45; 2026-02-10 B0.16 10:30 11:15 45"
+    },
+    {
+      "timestamp": "2026-02-03T22:00:11.273714",
+      "bookings_made": 0,
+      "events_detected": 32,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-03T18:15:11.934109",
+      "bookings_made": 0,
+      "events_detected": 32,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-03T18:00:11.793109",
+      "bookings_made": 0,
+      "events_detected": 32,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-03T17:45:11.361674",
+      "bookings_made": 0,
+      "events_detected": 32,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-03T13:15:11.895825",
+      "bookings_made": 0,
+      "events_detected": 32,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-03T13:12:26.802998",
+      "bookings_made": 0,
+      "events_detected": 32,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T23:08:59.433254",
+      "bookings_made": 2,
+      "events_detected": 29,
+      "details": "SUCCESS: Booked B0.13 09:45-11:15; Notification sent: Booked 1 room"
+    },
+    {
+      "timestamp": "2026-02-02T23:08:28.797671",
+      "bookings_made": 1,
+      "events_detected": 29,
+      "details": "2026-02-09 B0.13 09:45 11:15 90"
+    },
+    {
+      "timestamp": "2026-02-02T22:49:26.470820",
+      "bookings_made": 3,
+      "events_detected": 29,
+      "details": "SUCCESS: Booked B0.16 20:00-22:00; SUCCESS: Booked B0.11 07:30-08:00; Notification sent: Booked 2 rooms"
+    },
+    {
+      "timestamp": "2026-02-02T22:49:15.913103",
+      "bookings_made": 2,
+      "events_detected": 29,
+      "details": "2026-02-09 B0.16 20:00 22:00 120; 2026-02-09 B0.11 07:30 08:00 30"
+    },
+    {
+      "timestamp": "2026-02-02T18:45:00.111920",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T12:15:00.324716",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T12:00:00.263008",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T11:45:00.379808",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T11:30:09.090725",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T11:15:00.134236",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T11:00:19.345556",
+      "bookings_made": 1,
+      "events_detected": 29,
+      "details": "2026-02-09 B0.13 09:45 10:15 30"
+    },
+    {
+      "timestamp": "2026-02-02T10:45:00.335038",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T10:30:00.280468",
+      "bookings_made": 0,
+      "events_detected": 29,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T10:13:27.812508",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "Quota full (28.0/28h)"
+    },
+    {
+      "timestamp": "2026-02-02T10:01:07.424958",
+      "bookings_made": 2,
+      "events_detected": 29,
+      "details": "2026-02-06 B1.17 20:30 22:15 105; 2026-02-04 B1.10 18:30 19:30 60"
+    },
+    {
+      "timestamp": "2026-02-02T09:45:18.618290",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T09:31:18.164445",
+      "bookings_made": 3,
+      "events_detected": 28,
+      "details": "2026-02-06 B1.10 13:00 13:30 30; 2026-02-04 B1.10 16:00 17:00 60; 2026-02-03 B0.13 13:00 14:45 105"
+    },
+    {
+      "timestamp": "2026-02-02T05:20:04.628747",
+      "bookings_made": 2,
+      "events_detected": 28,
+      "details": "SUCCESS: Booked B1.10 11:00-11:30; Notification sent: Booked 1 room"
+    },
+    {
+      "timestamp": "2026-02-02T05:19:33.924772",
+      "bookings_made": 1,
+      "events_detected": 28,
+      "details": "2026-02-06 B1.10 11:00 11:30 30"
+    },
+    {
+      "timestamp": "2026-02-02T04:58:13.542888",
+      "bookings_made": 2,
+      "events_detected": 27,
+      "details": "SUCCESS: Booked B1.17 20:30-22:15; Notification sent: Booked 1 room"
+    },
+    {
+      "timestamp": "2026-02-02T04:58:09.504930",
+      "bookings_made": 1,
+      "events_detected": 27,
+      "details": "2026-02-06 B1.17 20:30 22:15 105"
+    },
+    {
+      "timestamp": "2026-02-02T04:37:09.012545",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T04:37:01.664499",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "Quota full (28.0/28h)"
+    },
+    {
+      "timestamp": "2026-02-02T04:31:08.212535",
+      "bookings_made": 2,
+      "events_detected": 30,
+      "details": "SUCCESS: Booked B1.21 19:30-20:30; Notification sent: Booked 1 room"
+    },
+    {
+      "timestamp": "2026-02-02T04:31:03.117635",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "2026-02-06 B1.21 19:30 20:30 60"
+    },
+    {
+      "timestamp": "2026-02-02T03:01:49.304221",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T03:01:43.032662",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T03:00:50.796410",
+      "bookings_made": 3,
+      "events_detected": 28,
+      "details": "SUCCESS: Booked B0.14 09:00-10:00; SUCCESS: Booked B0.13 09:00-09:30; Notification sent: Booked 2 rooms"
+    },
+    {
+      "timestamp": "2026-02-02T03:00:24.766761",
+      "bookings_made": 2,
+      "events_detected": 28,
+      "details": "2026-02-04 B0.14 09:00 10:00 60; 2026-02-02 B0.13 09:00 09:30 30"
+    },
+    {
+      "timestamp": "2026-02-02T02:58:52.298899",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:58:46.859573",
+      "bookings_made": 0,
+      "events_detected": 28,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:54:12.804486",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:52:14.574513",
+      "bookings_made": 0,
+      "events_detected": 30,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:46:51.838828",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:46:34.345378",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:32:03.353860",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T02:31:52.568824",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "Quota full (28.0/28h)"
+    },
+    {
+      "timestamp": "2026-02-02T01:50:11.548326",
+      "bookings_made": 2,
+      "events_detected": 30,
+      "details": "SUCCESS: Booked B1.21 20:00-20:30; Notification sent: Booked 1 room"
+    },
+    {
+      "timestamp": "2026-02-02T01:50:06.504102",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "2026-02-03 B1.21 20:00 20:30 30"
+    },
+    {
+      "timestamp": "2026-02-02T01:46:29.510851",
+      "bookings_made": 2,
+      "events_detected": 30,
+      "details": "SUCCESS: Booked B1.10 20:00-22:00; Notification sent: Booked 1 room"
+    },
+    {
+      "timestamp": "2026-02-02T01:46:22.271289",
+      "bookings_made": 1,
+      "events_detected": 30,
+      "details": "2026-02-02 B1.10 20:00 22:00 120"
+    },
+    {
+      "timestamp": "2026-02-02T01:44:54.458014",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "No bookings made"
+    },
+    {
+      "timestamp": "2026-02-02T01:44:43.671851",
+      "bookings_made": 0,
+      "events_detected": 31,
+      "details": "Quota full (28.0/28h)"
+    },
+    {
+      "timestamp": "2026-02-02T01:44:23.366928",
+      "bookings_made": 0,
+      "events_detected": 0,
+      "details": "No bookings made"
+    }
+  ]
+}

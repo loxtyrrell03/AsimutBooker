@@ -1,0 +1,188 @@
+[16/02/2026 12:13:02.44] Starting scheduled booking run... 
+============================================================ 
+============================================================
+ASIMUT WEEK BOOKER
+============================================================
+Today: 2026-02-16
+Booking for: 2026-02-16 to 2026-02-23
+Mode: Visible browser
+============================================================
+
+============================================================
+SCANNING MY AGENDA FOR EXISTING EVENTS
+============================================================
+  [DEBUG] Navigating to agenda page...
+  [DEBUG] Agenda page loaded, URL: https://rwcmd.asimut.net/agenda...
+  Scrolling until we reach 23 February 2026...
+  [DEBUG] Found target date '23 February 2026' after 0 scrolls
+  Final pass to capture all events (10 scrolls)...
+  [DEBUG] Raw events extracted: 8
+
+  Found 8 unique events in agenda (deduplicated from 8):
+  [Tracker] Added reservation: 2026-02-16 20.00-22.00
+  [R] 2026-02-16 (Monday): 20:00 - 22:00 in B1.07
+  [Tracker] Added reservation: 2026-02-17 19.00-19.50
+  [R] 2026-02-17 (Tuesday): 19:00 - 19:30 in B1.07
+  [Tracker] Added reservation: 2026-02-17 20.00-20.50
+  [R] 2026-02-17 (Tuesday): 20:00 - 20:30 in B1.20
+  [Tracker] Added reservation: 2026-02-17 20.50-22.25
+  [R] 2026-02-17 (Tuesday): 20:30 - 22:15 in B1.08
+  [Tracker] Added reservation: 2026-02-18 11.50-12.00 (+30min peak)
+  [R] 2026-02-18 (Wednesday): 11:30 - 12:00 in B0.16
+  [Tracker] Added conflict: 2026-02-18 14.00-16.00
+      2026-02-18 (Wednesday): 14:00 - 16:00 in B0.08
+  [Tracker] Added reservation: 2026-02-18 19.00-19.50
+  [R] 2026-02-18 (Wednesday): 19:00 - 19:30 in B0.14
+  [Tracker] Added conflict: 2026-02-18 19.50-21.50
+      2026-02-18 (Wednesday): 19:30 - 21:30
+
+  Total events: 8 (6 reservations, 2 other)
+
+  Rolling quota: 5.8/28 hours this week
+  [OK] Can book 22.2 more hours
+  Peak hours from existing reservations:
+    2026-02-18: 30/120 min
+============================================================
+
+Navigating to practice rooms (AHC)...
+  Currently showing: Unknown
+
+  Disabled dates (will skip): ['2026-02-02', '2026-02-03', '2026-02-04', '2026-02-05', '2026-02-06', '2026-02-07', '2026-02-08', '2026-02-09']
+
+  Time preferences: Prioritizing 09:00 - 21:00
+  Strict mode: ON (only booking preferred times)
+
+  Booking strategy: REVERSE ORDER (furthest dates first)
+
+  Smart redistribution calculation:
+    Enabled days: 8/8
+    Remaining quota: 22.2h
+    Ideal hours/day: 3.5h
+    Current hours per day:
+      2026-02-16 (Mon): 2.0h [needs +1.5h]
+      2026-02-17 (Tue): 2.8h [needs +0.8h]
+      2026-02-18 (Wed): 1.0h [needs +2.5h]
+      2026-02-19 (Thu): 0.0h [needs +3.5h]
+      2026-02-20 (Fri): 0.0h [needs +3.5h]
+      2026-02-21 (Sat): 0.0h [needs +3.5h]
+      2026-02-22 (Sun): 0.0h [needs +3.5h]
+      2026-02-23 (Mon): 0.0h [needs +3.5h]
+
+  Navigating to day 7 first (reverse order strategy)...
+
+============================================================
+CHECKING FOR HORIZON SNIPE OPPORTUNITIES (MULTI-DAY)
+============================================================
+
+  Scanning 3 horizon days for snipe candidates: [7, 5, 3]
+
+    Scanning Day 7 (2026-02-23) for 7-day horizon rooms...
+      No snipe candidates found for Day 7
+
+    Scanning Day 5 (2026-02-21) for 5-day horizon rooms...
+    Navigating backward 2 day(s) to Day 5...
+      Found: B1.17 at 11.75, bookable in 84s
+
+    Scanning Day 3 (2026-02-19) for 3-day horizon rooms...
+    Navigating backward 2 day(s) to Day 3...
+      No snipe candidates found for Day 3
+
+  Total snipe candidates found: 1
+  Snipe order (furthest day first, then by room priority):
+    1. Day 5 - B1.17 at 11.75 (bookable in 84s)
+
+  Positioning for first snipe...
+    Navigating forward 2 day(s) to Day 5...
+
+  Ready to snipe 1 candidate(s)
+  First snipe: B1.17 at 11.75 (Day 5)
+  Bookable at: 12:15:00
+
+  [SNIPE 1/1] Attempting B1.17 at 11.75 (Day 5)
+
+============================================================
+HORIZON SNIPE: B1.17 at 11:45-12:15
+============================================================
+  Slot becomes bookable at: 12:15:00
+  Current time: 12:13:45
+  Seconds until bookable: 74.3
+  Strategy: Open form now, wait, click Save at exact moment
+
+  [SNIPE] Step 1: Opening booking form...
+  [SNIPE] Clicking at (870, 690)...
+  [SNIPE] No booking type button found, checking if form opened...
+  [SNIPE] Step 2: Pre-filling times (11:45 to 12:15)...
+  [SNIPE] Could not find time inputs (found 0) - aborting
+  [DEBUG] go_back() called
+  [DEBUG] Booking form visible: False
+  [DEBUG] Back on calendar (location-day found)
+    [SNIPE 1] FAILED, continuing to next candidate...
+
+  Snipe phase complete: 0/1 successful
+
+  Returning to Day 7 for normal booking flow...
+    Navigating forward 2 day(s) to Day 7...
+Traceback (most recent call last):
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 4409, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 3729, in main
+    current_calendar_day = navigate_to_day(page, day_order[0], current_calendar_day)
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 2498, in navigate_to_day
+    page.locator("mat-icon").filter(has_text="chevron_right").first.click()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\sync_api\_generated.py", line 15631, in click
+    self._sync(
+    ~~~~~~~~~~^
+        self._impl_obj.click(
+        ^^^^^^^^^^^^^^^^^^^^^
+    ...<10 lines>...
+        )
+        ^
+    )
+    ^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_sync_base.py", line 115, in _sync
+    return task.result()
+           ~~~~~~~~~~~^^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_locator.py", line 162, in click
+    return await self._frame._click(self._selector, strict=True, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_frame.py", line 566, in _click
+    await self._channel.send("click", self._timeout, locals_to_params(locals()))
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_connection.py", line 69, in send
+    return await self._connection.wrap_api_call(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Users\loxty\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_connection.py", line 559, in wrap_api_call
+    raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+playwright._impl._errors.TimeoutError: Locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator("mat-icon").filter(has_text="chevron_right").first
+    - locator resolved to <mat-icon role="img" aria-hidden="true" data-mat-icon-type="font" _ngcontent-asimut-core-c2283000203="" class="mat-icon notranslate material-icons mat-ligature-font mat-icon-no-color">chevron_right</mat-icon>
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="cdk-overlay-backdrop cdk-overlay-dark-backdrop cdk-overlay-backdrop-showing"></div> from <div class="cdk-overlay-container">…</div> subtree intercepts pointer events
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is visible, enabled and stable
+      - scrolling into view if needed
+      - done scrolling
+      - <div class="cdk-overlay-backdrop cdk-overlay-dark-backdrop cdk-overlay-backdrop-showing"></div> from <div class="cdk-overlay-container">…</div> subtree intercepts pointer events
+    - retrying click action
+      - waiting 100ms
+    11 × waiting for element to be visible, enabled and stable
+       - element is visible, enabled and stable
+       - scrolling into view if needed
+       - done scrolling
+       - <div class="cdk-overlay-backdrop cdk-overlay-dark-backdrop cdk-overlay-backdrop-showing"></div> from <div class="cdk-overlay-container">…</div> subtree intercepts pointer events
+     - retrying click action
+       - waiting 500ms
+
+============================================================ 
+[16/02/2026 12:14:17.54] Booking run completed 

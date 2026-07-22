@@ -1,0 +1,76 @@
+[14/02/2026  9:00:28.03] Starting scheduled booking run... 
+============================================================ 
+============================================================
+ASIMUT WEEK BOOKER
+============================================================
+Today: 2026-02-14
+Booking for: 2026-02-14 to 2026-02-21
+Mode: Visible browser
+============================================================
+
+============================================================
+SCANNING MY AGENDA FOR EXISTING EVENTS
+============================================================
+  [DEBUG] Navigating to agenda page...
+  [DEBUG] Agenda page loaded, URL: https://rwcmd.asimut.net/agenda...
+  Scrolling until we reach 21 February 2026...
+  [DEBUG] Found target date '21 February 2026' after 0 scrolls
+  Final pass to capture all events (10 scrolls)...
+  [DEBUG] Raw events extracted: 10
+
+  Found 10 unique events in agenda (deduplicated from 10):
+  [Tracker] Added reservation: 2026-02-14 12.00-12.50
+  [R] 2026-02-14 (Saturday): 12:00 - 12:30 in B0.13
+  [Tracker] Added reservation: 2026-02-14 12.50-13.00
+  [R] 2026-02-14 (Saturday): 12:30 - 13:00 in B0.14
+  [Tracker] Added reservation: 2026-02-14 13.50-14.00
+  [R] 2026-02-14 (Saturday): 13:30 - 14:00 in B0.16
+  [Tracker] Added reservation: 2026-02-14 14.50-16.50
+  [R] 2026-02-14 (Saturday): 14:30 - 16:30 in B0.14
+  [Tracker] Added reservation: 2026-02-14 16.75-17.25
+  [R] 2026-02-14 (Saturday): 16:45 - 17:15 in B0.11
+  [Tracker] Added reservation: 2026-02-15 9.50-11.50
+  [R] 2026-02-15 (Sunday): 09:30 - 11:30 in B0.11
+  [Tracker] Added reservation: 2026-02-15 11.50-13.00
+  [R] 2026-02-15 (Sunday): 11:30 - 13:00 in B0.16
+  [Tracker] Added reservation: 2026-02-15 15.50-16.25
+  [R] 2026-02-15 (Sunday): 15:30 - 16:15 in B0.16
+  [Tracker] Added conflict: 2026-02-18 14.00-16.00
+      2026-02-18 (Wednesday): 14:00 - 16:00 in B0.08
+  [Tracker] Added conflict: 2026-02-18 19.50-21.50
+      2026-02-18 (Wednesday): 19:30 - 21:30
+
+  Total events: 10 (8 reservations, 2 other)
+
+  Rolling quota: 8.2/28 hours this week
+  [OK] Can book 19.8 more hours
+============================================================
+
+Navigating to practice rooms (AHC)...
+  Currently showing: Unknown
+
+  Disabled dates (will skip): ['2026-02-02', '2026-02-03', '2026-02-04', '2026-02-05', '2026-02-06', '2026-02-07', '2026-02-08', '2026-02-09']
+
+  Time preferences: Prioritizing 09:00 - 21:00
+  Strict mode: ON (only booking preferred times)
+
+  Booking strategy: REVERSE ORDER (furthest dates first)
+
+  Smart redistribution calculation:
+    Enabled days: 8/8
+    Remaining quota: 19.8h
+    Ideal hours/day: 3.5h
+    Current hours per day:
+Traceback (most recent call last):
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 4409, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\loxty\Desktop\Repos\AsimutBooker\book_week.py", line 3595, in main
+    print(f"      {d.strftime('%Y-%m-%d')} ({d.strftime('%a')}): {day_hours:.1f}h [{status}]")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 30: character maps to <undefined>
+============================================================ 
+[14/02/2026  9:01:44.90] Booking run completed 
