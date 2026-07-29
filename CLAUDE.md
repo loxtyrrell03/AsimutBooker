@@ -231,6 +231,8 @@ Extensions, History, and Diagnostics views. It:
 Overall health is never inferred from the mere presence of a session file.
 An unhealthy live doctor/authentication result stays unhealthy, and a
 positive live validation is required before the dashboard reports healthy.
+When doctor and scheduled authentication results disagree, the newest
+timestamped result wins so a successful recovery clears an older failure.
 
 Do not add a second booking implementation to the GUI.
 

@@ -70,7 +70,8 @@ Open `AsimutBooker.bat` for the control panel, or use the CLI:
 ```
 
 Status remains degraded until a live login/doctor check succeeds; an existing
-but expired session file cannot produce a false healthy result.
+but expired session file cannot produce a false healthy result. A newer
+successful scheduled authentication supersedes an older doctor failure.
 
 Install exactly one 15-minute Windows task:
 

@@ -378,21 +378,53 @@ def _derive_overall_status(
         return "degraded"
     if not isinstance(health, dict):
         return "degraded"
+    live_status = _latest_live_health_status(health)
+    if live_status == "unhealthy":
+        return "unhealthy"
     component_states = {
-        str(item.get("status", "")).casefold() for item in health.values() if isinstance(item, dict)
+        str(item.get("status", "")).casefold()
+        for component, item in health.items()
+        if component not in {"authentication", "doctor"} and isinstance(item, dict)
     }
     if "unhealthy" in component_states:
         return "unhealthy"
-    if "degraded" in component_states:
+    if live_status == "degraded" or "degraded" in component_states:
         return "degraded"
-    # A cookie file alone is not proof of a usable session. At least one live
-    # authentication/doctor result must have succeeded.
-    trusted_live_state = any(
-        isinstance(health.get(component), dict)
-        and str(health[component].get("status", "")).casefold() == "healthy"
-        for component in ("authentication", "doctor")
-    )
-    return "healthy" if trusted_live_state else "degraded"
+    # A cookie file alone is not proof of a usable session.
+    return "healthy" if live_status == "healthy" else "degraded"
+
+
+def _latest_live_health_status(health: dict[object, object]) -> str | None:
+    """Return the newest doctor/auth result, failing closed if order is unknown."""
+
+    records: list[tuple[str, datetime | None]] = []
+    for component in ("authentication", "doctor"):
+        raw = health.get(component)
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status", "")).casefold()
+        if not status:
+            continue
+        timestamp: datetime | None = None
+        raw_timestamp = raw.get("updated_at")
+        if raw_timestamp:
+            try:
+                timestamp = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+            except ValueError:
+                timestamp = None
+        records.append((status, timestamp))
+    if not records:
+        return None
+    if len(records) == 1:
+        return records[0][0]
+    if all(timestamp is not None for _, timestamp in records):
+        return max(records, key=lambda item: item[1])[0]
+    states = {status for status, _ in records}
+    if "unhealthy" in states:
+        return "unhealthy"
+    if "degraded" in states:
+        return "degraded"
+    return "healthy" if "healthy" in states else None
 
 
 def _command_extensions(config: AppConfig, args: argparse.Namespace) -> int:
