@@ -225,6 +225,9 @@ Extensions, History, and Diagnostics views. It:
 - runs the canonical CLI and renders JSONL progress;
 - supports visible/headless/manual runs and dedicated login;
 - manages one scheduled task;
+- treats Task Scheduler's pre-epoch "never run" sentinel as empty; and
+- isolates and persistently logs individual UI callback failures so one bad
+  health/status result cannot freeze subsequent controls or live output;
 - exposes extension reconcile/retry/cancel controls; and
 - exports local diagnostics/history.
 

@@ -23,13 +23,13 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Any, Callable, Iterable
-
 import tkinter as tk
+import traceback
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+from typing import Any, Callable, Iterable
 
 try:
     import yaml
@@ -92,14 +92,24 @@ def _format_timestamp(value: Any) -> str:
     if value in (None, ""):
         return ""
     if isinstance(value, datetime):
-        return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        parsed = value
+    else:
+        text = str(value)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return text[:19].replace("T", " ")
+
+    # Task Scheduler returns an invented pre-epoch date when a task has never
+    # run. Windows cannot always convert such values to the local timezone.
+    if parsed.year < 1970:
+        return ""
     text = str(value)
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone()
         return parsed.strftime("%Y-%m-%d %H:%M:%S")
-    except (ValueError, TypeError):
+    except (OSError, OverflowError, ValueError, TypeError):
         return text[:19].replace("T", " ")
 
 
@@ -1029,12 +1039,36 @@ class AsimutBookerGUI:
                 callback = self._ui_queue.get_nowait()
                 try:
                     callback()
-                except tk.TclError:
-                    if not self._closing:
-                        raise
+                except tk.TclError as exc:
+                    if self._closing:
+                        return
+                    self._report_ui_callback_error(exc)
+                except Exception as exc:
+                    self._report_ui_callback_error(exc)
         except queue.Empty:
             pass
-        self.root.after(75, self._drain_ui_queue)
+        finally:
+            if not self._closing:
+                try:
+                    self.root.after(75, self._drain_ui_queue)
+                except tk.TclError:
+                    pass
+
+    def _report_ui_callback_error(self, error: Exception) -> None:
+        """Keep one failed background update from freezing the control panel."""
+        summary = f"Control-panel update failed: {type(error).__name__}: {error}"
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with (LOGS_DIR / "gui_errors.log").open("a", encoding="utf-8") as handle:
+                timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+                handle.write(f"[{timestamp}] {summary}\n{traceback.format_exc()}\n")
+        except (OSError, ValueError):
+            pass
+        try:
+            self.append_output(summary, "error")
+            self.footer_var.set("A panel update failed; other updates are still running")
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass
 
     def run_worker(
         self,
@@ -1979,6 +2013,8 @@ $action = $task.Actions | Select-Object -First 1
             result_text = (
                 "Success (0)"
                 if last_result == 0
+                else "Not yet run"
+                if last_result == 267011
                 else f"Exit / HRESULT {last_result}"
                 if last_result is not None
                 else "—"
@@ -2099,7 +2135,6 @@ $action = $task.Actions | Select-Object -First 1
         pending = 0
         for index, raw in enumerate(records):
             row = _record_to_dict(raw)
-            record_id = str(_first(row, "id", "extension_id", default=f"row-{index}"))
             iid = f"extension-{index}"
             self._extension_records[iid] = row
             status = str(_first(row, "status", default="pending"))
