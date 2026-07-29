@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en-GB">
+  <body>
+    <div data-cy="rolling-quota">
+      <span class="quota-value">27:15</span>
+    </div>
+    <div day-header="2026-08-05T00:00:00+01:00">
+      <div class="day-header"><span role="heading">Wednesday 5 August 2026</span></div>
+      <div class="as-event-panel">
+        <div data-cy="event_3570253" class="event-details-expanded normal">
+          <div data-cy="event-datetime">10:00 - 10:45</div>
+          <a
+            href="/arrangement?eventId=3570253"
+            aria-label="Not yet confirmed: Reservation"
+          >
+            <span data-cy="event-display-name">Reservation</span>
+          </a>
+          <a data-cy="event-location-link" href="/agenda?locationIds=49">
+            B0.14 (Practice: Grand Piano)
+          </a>
+        </div>
+      </div>
+      <!-- Responsive duplicate: it must deduplicate by stable event ID. -->
+      <div hidden>
+        <div data-cy="event_3570253" class="event-details-expanded normal">
+          <div data-cy="event-datetime">10:00 - 10:45</div>
+          <a
+            href="/arrangement?eventId=3570253"
+            aria-label="Not yet confirmed: Reservation"
+          >
+            <span data-cy="event-display-name">Reservation</span>
+          </a>
+          <a data-cy="event-location-link" href="/agenda?locationIds=49">
+            B0.14 (Practice: Grand Piano)
+          </a>
+        </div>
+      </div>
+    </div>
+    <div day-header="2026-08-06T00:00:00+01:00">
+      <div class="day-header"><span role="heading">Thursday 6 August 2026</span></div>
+      <div data-cy="event_3570300" class="event-details-expanded cancelled">
+        <div data-cy="event-datetime">11:00 – 12:00</div>
+        <a
+          href="/arrangement?eventId=3570300"
+          aria-label="Cancelled: Reservation"
+        >
+          <span data-cy="event-display-name">Reservation</span>
+        </a>
+        <a data-cy="event-location-link" href="/agenda?locationIds=77">
+          B0.29 (Practice: Grand Piano)
+        </a>
+      </div>
+    </div>
+  </body>
+</html>

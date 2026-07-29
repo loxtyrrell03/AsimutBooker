@@ -1,85 +1,103 @@
-# AsimutBooker Configuration
-# Copy this file to config.yaml and customize for your needs
+# Canonical AsimutBooker configuration.
+# Copy to config/config.yaml. Unknown keys, rooms, and horizons fail closed.
 
 institution:
-  # RWCMD Asimut URL
-  url: "https://rwcmd.asimut.net/"
-  # The location category to book from (as shown in the sidebar)
-  location: "Music Practice Rooms - AHC"
+  base_url: "https://rwcmd.asimut.net/"
+  location_group_id: 10
+  location_category: "Music Practice Rooms - AHC"
 
 rooms:
-  # Rooms configuration with per-room booking horizons
-  # Each room can have its own "horizon" (how many days in advance it can be booked)
-  # Rooms are listed in order of preference (first = most preferred)
-
-  priority:
-    # Format: room_id: horizon_days
-    # Or just room_id (uses default horizon)
-    - room: "B0.35"
-      horizon: 7  # Can book 7 days in advance
-    - room: "B0.28"
-      horizon: 7
-    - room: "B0.24"
-      horizon: 7
-    - room: "B0.29"
-      horizon: 3  # Can only book 3 days in advance
-    - room: "B0.27"
-      horizon: 3
-    - room: "B0.23"
-      horizon: 7
-    - room: "B1.06"
-      horizon: 7
-    - room: "B1.07"
-      horizon: 7
-
-  # Rooms to explicitly exclude (never book these)
-  exclude:
-    - "B0.11"
-    - "B0.13"
-    - "B0.14"
-    - "B0.16"
-    # Add any rooms you don't want to use
-
-  # If true, book any available room (not in exclude list) when priority rooms are full
+  # Horizon is authoritative per room. Do not guess a value for a new room:
+  # verify it against Asimut's form warning before adding it.
+  policies:
+    - {room_id: "B0.29", horizon_days: 5, priority: 0}
+    - {room_id: "B1.09", horizon_days: 3, priority: 1}
+    - {room_id: "B0.11", horizon_days: 7, priority: 2}
+    - {room_id: "B1.16", horizon_days: 3, priority: 3}
+    - {room_id: "B0.13", horizon_days: 7, priority: 4}
+    - {room_id: "B0.14", horizon_days: 7, priority: 5}
+    - {room_id: "B0.27", horizon_days: 5, priority: 6}
+    - {room_id: "B1.14", horizon_days: 5, priority: 7}
+    - {room_id: "B1.17", horizon_days: 5, priority: 8}
+    - {room_id: "B0.16", horizon_days: 7, priority: 9}
+    - {room_id: "B1.20", horizon_days: 5, priority: 10}
+    - {room_id: "B1.18", horizon_days: 5, priority: 11}
+    - {room_id: "B1.21", horizon_days: 5, priority: 12}
+    - {room_id: "B1.19", horizon_days: 5, priority: 13}
+    - {room_id: "B1.06", horizon_days: 5, priority: 14}
+    - {room_id: "B1.07", horizon_days: 5, priority: 15}
+    - {room_id: "B1.08", horizon_days: 5, priority: 16}
+    - {room_id: "B1.10", horizon_days: 5, priority: 17}
+    - {room_id: "B1.11", horizon_days: 5, priority: 18}
+    - {room_id: "B1.15", horizon_days: 5, priority: 19}
+    - {room_id: "B0.23", horizon_days: 5, priority: 20}
+    - {room_id: "B0.24", horizon_days: 5, priority: 21}
+    - {room_id: "B0.28", horizon_days: 7, priority: 22}
+    - {room_id: "B0.35", horizon_days: 7, priority: 23}
+    - {room_id: "B1.22", horizon_days: 7, priority: 24}
+    - {room_id: "B1.23", horizon_days: 7, priority: 25}
+    - {room_id: "B1.24", horizon_days: 7, priority: 26}
+    - {room_id: "B1.25", horizon_days: 7, priority: 27}
+  exclude: []
   fallback: false
 
 booking:
-  # Book for all days from today up to max_horizon_days
-  # The script will check each day and book if slots are available
   max_horizon_days: 7
-
-  # Preferred time slots (24-hour format)
-  # Script will prioritize booking during these times
-  preferred_times:
-    - start: "09:00"
-      end: "11:00"
-    - start: "14:00"
-      end: "16:00"
-    - start: "18:00"
-      end: "20:00"
-
-  # Default booking duration in hours (if applicable)
-  duration_hours: 2
-
-  # Days of the week to book (0=Monday, 6=Sunday)
-  # Leave empty to book any day
-  preferred_days: []
-
-  # Maximum bookings to make per run (to avoid over-booking)
+  default_duration_minutes: 120
   max_bookings_per_run: 5
+  strict_preferences: false
+  preferred_windows:
+    monday: &standard_windows
+      - {start: "09:00", end: "11:00"}
+      - {start: "14:00", end: "16:00"}
+      - {start: "18:00", end: "20:00"}
+    tuesday: *standard_windows
+    wednesday: *standard_windows
+    thursday: *standard_windows
+    friday: *standard_windows
+    saturday: *standard_windows
+    sunday: *standard_windows
+  disabled_dates: []
+
+rules:
+  rolling_quota_hours: 28
+  duration:
+    minimum_minutes: 30
+    maximum_minutes: 120
+    increment_minutes: 15
+  same_room_gap_minutes: 60
+  peak_hours:
+    enabled: true
+    start: "09:00"
+    end: "16:00"
+    weekdays: [monday, tuesday, wednesday, thursday, friday]
+    daily_quota_minutes: 120
 
 schedule:
-  # How often to check for new availability (in hours)
-  check_interval_hours: 1
+  enabled: true
+  cadence_minutes: 15
+  lead_seconds: 120
+  max_lateness_seconds: 180
+  active_start: "07:30"
+  active_end: "22:15"
+  timeout_minutes: 12
 
-  # Specific times to run checks (24-hour format)
-  # If set, overrides check_interval_hours
-  # Useful for running at midnight when new slots open
-  run_at_times: []
-  # Example: ["00:05", "06:00", "12:00", "18:00"]
+browser:
+  state_path: "data/browser_state/state.json"
+  database_path: "data/asimut_booker.sqlite3"
+  lock_path: "data/asimut_booker.lock"
+  artifacts_dir: "data/artifacts"
+  timezone: "Europe/London"
+  navigation_timeout_ms: 30000
+  action_timeout_ms: 10000
+
+notifications:
+  enabled: false
+  provider: "ntfy"
+  base_url: "https://ntfy.sh"
+  priority: "default"
 
 logging:
-  # Log level: DEBUG, INFO, WARNING, ERROR
   level: "INFO"
-  # Keep logs for this many days
   retention_days: 30
+  directory: "logs"

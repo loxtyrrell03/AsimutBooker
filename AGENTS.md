@@ -1,251 +1,305 @@
 # AsimutBooker
 
-Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.
+Automated, policy-aware booking of RWCMD practice rooms through Asimut.
 
-> **IMPORTANT FOR AI AGENTS**: When making changes to this codebase, always update this `CLAUDE.md` file to reflect new features, changed behavior, or updated architecture. Keep documentation in sync with code.
+> **AI maintenance rule:** update this file whenever behavior, architecture,
+> selectors, rules, commands, or file layout changes. Never reintroduce
+> live-writing scripts under pytest-discoverable names.
 
-## Project Overview
+## Core safety contract
 
-This tool automatically books music practice rooms on the RWCMD Asimut system before other students can claim them. It runs on a schedule via Windows Task Scheduler (with wake-from-sleep support) and books rooms as soon as they become available in the booking window.
+Asimut is the source of truth. Local state is coordination/audit state only.
 
-### Key Features
+1. A failed or incomplete parse must stop writes. It must never become an
+   empty agenda or an available room.
+2. Unknown rooms have no inferred horizon. They are not bookable until an
+   explicit 3/5/7-day policy is verified and configured.
+3. A booking or extension is successful only after the exact remote event ID,
+   local date, room, start, and end are observed in a freshly loaded agenda.
+4. Once Save may have been clicked, any inability to reconcile is
+   `AmbiguousBookingResult`. Do not retry that intent automatically.
+5. All browser writes require the process `FileLock`. Scheduled overlap also
+   uses Task Scheduler `IgnoreNew`.
+6. Never use input `.fill()` for Asimut time fields. The visible text can
+   change without Angular persisting the model. Use the native time picker and
+   read the live input property afterward.
+7. Cancelled agenda events are identified by explicit status semantics, not
+   CSS color.
+8. Runtime files may contain personal/authentication data and must remain
+   ignored.
+9. RWCMD dates and rolling horizons are always interpreted in
+   `Europe/London`; configuration rejects another timezone.
 
-- **Automated Login**: Handles Microsoft 365 SSO authentication with persistent session storage (no manual login required after initial setup)
-- **Priority Room Booking**: Targets specific preferred rooms before falling back to alternatives
-- **Scheduled Execution**: Runs every 30 minutes (07:30-22:00) via Windows Task Scheduler with wake-from-sleep
-- **RWCMD Booking Rules**: Respects rolling quota (28 hours/week), peak hours (2hr/day Mon-Fri 9am-4pm), and 60-min same-room gap
-- **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
-- **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
-- **GUI Control Panel**: Desktop application for monitoring, manual control, and day selection
-- **Day Selection**: Toggle specific days on/off for booking via GUI checkboxes
-- **Booking History**: Tracks all runs and bookings made
-- **Push Notifications**: Optional ntfy.sh notifications for booking results
+## Architecture
 
-## Technical Stack
+```
+CLI / Tk control panel / one Windows task
+                  |
+          BookingCoordinator
+        /          |          \
+ pure planner   SQLite WAL   AsimutGateway
+ and policies   + OS lock    (Playwright)
+                                |
+                    validated HTML observations
+```
 
-- **Language**: Python 3.11+
-- **Browser Automation**: Playwright (handles JavaScript-heavy sites, SSO flows)
-- **Scheduling**: Windows Task Scheduler with wake timers
-- **GUI**: Tkinter-based control panel
-- **Session Management**: Persistent browser context to maintain login state
+### Pure domain
 
-## Target Institution
+- `asimut_booker/intervals.py`: same-day half-open integer-minute intervals.
+- `asimut_booker/models.py`: typed events, rooms, intents, candidates, and
+  availability states.
+- `asimut_booker/policies.py`: exact London horizon release, duration, quota,
+  peak, personal-conflict, and same-room-gap checks.
+- `asimut_booker/planner.py`: exhaustive 15-minute candidate generation,
+  preference ranking, currently bookable candidates, and upcoming snipes.
 
-- **Institution**: Royal Welsh College of Music and Drama (RWCMD)
-- **Asimut URL**: `https://rwcmd.asimut.net/`
-- **Location Category**: Music Practice Rooms - AHC
-- **Authentication**: Microsoft 365 SSO
+This layer has no browser, filesystem, database, or current-time side effects.
 
-## Directory Structure
+### HTML observations
+
+- `overview.py` parses the current SVG overview.
+- `agenda.py` parses the signed-in agenda.
+- `forms.py` validates booking/edit and arrangement snapshots.
+- `adapters.py` translates observations/configuration to the pure domain.
+
+Observed overview contract:
+
+- `[data-cy="display-date"]`
+- `[data-cy="increment-date-chevron"]` and decrement counterpart
+- `#svg-grid` with a `viewBox`
+- `#legend-x-inner p[style*=left]` for live x/minute calibration
+- `#legend-y-inner a[data-location-id]` for stable room identity
+- `#closed-hours rect`
+- `#event-overlays rect[data-event-id][data-location-id]`
+- quota counters under `rolling-quota` and `peak-quota`
+
+Do not hardcode `07:00`, `6.25%`, row pixels, event colors, or viewport-relative
+Y proximity. Calibrate from the page and require the requested date.
+
+Observed agenda contract:
+
+- `[day-header="<ISO date with offset>"]`
+- `[data-cy="event_<event id>"]`
+- `[data-cy="event-datetime"]`
+- `[data-cy="event-display-name"]`
+- `[data-cy="event-location-link"]`
+- arrangement href and aria status
+
+### Browser boundary
+
+`asimut_booker/gateway.py` owns Playwright. It:
+
+- validates and atomically updates saved browser state;
+- positively proves signed-in agenda HTML;
+- navigates by semantic date controls and checks the observed date after every
+  click;
+- clicks a calibrated SVG slot and verifies the contextual room/time heading;
+- selects time through the native picker;
+- reads live form properties and server warning text;
+- permits a pre-release snipe form only when its sole blocker matches the
+  observed Asimut horizon warning contract;
+- submits once; and
+- reconciles against arrangement plus refreshed agenda.
+
+Diagnostic HTML/screenshots are local-only under the configured artifacts
+directory.
+
+### Coordinator and persistence
+
+`coordinator.py` performs a bounded run:
+
+1. verify authentication;
+2. read and persist the authoritative agenda/quota;
+3. reconcile uncertain prior intents;
+4. reconcile and process extensions;
+5. scan every enabled date from today through the maximum horizon;
+6. derive free intervals from validated SVG HTML;
+7. rank imminent snipes before ordinary opportunities;
+8. persist an idempotent intent before each write;
+9. revalidate immediately before submission; and
+10. persist only remotely verified mutations.
+
+`database.py` uses SQLite WAL, full synchronous durability, schema migrations,
+foreign keys, compare-and-swap run completion, non-regressing extensions, and
+idempotency keys. `locking.py` supplies the cross-process kernel lock with
+holder metadata and crash recovery.
+
+## RWCMD rules represented
+
+- Minimum duration: 30 minutes.
+- Maximum duration: 120 minutes.
+- Increment: 15 minutes.
+- Configured future/rolling quota: 28 hours; live Asimut remaining quota is
+  also required and constrains decisions.
+- Peak: Monday-Friday 09:00-16:00, maximum 120 minutes per day.
+- Same-room gap: 60 minutes; touching bookings have zero gap and are rejected.
+- Personal calendar conflicts include reservations and non-reservation events.
+- Only active `Reservation` events count toward reservation quota.
+
+### Exact room horizon semantics
+
+The live server warning confirmed that a horizon limits the booking **end** to
+`now + horizon_days`, rolling to the minute.
+
+For a room with horizon `H`, an interval ending at `E` releases at:
+
+```
+local_datetime(target_date, E) - H days
+```
+
+Thus a 10:00 start with 30-minute minimum first releases at 10:30 `H` days
+earlier. `released_end_minute()` rounds the current frontier down to the
+configured increment.
+
+Verified configuration:
+
+- 3 days: B1.09, B1.16
+- 5 days: B0.23, B0.24, B0.27, B0.29, B1.06-B1.08, B1.10-B1.11,
+  B1.14-B1.15, B1.17-B1.21
+- 7 days: B0.11, B0.13, B0.14, B0.16, B0.28, B0.35, B1.22-B1.25
+
+Hopkins Studio was observed in the live group but is not enabled because its
+horizon has not been explicitly verified.
+
+There is no unlisted-room fallback mode. Room priority already supplies safe
+fallback choices among the 28 explicitly configured rooms; enabling an
+unknown room without a verified horizon is rejected at configuration load.
+
+## Extensions
+
+An initial horizon-edge booking stores its stable external event ID, current
+end, and target end in SQLite. Each extension run:
+
+- finds the exact event in a new agenda;
+- accepts already-advanced remote state after a prior crash;
+- calculates the latest released end;
+- checks only the tail after the existing event against live room occupancy;
+- validates the replacement interval with the existing event removed from
+  conflicts/quota accounting;
+- uses the native end-time picker; and
+- records progress only after agenda reconciliation.
+
+Manual cancellation in the GUI cancels only future extension attempts, not the
+existing Asimut reservation.
+
+## Snipes and scheduling
+
+The canonical task runs every 15 minutes, normally two minutes before the
+quarter-hour frontier. The coordinator pre-fills only candidates within that
+lead window and waits using a monotonic deadline. A disabled prefilled form is
+accepted only for the observed "not allowed ... end later than" horizon
+warning; occupancy or unknown warnings fail closed. Pending extensions have
+priority. Each candidate is reevaluated after prior writes so the booker cannot
+book two rooms over the same personal time. Dry-run output also reserves each
+hypothetical target in memory, so its "Would book" lines are mutually
+compatible and collectively respect quota. Horizon-only classifications are
+refreshed after scanning, so a release crossed during slow page navigation is
+booked in the same run rather than missed until the next quarter hour.
+
+Scheduled invocations are accepted only from `lead_seconds` before a target
+through `max_lateness_seconds` afterward. Cadence is fixed at 15 minutes,
+active-window endpoints must align to that cadence, and lead plus lateness must
+be shorter than one interval. This makes the control-panel lateness setting
+real and prevents a delayed wake from replaying a stale snipe as if on time.
+
+`setup_scheduled_tasks.ps1` creates exactly one `AsimutBooker` task with:
+
+- `IgnoreNew`
+- `WakeToRun`
+- `StartWhenAvailable`
+- network required
+- least-privilege interactive user token
+- a configured execution limit
+- no mutation of laptop lid or global power policy
+
+The wrapper uses an absolute `.venv` interpreter, unique logs, and preserves
+the real exit code.
+
+## Control panel
+
+`gui.py` is a thin Tk client with Dashboard, Rooms, Availability, Blackouts,
+Extensions, History, and Diagnostics views. It:
+
+- edits canonical typed YAML atomically with a backup;
+- reads SQLite in read-only mode;
+- runs the canonical CLI and renders JSONL progress;
+- supports visible/headless/manual runs and dedicated login;
+- manages one scheduled task;
+- exposes extension reconcile/retry/cancel controls; and
+- exports local diagnostics/history.
+
+Overall health is never inferred from the mere presence of a session file.
+An unhealthy live doctor/authentication result stays unhealthy, and a
+positive live validation is required before the dashboard reports healthy.
+
+Do not add a second booking implementation to the GUI.
+
+## Commands
+
+```powershell
+# Environment
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+
+# Login and health
+.\.venv\Scripts\python.exe -m asimut_booker.cli login
+.\.venv\Scripts\python.exe -m asimut_booker.cli doctor --json
+.\.venv\Scripts\python.exe -m asimut_booker.cli status --json
+
+# Runs
+.\.venv\Scripts\python.exe -m asimut_booker.cli run
+.\.venv\Scripts\python.exe -m asimut_booker.cli run --headless --dry-run
+.\.venv\Scripts\python.exe -m asimut_booker.cli run --headless --scheduled
+
+# Tests
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m compileall -q asimut_booker
+```
+
+`book_week.py` remains only as a compatibility wrapper.
+
+## Exit codes
+
+- 0: success, no-op, or deliberate scheduled skip
+- 2: invalid configuration
+- 3: login required
+- 4: another worker holds the lock
+- 5: page contract/navigation failure
+- 6: ambiguous remote write
+- 7: unexpected failure
+- 8: local database failure
+- 130: interrupted
+
+## Repository layout
 
 ```
 AsimutBooker/
-├── book_week.py          # Main booking script (entry point)
-├── gui.py                # Desktop control panel GUI
-├── run_booker.bat        # Batch file called by Task Scheduler
-├── AsimutBooker.bat      # GUI launcher (double-click to open)
-├── setup_scheduled_tasks.ps1  # Creates Windows scheduled tasks
-├── create_shortcut.ps1   # Creates desktop shortcut
-├── config/
-│   └── config.yaml       # User configuration
-├── data/
-│   ├── browser_state/    # Persistent login state (gitignored)
-│   │   └── state.json
-│   ├── booking_history.json  # Run history
-│   └── settings.json     # GUI settings (disabled dates, etc.)
-├── logs/                 # Booking logs
-│   └── scheduler.log
-├── src/                  # Alternative module-based implementation
-│   ├── __init__.py
-│   ├── main.py
-│   ├── auth.py
-│   ├── booker.py
-│   ├── scheduler.py
-│   └── config.py
-├── requirements.txt
-└── CLAUDE.md
+├── asimut_booker/
+│   ├── cli.py, coordinator.py, gateway.py
+│   ├── overview.py, agenda.py, forms.py, adapters.py
+│   ├── intervals.py, models.py, policies.py, planner.py
+│   ├── config.py, database.py, locking.py, notifications.py
+│   └── errors.py
+├── tests/                     # offline fixtures and deterministic tests
+├── config/config.example.yaml
+├── gui.py
+├── book_week.py               # compatibility wrapper
+├── run_booker.ps1 / .bat
+├── setup_scheduled_tasks.ps1
+├── AsimutBooker.bat
+├── pyproject.toml
+└── data/README.md
 ```
 
-## Usage
+## Privacy and maintenance
 
-### GUI (Recommended)
-```bash
-# Double-click AsimutBooker.bat or run:
-pythonw gui.py
-```
-
-The GUI provides:
-- Status indicators (login state, scheduled tasks)
-- Run booker manually (visible or headless)
-- View booking history
-- Setup/remove scheduled tasks
-- Day selection checkboxes (enable/disable specific days for booking)
-
-### Command Line
-```bash
-# Run with visible browser (for testing/debugging)
-python book_week.py
-
-# Run headless (for scheduled tasks)
-python book_week.py --headless
-```
-
-### Initial Setup
-1. Run `python book_week.py` with visible browser
-2. Complete Microsoft 365 SSO login manually
-3. Browser state is saved to `data/browser_state/state.json`
-4. Subsequent runs use saved session (no login required)
-
-### Scheduled Tasks Setup
-```powershell
-# Run as Administrator
-.\setup_scheduled_tasks.ps1
-```
-
-This creates 30 scheduled tasks (every 30 min from 07:30-22:00) with:
-- Wake-from-sleep enabled
-- Lid close action set to "Do nothing" when plugged in
-
-## Booking Rules (RWCMD)
-
-The script enforces these rules:
-- **Rolling Quota**: Maximum 28 hours per rolling week (only "Reservation" events count, not classes)
-- **Peak Hours**: Maximum 2 hours **per day** during Mon-Fri 9am-4pm
-- **Booking Duration**: Minimum 30 min, maximum 2 hours per slot
-- **Same-Room Gap**: 60-minute gap required between bookings in same room
-- **Room Horizons**: Different rooms have different advance booking windows (3, 5, or 7 days)
-- **Dynamic Allocation**: Bookings per day adjust based on enabled days to maximize quota usage
-- **Smart Redistribution**: Hours are distributed evenly across enabled days - days with existing bookings get fewer new slots
-
-## Horizon Edge Booking & Extension
-
-Rooms become bookable exactly X days before the slot time (where X is the room's horizon: 3, 5, or 7 days). Due to the 30-minute minimum booking rule, this creates a staggered booking pattern:
-
-### How It Works
-
-**Example**: Room B0.27 (5-day horizon), slot at 10:00 on Feb 7
-
-1. **Horizon edge** = Feb 2 at 10:00 (exactly 5 days before)
-2. **At 10:00**: Slot just became visible, but only 0 minutes are "past" the horizon - cannot book yet
-3. **At 10:30**: 30 minutes past horizon - can now book **10:00-10:30** (minimum 30 min)
-4. **At 10:45**: 45 minutes past - can extend to **10:00-10:45**
-5. **At 11:00**: 60 minutes past - can extend to **10:00-11:00**
-6. **...continues in 15-minute increments...**
-7. **At 12:00**: 120 minutes past - can extend to **10:00-12:00** (maximum 2 hours)
-
-### Extension Flow
-
-The booker automatically handles this in two phases:
-
-1. **Initial Booking**: At the first possible moment (30 min after horizon), books the minimum 30-minute slot and saves it to `extendable_bookings` in settings.json
-
-2. **Extension Runs**: Every 15 minutes, the scheduled task runs again and:
-   - Loads pending extendable bookings
-   - Calculates how much more time is now available (based on time since horizon, not time since booking)
-   - Extends each booking by the available amount (in 15-minute increments)
-   - Continues until reaching 2 hours or the target duration
-
-### Timeline Example
-
-```
-10:00  Horizon edge - slot becomes visible but not bookable
-10:30  Book 10:00-10:30 (first possible moment)
-10:45  Extend to 10:00-10:45  (scheduled task runs)
-11:00  Extend to 10:00-11:00  (scheduled task runs)
-11:15  Extend to 10:00-11:15  (scheduled task runs)
-11:30  Extend to 10:00-11:30  (scheduled task runs)
-11:45  Extend to 10:00-11:45  (scheduled task runs)
-12:00  Extend to 10:00-12:00  (scheduled task runs) - DONE
-```
-
-### Key Functions
-
-- `is_room_available_to_book()`: Checks if a slot is past its horizon edge
-- `save_extendable_booking()`: Saves a booking for later extension
-- `calculate_max_extension()`: Determines how much a booking can be extended based on current time vs horizon
-- `try_extend_booking()`: Attempts to extend a booking via Asimut's edit feature
-
-## Multi-Day Horizon Snipe
-
-The booker scans **all** horizon days (7, 5, 3) for snipe candidates, not just the furthest day. This catches opportunities across different room horizons.
-
-### How Multi-Day Snipe Works
-
-1. **Pre-scan phase** (before target time):
-   - Navigate to Day 7 → scan for 7-day horizon rooms becoming bookable
-   - Navigate to Day 5 → scan for 5-day horizon rooms becoming bookable
-   - Navigate to Day 3 → scan for 3-day horizon rooms becoming bookable
-   - Collect all candidates within 3-minute snipe window
-
-2. **Sort candidates**: Furthest day first, then by room priority within each day
-
-3. **Sequential snipe**: Attempt each candidate in order
-   - Navigate to candidate's day
-   - Pre-fill form, wait for exact moment, click Save
-   - On success: record booking, continue to next
-   - On failure: skip, try next candidate
-
-4. **Resume normal booking**: Navigate back to furthest enabled day
-
-### Extension Priority
-
-Pending extensions take priority over new snipes. If a slot has a pending extension (from a previous horizon edge booking), the snipe scanner skips that slot to avoid conflicts.
-
-### Key Functions
-
-- `navigate_to_day()`: Helper to navigate calendar forward/backward
-- `find_all_snipe_candidates_multi_day()`: Scans all horizon days for snipe candidates
-- `find_horizon_snipe_candidate()`: Original single-day scanner (still used internally)
-
-## Configuration
-
-The script loads settings from `config/config.yaml` with fallback to hardcoded defaults. Key configurable options:
-
-- **Room priority**: Order of preferred rooms (first = most preferred)
-- **Room horizons**: How many days in advance each room can be booked (3, 5, or 7 days)
-- **Booking rules**: Rolling quota, peak hours limits, same-room gap
-- **Schedule**: Run times for the booker
-
-See `config/config.yaml` for all available options. Changes take effect on next run.
-
-**Room booking horizons** (configured in config.yaml):
-- **3 days**: B1.09, B1.16
-- **5 days**: B0.23, B0.24, B0.27, B0.29, B1.06-B1.08, B1.10-B1.11, B1.14-B1.15, B1.17-B1.21
-- **7 days**: All other rooms (B0.11, B0.13-B0.15, etc.)
-
-## Development Commands
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Install Playwright browsers
-playwright install chromium
-
-# Run with visible browser (debugging)
-python book_week.py
-
-# Run headless
-python book_week.py --headless
-```
-
-## Files Overview
-
-| File | Purpose |
-|------|---------|
-| `book_week.py` | Main booking script - scans agenda, navigates calendar, books slots |
-| `gui.py` | Tkinter GUI for monitoring and control |
-| `run_booker.bat` | Wrapper script called by Task Scheduler |
-| `setup_scheduled_tasks.ps1` | Creates Windows scheduled tasks with wake timers |
-| `config/config.yaml` | User configuration (rooms, horizons, rules) |
-| `data/browser_state/state.json` | Saved browser session (cookies, localStorage) |
-| `data/booking_history.json` | JSON log of all booking runs |
-| `data/settings.json` | GUI settings including disabled dates and extendable bookings |
-
-## Maintenance Notes
-
-When modifying this codebase:
-- **Always update `CLAUDE.md`** when adding features, changing behavior, or modifying architecture
-- Keep the "Key Functions" sections current with new/changed functions
-- Document any new booking rules or constraints
-- Update the Files Overview table if adding new files
+- `config/config.yaml`, browser state, SQLite, legacy JSON, logs, screenshots,
+  and diagnostics are ignored.
+- Never commit credentials, cookie state, participant names, agenda HTML, or
+  guessable notification topics.
+- Removing sensitive runtime files from the current Git tree does not remove
+  them from old public history. A history rewrite/credential rotation is a
+  separate destructive remediation requiring explicit authorization.
+- Keep selector fixtures current when the site changes. A contract change
+  should first cause a safe stop, then a fixture and parser update.

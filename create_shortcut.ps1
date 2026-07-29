@@ -1,28 +1,33 @@
-# Create Desktop Shortcut for AsimutBooker GUI
-# Run this script once to create the shortcut
+[CmdletBinding()]
+param()
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ProjectRoot = $PSScriptRoot
+$PythonwPath = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
+$GuiPath = Join-Path $ProjectRoot "gui.py"
 $DesktopPath = [Environment]::GetFolderPath("Desktop")
 $ShortcutPath = Join-Path $DesktopPath "AsimutBooker.lnk"
 
-# Create WScript Shell object
-$WshShell = New-Object -ComObject WScript.Shell
-
-# Create shortcut
-$Shortcut = $WshShell.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = "pythonw.exe"
-$Shortcut.Arguments = "`"$ScriptDir\gui.py`""
-$Shortcut.WorkingDirectory = $ScriptDir
-$Shortcut.Description = "AsimutBooker Control Panel"
-
-# Try to set icon
-$IconPath = Join-Path $ScriptDir "assets\icon.ico"
-if (Test-Path $IconPath) {
-    $Shortcut.IconLocation = $IconPath
+if (-not (Test-Path -LiteralPath $PythonwPath -PathType Leaf)) {
+    throw "Project Python not found: $PythonwPath`nCreate .venv and install the project first."
+}
+if (-not (Test-Path -LiteralPath $GuiPath -PathType Leaf)) {
+    throw "Control panel not found: $GuiPath"
 }
 
-$Shortcut.Save()
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($ShortcutPath)
+$shortcut.TargetPath = $PythonwPath
+$shortcut.Arguments = "`"$GuiPath`""
+$shortcut.WorkingDirectory = $ProjectRoot
+$shortcut.Description = "AsimutBooker Control Panel"
 
+$iconPath = Join-Path $ProjectRoot "assets\icon.ico"
+if (Test-Path -LiteralPath $iconPath -PathType Leaf) {
+    $shortcut.IconLocation = $iconPath
+}
+
+$shortcut.Save()
 Write-Host "Desktop shortcut created: $ShortcutPath" -ForegroundColor Green
-Write-Host ""
-Write-Host "You can now launch AsimutBooker from your desktop!" -ForegroundColor Cyan

@@ -8,19 +8,35 @@ env/
 venv/
 .venv/
 ENV/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
 
 # Environment variables
 .env
 
-# Browser state (contains session cookies - sensitive!)
-data/browser_state/
+# Runtime state (contains cookies, agenda data, booking history and locks)
+data/*
+!data/README.md
 
-# Logs
-logs/*.log
+# Logs and diagnostic captures may contain personal calendar data
+logs/
+debug_screenshots/
+artifacts/
+*.log
+*.trace.zip
+
+# SQLite sidecars
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
 
 # IDE
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 
@@ -30,3 +46,4 @@ Thumbs.db
 
 # Local config (user-specific)
 config/config.yaml
+config/config.yaml.*

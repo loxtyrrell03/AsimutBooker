@@ -1,4 +1,4 @@
-playwright>=1.40.0
-pyyaml>=6.0
-apscheduler>=3.10.0
-python-dotenv>=1.0.0
+beautifulsoup4>=4.12,<5
+playwright>=1.49,<2
+PyYAML>=6,<7
+tzdata>=2025.2

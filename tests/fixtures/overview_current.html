@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en-GB">
+  <body>
+    <span data-cy="display-date"> Wednesday, 29 July 2026 </span>
+    <div data-cy="rolling-quota">
+      <span class="quota-value"> 12:30 </span>
+    </div>
+    <div data-cy="peak-quota">
+      <span class="quota-value"> 1:15 </span>
+    </div>
+    <div id="legend-x-inner">
+      <p style="left:6.25%">8</p>
+      <p style="left:12.5%">9</p>
+      <p style="left:18.75%">10</p>
+    </div>
+    <div id="legend-y-inner">
+      <a data-location-id="82" style="top:0%;height:50%">
+        <span>B0.11</span>
+        <span class="secondary-name">&nbsp;(Practice: Grand Piano x 2)</span>
+      </a>
+      <a data-location-id="74" style="top:50%;height:50%">
+        <span>B0.13</span>
+        <span class="secondary-name">&nbsp;(Practice: Grand Piano)</span>
+      </a>
+    </div>
+    <svg id="svg-grid" viewBox="-0.5 -0.5 961 61" width="961" height="61">
+      <rect x="0" y="0" width="961" height="61" fill="white"></rect>
+      <g id="closed-hours">
+        <rect x="0" y="0" width="30" height="30" class="closed-hours"></rect>
+        <rect x="915" y="0" width="44" height="30" class="closed-hours"></rect>
+        <rect x="0" y="30" width="30" height="30" class="closed-hours"></rect>
+        <rect x="915" y="30" width="44" height="30" class="closed-hours"></rect>
+      </g>
+      <g id="events">
+        <path class="c2" d="M60 0h60v30h-60z"></path>
+      </g>
+      <g id="event-overlays">
+        <rect
+          x="60"
+          y="0"
+          width="60"
+          height="30"
+          data-event-id="3570001"
+          data-location-id="82"
+          data-category-id="2"
+          class="event-overlay"
+        ></rect>
+      </g>
+    </svg>
+  </body>
+</html>

@@ -1,161 +1,199 @@
-# AsimutBooker - Task Scheduler Setup Script
-# Run this script as Administrator to create scheduled tasks
-# Usage: Right-click PowerShell -> Run as Administrator -> .\setup_scheduled_tasks.ps1
+[CmdletBinding()]
+param(
+    [ValidatePattern('^(?:[01]\d|2[0-3]):[0-5]\d$')]
+    [string]$StartTime = "07:30",
 
-$ErrorActionPreference = "Stop"
+    [ValidatePattern('^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$')]
+    [string]$EndTime = "22:15",
 
-# Configuration
-$TaskName = "AsimutBooker"
-$ScriptPath = Join-Path $PSScriptRoot "run_booker.bat"
-$WorkingDir = $PSScriptRoot
+    [ValidateRange(15, 15)]
+    [int]$IntervalMinutes = 15,
 
-# Times to run (every 15 minutes from 07:15 to 22:00)
-# 15-minute intervals allow extending horizon-edge bookings incrementally
-$RunTimes = @(
-    "07:15", "07:30", "07:45",
-    "08:00", "08:15", "08:30", "08:45",
-    "09:00", "09:15", "09:30", "09:45",
-    "10:00", "10:15", "10:30", "10:45",
-    "11:00", "11:15", "11:30", "11:45",
-    "12:00", "12:15", "12:30", "12:45",
-    "13:00", "13:15", "13:30", "13:45",
-    "14:00", "14:15", "14:30", "14:45",
-    "15:00", "15:15", "15:30", "15:45",
-    "16:00", "16:15", "16:30", "16:45",
-    "17:00", "17:15", "17:30", "17:45",
-    "18:00", "18:15", "18:30", "18:45",
-    "19:00", "19:15", "19:30", "19:45",
-    "20:00", "20:15", "20:30", "20:45",
-    "21:00", "21:15", "21:30", "21:45",
-    "22:00"
+    [ValidateRange(0, 600)]
+    [int]$LeadSeconds = 120,
+
+    [ValidateRange(5, 120)]
+    [int]$ExecutionTimeLimitMinutes = 12,
+
+    [switch]$Disabled,
+
+    [switch]$ValidateOnly,
+
+    [switch]$NoPause
 )
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "AsimutBooker Task Scheduler Setup" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-# Check if running as administrator
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host "ERROR: This script must be run as Administrator!" -ForegroundColor Red
-    Write-Host "Right-click PowerShell and select 'Run as Administrator'" -ForegroundColor Yellow
-    exit 1
+$TaskName = "AsimutBooker"
+$ProjectRoot = $PSScriptRoot
+$WrapperPath = Join-Path $ProjectRoot "run_booker.ps1"
+$PythonPath = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+
+function Convert-MinutesToIsoDuration {
+    param([Parameter(Mandatory = $true)][int]$Minutes)
+    $hours = [math]::Floor($Minutes / 60)
+    $remainingMinutes = $Minutes % 60
+    if ($hours -gt 0 -and $remainingMinutes -gt 0) {
+        return "PT${hours}H${remainingMinutes}M"
+    }
+    if ($hours -gt 0) {
+        return "PT${hours}H"
+    }
+    return "PT${remainingMinutes}M"
 }
 
-# Check if script exists
-if (-not (Test-Path $ScriptPath)) {
-    Write-Host "ERROR: run_booker.bat not found at $ScriptPath" -ForegroundColor Red
-    exit 1
+function Escape-Xml {
+    param([AllowEmptyString()][string]$Value)
+    return [System.Security.SecurityElement]::Escape($Value)
 }
 
-Write-Host "Script path: $ScriptPath" -ForegroundColor Green
-Write-Host "Working directory: $WorkingDir" -ForegroundColor Green
-Write-Host ""
+try {
+    if (-not $ValidateOnly) {
+        if (-not (Test-Path -LiteralPath $WrapperPath -PathType Leaf)) {
+            throw "Scheduler wrapper not found: $WrapperPath"
+        }
+        if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+            throw "Project Python not found: $PythonPath`nCreate .venv and install the project before scheduling it."
+        }
+    }
 
-# Remove existing tasks
-Write-Host "Removing existing AsimutBooker tasks..." -ForegroundColor Yellow
-Get-ScheduledTask | Where-Object { $_.TaskName -like "AsimutBooker*" } | ForEach-Object {
-    Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false
-    Write-Host "  Removed: $($_.TaskName)" -ForegroundColor Gray
-}
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $startClock = [datetime]::ParseExact($StartTime, "HH:mm", $culture)
+    $endClock = if ($EndTime -eq "24:00") {
+        $startClock.Date.AddDays(1)
+    } else {
+        [datetime]::ParseExact($EndTime, "HH:mm", $culture)
+    }
+    if ($endClock -le $startClock) {
+        throw "EndTime must be later than StartTime on the same day."
+    }
 
-Write-Host ""
-Write-Host "Creating scheduled tasks..." -ForegroundColor Yellow
-Write-Host "  Tasks will start 2 minutes early and wait for target time" -ForegroundColor Gray
+    # One daily calendar trigger repeats every 15 minutes. This avoids the old
+    # burst of dozens of independent tasks when Windows resumes from sleep.
+    $firstTarget = (Get-Date).Date.Add($startClock.TimeOfDay)
+    $triggerBoundary = $firstTarget.AddSeconds(-$LeadSeconds)
+    $windowMinutes = [int](($endClock - $startClock).TotalMinutes)
+    # Include the final target without keeping the trigger active for another interval.
+    $repetitionDuration = Convert-MinutesToIsoDuration ($windowMinutes + 1)
+    $executionLimit = Convert-MinutesToIsoDuration $ExecutionTimeLimitMinutes
 
-# Create settings
-$Settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -WakeToRun `
-    -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1)
+    $powerShellPath = (Get-Command "powershell.exe" -ErrorAction Stop).Source
+    $actionArguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$WrapperPath`""
+    $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $author = $userId
+    $registeredAt = (Get-Date).ToString("s")
+    $taskEnabledText = if ($Disabled) { "false" } else { "true" }
 
-# Create principal (run whether user is logged on or not requires password)
-# For simplicity, we'll run only when logged on
-$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    $escapedPowerShell = Escape-Xml $powerShellPath
+    $escapedArguments = Escape-Xml $actionArguments
+    $escapedRoot = Escape-Xml $ProjectRoot
+    $escapedUser = Escape-Xml $userId
+    $escapedAuthor = Escape-Xml $author
+    $startBoundaryText = $triggerBoundary.ToString("yyyy-MM-dd'T'HH:mm:ss")
 
-$count = 0
-foreach ($time in $RunTimes) {
-    $TaskFullName = "${TaskName}_$($time.Replace(':', ''))"
+    $taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>$registeredAt</Date>
+    <Author>$escapedAuthor</Author>
+    <Description>AsimutBooker single-instance booking coordinator. Targets $StartTime-$EndTime every $IntervalMinutes minutes and starts $LeadSeconds seconds early.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <Repetition>
+        <Interval>PT${IntervalMinutes}M</Interval>
+        <Duration>$repetitionDuration</Duration>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>$startBoundaryText</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>$escapedUser</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>$taskEnabledText</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>$executionLimit</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>$escapedPowerShell</Command>
+      <Arguments>$escapedArguments</Arguments>
+      <WorkingDirectory>$escapedRoot</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
 
-    # Calculate trigger time (2 minutes before target)
-    $TargetTime = [datetime]::Parse($time)
-    $TriggerTime = $TargetTime.AddMinutes(-2)
-    $TriggerTimeStr = $TriggerTime.ToString("HH:mm")
+    # Force a well-formed XML parse even during normal installation so quoting
+    # or path characters cannot register a malformed task definition.
+    $null = [xml]$taskXml
+    if ($ValidateOnly) {
+        Write-Host "Scheduled task definition is valid." -ForegroundColor Green
+        Write-Host "  First trigger:       $startBoundaryText"
+        Write-Host "  Repetition:          every $IntervalMinutes minutes for $repetitionDuration"
+        Write-Host "  Instance policy:    IgnoreNew"
+        exit 0
+    }
 
-    # Create action with target time argument
-    $Action = New-ScheduledTaskAction `
-        -Execute $ScriptPath `
-        -Argument "--target-time $time" `
-        -WorkingDirectory $WorkingDir
+    # Register the replacement first. If registration fails, the existing
+    # schedule remains intact.
+    Register-ScheduledTask -TaskName $TaskName -Xml $taskXml -Force | Out-Null
 
-    # Create trigger for 2 minutes before target time, daily
-    $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTimeStr
+    # Remove only the obsolete per-time tasks after the canonical task exists.
+    Get-ScheduledTask -ErrorAction SilentlyContinue |
+        Where-Object { $_.TaskName -like "AsimutBooker_*" } |
+        ForEach-Object {
+            Unregister-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -Confirm:$false
+        }
 
-    # Register the task
-    Register-ScheduledTask `
-        -TaskName $TaskFullName `
-        -Action $Action `
-        -Trigger $Trigger `
-        -Settings $Settings `
-        -Principal $Principal `
-        -Description "AsimutBooker automatic room booking at $time (starts at $TriggerTimeStr)" | Out-Null
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction Stop
 
-    $count++
-    Write-Host "  Created: $TaskFullName (triggers $TriggerTimeStr, books at $time)" -ForegroundColor Green
-}
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Setup Complete!" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Created $count scheduled tasks." -ForegroundColor White
-Write-Host ""
-Write-Host "IMPORTANT NOTES:" -ForegroundColor Yellow
-Write-Host "1. Tasks are set to WAKE your PC from sleep" -ForegroundColor White
-Write-Host "2. Tasks run daily at each scheduled time" -ForegroundColor White
-Write-Host "3. Your PC must be plugged in (not on battery only)" -ForegroundColor White
-Write-Host "4. Hibernate mode may not wake reliably - use Sleep instead" -ForegroundColor White
-Write-Host ""
-Write-Host "To view tasks: Open Task Scheduler -> Task Scheduler Library" -ForegroundColor Gray
-Write-Host "To remove all tasks: Run this script again or delete manually" -ForegroundColor Gray
-Write-Host ""
-
-# Verify wake timers are enabled
-Write-Host "Checking power settings..." -ForegroundColor Yellow
-$wakeTimers = powercfg /query SCHEME_CURRENT SUB_SLEEP RTCWAKE 2>$null
-if ($wakeTimers -match "0x00000000") {
+    Write-Host "AsimutBooker scheduler installed successfully." -ForegroundColor Green
+    Write-Host "  Task name:          $TaskName"
+    Write-Host "  Target window:      $StartTime - $EndTime"
+    Write-Host "  Cadence:            every $IntervalMinutes minutes"
+    Write-Host "  Trigger lead:       $LeadSeconds seconds"
+    Write-Host "  Instance policy:    $($task.Settings.MultipleInstances)"
+    Write-Host "  Wake from sleep:    $($task.Settings.WakeToRun)"
+    Write-Host "  Enabled:            $(-not $Disabled)"
+    Write-Host "  Next run:           $($info.NextRunTime)"
     Write-Host ""
-    Write-Host "Enabling wake timers..." -ForegroundColor Yellow
-    powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP RTCWAKE 1
-    powercfg /setactive SCHEME_CURRENT
-    Write-Host "Wake timers enabled." -ForegroundColor Green
-} else {
-    Write-Host "Wake timers already enabled." -ForegroundColor Green
+    Write-Host "The task uses the current interactive Windows account." -ForegroundColor Yellow
+    Write-Host "It runs while this account remains signed in, including on the lock screen."
+    exit 0
 }
-
-# Configure lid close action to "Do nothing" when plugged in
-Write-Host ""
-Write-Host "Configuring lid close action..." -ForegroundColor Yellow
-Write-Host "Setting lid close to 'Do nothing' when plugged in..." -ForegroundColor Gray
-
-# LIDACTION: 0 = Do nothing, 1 = Sleep, 2 = Hibernate, 3 = Shut down
-powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
-powercfg /setactive SCHEME_CURRENT
-
-Write-Host "Lid close action set to 'Do nothing' (when plugged in)." -ForegroundColor Green
-Write-Host ""
-Write-Host "NOTE: Your laptop will now stay awake with the lid closed" -ForegroundColor Yellow
-Write-Host "      (only when plugged into power)." -ForegroundColor Yellow
-Write-Host ""
-Write-Host "To revert this later, run:" -ForegroundColor Gray
-Write-Host "  powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 1" -ForegroundColor Cyan
-
-Write-Host ""
-Write-Host "Press any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+catch {
+    Write-Error $_
+    if (-not $NoPause -and $Host.Name -notlike "*ServerRemoteHost*") {
+        Write-Host ""
+        Read-Host "Press Enter to close"
+    }
+    exit 1
+}

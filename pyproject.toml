@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asimut-booker"
+version = "2.0.0"
+description = "Reliable, policy-aware room booking automation for RWCMD Asimut"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "playwright>=1.49,<2",
+    "PyYAML>=6,<7",
+    "tzdata>=2025.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=6,<7",
+    "ruff>=0.12,<1",
+]
+
+[project.scripts]
+asimut-booker = "asimut_booker.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["asimut_booker*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "live: explicitly opted-in tests that can access the live Asimut service",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["asimut_booker"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "I"]
