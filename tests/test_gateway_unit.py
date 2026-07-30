@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from asimut_booker.agenda import AgendaEvent, AgendaObservation
-from asimut_booker.errors import AmbiguousBookingResult
+from asimut_booker.errors import AmbiguousBookingResult, AuthenticationRequired
 from asimut_booker.forms import BookingFormSnapshot
 from asimut_booker.gateway import (
     AsimutGateway,
@@ -250,3 +250,50 @@ def test_legacy_state_seeds_new_persistent_context() -> None:
     assert [cookie["name"] for cookie in cookies_added] == ["session"]
     assert len(scripts) == 1
     assert "localStorage.setItem" in scripts[0]
+
+
+def test_auth_verification_detects_microsoft_redirect_without_waiting() -> None:
+    class Locator:
+        @property
+        def first(self) -> "Locator":
+            return self
+
+        def wait_for(self, **_kwargs: object) -> None:
+            raise AssertionError("the agenda wait must not run on the Microsoft host")
+
+    class Page:
+        url = "about:blank"
+
+        def goto(self, _url: str, **_kwargs: object) -> None:
+            self.url = "https://login.microsoftonline.com/example"
+
+        def locator(self, _selector: str) -> Locator:
+            return Locator()
+
+    gateway = AsimutGateway(GatewaySettings())
+    gateway.page = Page()
+
+    with pytest.raises(AuthenticationRequired, match="redirected"):
+        gateway.verify_authenticated()
+
+
+def test_interactive_wait_preserves_an_existing_mfa_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Page:
+        def goto(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the active MFA page must not be replaced")
+
+        def is_closed(self) -> bool:
+            return False
+
+    gateway = AsimutGateway(GatewaySettings())
+    gateway.page = Page()
+    saved: list[bool] = []
+    monkeypatch.setattr(gateway, "_current_page_proves_authenticated", lambda: True)
+    monkeypatch.setattr(gateway, "save_storage_state", lambda: saved.append(True))
+
+    gateway.wait_for_interactive_login(timeout_seconds=30, navigate=False)
+
+    assert gateway._authenticated is True
+    assert saved == [True]

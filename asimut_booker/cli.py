@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--extensions-only", action="store_true")
 
     login = commands.add_parser("login", help="Open a headed browser and save Microsoft SSO state")
-    login.add_argument("--timeout-seconds", type=int, default=300)
+    login.add_argument("--timeout-seconds", type=int, default=900)
 
     doctor = commands.add_parser(
         "doctor", help="Validate config, session, HTML contracts, and storage"
@@ -221,6 +221,8 @@ def _command_run(config: AppConfig, args: argparse.Namespace) -> int:
             gateway = _gateway(config, headless=headless)
             gateway.open()
             try:
+                if not headless:
+                    _ensure_headed_authentication(gateway)
                 coordinator = BookingCoordinator(config, database, gateway, emit=_coordinator_emit)
                 summary = coordinator.run(
                     trigger=trigger,
@@ -464,6 +466,8 @@ def _command_extensions(config: AppConfig, args: argparse.Namespace) -> int:
             gateway = _gateway(config, headless=bool(args.headless))
             gateway.open()
             try:
+                if not args.headless:
+                    _ensure_headed_authentication(gateway)
                 coordinator = BookingCoordinator(config, database, gateway, emit=_coordinator_emit)
                 summary = coordinator.run(
                     trigger="extension_reconcile",
@@ -482,6 +486,38 @@ def _command_extensions(config: AppConfig, args: argparse.Namespace) -> int:
                 raise
             finally:
                 gateway.close(save_state=True)
+
+
+def _ensure_headed_authentication(
+    gateway: AsimutGateway,
+    *,
+    timeout_seconds: int = 900,
+) -> None:
+    """Keep a headed command alive through Microsoft MFA, then resume it."""
+
+    try:
+        gateway.verify_authenticated()
+        return
+    except AuthenticationRequired:
+        EMIT(
+            "warning",
+            "interactive_login_waiting",
+            {"timeout_seconds": timeout_seconds},
+            message=(
+                "The booker session needs Microsoft authentication. "
+                "This window will remain open while sign-in is completed."
+            ),
+        )
+    gateway.wait_for_interactive_login(
+        timeout_seconds=timeout_seconds,
+        navigate=False,
+    )
+    gateway.verify_authenticated()
+    EMIT(
+        "success",
+        "interactive_login_saved",
+        message="Booker authentication was saved; continuing the requested command.",
+    )
 
 
 def _gateway(

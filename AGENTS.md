@@ -95,6 +95,11 @@ Observed agenda contract:
 - atomically refreshes a portable storage-state backup, including IndexedDB,
   only after positive authentication;
 - positively proves signed-in agenda HTML;
+- detects a Microsoft redirect before waiting for Asimut-only selectors;
+- keeps headed manual runs and extension reconciliation alive for up to 15
+  minutes through the existing Microsoft MFA page, then resumes the original
+  command after overview/agenda recognition and a fresh agenda proof;
+- never opens an interactive login flow for scheduled or headless runs;
 - navigates by semantic date controls and checks the observed date after every
   click;
 - clicks a calibrated SVG slot and verifies the contextual room/time heading;

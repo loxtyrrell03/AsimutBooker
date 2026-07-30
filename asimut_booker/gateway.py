@@ -247,6 +247,8 @@ class AsimutGateway:
 
         page = self._require_page()
         page.goto(self.settings.agenda_url, wait_until="domcontentloaded")
+        if not self._same_asimut_host():
+            raise AuthenticationRequired(f"Asimut redirected to {page.url}; login is required.")
         try:
             page.locator("[day-header]").first.wait_for(
                 state="attached", timeout=self.settings.timeout_ms
@@ -256,29 +258,45 @@ class AsimutGateway:
                 "Asimut did not expose the signed-in agenda. The saved Microsoft "
                 "365 session may have expired."
             ) from exc
-        if not self._same_asimut_host():
-            raise AuthenticationRequired(f"Asimut redirected to {page.url}; login is required.")
         # Parsing proves this is the expected complete application, rather than a
         # generic error page that happened to remain on the same host.
         parse_agenda_html(page.content())
         self._authenticated = True
 
-    def wait_for_interactive_login(self, *, timeout_seconds: int = 300) -> None:
+    def _current_page_proves_authenticated(self) -> bool:
+        page = self._require_page()
+        if not self._same_asimut_host():
+            return False
+        if page.locator('[data-cy="display-date"]:visible').count() == 1:
+            parse_overview_html(page.content())
+            return True
+        if page.locator("[day-header]").count() >= 1:
+            parse_agenda_html(page.content())
+            return True
+        return False
+
+    def wait_for_interactive_login(
+        self,
+        *,
+        timeout_seconds: int = 900,
+        navigate: bool = True,
+    ) -> None:
         """Wait for a user to complete Microsoft SSO in a headed browser."""
 
         page = self._require_page()
-        page.goto(self.settings.overview_url, wait_until="domcontentloaded")
+        if navigate:
+            page.goto(self.settings.overview_url, wait_until="domcontentloaded")
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            if self._same_asimut_host():
-                try:
-                    if page.locator('[data-cy="display-date"]:visible').count() == 1:
-                        parse_overview_html(page.content())
-                        self._authenticated = True
-                        self.save_storage_state()
-                        return
-                except PageContractError:
-                    pass
+            if page.is_closed():
+                raise AuthenticationRequired("The sign-in window was closed before login completed.")
+            try:
+                if self._current_page_proves_authenticated():
+                    self._authenticated = True
+                    self.save_storage_state()
+                    return
+            except PageContractError:
+                pass
             time.sleep(1)
         raise AuthenticationRequired("Timed out waiting for a completed Asimut sign-in.")
 
@@ -317,6 +335,8 @@ class AsimutGateway:
         """
 
         page = self._require_page()
+        if page.is_closed():
+            return ()
         safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-")
         safe_label = safe_label[:60] or "failure"
         timestamp = datetime.now(self.zone).strftime("%Y%m%d-%H%M%S-%f")

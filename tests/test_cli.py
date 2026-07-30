@@ -1,7 +1,12 @@
 from datetime import datetime
 
-from asimut_booker.cli import _derive_overall_status, _is_valid_scheduled_launch
+from asimut_booker.cli import (
+    _derive_overall_status,
+    _ensure_headed_authentication,
+    _is_valid_scheduled_launch,
+)
 from asimut_booker.config import ScheduleConfig
+from asimut_booker.errors import AuthenticationRequired
 from asimut_booker.policies import LONDON
 
 
@@ -93,3 +98,28 @@ def test_scheduled_launch_honours_lead_and_lateness_windows() -> None:
         schedule,
         datetime(2026, 7, 29, 7, 43, tzinfo=LONDON),
     )
+
+
+def test_headed_authentication_waits_in_existing_mfa_flow_and_then_resumes(
+    capsys,
+) -> None:
+    calls: list[object] = []
+
+    class Gateway:
+        def verify_authenticated(self) -> None:
+            calls.append("verify")
+            if calls.count("verify") == 1:
+                raise AuthenticationRequired("redirected to Microsoft")
+
+        def wait_for_interactive_login(
+            self,
+            *,
+            timeout_seconds: int,
+            navigate: bool,
+        ) -> None:
+            calls.append(("wait", timeout_seconds, navigate))
+
+    _ensure_headed_authentication(Gateway(), timeout_seconds=600)  # type: ignore[arg-type]
+
+    assert calls == ["verify", ("wait", 600, False), "verify"]
+    assert "window will remain open" in capsys.readouterr().out
