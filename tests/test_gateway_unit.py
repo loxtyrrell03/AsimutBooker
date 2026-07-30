@@ -193,19 +193,15 @@ def test_snipe_prefill_accepts_only_the_observed_horizon_warning_contract() -> N
     assert not _only_horizon_release_warnings(("The room is already occupied at this time",))
 
 
-def test_storage_state_backup_includes_indexed_db_and_marks_persistent_profile(
+def test_storage_state_backup_is_nonblocking_and_marks_persistent_profile(
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[Path, bool]] = []
+    calls: list[str] = []
 
     class Context:
-        def storage_state(self, *, path: str, indexed_db: bool) -> None:
-            destination = Path(path)
-            calls.append((destination, indexed_db))
-            destination.write_text(
-                json.dumps({"cookies": [], "origins": []}),
-                encoding="utf-8",
-            )
+        def cookies(self) -> list[dict[str, object]]:
+            calls.append("cookies")
+            return [{"name": "session", "value": "opaque", "domain": "example.test"}]
 
     settings = GatewaySettings(
         storage_state_path=tmp_path / "state.json",
@@ -217,8 +213,11 @@ def test_storage_state_backup_includes_indexed_db_and_marks_persistent_profile(
 
     gateway.save_storage_state()
 
-    assert calls == [(tmp_path / "state.json.tmp", True)]
+    assert calls == ["cookies"]
     assert settings.storage_state_path.is_file()
+    saved = json.loads(settings.storage_state_path.read_text(encoding="utf-8"))
+    assert [cookie["name"] for cookie in saved["cookies"]] == ["session"]
+    assert saved["origins"] == []
     assert (settings.profile_path / ".asimut-booker-authenticated").is_file()
 
 

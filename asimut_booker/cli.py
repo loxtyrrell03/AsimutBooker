@@ -254,7 +254,10 @@ def _command_login(config: AppConfig, args: argparse.Namespace) -> int:
                 "login_waiting",
                 message="Complete Microsoft sign-in in the opened browser.",
             )
-            gateway.wait_for_interactive_login(timeout_seconds=args.timeout_seconds)
+            gateway.wait_for_interactive_login(
+                timeout_seconds=args.timeout_seconds,
+                on_progress=_emit_login_progress,
+            )
             EMIT(
                 "success",
                 "login_saved",
@@ -511,12 +514,25 @@ def _ensure_headed_authentication(
     gateway.wait_for_interactive_login(
         timeout_seconds=timeout_seconds,
         navigate=False,
+        on_progress=_emit_login_progress,
     )
     gateway.verify_authenticated()
     EMIT(
         "success",
         "interactive_login_saved",
         message="Booker authentication was saved; continuing the requested command.",
+    )
+
+
+def _emit_login_progress(elapsed_seconds: int, host: str) -> None:
+    EMIT(
+        "info",
+        "interactive_login_progress",
+        {
+            "progress": elapsed_seconds,
+            "host": host,
+        },
+        message=f"Waiting for authentication on {host} ({elapsed_seconds}s elapsed).",
     )
 
 

@@ -46,13 +46,14 @@ Authorize the dedicated persistent booker profile once:
 ```
 
 The full Chromium profile is retained locally for subsequent manual and
-scheduled runs. `state.json` is only a portable backup/migration source, not a
-new temporary browser identity for every run.
+scheduled runs. `state.json` is only an atomic cookie recovery/migration source,
+not a new temporary browser identity for every run.
 
 If a visible manual run encounters expired authentication, it preserves the
 same browser window through Microsoft MFA for up to 15 minutes, saves the
 verified profile, and then resumes that run. Headless and scheduled commands
-never prompt interactively.
+never prompt interactively. The control panel reports the current authentication
+host and elapsed time every 10 seconds instead of appearing idle.
 
 Then verify the live session and page contracts:
 

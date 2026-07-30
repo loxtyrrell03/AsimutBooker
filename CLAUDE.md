@@ -92,13 +92,18 @@ Observed agenda contract:
 - launches one dedicated persistent Chromium profile under
   `data/browser_state/profile` for all manual and scheduled runs;
 - migrates the old cookie/local-storage snapshot into that profile once;
-- atomically refreshes a portable storage-state backup, including IndexedDB,
-  only after positive authentication;
+- atomically refreshes a direct cookie recovery snapshot only after positive
+  authentication; all site storage stays in the authoritative persistent
+  profile, avoiding Playwright's storage-state export because it can block
+  indefinitely while Microsoft-owned origins settle after SSO;
+- normalizes restored tabs and adopts any authenticated Asimut tab returned by
+  Microsoft, so the visible page and monitored page cannot diverge;
 - positively proves signed-in agenda HTML;
 - detects a Microsoft redirect before waiting for Asimut-only selectors;
 - keeps headed manual runs and extension reconciliation alive for up to 15
   minutes through the existing Microsoft MFA page, then resumes the original
   command after overview/agenda recognition and a fresh agenda proof;
+- emits a visible authentication heartbeat every 10 seconds while waiting;
 - never opens an interactive login flow for scheduled or headless runs;
 - navigates by semantic date controls and checks the observed date after every
   click;

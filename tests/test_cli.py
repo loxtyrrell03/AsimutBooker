@@ -116,7 +116,9 @@ def test_headed_authentication_waits_in_existing_mfa_flow_and_then_resumes(
             *,
             timeout_seconds: int,
             navigate: bool,
+            on_progress,
         ) -> None:
+            assert on_progress is not None
             calls.append(("wait", timeout_seconds, navigate))
 
     _ensure_headed_authentication(Gateway(), timeout_seconds=600)  # type: ignore[arg-type]

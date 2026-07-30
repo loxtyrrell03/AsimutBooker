@@ -159,7 +159,13 @@ class AsimutGateway:
             if storage_state is not None and not profile_was_authenticated:
                 self._restore_legacy_storage_state(storage_state)
             self.context.set_default_timeout(self.settings.timeout_ms)
-            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+            pages = list(self.context.pages)
+            self.page = pages[0] if pages else self.context.new_page()
+            # Chromium can restore stale SSO tabs from a previous interrupted
+            # run. Keep exactly one controlled tab so the page the user sees is
+            # also the page the coordinator observes.
+            for extra_page in pages[1:]:
+                extra_page.close()
         except Exception:
             self.close()
             raise
@@ -236,8 +242,8 @@ class AsimutGateway:
             raise RuntimeError("gateway is not open")
         return self.page
 
-    def _same_asimut_host(self) -> bool:
-        page = self._require_page()
+    def _same_asimut_host(self, page: Any | None = None) -> bool:
+        page = page or self._require_page()
         expected = urlparse(self.settings.base_url).hostname
         actual = urlparse(page.url).hostname
         return bool(expected and actual and expected.casefold() == actual.casefold())
@@ -264,15 +270,21 @@ class AsimutGateway:
         self._authenticated = True
 
     def _current_page_proves_authenticated(self) -> bool:
-        page = self._require_page()
-        if not self._same_asimut_host():
-            return False
-        if page.locator('[data-cy="display-date"]:visible').count() == 1:
-            parse_overview_html(page.content())
-            return True
-        if page.locator("[day-header]").count() >= 1:
-            parse_agenda_html(page.content())
-            return True
+        current = self._require_page()
+        candidates = [current]
+        if self.context is not None:
+            candidates.extend(page for page in self.context.pages if page is not current)
+        for page in candidates:
+            if page.is_closed() or not self._same_asimut_host(page):
+                continue
+            if page.locator('[data-cy="display-date"]:visible').count() == 1:
+                parse_overview_html(page.content())
+                self.page = page
+                return True
+            if page.locator("[day-header]").count() >= 1:
+                parse_agenda_html(page.content())
+                self.page = page
+                return True
         return False
 
     def wait_for_interactive_login(
@@ -280,15 +292,23 @@ class AsimutGateway:
         *,
         timeout_seconds: int = 900,
         navigate: bool = True,
+        on_progress: Callable[[int, str], None] | None = None,
     ) -> None:
         """Wait for a user to complete Microsoft SSO in a headed browser."""
 
         page = self._require_page()
         if navigate:
             page.goto(self.settings.overview_url, wait_until="domcontentloaded")
+        started = time.monotonic()
         deadline = time.monotonic() + timeout_seconds
+        next_progress = 0
         while time.monotonic() < deadline:
-            if page.is_closed():
+            live_pages = (
+                [candidate for candidate in self.context.pages if not candidate.is_closed()]
+                if self.context is not None
+                else ([] if page.is_closed() else [page])
+            )
+            if not live_pages:
                 raise AuthenticationRequired("The sign-in window was closed before login completed.")
             try:
                 if self._current_page_proves_authenticated():
@@ -297,6 +317,12 @@ class AsimutGateway:
                     return
             except PageContractError:
                 pass
+            elapsed = int(time.monotonic() - started)
+            if on_progress is not None and elapsed >= next_progress:
+                active_page = self.page if self.page is not None and not self.page.is_closed() else live_pages[0]
+                host = urlparse(active_page.url).hostname or "unknown"
+                on_progress(elapsed, host)
+                next_progress = elapsed + 10
             time.sleep(1)
         raise AuthenticationRequired("Timed out waiting for a completed Asimut sign-in.")
 
@@ -309,7 +335,16 @@ class AsimutGateway:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".tmp")
         backup = destination.with_suffix(destination.suffix + ".bak")
-        self.context.storage_state(path=str(temporary), indexed_db=True)
+        # The persistent profile is authoritative for site storage. Export
+        # cookies directly instead of calling BrowserContext.storage_state():
+        # that API can block while Microsoft-owned origins are still settling
+        # after SSO. Cookies are sufficient to recover the authenticated
+        # profile, and writing them ourselves is bounded and atomic.
+        cookies = self.context.cookies()
+        temporary.write_text(
+            json.dumps({"cookies": cookies, "origins": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
         # Validate the generated document before it can replace a usable state.
         parsed = json.loads(temporary.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict) or not isinstance(parsed.get("cookies"), list):
