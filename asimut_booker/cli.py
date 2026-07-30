@@ -303,7 +303,12 @@ def _command_doctor(config: AppConfig, args: argparse.Namespace) -> int:
                     "configured_rooms": len(configured),
                     "missing_configured_rooms": sorted(configured.difference(observed)),
                     "rolling_quota_remaining": (agenda.rolling_quota_remaining),
-                    "peak_quota_remaining": overview.peak_quota_remaining,
+                    "peak_quota_remaining": agenda.peak_quota_remaining,
+                    "peak_quota_date": (
+                        agenda.peak_quota_date.isoformat()
+                        if agenda.peak_quota_date is not None
+                        else None
+                    ),
                 }
                 health_status = "healthy" if not detail["missing_configured_rooms"] else "degraded"
                 database.set_health(

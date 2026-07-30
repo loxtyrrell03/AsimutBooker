@@ -127,11 +127,13 @@ directory.
 3. reconcile uncertain prior intents;
 4. reconcile and process extensions;
 5. scan every enabled date from today through the maximum horizon;
-6. derive free intervals from validated SVG HTML;
-7. rank imminent snipes before ordinary opportunities;
-8. persist an idempotent intent before each write;
-9. revalidate immediately before submission; and
-10. persist only remotely verified mutations.
+6. wait for the Angular SVG room, closed-hours, and event layers to settle
+   across consecutive polls after each date change;
+7. derive free intervals from validated SVG HTML;
+8. rank imminent snipes before ordinary opportunities;
+9. persist an idempotent intent before each write;
+10. revalidate immediately before submission; and
+11. persist only remotely verified mutations.
 
 `database.py` uses SQLite WAL, full synchronous durability, schema migrations,
 foreign keys, compare-and-swap run completion, non-regressing extensions, and
@@ -143,9 +145,13 @@ holder metadata and crash recovery.
 - Minimum duration: 30 minutes.
 - Maximum duration: 120 minutes.
 - Increment: 15 minutes.
-- Configured future/rolling quota: 28 hours; live Asimut remaining quota is
-  also required and constrains decisions.
+- Configured future/rolling quota: 28 hours; the live agenda rolling counter is
+  required and constrains decisions.
 - Peak: Monday-Friday 09:00-16:00, maximum 120 minutes per day.
+- The dated agenda peak counter further constrains only the exact date named in
+  its HTML. Asimut may omit quota widgets from the overview, so a missing
+  overview counter never aborts a run or gets mistaken for unlimited quota;
+  the configured 120-minute cap plus explicit agenda events remains enforced.
 - Same-room gap: 60 minutes; touching bookings have zero gap and are rejected.
 - Personal calendar conflicts include reservations and non-reservation events.
 - Only active `Reservation` events count toward reservation quota.

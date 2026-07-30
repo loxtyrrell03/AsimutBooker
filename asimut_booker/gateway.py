@@ -423,6 +423,91 @@ class AsimutGateway:
         except ValueError as exc:
             raise PageContractError(f"unrecognised displayed date: {text!r}") from exc
 
+    def _wait_for_overview_grid(self, page: Any, expected_date: date) -> None:
+        """Wait for Angular's SVG rerender to finish after a date change.
+
+        The visible date updates before the old SVG layers are replaced.  A
+        single selector wait can therefore either read a half-built grid or
+        accidentally accept the previous day's grid.  Require the semantic
+        room/closed/event geometry to be present and unchanged across two
+        polls before parsing it.
+        """
+
+        deadline = time.monotonic() + (self.settings.timeout_ms / 1000)
+        previous_fingerprint: str | None = None
+        stable_polls = 0
+        last_state: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            if self._displayed_date(page) != expected_date:
+                previous_fingerprint = None
+                stable_polls = 0
+                page.wait_for_timeout(100)
+                continue
+            state = page.evaluate(
+                """() => {
+                    const svg = document.querySelector('#svg-grid');
+                    const closed = svg && svg.querySelector('#closed-hours');
+                    const events = svg && svg.querySelector('#event-overlays');
+                    const rooms = [...document.querySelectorAll(
+                        '#legend-y-inner a[data-location-id]'
+                    )];
+                    const spinnerVisible = [...document.querySelectorAll(
+                        '.overview-render-spinner'
+                    )].some(item => item.getClientRects().length > 0);
+                    const rectSignature = root => root
+                        ? [...root.querySelectorAll('rect')].map(rect => [
+                            rect.getAttribute('x'),
+                            rect.getAttribute('y'),
+                            rect.getAttribute('width'),
+                            rect.getAttribute('height'),
+                            rect.getAttribute('data-event-id'),
+                            rect.getAttribute('data-location-id'),
+                        ])
+                        : null;
+                    const fingerprint = JSON.stringify({
+                        viewBox: svg && svg.getAttribute('viewBox'),
+                        rooms: rooms.map(item => [
+                            item.getAttribute('data-location-id'),
+                            item.textContent && item.textContent.trim(),
+                        ]),
+                        closed: rectSignature(closed),
+                        events: rectSignature(events),
+                    });
+                    return {
+                        hasSvg: Boolean(svg),
+                        hasClosedLayer: Boolean(closed),
+                        hasEventLayer: Boolean(events),
+                        roomCount: rooms.length,
+                        spinnerVisible,
+                        fingerprint,
+                    };
+                }"""
+            )
+            last_state = state
+            ready = (
+                state["hasSvg"]
+                and state["hasClosedLayer"]
+                and state["hasEventLayer"]
+                and int(state["roomCount"]) >= 10
+                and not state["spinnerVisible"]
+            )
+            fingerprint = str(state["fingerprint"])
+            if ready and fingerprint == previous_fingerprint:
+                stable_polls += 1
+                if stable_polls >= 2:
+                    return
+            elif ready:
+                previous_fingerprint = fingerprint
+                stable_polls = 1
+            else:
+                previous_fingerprint = None
+                stable_polls = 0
+            page.wait_for_timeout(100)
+
+        raise PageContractError(
+            f"overview grid did not settle for {expected_date.isoformat()}: {last_state}"
+        )
+
     def navigate_overview(self, target_date: date) -> OverviewObservation:
         """Navigate by semantic date controls and prove the observed date."""
 
@@ -478,6 +563,7 @@ class AsimutGateway:
             if observed != expected:
                 raise NavigationError(f"date navigation expected {expected}, observed {observed}")
 
+        self._wait_for_overview_grid(page, target_date)
         html = page.content()
         return parse_overview_html(html, expected_date=target_date)
 

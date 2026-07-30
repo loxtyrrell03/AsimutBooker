@@ -180,6 +180,7 @@ class BookingCoordinator:
                 context = self._reserve_pending_extension_targets(context)
                 observations, candidates, rules_by_day = self._scan_candidates(
                     run_id=run.id,
+                    agenda=agenda,
                     context=context,
                     server_context=server_context,
                     summary=summary,
@@ -389,6 +390,7 @@ class BookingCoordinator:
         self,
         *,
         run_id: str,
+        agenda: AgendaObservation,
         context: PolicyContext,
         server_context: PolicyContext | None = None,
         summary: RunSummary,
@@ -418,7 +420,8 @@ class BookingCoordinator:
             active_rules = rules_with_server_peak_limit(
                 self.rules,
                 server_context if server_context is not None else context,
-                overview,
+                target_date=target,
+                agenda=agenda,
             )
             rules_by_day[target] = active_rules
             windows = tuple(
@@ -1012,7 +1015,12 @@ class BookingCoordinator:
             )
             return context
 
-        active_rules = rules_with_server_peak_limit(self.rules, context, overview)
+        active_rules = rules_with_server_peak_limit(
+            self.rules,
+            context,
+            target_date=current.event_date,
+            agenda=agenda,
+        )
         without_current = context_without_event(
             context,
             event_id=event_id,

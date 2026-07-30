@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup, Tag
@@ -17,6 +17,12 @@ _TIME_RANGE_RE = re.compile(
     r"(\d{1,2}):(\d{2})\s*$"
 )
 _QUOTA_RE = re.compile(r"^\s*(\d{1,3}):(\d{2})\s*$")
+_PEAK_QUOTA_DATE_RE = re.compile(
+    r"\bfor\s+(?P<weekday>[A-Za-z]{3})\s*,\s*"
+    r"(?P<day>\d{1,2})\s+(?P<month>[A-Za-z]{3})\s*"
+    r"\(\s*peak\s+hours\s*\)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,8 @@ class AgendaObservation:
     day_count: int
     events: tuple[AgendaEvent, ...]
     rolling_quota_remaining: int | None
+    peak_quota_remaining: int | None = None
+    peak_quota_date: date | None = None
     contract_version: str = "asimut-agenda-v1"
 
     def find_exact(
@@ -76,19 +84,72 @@ class AgendaObservation:
         return matches
 
 
-def _parse_quota(soup: BeautifulSoup) -> int | None:
-    nodes = soup.select('[data-cy="rolling-quota"] .quota-value')
+def _parse_quota(
+    soup: BeautifulSoup,
+    data_cy: str,
+    *,
+    description: str,
+) -> int | None:
+    nodes = soup.select(f'[data-cy="{data_cy}"] .quota-value')
     if not nodes:
         return None
     values: set[int] = set()
     for node in nodes:
         match = _QUOTA_RE.match(node.get_text(" ", strip=True))
         if not match:
-            raise PageContractError("agenda rolling quota is malformed")
+            raise PageContractError(f"agenda {description} quota is malformed")
         values.add(int(match.group(1)) * 60 + int(match.group(2)))
     if len(values) != 1:
-        raise PageContractError(f"agenda contains conflicting quota values: {values}")
+        raise PageContractError(f"agenda contains conflicting {description} quota values: {values}")
     return values.pop()
+
+
+def _nearest_date_without_year(
+    *,
+    day: int,
+    month: str,
+    reference: date,
+) -> date:
+    candidates: list[date] = []
+    for year in (reference.year - 1, reference.year, reference.year + 1):
+        try:
+            candidates.append(datetime.strptime(f"{day} {month} {year}", "%d %b %Y").date())
+        except ValueError as exc:
+            raise PageContractError("agenda peak quota date is malformed") from exc
+    return min(candidates, key=lambda item: abs(item - reference))
+
+
+def _parse_peak_quota(
+    soup: BeautifulSoup,
+    *,
+    reference_date: date,
+) -> tuple[int | None, date | None]:
+    remaining = _parse_quota(soup, "peak-quota", description="peak")
+    if remaining is None:
+        return None, None
+
+    title_nodes = soup.select('[data-cy="peak-quota"] .quota-title')
+    if not title_nodes:
+        raise PageContractError("agenda peak quota is missing its target date")
+
+    dates: set[date] = set()
+    for node in title_nodes:
+        text = node.get_text(" ", strip=True)
+        match = _PEAK_QUOTA_DATE_RE.search(text)
+        if not match:
+            raise PageContractError(f"agenda peak quota date is malformed: {text!r}")
+        parsed = _nearest_date_without_year(
+            day=int(match.group("day")),
+            month=match.group("month"),
+            reference=reference_date,
+        )
+        if parsed.strftime("%a").casefold() != match.group("weekday").casefold():
+            raise PageContractError(f"agenda peak quota weekday is inconsistent: {text!r}")
+        dates.add(parsed)
+
+    if len(dates) != 1:
+        raise PageContractError(f"agenda contains conflicting peak quota dates: {dates}")
+    return remaining, dates.pop()
 
 
 def _parse_day(value: str | None) -> date:
@@ -202,6 +263,10 @@ def parse_agenda_html(
                 raise PageContractError(f"responsive agenda copies disagree for event {event_id}")
             events_by_id[event_id] = item
 
+    peak_quota_remaining, peak_quota_date = _parse_peak_quota(
+        soup,
+        reference_date=first_date,
+    )
     return AgendaObservation(
         first_date=first_date,
         last_date=last_date,
@@ -217,5 +282,11 @@ def parse_agenda_html(
                 ),
             )
         ),
-        rolling_quota_remaining=_parse_quota(soup),
+        rolling_quota_remaining=_parse_quota(
+            soup,
+            "rolling-quota",
+            description="rolling",
+        ),
+        peak_quota_remaining=peak_quota_remaining,
+        peak_quota_date=peak_quota_date,
     )

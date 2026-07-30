@@ -79,6 +79,8 @@ def test_agenda_preserves_local_bst_date_and_stable_event_identity() -> None:
     assert result.first_date == date(2026, 8, 5)
     assert result.last_date == date(2026, 8, 6)
     assert result.rolling_quota_remaining == 27 * 60 + 15
+    assert result.peak_quota_remaining == 90
+    assert result.peak_quota_date == date(2026, 8, 5)
     assert len(result.events) == 2
     event = result.find_exact(event_id="3570253")[0]
     assert event.event_date == date(2026, 8, 5)

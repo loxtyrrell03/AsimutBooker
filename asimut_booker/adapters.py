@@ -8,7 +8,7 @@ contract for write-capable runs; it is never interpreted as unlimited quota.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Iterable
 
 from .agenda import AgendaEvent, AgendaObservation
@@ -132,16 +132,26 @@ def snapshot_from_overview(
 def rules_with_server_peak_limit(
     rules: BookingRules,
     context: PolicyContext,
-    overview: OverviewObservation,
+    *,
+    target_date: date,
+    agenda: AgendaObservation,
 ) -> BookingRules:
-    """Constrain local peak policy by the target day's live quota counter."""
+    """Constrain local peak policy by a counter naming the exact target date.
 
-    if overview.observed_date.weekday() not in rules.peak_weekdays:
+    Asimut's quota panel is an agenda-level widget and may be absent from the
+    overview entirely.  It normally describes today even while the overview
+    is displaying another date, so an unlabelled overview value must not be
+    applied to future days.  When no matching live counter exists, the
+    configured cap and explicit agenda events remain the conservative source
+    of truth.
+    """
+
+    if target_date.weekday() not in rules.peak_weekdays:
         return rules
-    if overview.peak_quota_remaining is None:
-        raise PageContractError("overview does not expose peak quota for a peak-hours day")
-    used = peak_minutes_used(overview.observed_date, context, rules)
-    entitlement_from_counter = used + overview.peak_quota_remaining
+    if agenda.peak_quota_remaining is None or agenda.peak_quota_date != target_date:
+        return rules
+    used = peak_minutes_used(target_date, context, rules)
+    entitlement_from_counter = used + agenda.peak_quota_remaining
     return replace(
         rules,
         peak_limit_minutes=min(

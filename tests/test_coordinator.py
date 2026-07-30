@@ -6,6 +6,7 @@ from asimut_booker.adapters import (
     context_with_event,
     context_with_target_end,
     policy_context,
+    rules_with_server_peak_limit,
 )
 from asimut_booker.agenda import AgendaEvent, AgendaObservation
 from asimut_booker.coordinator import (
@@ -98,6 +99,56 @@ def test_policy_context_does_not_count_reservations_beyond_rolling_week() -> Non
     context = policy_context(observation, now=now, rules=BookingRules())
 
     assert context.quota_used_minutes == 60
+
+
+def test_peak_quota_only_constrains_the_date_named_by_the_agenda() -> None:
+    observation = AgendaObservation(
+        first_date=DAY,
+        last_date=DAY,
+        day_count=1,
+        events=(),
+        rolling_quota_remaining=28 * 60,
+        peak_quota_remaining=45,
+        peak_quota_date=DAY,
+    )
+    rules = BookingRules(peak_limit_minutes=120)
+    context = PolicyContext()
+
+    current = rules_with_server_peak_limit(
+        rules,
+        context,
+        target_date=DAY,
+        agenda=observation,
+    )
+    future = rules_with_server_peak_limit(
+        rules,
+        context,
+        target_date=date(2026, 8, 6),
+        agenda=observation,
+    )
+
+    assert current.peak_limit_minutes == 45
+    assert future.peak_limit_minutes == 120
+
+
+def test_missing_peak_widget_keeps_the_configured_conservative_cap() -> None:
+    observation = AgendaObservation(
+        first_date=DAY,
+        last_date=DAY,
+        day_count=1,
+        events=(),
+        rolling_quota_remaining=28 * 60,
+    )
+    rules = BookingRules(peak_limit_minutes=120)
+
+    active = rules_with_server_peak_limit(
+        rules,
+        PolicyContext(),
+        target_date=DAY,
+        agenda=observation,
+    )
+
+    assert active.peak_limit_minutes == 120
 
 
 def test_dry_run_plan_does_not_report_mutually_conflicting_candidates() -> None:
