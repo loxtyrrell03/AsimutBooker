@@ -46,6 +46,7 @@ class GatewaySettings:
     location_group_id: int = 10
     booking_category_id: int = 56
     storage_state_path: Path = Path("data/browser_state/state.json")
+    profile_path: Path = Path("data/browser_state/profile")
     artifacts_dir: Path = Path("data/artifacts")
     executable_path: Path | None = None
     timezone: str = "Europe/London"
@@ -102,6 +103,7 @@ class AsimutGateway:
         self.context: Any | None = None
         self.page: Any | None = None
         self._authenticated = False
+        self._persistent_context = False
 
     def __enter__(self) -> "AsimutGateway":
         self.open()
@@ -116,28 +118,29 @@ class AsimutGateway:
         from playwright.sync_api import sync_playwright
 
         state_path = self.settings.storage_state_path
-        if self.require_saved_session and not state_path.exists():
+        profile_marker = self._profile_marker_path
+        if self.require_saved_session and not state_path.exists() and not profile_marker.is_file():
             raise AuthenticationRequired(
-                f"No saved Asimut session at {state_path}. Run login setup first."
+                "No saved AsimutBooker browser profile exists. Run login setup once."
             )
-        storage_state: str | None = None
+        storage_state: dict[str, Any] | None = None
         if state_path.exists():
             try:
                 parsed = json.loads(state_path.read_text(encoding="utf-8"))
                 if not isinstance(parsed, dict) or not isinstance(parsed.get("cookies"), list):
                     raise ValueError("missing cookies array")
-                storage_state = str(state_path)
+                storage_state = parsed
             except (OSError, ValueError, json.JSONDecodeError) as exc:
-                if self.require_saved_session:
+                if self.require_saved_session and not profile_marker.is_file():
                     raise AuthenticationRequired(f"Saved Asimut session is invalid: {exc}") from exc
+                LOG.warning("Ignoring invalid legacy browser state: %s", exc)
 
         self._playwright = sync_playwright().start()
         try:
-            launch_options: dict[str, object] = {"headless": self.headless}
-            if self.settings.executable_path is not None:
-                launch_options["executable_path"] = str(self.settings.executable_path)
-            self.browser = self._playwright.chromium.launch(**launch_options)
-            context_options: dict[str, Any] = {
+            profile_was_authenticated = profile_marker.is_file()
+            self.settings.profile_path.mkdir(parents=True, exist_ok=True)
+            launch_options: dict[str, Any] = {
+                "headless": self.headless,
                 "viewport": {
                     "width": self.settings.viewport_width,
                     "height": self.settings.viewport_height,
@@ -145,11 +148,18 @@ class AsimutGateway:
                 "locale": "en-GB",
                 "timezone_id": self.settings.timezone,
             }
-            if storage_state is not None:
-                context_options["storage_state"] = storage_state
-            self.context = self.browser.new_context(**context_options)
+            if self.settings.executable_path is not None:
+                launch_options["executable_path"] = str(self.settings.executable_path)
+            self.context = self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.settings.profile_path),
+                **launch_options,
+            )
+            self._persistent_context = True
+            self.browser = self.context.browser
+            if storage_state is not None and not profile_was_authenticated:
+                self._restore_legacy_storage_state(storage_state)
             self.context.set_default_timeout(self.settings.timeout_ms)
-            self.page = self.context.new_page()
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         except Exception:
             self.close()
             raise
@@ -164,7 +174,7 @@ class AsimutGateway:
                     self.context.close()
             finally:
                 try:
-                    if self.browser is not None:
+                    if self.browser is not None and not self._persistent_context:
                         self.browser.close()
                 finally:
                     try:
@@ -175,6 +185,51 @@ class AsimutGateway:
                         self.context = None
                         self.browser = None
                         self._playwright = None
+                        self._persistent_context = False
+
+    @property
+    def _profile_marker_path(self) -> Path:
+        return self.settings.profile_path / ".asimut-booker-authenticated"
+
+    def _restore_legacy_storage_state(self, state: dict[str, Any]) -> None:
+        """Seed a new persistent profile from the previous cookie snapshot once."""
+
+        if self.context is None:
+            raise RuntimeError("gateway context is not open")
+        cookies = state.get("cookies")
+        if isinstance(cookies, list) and cookies:
+            self.context.add_cookies(cookies)
+
+        origin_storage: dict[str, dict[str, str]] = {}
+        origins = state.get("origins")
+        if isinstance(origins, list):
+            for item in origins:
+                if not isinstance(item, dict) or not isinstance(item.get("origin"), str):
+                    continue
+                values: dict[str, str] = {}
+                for entry in item.get("localStorage", []):
+                    if (
+                        isinstance(entry, dict)
+                        and isinstance(entry.get("name"), str)
+                        and isinstance(entry.get("value"), str)
+                    ):
+                        values[entry["name"]] = entry["value"]
+                if values:
+                    origin_storage[item["origin"]] = values
+        if origin_storage:
+            serialized = json.dumps(origin_storage, ensure_ascii=False)
+            self.context.add_init_script(
+                script=(
+                    "(() => {"
+                    f"const saved = {serialized};"
+                    "const values = saved[location.origin];"
+                    "if (values) {"
+                    "for (const [name, value] of Object.entries(values)) "
+                    "localStorage.setItem(name, value);"
+                    "}"
+                    "})();"
+                )
+            )
 
     def _require_page(self) -> Any:
         if self.page is None:
@@ -228,7 +283,7 @@ class AsimutGateway:
         raise AuthenticationRequired("Timed out waiting for a completed Asimut sign-in.")
 
     def save_storage_state(self) -> None:
-        """Atomically replace the last known-good browser state."""
+        """Persist the full profile and atomically refresh the portable backup."""
 
         if not self._authenticated or self.context is None:
             return
@@ -236,7 +291,7 @@ class AsimutGateway:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".tmp")
         backup = destination.with_suffix(destination.suffix + ".bak")
-        self.context.storage_state(path=str(temporary))
+        self.context.storage_state(path=str(temporary), indexed_db=True)
         # Validate the generated document before it can replace a usable state.
         parsed = json.loads(temporary.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict) or not isinstance(parsed.get("cookies"), list):
@@ -245,6 +300,14 @@ class AsimutGateway:
         if destination.exists():
             shutil.copy2(destination, backup)
         os.replace(temporary, destination)
+        marker = self._profile_marker_path
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker_temporary = marker.with_suffix(".tmp")
+        marker_temporary.write_text(
+            datetime.now(self.zone).isoformat(timespec="seconds"),
+            encoding="utf-8",
+        )
+        os.replace(marker_temporary, marker)
 
     def capture_diagnostics(self, label: str = "failure") -> tuple[Path, ...]:
         """Capture local-only HTML and screenshot artifacts best-effort.

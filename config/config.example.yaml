@@ -83,7 +83,9 @@ schedule:
   timeout_minutes: 12
 
 browser:
+  # The persistent profile is authoritative; state_path is its portable backup.
   state_path: "data/browser_state/state.json"
+  profile_path: "data/browser_state/profile"
   database_path: "data/asimut_booker.sqlite3"
   lock_path: "data/asimut_booker.lock"
   artifacts_dir: "data/artifacts"

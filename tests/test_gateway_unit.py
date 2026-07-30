@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -189,3 +191,62 @@ def test_snipe_prefill_accepts_only_the_observed_horizon_warning_contract() -> N
     )
     assert not _only_horizon_release_warnings(())
     assert not _only_horizon_release_warnings(("The room is already occupied at this time",))
+
+
+def test_storage_state_backup_includes_indexed_db_and_marks_persistent_profile(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[Path, bool]] = []
+
+    class Context:
+        def storage_state(self, *, path: str, indexed_db: bool) -> None:
+            destination = Path(path)
+            calls.append((destination, indexed_db))
+            destination.write_text(
+                json.dumps({"cookies": [], "origins": []}),
+                encoding="utf-8",
+            )
+
+    settings = GatewaySettings(
+        storage_state_path=tmp_path / "state.json",
+        profile_path=tmp_path / "profile",
+    )
+    gateway = AsimutGateway(settings)
+    gateway.context = Context()
+    gateway._authenticated = True
+
+    gateway.save_storage_state()
+
+    assert calls == [(tmp_path / "state.json.tmp", True)]
+    assert settings.storage_state_path.is_file()
+    assert (settings.profile_path / ".asimut-booker-authenticated").is_file()
+
+
+def test_legacy_state_seeds_new_persistent_context() -> None:
+    cookies_added: list[dict[str, object]] = []
+    scripts: list[str] = []
+
+    class Context:
+        def add_cookies(self, cookies: list[dict[str, object]]) -> None:
+            cookies_added.extend(cookies)
+
+        def add_init_script(self, *, script: str) -> None:
+            scripts.append(script)
+
+    gateway = AsimutGateway(GatewaySettings())
+    gateway.context = Context()
+    gateway._restore_legacy_storage_state(
+        {
+            "cookies": [{"name": "session", "value": "opaque", "domain": "example.test"}],
+            "origins": [
+                {
+                    "origin": "https://rwcmd.asimut.net",
+                    "localStorage": [{"name": "preference", "value": "grid"}],
+                }
+            ],
+        }
+    )
+
+    assert [cookie["name"] for cookie in cookies_added] == ["session"]
+    assert len(scripts) == 1
+    assert "localStorage.setItem" in scripts[0]

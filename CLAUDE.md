@@ -89,7 +89,11 @@ Observed agenda contract:
 
 `asimut_booker/gateway.py` owns Playwright. It:
 
-- validates and atomically updates saved browser state;
+- launches one dedicated persistent Chromium profile under
+  `data/browser_state/profile` for all manual and scheduled runs;
+- migrates the old cookie/local-storage snapshot into that profile once;
+- atomically refreshes a portable storage-state backup, including IndexedDB,
+  only after positive authentication;
 - positively proves signed-in agenda HTML;
 - navigates by semantic date controls and checks the observed date after every
   click;
@@ -236,6 +240,10 @@ An unhealthy live doctor/authentication result stays unhealthy, and a
 positive live validation is required before the dashboard reports healthy.
 When doctor and scheduled authentication results disagree, the newest
 timestamped result wins so a successful recovery clears an older failure.
+The in-app Codex browser and the autonomous booker's persistent Chromium
+profile are intentionally separate security contexts. The control panel calls
+the latter the "booker session" so it does not imply that an unrelated browser
+login should be repeated.
 
 Do not add a second booking implementation to the GUI.
 

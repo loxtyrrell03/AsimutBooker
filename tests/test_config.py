@@ -95,6 +95,7 @@ def test_loads_complete_typed_config_and_resolves_paths(tmp_path: Path) -> None:
     assert config.schedule.active_end_minute == 22 * 60 + 15
     assert config.schedule.timeout_minutes == 12
     assert config.browser.database_path == (tmp_path / "data/booker.sqlite3").resolve()
+    assert config.browser.profile_path == (tmp_path / "data/browser_state/profile").resolve()
     assert config.notifications.enabled is False
 
     domain_rules = config.to_domain_rules()

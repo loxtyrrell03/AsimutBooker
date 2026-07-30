@@ -41,6 +41,8 @@ APP_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = APP_DIR / "config" / "config.yaml"
 DATA_DIR = APP_DIR / "data"
 STATE_FILE = DATA_DIR / "browser_state" / "state.json"
+PROFILE_DIR = DATA_DIR / "browser_state" / "profile"
+PROFILE_MARKER = PROFILE_DIR / ".asimut-booker-authenticated"
 LEGACY_SETTINGS_FILE = DATA_DIR / "settings.json"
 LEGACY_HISTORY_FILE = DATA_DIR / "booking_history.json"
 DEFAULT_DATABASE_FILE = DATA_DIR / "asimut_booker.sqlite3"
@@ -624,7 +626,7 @@ class AsimutBookerGUI:
         )
         self.login_button = ttk.Button(
             controls,
-            text="Refresh login",
+            text="Repair booker session",
             command=lambda: self.launch_cli(["login"]),
         )
         self.login_button.pack(side=tk.LEFT, padx=6)
@@ -2219,22 +2221,38 @@ $action = $task.Actions | Select-Object -First 1
 
     @staticmethod
     def _session_health() -> dict[str, Any]:
-        if not STATE_FILE.exists():
+        if not STATE_FILE.exists() and not PROFILE_MARKER.exists():
             return {
                 "status": "error",
-                "message": "No saved browser state. Use Refresh login.",
+                "message": "The dedicated booker browser profile has not been set up.",
             }
+        profile_age = _human_age(PROFILE_MARKER) if PROFILE_MARKER.exists() else None
         try:
-            with STATE_FILE.open("r", encoding="utf-8") as handle:
-                state = json.load(handle)
+            state: dict[str, Any] = {}
+            if STATE_FILE.exists():
+                with STATE_FILE.open("r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if not isinstance(loaded, dict):
+                    raise ValueError("root document must be an object")
+                state = loaded
             cookies = len(state.get("cookies", [])) if isinstance(state, dict) else 0
+            if profile_age is not None:
+                message = (
+                    f"Persistent booker profile saved {profile_age}; "
+                    f"portable backup has {cookies} cookies. "
+                    "Live authentication is confirmed separately."
+                )
+                updated_path = PROFILE_MARKER
+            else:
+                message = (
+                    f"Legacy cookie backup is {_human_age(STATE_FILE)} old with {cookies} cookies. "
+                    "It will be migrated into the persistent booker profile."
+                )
+                updated_path = STATE_FILE
             return {
                 "status": "unverified",
-                "message": (
-                    f"State file is {_human_age(STATE_FILE)} with {cookies} cookies. "
-                    "Authentication is only confirmed by the canonical health check."
-                ),
-                "updated_at": datetime.fromtimestamp(STATE_FILE.stat().st_mtime).isoformat(),
+                "message": message,
+                "updated_at": datetime.fromtimestamp(updated_path.stat().st_mtime).isoformat(),
             }
         except (OSError, ValueError, TypeError) as exc:
             return {"status": "error", "message": f"Invalid state file: {exc}"}
@@ -2484,6 +2502,8 @@ if ($task.State -eq 'Disabled') {{
             ),
             "state_file_present": STATE_FILE.exists(),
             "state_file_age": _human_age(STATE_FILE),
+            "persistent_profile_present": PROFILE_MARKER.exists(),
+            "persistent_profile_age": _human_age(PROFILE_MARKER),
             **self._last_diagnostics,
         }
         try:

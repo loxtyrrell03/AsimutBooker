@@ -138,6 +138,7 @@ class ScheduleConfig:
 @dataclass(frozen=True, slots=True)
 class BrowserConfig:
     state_path: Path
+    profile_path: Path
     executable_path: Path | None
     artifacts_dir: Path
     database_path: Path
@@ -848,6 +849,7 @@ def _parse_browser(value: Any, project_root: Path) -> BrowserConfig:
         data,
         {
             "state_path",
+            "profile_path",
             "executable_path",
             "artifacts_dir",
             "database_path",
@@ -862,6 +864,11 @@ def _parse_browser(value: Any, project_root: Path) -> BrowserConfig:
         data.get("state_path", "data/browser_state/state.json"),
         project_root,
         "browser.state_path",
+    )
+    profile_path = _resolved_path(
+        data.get("profile_path", "data/browser_state/profile"),
+        project_root,
+        "browser.profile_path",
     )
     executable_path = _optional_resolved_path(
         data.get("executable_path"),
@@ -912,6 +919,7 @@ def _parse_browser(value: Any, project_root: Path) -> BrowserConfig:
 
     return BrowserConfig(
         state_path=state_path,
+        profile_path=profile_path,
         executable_path=executable_path,
         artifacts_dir=artifacts_dir,
         database_path=database_path,

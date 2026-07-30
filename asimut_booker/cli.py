@@ -256,8 +256,11 @@ def _command_login(config: AppConfig, args: argparse.Namespace) -> int:
             EMIT(
                 "success",
                 "login_saved",
-                {"state_path": str(config.browser.state_path)},
-                message="Asimut login verified and session state saved.",
+                {
+                    "profile_path": str(config.browser.profile_path),
+                    "state_path": str(config.browser.state_path),
+                },
+                message="Asimut login verified; the persistent booker profile is ready.",
             )
             return EXIT_OK
         finally:
@@ -286,6 +289,7 @@ def _command_doctor(config: AppConfig, args: argparse.Namespace) -> int:
                     "database": str(database.path),
                     "database_schema": database.schema_version,
                     "session_state": str(config.browser.state_path),
+                    "session_profile": str(config.browser.profile_path),
                     "agenda_contract": agenda.contract_version,
                     "agenda_days": agenda.day_count,
                     "overview_contract": overview.contract_version,
@@ -328,7 +332,10 @@ def _command_status(config: AppConfig, args: argparse.Namespace) -> int:
         "status": "unknown",
         "config": str(config.config_path),
         "database": str(config.browser.database_path),
-        "session_state_exists": config.browser.state_path.is_file(),
+        "session_state_exists": (
+            config.browser.state_path.is_file()
+            or (config.browser.profile_path / ".asimut-booker-authenticated").is_file()
+        ),
         "schedule_enabled": config.schedule.enabled,
         "rooms_enabled": len(config.enabled_rooms),
     }
@@ -487,6 +494,7 @@ def _gateway(
         base_url=f"{config.institution.base_url}/",
         location_group_id=config.institution.location_group_id,
         storage_state_path=config.browser.state_path,
+        profile_path=config.browser.profile_path,
         artifacts_dir=config.browser.artifacts_dir,
         executable_path=config.browser.executable_path,
         timezone=config.browser.timezone,

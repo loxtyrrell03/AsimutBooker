@@ -39,11 +39,15 @@ py -3.12 -m venv .venv
 Copy-Item config\config.example.yaml config\config.yaml
 ```
 
-Sign in once through the dedicated automation browser:
+Authorize the dedicated persistent booker profile once:
 
 ```powershell
 .\.venv\Scripts\python.exe -m asimut_booker.cli login
 ```
+
+The full Chromium profile is retained locally for subsequent manual and
+scheduled runs. `state.json` is only a portable backup/migration source, not a
+new temporary browser identity for every run.
 
 Then verify the live session and page contracts:
 
