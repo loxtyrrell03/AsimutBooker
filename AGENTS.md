@@ -1,5 +1,13 @@
 # AsimutBooker
 
+## Milestone documentation
+
+- Agents must update this `AGENTS.md` after every meaningful, verified milestone and include that update in the same milestone commit.
+- Record concise, durable context: important behavior or architecture changes, decisions and their rationale, relevant tests or verification, deployment or runtime state, and material limitations or follow-up work.
+- Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
+- Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
+
+
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.
 
 > **IMPORTANT FOR AI AGENTS**: When making changes to this codebase, always update this `CLAUDE.md` file to reflect new features, changed behavior, or updated architecture. Keep documentation in sync with code.
