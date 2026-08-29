@@ -1,5 +1,11 @@
 # AsimutBooker
 
+## Local checkout
+
+- The canonical Windows checkout is `C:\Users\Lox\Desktop\repo\AsimutBooker`.
+- `C:\Users\Lox\Desktop\Development\repo\AsimutBooker` is a compatibility junction to the canonical checkout so existing launchers and path-based integrations continue to work.
+- The shared `Development\repo\.dev-tools\Start-DevApp.ps1` launcher resolves the canonical checkout first; its existing Asimut Booker desktop shortcut does not need to be rewritten.
+
 ## Milestone documentation
 
 - Agents must update this `AGENTS.md` after every meaningful, verified milestone and include that update in the same milestone commit.
