@@ -1,10 +1,15 @@
-"""Test booking on February 6th - tries multiple rooms if one fails."""
+"""DANGEROUS live-site booking script retained for manual investigation only.
+
+Running this file opens the real RWCMD Asimut site and may click Save to create
+a real reservation. It has no dry-run mode. See README.md before use.
+"""
 
 from pathlib import Path
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-state_file = Path("data/browser_state/state.json")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+state_file = REPO_ROOT / "data" / "browser_state" / "state.json"
 
 # Maximum booking duration in hours
 MAX_BOOKING_HOURS = 2

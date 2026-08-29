@@ -1,4 +1,4 @@
-"""Simple test to edit any existing reservation.
+"""DANGEROUS manual tool that can edit a real existing reservation.
 
 This will:
 1. Go to your agenda
@@ -8,8 +8,11 @@ This will:
 5. Save
 
 Usage:
-    python test_edit_reservation.py           # Visible browser
-    python test_edit_reservation.py --dry-run # Just find reservation, don't edit
+    python tools/manual_live/edit_reservation_live.py --dry-run
+    python tools/manual_live/edit_reservation_live.py  # DANGEROUS: edits
+
+Read README.md before use. ``--headless`` changes only browser visibility; it
+does not prevent an edit.
 """
 
 import argparse
@@ -18,7 +21,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
-state_file = Path("data/browser_state/state.json")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+state_file = REPO_ROOT / "data" / "browser_state" / "state.json"
 
 
 def main():

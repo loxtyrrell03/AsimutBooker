@@ -1,8 +1,8 @@
-"""
-Test script for verifying the find_matching_panel date matching fix.
+"""Read-only manual live-site diagnostic for reservation panel matching.
 
 This script connects to the REAL Asimut website using saved browser state
-and tests the date matching logic against actual reservations.
+and reads actual reservations. It does not intentionally create or edit a
+booking, but it still accesses the real account. See README.md before use.
 """
 
 import sys
@@ -195,9 +195,10 @@ def run_real_site_test():
         return False
 
     # Check for browser state
-    state_file = Path("data/browser_state/state.json")
+    repo_root = Path(__file__).resolve().parents[2]
+    state_file = repo_root / "data" / "browser_state" / "state.json"
     if not state_file.exists():
-        print("ERROR: No saved browser state found at data/browser_state/state.json")
+        print(f"ERROR: No saved browser state found at {state_file}")
         print("Run 'python book_week.py' first to log in and save your session.")
         return False
 

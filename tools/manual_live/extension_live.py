@@ -1,20 +1,28 @@
-"""Test script for the booking extension feature.
+"""Manual booking-extension diagnostic with safe and dangerous modes.
 
 This script tests the extension workflow in isolation:
 1. Manually add a fake "extendable booking" to settings.json
 2. Run the extension logic to see if it can find and edit the booking
 
 Usage:
-    python test_extension.py              # Run with visible browser
-    python test_extension.py --headless   # Run headless
-    python test_extension.py --dry-run    # Just test calculation, don't edit
+    python tools/manual_live/extension_live.py --dry-run
+    python tools/manual_live/extension_live.py --list
+    python tools/manual_live/extension_live.py  # DANGEROUS: may edit booking
+
+``--add-test`` and ``--clear`` mutate local settings. ``--headless`` changes
+only browser visibility and is not a safety control. See README.md before use.
 """
 
 import json
 import argparse
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # Import functions from book_week
 from book_week import (
@@ -30,8 +38,8 @@ from book_week import (
     MIN_BOOKING_MINUTES,
 )
 
-state_file = Path("data/browser_state/state.json")
-settings_file = Path("data/settings.json")
+state_file = REPO_ROOT / "data" / "browser_state" / "state.json"
+settings_file = REPO_ROOT / "data" / "settings.json"
 
 
 def test_calculate_max_extension():
