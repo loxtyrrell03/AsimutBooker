@@ -18,6 +18,8 @@ def _install_test_live_policy(today, *, window_days=8):
         time(12),
         tzinfo=timezone.utc,
     )
+    room_names = ("B0.29", "B1.09")
+    room_location_ids = {"B0.29": 96, "B1.09": 87}
     policy = book_week.LiveRoomPolicy(
         observed_at=observed_at,
         booking_horizon=booking_horizon,
@@ -41,6 +43,12 @@ def _install_test_live_policy(today, *, window_days=8):
         site_minimum_booking_gap_minutes=60,
         minimum_block_minutes=30,
         allow_fragmented_sessions=True,
+        all_room_names=room_names,
+        all_room_location_ids=room_location_ids,
+        overview_url=book_week.canonical_overview_url(
+            room_names,
+            room_location_ids,
+        ),
     )
     return book_week.install_live_room_policy(policy, today=today)
 

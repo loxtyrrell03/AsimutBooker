@@ -85,7 +85,9 @@ RECURRING_DURATION_ISO = "PT14H46M"
 RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
 RECURRING_RESTART_INTERVAL_ISO = "PT1M"
 ASIMUT_AGENDA_URL = "https://rwcmd.asimut.net/agenda"
-ASIMUT_OVERVIEW_URL = "https://rwcmd.asimut.net/overview?locationGroupId=10"
+MANUAL_RECONFIRMATION_NOTICE = (
+    "Saved student bookings still need manual confirmation on RWCMD Wi-Fi."
+)
 
 TIME_PREFERENCE_PRESET_KEYS = frozenset(
     {
@@ -2676,6 +2678,7 @@ class AsimutBookerGUI:
                 if confirmed_minutes
                 else "potential, not booked."
             )
+            + f" {MANUAL_RECONFIRMATION_NOTICE}"
         )
 
     def _sync_open_calendar_plan(self, result):
@@ -5708,7 +5711,9 @@ class AsimutBookerGUI:
                 f"State: {candidate.state.replace('_', ' ')}\n\n"
                 f"Why: {candidate.reason}\n\n"
                 "This is a read-only progress view. The runtime will re-check the live "
-                "room, agenda, limits, time, and form before any further Save action."
+                "room, agenda, limits, time, and form before any further Save action.\n\n"
+                f"{MANUAL_RECONFIRMATION_NOTICE} Asimut only permits that action "
+                "from the College network, so the booker will not attempt it."
             ),
             parent=getattr(self, "calendar_dialog", self.root),
         )
@@ -7137,6 +7142,16 @@ class AsimutBookerGUI:
                     room_preferences,
                     today=today,
                 )
+                overview_query = urlsplit(policy.overview_url).query
+                if not is_exact_asimut_scan_url(
+                    policy.overview_url,
+                    "/overview",
+                    expected_query=overview_query,
+                ):
+                    raise RuntimeError(
+                        "The fresh room policy did not provide an exact trusted "
+                        "selected-location overview"
+                    )
                 live_date_strings = {
                     value.isoformat()
                     for value in policy.booking_dates(today)
@@ -7158,7 +7173,7 @@ class AsimutBookerGUI:
                     page,
                     page_is_authenticated,
                     "/overview",
-                    expected_query="locationGroupId=10",
+                    expected_query=overview_query,
                 )
                 current_url = page.url
                 self.root.after(
@@ -7198,7 +7213,7 @@ class AsimutBookerGUI:
                         page,
                         page_is_authenticated,
                         "/overview",
-                        expected_query="locationGroupId=10",
+                        expected_query=overview_query,
                     )
 
                     # Use the production renderer abstraction so current SVG
@@ -7250,7 +7265,7 @@ class AsimutBookerGUI:
                     page,
                     page_is_authenticated,
                     "/overview",
-                    expected_query="locationGroupId=10",
+                    expected_query=overview_query,
                 )
                 if generation != self._room_scan_generation:
                     return

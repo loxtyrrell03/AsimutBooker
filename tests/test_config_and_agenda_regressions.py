@@ -26,6 +26,25 @@ class BookingNotificationFormattingTests(unittest.TestCase):
         detail = "unstructured booking detail"
         self.assertEqual(book_week.format_booking_notification_detail(detail), detail)
 
+    def test_success_notification_reminds_user_to_reconfirm_on_college_wifi(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = Path(temp_dir) / "booking_history.json"
+            with (
+                mock.patch.object(book_week, "history_file", history_path),
+                mock.patch.object(book_week, "send_notification") as notify,
+            ):
+                book_week.save_history(
+                    1,
+                    0,
+                    ["2026-09-02 Weston Gallery 12:00 14:00 120"],
+                )
+
+        notify.assert_called_once()
+        title, message = notify.call_args.args[:2]
+        self.assertEqual(title, "Booked 1 room")
+        self.assertIn("Weston Gallery 12:00-14:00", message)
+        self.assertIn("reconfirm provisional bookings on RWCMD Wi-Fi", message)
+
 
 class _YamlStub:
     class YAMLError(Exception):

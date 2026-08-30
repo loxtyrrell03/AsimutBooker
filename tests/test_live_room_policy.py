@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from live_room_policy import (
     LiveRoomPolicyError,
     build_live_room_policy,
+    canonical_overview_url,
     format_horizon_minutes,
 )
 from room_preferences import load_room_preferences
@@ -14,6 +15,7 @@ from room_preferences import load_room_preferences
 class FakeRoom:
     name: str
     horizon_minutes: int
+    location_id: int
 
 
 class FakeCatalog:
@@ -27,11 +29,11 @@ class FakeCatalog:
         self.maximum_booking_minutes = 120
         self.minimum_booking_gap_minutes = 60
         self.rooms = (
-            FakeRoom("B0.29", 5 * 24 * 60),
-            FakeRoom("B1.09", 3 * 24 * 60),
-            FakeRoom("B0.11", 7 * 24 * 60),
-            FakeRoom("B0.24", 4 * 24 * 60 + 30),
-            FakeRoom("The Hopkins Studio", 3 * 24 * 60),
+            FakeRoom("B0.29", 5 * 24 * 60, 96),
+            FakeRoom("B1.09", 3 * 24 * 60, 87),
+            FakeRoom("B0.11", 7 * 24 * 60, 75),
+            FakeRoom("B0.24", 4 * 24 * 60 + 30, 92),
+            FakeRoom("The Hopkins Studio", 3 * 24 * 60, 111),
         )
 
     def require_fresh(self):
@@ -110,6 +112,46 @@ class LiveRoomPolicyTests(unittest.TestCase):
             ("B0.29", "B1.09", "B0.11", "B0.24", "The Hopkins Studio"),
         )
         self.assertEqual(policy.all_room_names[-1], "The Hopkins Studio")
+
+    def test_builds_exact_all_locations_url_from_fresh_catalog_order(self):
+        policy = build_live_room_policy(FakeCatalog(), self.preferences())
+
+        self.assertEqual(
+            dict(policy.all_room_location_ids),
+            {
+                "B0.29": 96,
+                "B1.09": 87,
+                "B0.11": 75,
+                "B0.24": 92,
+                "The Hopkins Studio": 111,
+            },
+        )
+        self.assertEqual(
+            policy.overview_url,
+            "https://rwcmd.asimut.net/overview?locationGroupId=0&"
+            "locationIds=96,87,75,92,111",
+        )
+
+    def test_catalog_location_ids_are_strict_unique_positive_evidence(self):
+        for invalid_id in (True, 0, -1, "96"):
+            catalog = FakeCatalog()
+            catalog.rooms = (
+                FakeRoom("B0.29", 5 * 24 * 60, invalid_id),
+            ) + catalog.rooms[1:]
+            with self.subTest(invalid_id=invalid_id):
+                with self.assertRaisesRegex(LiveRoomPolicyError, "location_id"):
+                    build_live_room_policy(catalog, self.preferences())
+
+        catalog = FakeCatalog()
+        catalog.rooms = catalog.rooms[:-1] + (
+            FakeRoom("The Hopkins Studio", 3 * 24 * 60, 96),
+        )
+        with self.assertRaisesRegex(LiveRoomPolicyError, "location_id"):
+            build_live_room_policy(catalog, self.preferences())
+
+    def test_canonical_overview_url_requires_exact_name_id_identity(self):
+        with self.assertRaisesRegex(LiveRoomPolicyError, "match exactly"):
+            canonical_overview_url(("B0.29", "B1.09"), {"B0.29": 96})
 
     def test_booking_dates_come_from_absolute_live_cutoff(self):
         policy = build_live_room_policy(FakeCatalog(), self.preferences())

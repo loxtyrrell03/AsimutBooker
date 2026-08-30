@@ -994,6 +994,13 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
                 expected_query="locationGroupId=10",
             )
         )
+        self.assertTrue(
+            is_exact_asimut_scan_url(
+                "https://rwcmd.asimut.net/overview?locationGroupId=0&locationIds=96,93,77",
+                "/overview",
+                expected_query="locationGroupId=0&locationIds=96,93,77",
+            )
+        )
         for url in (
             "http://rwcmd.asimut.net/agenda",
             "https://rwcmd.asimut.net:443/agenda",
@@ -1088,10 +1095,15 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
         browser = playwright.chromium.launch.return_value
         context = browser.new_context.return_value
         page = context.new_page.return_value
-        page.url = "https://rwcmd.asimut.net/overview?locationGroupId=10"
+        overview_url = (
+            "https://rwcmd.asimut.net/overview?"
+            "locationGroupId=0&locationIds=96,93,77"
+        )
+        page.url = overview_url
 
         policy = MagicMock()
         policy.minimum_block_minutes = 45
+        policy.overview_url = overview_url
         policy.booking_dates.return_value = tuple(
             today + timedelta(days=offset) for offset in range(3)
         )
@@ -1196,9 +1208,14 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
         browser = playwright.chromium.launch.return_value
         context = browser.new_context.return_value
         page = context.new_page.return_value
-        page.url = "https://rwcmd.asimut.net/overview?locationGroupId=10"
+        overview_url = (
+            "https://rwcmd.asimut.net/overview?"
+            "locationGroupId=0&locationIds=96,93,77"
+        )
+        page.url = overview_url
         policy = MagicMock()
         policy.minimum_block_minutes = 45
+        policy.overview_url = overview_url
         policy.booking_dates.return_value = (
             today,
             today + timedelta(days=1),

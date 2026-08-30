@@ -24,7 +24,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 
 - **Autonomous Login**: Reuses persistent browser state first, then recovers an expired Microsoft 365 session with a Windows Credential Manager password and the local RWCMD SMS bridge—without an AI model
 - **Room Preferences**: GUI ordering, exclusions, live instrument/type/feature requirements, minimum block length, and fragmentation policy
-- **Live Room Policy**: Refreshes the current AHC room catalog, metadata, per-room horizons, and booking-window cutoff from Asimut before every authenticated booking or check run
+- **Live Room Policy**: Refreshes the current AHC catalog plus selected promoted All Locations rooms, metadata, per-room horizons, and booking-window cutoff from Asimut before every authenticated booking or check run
 - **Scheduled Execution**: One non-overlapping task runs every 15 minutes (07:13-21:58) with AC/DC wake-timer requests and missed-start recovery
 - **RWCMD Booking Rules**: Respects rolling quota (28 hours/week), peak hours (2hr/day Mon-Fri 9am-4pm), and the greater of the configured/default same-room gap and Asimut's fresh minimum
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
@@ -35,6 +35,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
 - **Booking Plan UI**: Explains ready, waiting, in-progress, and alternative sessions in the dashboard and calendar; hatched blocks are explicitly potential rather than booked
 - **Verified Mutations**: A booking or extension counts only after the positive event ID and exact persisted room/date/time survive a reload
+- **Manual Reconfirmation Boundary**: Student bookings remain provisional; the user reconfirms them on RWCMD Wi-Fi when Asimut enables the action, and this runtime never attempts remote reconfirmation
 - **Crash Recovery**: Durable pre-Save receipts stop further mutations when a result is uncertain and force agenda reconciliation on the next run
 - **Booking History**: Tracks verified runs and bookings with locked, atomic persistence
 - **Push Notifications**: Optional ntfy.sh notifications for booking results
@@ -51,7 +52,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 
 - **Institution**: Royal Welsh College of Music and Drama (RWCMD)
 - **Asimut URL**: `https://rwcmd.asimut.net/`
-- **Location Category**: Music Practice Rooms - AHC
+- **Location Scope**: All current Music Practice Rooms - AHC plus exact promoted rooms discovered from All Locations
 - **Authentication**: Microsoft 365 SSO
 
 ### Authentication Recovery for Agents
@@ -372,8 +373,10 @@ python -m unittest discover -s tests
   persisted Save identity all fail closed.
 - Every authenticated booking, `--check-only`, and `--plan-only` run builds a new room policy
   from Asimut before agenda or mutation work. Discovery reads the current
-  booking category/group, group metadata, event defaults, and one no-Save check
-  response per room. An incomplete or inconsistent observation stops the run;
+  booking category, AHC group, complete All Locations group, merged metadata,
+  event defaults, and one no-Save check response for each selected room. Only
+  exact promoted room names are added; unrelated All Locations rooms are not
+  probed. An incomplete or inconsistent observation stops the run;
   `data/room_catalog.json` is never booking authority.
 - Discovery never calls `event/type=save`. Participant arrays required by the
   in-memory check template are neither logged nor cached.
@@ -381,6 +384,11 @@ python -m unittest discover -s tests
   cutoff determines the complete date set, and per-room warning cutoffs
   determine arbitrary positive 15-minute horizons. Request-minute rollover is
   normalized without accepting a changed duration or a mixed snapshot.
+- Grid navigation uses an exact run-scoped
+  `/overview?locationGroupId=0&locationIds=...` URL built from the freshly
+  validated selected location IDs. Every expected room row must appear exactly
+  once before availability, coordinates, or a Save path may use the grid;
+  Asimut may render those rows in a different order from the URL.
 - Creates and extensions write a receipt before Save. Explicit rejection closes
   it; confirmed persistence verifies it; a timeout or mismatch leaves it pending
   and prevents further mutations until an exact agenda/event reconciliation.
@@ -752,6 +760,43 @@ python -m unittest discover -s tests
   reservation, retained its 15:30 target as 60/90 minutes confirmed, refreshed
   all live 3-, 5-, and 7-day room horizons and the site-owned cutoff, and left
   zero pending mutation receipts. The complete offline suite passes 448 tests.
+
+## 2026-08-30 Promoted All Locations Rooms Milestone
+
+- The live catalog now combines all current AHC group-10 rooms with exact
+  `Weston Gallery` and `Corus Recital Room` identities freshly discovered from
+  complete All Locations group 2. Other All Locations rooms are not added or
+  probed. Cross-source ID/name disagreement, duplicate identities, malformed
+  metadata, or incomplete checks fail closed; a promoted room absent from a
+  complete current group response is omitted only for that run and regains its
+  saved rank when it reappears.
+- Default priority is Weston Gallery, Corus Recital Room, then B0.29 and the
+  previous room order. Explicit saved user ordering, exclusions, metadata
+  requirements, and the preferred-time/day planner remain authoritative; room
+  rank decides otherwise comparable opportunities rather than overriding a
+  materially better configured practice time.
+- Every merged room receives current metadata and its own no-Save horizon check.
+  The runtime constructs one exact group-0 selected-location overview from the
+  fresh location IDs and requires every expected row exactly once before using
+  availability or click coordinates. This avoids loading all 130 current All
+  Locations rows while keeping group membership, IDs, horizons, opening hours,
+  and occupancy site-owned.
+- A production `--headless --plan-only` run exited zero with 31 live rooms and
+  traversed every date in the current eight-date window. It proved Weston
+  Gallery as location 96 / B0.08 and Corus Recital Room as location 93 / B0.03;
+  both independently reported a current 10,080-minute horizon, while B0.29
+  independently reported 7,200 minutes. The effective order was Weston, Corus,
+  B0.29; the full agenda contained eight events, and pending receipts remained
+  zero. No booking or edit was attempted.
+- Live read-only evidence confirms that Student bookings remain provisional and
+  Asimut currently opens reconfirmation 300 minutes before the reservation.
+  Reconfirmation requires RWCMD Wi-Fi and is intentionally user-owned: the
+  runtime never calls the reconfirm endpoint. Successful-booking notifications
+  and the plan UI state this manual step explicitly. Until the user confirms,
+  the reservation still consumes its normal conflict, peak, daily-target, and
+  quota capacity; if Asimut cancels it, the next complete agenda scan removes
+  that coverage and replans from fresh availability. The complete offline suite
+  passes 471 tests.
 
 ## Maintenance Notes
 

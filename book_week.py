@@ -89,6 +89,7 @@ from live_room_policy import (
     LiveRoomPolicy,
     LiveRoomPolicyError,
     build_live_room_policy,
+    canonical_overview_url,
     format_horizon_minutes,
 )
 from room_catalog import RoomCatalogError, refresh_from_site as refresh_room_catalog
@@ -127,6 +128,10 @@ settings_file = APP_DIR / "data" / "settings.json"
 # Change this to your own unique topic name (like "asimut-yourname-secret123")
 NTFY_TOPIC = "asimut-loxty"
 NTFY_ENABLED = True  # Set to False to disable notifications
+MANUAL_RECONFIRMATION_REMINDER = (
+    "Manual action: reconfirm provisional bookings on RWCMD Wi-Fi when Asimut "
+    "enables it."
+)
 
 # Advanced College-rule overrides used only when no user config.yaml exists.
 # Room order, exclusions, requirements, block length, and fragmentation are
@@ -286,6 +291,7 @@ DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted base
 ACTIVE_ROOM_POLICY: LiveRoomPolicy | None = None
 PRIORITY_ROOMS = list(DEFAULT_ORDERED_ROOMS)
 LIVE_CATALOG_ROOM_NAMES = list(DEFAULT_ORDERED_ROOMS)
+LIVE_CATALOG_ROOM_LOCATION_IDS: dict[str, int] = {}
 ROOM_HORIZON_MINUTES: dict[str, int] = {}
 BOOKING_WINDOW_DATES: tuple = ()
 MINIMUM_BLOCK_MINUTES = MIN_BOOKING_MINUTES
@@ -298,7 +304,10 @@ HORIZON_SNIPE_GRACE_SECONDS = 180
 
 ASIMUT_BASE_URL = "https://rwcmd.asimut.net"
 ASIMUT_AGENDA_URL = f"{ASIMUT_BASE_URL}/agenda"
-ASIMUT_OVERVIEW_URL = f"{ASIMUT_BASE_URL}/overview?locationGroupId=10"
+# A fresh policy replaces this inert import-time value before any real grid
+# navigation.  Keeping it origin-only makes snapshot helpers import-safe while
+# ensuring no stale location group can be booking authority.
+ASIMUT_OVERVIEW_URL = f"{ASIMUT_BASE_URL}/overview"
 
 
 def install_live_room_policy(policy, *, today=None):
@@ -319,19 +328,35 @@ def install_live_room_policy(policy, *, today=None):
             f"{MAX_BOOKING_HOURS * 60} minutes to "
             f"{policy.site_maximum_booking_minutes} minutes"
         )
+    expected_overview_url = canonical_overview_url(
+        policy.all_room_names,
+        policy.all_room_location_ids,
+    )
+    if policy.overview_url != expected_overview_url:
+        raise LiveRoomPolicyError(
+            "The live room policy overview URL does not match its exact fresh "
+            "room location IDs"
+        )
+    if any(room not in policy.all_room_location_ids for room in policy.room_order):
+        raise LiveRoomPolicyError(
+            "The eligible room order is not a subset of the fresh catalog identities"
+        )
 
     global ACTIVE_ROOM_POLICY
     global PRIORITY_ROOMS
     global LIVE_CATALOG_ROOM_NAMES
+    global LIVE_CATALOG_ROOM_LOCATION_IDS
     global ROOM_HORIZON_MINUTES
     global BOOKING_WINDOW_DATES
     global MINIMUM_BLOCK_MINUTES
     global ALLOW_FRAGMENTED_SESSIONS
     global SITE_CLOCK_OFFSET_BOUNDS
     global SAME_ROOM_GAP_MINUTES
+    global ASIMUT_OVERVIEW_URL
     ACTIVE_ROOM_POLICY = policy
     PRIORITY_ROOMS = list(policy.room_order)
-    LIVE_CATALOG_ROOM_NAMES = list(policy.all_room_names or policy.room_order)
+    LIVE_CATALOG_ROOM_NAMES = list(policy.all_room_names)
+    LIVE_CATALOG_ROOM_LOCATION_IDS = dict(policy.all_room_location_ids)
     ROOM_HORIZON_MINUTES = dict(policy.room_horizon_minutes)
     BOOKING_WINDOW_DATES = policy_dates
     MINIMUM_BLOCK_MINUTES = policy.minimum_block_minutes
@@ -341,6 +366,7 @@ def install_live_room_policy(policy, *, today=None):
         CONFIGURED_SAME_ROOM_GAP_MINUTES,
         policy.site_minimum_booking_gap_minutes,
     )
+    ASIMUT_OVERVIEW_URL = policy.overview_url
     return policy
 
 
@@ -4155,7 +4181,12 @@ def _available_slots_from_grid_snapshot(snapshot):
 def get_available_slots(page):
     """Get free slots from either the legacy HTML or current SVG overview."""
 
-    return _available_slots_from_grid_snapshot(get_practice_room_grid_snapshot(page))
+    snapshot = get_practice_room_grid_snapshot(page)
+    if not _practice_room_grid_has_exact_inventory(snapshot):
+        raise RuntimeError(
+            "Practice-room overview is missing one or more exact fresh-catalog rows"
+        )
+    return _available_slots_from_grid_snapshot(snapshot)
 
 
 _CALENDAR_DATE_RE = re.compile(
@@ -4241,22 +4272,49 @@ def assert_calendar_date(page, expected_date, *, timeout_ms=6000):
 
 
 def _is_exact_practice_room_overview_url(url):
-    """Return whether ``url`` is the canonical AHC practice-room overview."""
+    """Return whether ``url`` is this run's exact fresh-catalog overview."""
 
-    try:
-        parsed = urlsplit(url)
-        return (
-            parsed.scheme == "https"
-            and parsed.hostname == "rwcmd.asimut.net"
-            and parsed.port is None
-            and parsed.username is None
-            and parsed.password is None
-            and parsed.path == "/overview"
-            and parsed.query == "locationGroupId=10"
-            and not parsed.fragment
-        )
-    except (TypeError, ValueError):
+    return isinstance(url, str) and url == ASIMUT_OVERVIEW_URL
+
+
+def _expected_live_overview_room_names():
+    """Return the full fresh room inventory when a run policy is installed."""
+
+    policy = ACTIVE_ROOM_POLICY
+    if not isinstance(policy, LiveRoomPolicy):
+        return ()
+    return tuple(policy.all_room_names)
+
+
+def _practice_room_grid_has_exact_inventory(snapshot, expected_rooms=None):
+    """Return whether a snapshot contains every expected room exactly once.
+
+    Asimut is free to render rows in an order different from the explicit
+    ``locationIds`` query.  Identity therefore uses exact set equality while
+    retaining duplicate detection through the row count.
+    """
+
+    expected = tuple(
+        _expected_live_overview_room_names()
+        if expected_rooms is None
+        else expected_rooms
+    )
+    if not expected:
+        return True
+    if len(set(expected)) != len(expected):
         return False
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rooms"), list):
+        return False
+    observed = [
+        item.get("room") if isinstance(item, dict) else None
+        for item in snapshot["rooms"]
+    ]
+    return (
+        len(observed) == len(expected)
+        and all(isinstance(room, str) and room for room in observed)
+        and len(set(observed)) == len(observed)
+        and set(observed) == set(expected)
+    )
 
 
 _SVG_POPULATED_GRID_STABLE_POLLS = 2
@@ -4348,11 +4406,12 @@ def wait_for_practice_room_grid(page, expected_date, *, timeout_ms=20000):
     last_error = None
     last_signature = None
     stable_polls = 0
+    expected_rooms = _expected_live_overview_room_names()
     while time.monotonic() < deadline:
         if not _is_exact_practice_room_overview_url(page.url):
             raise RuntimeError(
                 "Practice-room grid verification requires the exact "
-                "/overview?locationGroupId=10 route"
+                "fresh-catalog all-locations overview route"
             )
         if not page_is_authenticated(page):
             raise RuntimeError(
@@ -4380,6 +4439,10 @@ def wait_for_practice_room_grid(page, expected_date, *, timeout_ms=20000):
                 and last_snapshot.get("renderer") in {"legacy", "svg"}
                 and len(usable_rooms) == len(rooms)
                 and bool(rooms)
+                and _practice_room_grid_has_exact_inventory(
+                    last_snapshot,
+                    expected_rooms,
+                )
             )
             signature = (
                 _practice_room_grid_content_signature(last_snapshot)
@@ -4442,15 +4505,31 @@ def wait_for_practice_room_grid(page, expected_date, *, timeout_ms=20000):
         and isinstance(last_snapshot.get("rooms"), list)
         else 0
     )
+    observed_rooms = {
+        item.get("room")
+        for item in (
+            last_snapshot.get("rooms", [])
+            if isinstance(last_snapshot, dict)
+            and isinstance(last_snapshot.get("rooms"), list)
+            else []
+        )
+        if isinstance(item, dict) and isinstance(item.get("room"), str)
+    }
+    missing_rooms = [room for room in expected_rooms if room not in observed_rooms]
+    inventory_detail = (
+        "; missing expected live rooms: " + ", ".join(missing_rooms)
+        if missing_rooms
+        else ""
+    )
     detail = f"; last probe error: {last_error}" if last_error else ""
     raise RuntimeError(
         f"Practice-room grid did not become usable within {timeout_ms}ms "
-        f"(renderer={renderer}, rooms={room_count}){detail}"
+        f"(renderer={renderer}, rooms={room_count}){inventory_detail}{detail}"
     )
 
 
 def open_practice_room_overview(page, expected_date, *, attempts=2):
-    """Open and verify the AHC grid, retrying one incomplete SPA load."""
+    """Open and verify the fresh-catalog grid, retrying one incomplete SPA load."""
 
     last_error = None
     for attempt in range(1, attempts + 1):
@@ -4463,16 +4542,17 @@ def open_practice_room_overview(page, expected_date, *, attempts=2):
                 break
             print(
                 f"  Practice-room grid load {attempt}/{attempts} was incomplete; "
-                "retrying the canonical AHC overview..."
+                "retrying the canonical all-locations overview..."
             )
     raise RuntimeError(
-        f"Could not load a verified AHC practice-room grid after {attempts} attempts: "
+        "Could not load a verified all-locations practice-room grid after "
+        f"{attempts} attempts: "
         f"{last_error}"
     ) from last_error
 
 
 def refresh_practice_room_overview(page, expected_date):
-    """Reload the current AHC overview and verify its full grid before use."""
+    """Reload the fresh-catalog overview and verify its full grid before use."""
 
     safe_reload(page)
     return wait_for_practice_room_grid(page, expected_date)
@@ -4484,6 +4564,10 @@ def get_practice_room_names(page):
     snapshot = get_practice_room_grid_snapshot(page)
     if not isinstance(snapshot, dict) or snapshot.get("renderer") not in {"legacy", "svg"}:
         raise RuntimeError("Practice-room overview returned an unknown grid renderer")
+    if not _practice_room_grid_has_exact_inventory(snapshot):
+        raise RuntimeError(
+            "Practice-room overview is missing one or more exact fresh-catalog rows"
+        )
     return {
         item["room"].strip()
         for item in snapshot.get("rooms", [])
@@ -5298,7 +5382,7 @@ def navigate_to_day(page, target_day, current_day, *, base_date=None):
         # grid, so this recovery cannot silently land on the wrong day.
         print(
             "    Calendar traversal became stale; reopening today's verified "
-            "AHC grid and retrying once..."
+            "all-locations grid and retrying once..."
         )
         try:
             open_practice_room_overview(page, today)
@@ -8022,6 +8106,7 @@ def save_history(
             message = "\n".join(formatted)
             if len(booking_details) > 5:
                 message += f"\n+{len(booking_details) - 5} more"
+            message += f"\n{MANUAL_RECONFIRMATION_REMINDER}"
             send_notification(title, message, priority="default")
         else:
             title = "AsimutBooker ran"
@@ -8766,7 +8851,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             ]
             if missing_rooms:
                 print(
-                    "  WARNING: configured rooms not visible in the current AHC grid: "
+                    "  WARNING: configured rooms not visible in the current "
+                    "all-locations grid: "
                     + ", ".join(missing_rooms)
                 )
             persist_storage_state(context)
@@ -8905,7 +8991,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
         # Only continuing runs need the room grid. A verified extension above
         # can return early without this fallible post-success navigation.
-        print("\nNavigating to practice rooms (AHC)...")
+        print("\nNavigating to the fresh all-locations room overview...")
         open_practice_room_overview(page, today)
 
         current_calendar_day = 0

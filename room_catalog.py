@@ -113,6 +113,8 @@ ROOM_CATALOG_FILE = APP_DIR / "data" / "room_catalog.json"
 CATALOG_VERSION = 1
 ASIMUT_ORIGIN = "https://rwcmd.asimut.net"
 LOCATION_GROUP_ID = 10
+ALL_LOCATIONS_GROUP_ID = 2
+PROMOTED_LOCATION_NAMES = ("Weston Gallery", "Corus Recital Room")
 SITE_TIMEZONE = _load_site_timezone()
 
 SESSION_CONTEXT_PATH = "/services/v2/session-context/me"
@@ -510,14 +512,24 @@ def parse_booking_category(payload: Any) -> int:
     return candidates[0]
 
 
-def parse_location_group_meta(payload: Any) -> tuple[LocationMeta, ...]:
-    """Parse the current ordered membership of AHC location group 10."""
+def parse_location_group_meta(
+    payload: Any,
+    *,
+    group_id: int = LOCATION_GROUP_ID,
+    allow_empty: bool = False,
+) -> tuple[LocationMeta, ...]:
+    """Parse one exact live location-group membership response."""
 
-    response = _response_object(payload, "location group metadata")
-    _require_success(response, "location group metadata", True)
-    locations = _list(response.get("locations"), "location group metadata.response.locations")
-    if not locations:
-        raise RoomCatalogError("Location group 10 returned no rooms")
+    group_id = _positive_int(group_id, "location group id")
+    if not isinstance(allow_empty, bool):
+        raise RoomCatalogError("allow_empty must be a boolean")
+
+    label = f"location group {group_id} metadata"
+    response = _response_object(payload, label)
+    _require_success(response, label, True)
+    locations = _list(response.get("locations"), f"{label}.response.locations")
+    if not locations and not allow_empty:
+        raise RoomCatalogError(f"Location group {group_id} returned no rooms")
     result: list[LocationMeta] = []
     seen_ids: set[int] = set()
     seen_names: set[str] = set()
@@ -551,6 +563,81 @@ def parse_location_group_meta(payload: Any) -> tuple[LocationMeta, ...]:
                 raise RoomCatalogError("Location closed-hours end must be after its start")
         result.append(LocationMeta(location_id, name, secondary))
     return tuple(result)
+
+
+def merge_location_groups(
+    core_locations: Sequence[LocationMeta],
+    all_locations: Sequence[LocationMeta],
+) -> tuple[LocationMeta, ...]:
+    """Append exact promoted All Locations rooms to the live AHC order.
+
+    Cross-source ID and name overlaps must describe the same full identity.
+    Rooms outside :data:`PROMOTED_LOCATION_NAMES` remain useful identity
+    evidence but are not added to the booking catalog.
+    """
+
+    def validated(
+        value: Sequence[LocationMeta], label: str, *, allow_empty: bool
+    ) -> tuple[LocationMeta, ...]:
+        if not isinstance(value, Sequence) or isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            raise RoomCatalogError(f"{label} must be an ordered location sequence")
+        result = tuple(value)
+        if not result and not allow_empty:
+            raise RoomCatalogError(f"{label} must not be empty")
+        seen_ids: set[int] = set()
+        seen_names: set[str] = set()
+        for item in result:
+            if not isinstance(item, LocationMeta):
+                raise RoomCatalogError(f"{label} must contain LocationMeta values")
+            if item.location_id in seen_ids or item.name in seen_names:
+                raise RoomCatalogError(f"{label} contains duplicate identities")
+            seen_ids.add(item.location_id)
+            seen_names.add(item.name)
+        return result
+
+    core = validated(core_locations, "core locations", allow_empty=False)
+    complete = validated(all_locations, "All Locations", allow_empty=True)
+    core_by_id = {item.location_id: item for item in core}
+    core_by_name = {item.name: item for item in core}
+    all_by_name = {item.name: item for item in complete}
+
+    for item in complete:
+        same_id = core_by_id.get(item.location_id)
+        same_name = core_by_name.get(item.name)
+        if same_id is not None and same_id != item:
+            raise RoomCatalogError(
+                f"All Locations identity disagrees with AHC for id {item.location_id}"
+            )
+        if same_name is not None and same_name != item:
+            raise RoomCatalogError(
+                f"All Locations identity disagrees with AHC for room {item.name}"
+            )
+
+    merged = list(core)
+    merged_ids = set(core_by_id)
+    merged_names = set(core_by_name)
+    for name in PROMOTED_LOCATION_NAMES:
+        item = all_by_name.get(name)
+        if item is None:
+            # Availability and group membership are live site policy.  An exact
+            # promoted room absent from a complete response is simply omitted
+            # for this run, never recreated from stale cache or constants.
+            continue
+        if item.location_id in merged_ids or item.name in merged_names:
+            # An exact identity already present in AHC stays in AHC's live
+            # position; it must not be duplicated merely because group 2 also
+            # exposes it.
+            if core_by_id.get(item.location_id) != item:
+                raise RoomCatalogError(
+                    f"Promoted room {name} collides with an AHC identity"
+                )
+            continue
+        merged.append(item)
+        merged_ids.add(item.location_id)
+        merged_names.add(item.name)
+    return tuple(merged)
 
 
 class _PlainTextHTMLParser(HTMLParser):
@@ -921,6 +1008,7 @@ def build_catalog(
     check_payloads: Mapping[int, Any],
     observed_at: datetime,
     booking_category_id: int,
+    all_locations_meta_payload: Any | None = None,
     check_observed_ats: Mapping[int, datetime] | None = None,
     site_clock_offset_bounds: tuple[float, float] | None = None,
 ) -> RoomCatalog:
@@ -928,7 +1016,20 @@ def build_catalog(
 
     category_id = _positive_int(booking_category_id, "booking_category_id")
     session = parse_session_context(session_payload, observed_at)
-    locations = parse_location_group_meta(location_meta_payload)
+    core_locations = parse_location_group_meta(
+        location_meta_payload,
+        group_id=LOCATION_GROUP_ID,
+    )
+    locations = core_locations
+    if all_locations_meta_payload is not None:
+        locations = merge_location_groups(
+            core_locations,
+            parse_location_group_meta(
+                all_locations_meta_payload,
+                group_id=ALL_LOCATIONS_GROUP_ID,
+                allow_empty=True,
+            ),
+        )
     info_by_id = parse_location_info(location_info_payload, locations)
     if not isinstance(check_payloads, Mapping):
         raise RoomCatalogError("check_payloads must map location ids to responses")
@@ -1237,10 +1338,11 @@ def _day_time(day: date, hour: int, minute: int = 0) -> datetime:
     return datetime.combine(day, datetime_time(hour, minute), tzinfo=SITE_TIMEZONE)
 
 
-def _group_meta_path(observed_at: datetime) -> str:
+def _group_meta_path(observed_at: datetime, *, group_id: int) -> str:
+    group_id = _positive_int(group_id, "location group id")
     day = observed_at.astimezone(SITE_TIMEZONE).date()
     return (
-        f"/services/v2/locations/location_group_ids={LOCATION_GROUP_ID}"
+        f"/services/v2/locations/location_group_ids={group_id}"
         f";start_at={_format_site_iso(_day_time(day, 7))}"
         f";end_at={_format_site_iso(_day_time(day, 22, 59))}"
         f";current_date={_format_site_iso(_day_time(day, 0))}/meta"
@@ -1658,9 +1760,30 @@ def refresh_from_site(
     category_payload = _get_json(page, CATEGORIES_PATH, "categories")
     category_id = parse_booking_category(category_payload)
 
-    meta_path = _group_meta_path(session.observed_at)
-    meta_payload = _get_json(page, meta_path, "location group metadata")
-    locations = parse_location_group_meta(meta_payload)
+    meta_path = _group_meta_path(
+        session.observed_at,
+        group_id=LOCATION_GROUP_ID,
+    )
+    meta_payload = _get_json(page, meta_path, "AHC location group metadata")
+    core_locations = parse_location_group_meta(
+        meta_payload,
+        group_id=LOCATION_GROUP_ID,
+    )
+    all_meta_path = _group_meta_path(
+        session.observed_at,
+        group_id=ALL_LOCATIONS_GROUP_ID,
+    )
+    all_meta_payload = _get_json(
+        page,
+        all_meta_path,
+        "All Locations group metadata",
+    )
+    all_locations = parse_location_group_meta(
+        all_meta_payload,
+        group_id=ALL_LOCATIONS_GROUP_ID,
+        allow_empty=True,
+    )
+    locations = merge_location_groups(core_locations, all_locations)
     info_path = _location_info_path(locations, session.observed_at)
     info_payload = _get_json(page, info_path, "location info")
     # Validate the combined response before using a room identity in a form URL.
@@ -1674,7 +1797,7 @@ def refresh_from_site(
     template = _capture_eventdefault(
         page,
         category_id=category_id,
-        location=locations[0],
+        location=core_locations[0],
         start=template_start,
     )
 
@@ -1755,6 +1878,7 @@ def refresh_from_site(
         check_payloads=checks,
         observed_at=session.observed_at,
         booking_category_id=category_id,
+        all_locations_meta_payload=all_meta_payload,
         check_observed_ats=check_observed_ats,
         site_clock_offset_bounds=_intersect_clock_offset_bounds(clock_samples),
     )
@@ -1764,7 +1888,10 @@ def refresh_from_site(
 
 
 __all__ = [
+    "ALL_LOCATIONS_GROUP_ID",
     "CATALOG_VERSION",
+    "LOCATION_GROUP_ID",
+    "PROMOTED_LOCATION_NAMES",
     "ROOM_CATALOG_FILE",
     "SITE_TIMEZONE",
     "HorizonEvidence",
@@ -1779,6 +1906,7 @@ __all__ = [
     "load_catalog",
     "load_cached_catalog",
     "load_room_catalog",
+    "merge_location_groups",
     "normalize_html",
     "normalize_html_items",
     "parse_booking_category",

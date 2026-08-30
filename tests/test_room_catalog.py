@@ -8,10 +8,12 @@ from urllib.parse import parse_qs, urlsplit
 import room_catalog
 from room_catalog import (
     CATALOG_VERSION,
+    LocationMeta,
     SITE_TIMEZONE,
     RoomCatalogError,
     build_catalog,
     load_cached_catalog,
+    merge_location_groups,
     normalize_html,
     normalize_html_items,
     parse_booking_category,
@@ -187,6 +189,19 @@ ROOMS = (
     (12, "B0.29", "Piano Practice Room"),
     (13, "B1.09", "Music Practice Room"),
 )
+PROMOTED_ROOMS = (
+    (201, "Weston Gallery", "Performance Space"),
+    (202, "Corus Recital Room", "Recital Room"),
+)
+ALL_LOCATION_ROOMS = (
+    ROOMS[1],
+    (999, "Other Auditorium", "Performance Space"),
+    PROMOTED_ROOMS[1],
+    ROOMS[0],
+    PROMOTED_ROOMS[0],
+    ROOMS[2],
+)
+MERGED_ROOMS = ROOMS + PROMOTED_ROOMS
 
 
 def meta_payload(rooms=ROOMS):
@@ -270,6 +285,14 @@ def complete_checks():
         11: check_payload("B0.11"),
         12: check_payload("B0.29", "3/9/26 18:25"),
         13: check_payload("B1.09", "2/9/26 06:25"),
+    }
+
+
+def complete_union_checks():
+    return {
+        **complete_checks(),
+        201: check_payload("Weston Gallery", "1/9/26 06:25"),
+        202: check_payload("Corus Recital Room", "4/9/26 06:25"),
     }
 
 
@@ -363,6 +386,63 @@ class LiveResponseParserTests(unittest.TestCase):
         mismatch["response"]["locationsInfo"][0]["name"] = "B0.12"
         with self.assertRaises(RoomCatalogError):
             parse_location_info(mismatch, locations)
+
+    def test_all_locations_promotions_append_after_live_ahc_in_priority_order(self):
+        core = parse_location_group_meta(meta_payload())
+        all_locations = parse_location_group_meta(
+            meta_payload(ALL_LOCATION_ROOMS),
+            group_id=2,
+            allow_empty=True,
+        )
+
+        merged = merge_location_groups(core, all_locations)
+
+        self.assertEqual(
+            tuple(item.name for item in merged),
+            (
+                "B0.11",
+                "B0.29",
+                "B1.09",
+                "Weston Gallery",
+                "Corus Recital Room",
+            ),
+        )
+        self.assertNotIn("Other Auditorium", tuple(item.name for item in merged))
+
+    def test_complete_all_locations_absence_omits_only_missing_promotions(self):
+        core = parse_location_group_meta(meta_payload())
+        all_locations = parse_location_group_meta(
+            meta_payload(ROOMS + (PROMOTED_ROOMS[1],)),
+            group_id=2,
+            allow_empty=True,
+        )
+
+        merged = merge_location_groups(core, all_locations)
+
+        self.assertEqual(
+            tuple(item.name for item in merged),
+            ("B0.11", "B0.29", "B1.09", "Corus Recital Room"),
+        )
+
+    def test_cross_group_identity_conflicts_fail_closed(self):
+        core = parse_location_group_meta(meta_payload())
+        conflicts = (
+            (LocationMeta(11, "Weston Gallery", "Performance Space"),),
+            (LocationMeta(201, "B0.11", "Music Practice Room"),),
+            (
+                LocationMeta(201, "Weston Gallery", "Performance Space"),
+                LocationMeta(201, "Corus Recital Room", "Recital Room"),
+            ),
+        )
+        for conflict in conflicts:
+            with self.subTest(conflict=conflict):
+                with self.assertRaises(RoomCatalogError):
+                    merge_location_groups(core, conflict)
+
+        malformed = meta_payload(())
+        malformed["response"].pop("locations")
+        with self.assertRaises(RoomCatalogError):
+            parse_location_group_meta(malformed, group_id=2, allow_empty=True)
 
     def test_html_normalization_decodes_entities_and_ignores_active_content(self):
         html = (
@@ -529,6 +609,45 @@ class CatalogBuilderAndCacheTests(unittest.TestCase):
                 booking_category_id=56,
             )
 
+    def test_builder_uses_live_promoted_horizons_and_exact_merged_check_set(self):
+        catalog = build_catalog(
+            session_payload=session_payload(),
+            location_meta_payload=meta_payload(),
+            all_locations_meta_payload=meta_payload(ALL_LOCATION_ROOMS),
+            location_info_payload=info_payload(MERGED_ROOMS),
+            check_payloads=complete_union_checks(),
+            observed_at=OBSERVED,
+            booking_category_id=56,
+        )
+
+        self.assertEqual(catalog.room_names, tuple(row[1] for row in MERGED_ROOMS))
+        self.assertEqual(catalog.rooms[3].horizon_minutes, 2 * 24 * 60)
+        self.assertEqual(catalog.rooms[4].horizon_minutes, 5 * 24 * 60)
+
+        changed_checks = complete_union_checks()
+        changed_checks[201] = check_payload("Weston Gallery", "2/9/26 06:25")
+        changed = build_catalog(
+            session_payload=session_payload(),
+            location_meta_payload=meta_payload(),
+            all_locations_meta_payload=meta_payload(ALL_LOCATION_ROOMS),
+            location_info_payload=info_payload(MERGED_ROOMS),
+            check_payloads=changed_checks,
+            observed_at=OBSERVED,
+            booking_category_id=56,
+        )
+        self.assertEqual(changed.rooms[3].horizon_minutes, 3 * 24 * 60)
+
+        with self.assertRaises(RoomCatalogError):
+            build_catalog(
+                session_payload=session_payload(),
+                location_meta_payload=meta_payload(),
+                all_locations_meta_payload=meta_payload(ALL_LOCATION_ROOMS),
+                location_info_payload=info_payload(MERGED_ROOMS),
+                check_payloads=complete_checks(),
+                observed_at=OBSERVED,
+                booking_category_id=56,
+            )
+
     def test_builder_normalizes_moving_check_cutoffs_to_session_snapshot(self):
         checks = complete_checks()
         replacements = {
@@ -652,8 +771,17 @@ class _FakeRequestContext:
             payload = category_payload()
         elif "location_group_ids=10" in path and path.endswith("/meta"):
             payload = meta_payload()
-        elif "location_ids=11,12,13" in path and path.endswith("/info"):
-            payload = info_payload()
+        elif "location_group_ids=2" in path and path.endswith("/meta"):
+            payload = meta_payload(ALL_LOCATION_ROOMS)
+        elif "/services/v2/locations/location_ids=" in path and path.endswith("/info"):
+            id_text = path.split("location_ids=", 1)[1].split(";", 1)[0]
+            requested_ids = tuple(int(value) for value in id_text.split(","))
+            available_rooms = {row[0]: row for row in ROOMS + PROMOTED_ROOMS}
+            try:
+                requested_rooms = tuple(available_rooms[value] for value in requested_ids)
+            except KeyError as exc:
+                raise AssertionError(f"unexpected info identity {exc.args[0]}") from exc
+            payload = info_payload(requested_rooms)
         else:
             raise AssertionError(f"unexpected GET {url}")
         return _FakeResponse(url, payload)
@@ -670,7 +798,7 @@ class _FakeRequestContext:
             event["pe"] == [{"id": 999, "dn": "PARTICIPANT_SECRET"}]
             and event["ps"] == [{"id": 998, "dn": "PARTICIPANT_SECRET_2"}]
         )
-        payload = complete_checks()[location_id]
+        payload = complete_union_checks()[location_id]
         return _FakeResponse(url, payload)
 
 
@@ -730,7 +858,11 @@ class RefreshWorkflowTests(unittest.TestCase):
             )
 
             self.assertTrue(catalog.fresh)
-            self.assertEqual(page.checked_ids, [11, 12, 13])
+            self.assertEqual(page.checked_ids, [11, 12, 13, 201, 202])
+            self.assertEqual(
+                catalog.room_names,
+                ("B0.11", "B0.29", "B1.09", "Weston Gallery", "Corus Recital Room"),
+            )
             self.assertTrue(all(page.participants_preserved))
             self.assertEqual(page.goto_wait_until, "domcontentloaded")
             methods_and_paths = [
@@ -740,8 +872,24 @@ class RefreshWorkflowTests(unittest.TestCase):
             self.assertIn(("GET", "/services/v2/session-context/me"), methods_and_paths)
             self.assertIn(("GET", "/services/v2/categories"), methods_and_paths)
             self.assertEqual(
+                sum("location_group_ids=2" in path_value for _method, path_value in methods_and_paths),
+                1,
+            )
+            self.assertEqual(
+                sum("location_group_ids=10" in path_value for _method, path_value in methods_and_paths),
+                1,
+            )
+            info_calls = [
+                path_value
+                for method, path_value in methods_and_paths
+                if method == "GET" and path_value.endswith("/info")
+            ]
+            self.assertEqual(len(info_calls), 1)
+            self.assertIn("location_ids=11,12,13,201,202", info_calls[0])
+            self.assertNotIn("999", info_calls[0])
+            self.assertEqual(
                 sum(path_value.endswith("/type=check") for _method, path_value in methods_and_paths),
-                3,
+                5,
             )
             self.assertFalse(any("type=save" in path_value for _method, path_value in methods_and_paths))
 

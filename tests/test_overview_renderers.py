@@ -14,6 +14,8 @@ def _install_test_live_policy(today, *, window_days):
 
     observed_at = datetime.combine(today, time(12), tzinfo=timezone.utc)
     final_date = today + timedelta(days=window_days - 1)
+    room_names = ("B0.29", "B1.09")
+    room_location_ids = {"B0.29": 96, "B1.09": 87}
     policy = book_week.LiveRoomPolicy(
         observed_at=observed_at,
         booking_horizon=datetime.combine(
@@ -41,6 +43,12 @@ def _install_test_live_policy(today, *, window_days):
         site_minimum_booking_gap_minutes=60,
         minimum_block_minutes=30,
         allow_fragmented_sessions=True,
+        all_room_names=room_names,
+        all_room_location_ids=room_location_ids,
+        overview_url=book_week.canonical_overview_url(
+            room_names,
+            room_location_ids,
+        ),
     )
     return book_week.install_live_room_policy(policy, today=today)
 
@@ -200,6 +208,16 @@ class CalendarNavigationTests(unittest.TestCase):
 
 
 class OverviewRendererTests(unittest.TestCase):
+    def setUp(self):
+        # Renderer unit tests that do not explicitly install a live policy must
+        # not inherit another test class's process-global run policy.
+        saved_policy = book_week.ACTIVE_ROOM_POLICY
+        saved_url = book_week.ASIMUT_OVERVIEW_URL
+        self.addCleanup(setattr, book_week, "ACTIVE_ROOM_POLICY", saved_policy)
+        self.addCleanup(setattr, book_week, "ASIMUT_OVERVIEW_URL", saved_url)
+        book_week.ACTIVE_ROOM_POLICY = None
+        book_week.ASIMUT_OVERVIEW_URL = f"{book_week.ASIMUT_BASE_URL}/overview"
+
     def svg_snapshot(self):
         return {
             "renderer": "svg",
@@ -315,6 +333,62 @@ class OverviewRendererTests(unittest.TestCase):
         self.assertEqual(snapshot["renderer"], "svg")
         assert_date.assert_called_once()
         self.assertFalse(hasattr(page, "wait_for_selector"))
+
+    def test_installed_policy_uses_exact_dynamic_all_locations_route(self):
+        today = datetime.now().date()
+        policy = _install_test_live_policy(today, window_days=4)
+
+        self.assertEqual(book_week.ASIMUT_OVERVIEW_URL, policy.overview_url)
+        self.assertTrue(
+            book_week._is_exact_practice_room_overview_url(
+                "https://rwcmd.asimut.net/overview?locationGroupId=0&"
+                "locationIds=96,87"
+            )
+        )
+        for stale_or_changed in (
+            "https://rwcmd.asimut.net/overview?locationGroupId=10",
+            "https://rwcmd.asimut.net/overview?locationGroupId=0&locationIds=87,96",
+            "https://rwcmd.asimut.net/overview?locationGroupId=0&locationIds=96,87,93",
+        ):
+            with self.subTest(url=stale_or_changed):
+                self.assertFalse(
+                    book_week._is_exact_practice_room_overview_url(stale_or_changed)
+                )
+
+    def test_grid_waits_until_every_fresh_catalog_room_is_present(self):
+        today = datetime.now().date()
+        _install_test_live_policy(today, window_days=4)
+        missing = self.svg_snapshot()
+        complete = copy.deepcopy(missing)
+        second = copy.deepcopy(missing["rooms"][0])
+        second["room"] = "B0.29"
+        complete["rooms"].append(second)
+        page = _SequenceSnapshotPage([missing, complete, complete])
+
+        with (
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(book_week, "assert_calendar_date") as assert_date,
+        ):
+            result = book_week.wait_for_practice_room_grid(
+                page,
+                today,
+                timeout_ms=100,
+            )
+
+        self.assertEqual(
+            {item["room"] for item in result["rooms"]},
+            {"B0.29", "B1.09"},
+        )
+        self.assertEqual(len(page.scripts), 3)
+        assert_date.assert_called_once()
+
+    def test_missing_fresh_catalog_room_cannot_be_used_for_slots(self):
+        today = datetime.now().date()
+        _install_test_live_policy(today, window_days=4)
+        page = _SnapshotPage(self.svg_snapshot())
+
+        with self.assertRaisesRegex(RuntimeError, "missing one or more"):
+            book_week.get_available_slots(page)
 
     def test_grid_readiness_waits_for_svg_event_overlays(self):
         complete = self.svg_snapshot()

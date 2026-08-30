@@ -13,9 +13,12 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 ROOM_PREFERENCES_KEY = "room_preferences"
 MAX_ROOM_NAME_LENGTH = 120
 
-# This is the current built-in priority order.  An absent preferences block must
-# behave exactly like the existing booker until the user chooses to edit it.
+# This is the built-in priority order used only when the user has not supplied
+# an explicit order. Named rooms can disappear from a live catalog temporarily;
+# keeping them here lets them resume their original rank when they reappear.
 DEFAULT_ORDERED_ROOMS = (
+    "Weston Gallery",
+    "Corus Recital Room",
     "B0.29",
     "B1.09",
     "B0.11",
@@ -238,8 +241,8 @@ def load_room_preferences(
 ) -> RoomPreferences:
     """Load the optional room-preference block, rejecting malformed values.
 
-    A missing block preserves the booker's historical priority order and its
-    existing 30-minute, fragmentation-allowed behavior.
+    A missing block uses the booker's built-in priority order and its existing
+    30-minute, fragmentation-allowed behavior.
     """
 
     if not isinstance(settings, Mapping):

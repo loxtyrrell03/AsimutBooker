@@ -20,6 +20,9 @@ from room_preferences import (
 )
 
 
+ASIMUT_BASE_URL = "https://rwcmd.asimut.net"
+
+
 class LiveRoomPolicyError(ValueError):
     """Raised when live site policy and saved preferences cannot be combined."""
 
@@ -42,6 +45,62 @@ def _aware_datetime(value: Any, label: str) -> datetime:
     return value
 
 
+def canonical_overview_url(
+    room_names: tuple[str, ...],
+    room_location_ids: Mapping[str, int],
+) -> str:
+    """Return the exact all-locations overview URL for one fresh catalog.
+
+    The ordered ID list is deliberately derived from the catalog's immutable
+    room order rather than from saved room preferences.  That keeps temporarily
+    unavailable or newly introduced priority rooms visible in the grid and
+    makes the URL itself part of the run-scoped freshness evidence.
+    """
+
+    if not isinstance(room_names, tuple) or not room_names:
+        raise LiveRoomPolicyError("Live catalog room names must be a non-empty tuple")
+    if not isinstance(room_location_ids, Mapping):
+        raise LiveRoomPolicyError("Live catalog room location IDs must be a mapping")
+    if set(room_location_ids) != set(room_names) or len(room_location_ids) != len(
+        room_names
+    ):
+        raise LiveRoomPolicyError(
+            "Live catalog room names and location IDs must match exactly"
+        )
+
+    ordered_ids: list[int] = []
+    seen_names: set[str] = set()
+    seen_ids: set[int] = set()
+    for room_name in room_names:
+        if (
+            not isinstance(room_name, str)
+            or not room_name
+            or room_name != room_name.strip()
+            or room_name in seen_names
+        ):
+            raise LiveRoomPolicyError(
+                "Live catalog contains an invalid or duplicate room name"
+            )
+        location_id = room_location_ids.get(room_name)
+        if (
+            isinstance(location_id, bool)
+            or not isinstance(location_id, int)
+            or location_id <= 0
+            or location_id in seen_ids
+        ):
+            raise LiveRoomPolicyError(
+                f"{room_name}.location_id must be a unique positive integer"
+            )
+        seen_names.add(room_name)
+        seen_ids.add(location_id)
+        ordered_ids.append(location_id)
+
+    return (
+        f"{ASIMUT_BASE_URL}/overview?locationGroupId=0&locationIds="
+        + ",".join(str(value) for value in ordered_ids)
+    )
+
+
 @dataclass(frozen=True)
 class LiveRoomPolicy:
     """One immutable room/window policy for a single booking pass."""
@@ -57,7 +116,9 @@ class LiveRoomPolicy:
     site_minimum_booking_gap_minutes: int
     minimum_block_minutes: int
     allow_fragmented_sessions: bool
-    all_room_names: tuple[str, ...] = ()
+    all_room_names: tuple[str, ...]
+    all_room_location_ids: Mapping[str, int]
+    overview_url: str
     site_clock_offset_bounds: tuple[float, float] | None = None
 
     def horizon_minutes_for(self, room: str) -> int:
@@ -152,11 +213,33 @@ def build_live_room_policy(catalog: Any, preferences: RoomPreferences) -> LiveRo
     if not isinstance(catalog_rooms, tuple):
         raise LiveRoomPolicyError("Live catalog rooms must be an immutable tuple")
     by_name: dict[str, Any] = {}
+    location_ids: dict[str, int] = {}
+    seen_location_ids: set[int] = set()
     for room in catalog_rooms:
         name = getattr(room, "name", None)
-        if not isinstance(name, str) or not name or name in by_name:
+        if (
+            not isinstance(name, str)
+            or not name
+            or name != name.strip()
+            or name in by_name
+        ):
             raise LiveRoomPolicyError("Live catalog contains an invalid or duplicate room")
+        location_id = getattr(room, "location_id", None)
+        if (
+            isinstance(location_id, bool)
+            or not isinstance(location_id, int)
+            or location_id <= 0
+            or location_id in seen_location_ids
+        ):
+            raise LiveRoomPolicyError(
+                f"{name}.location_id must be a unique positive integer"
+            )
         by_name[name] = room
+        location_ids[name] = location_id
+        seen_location_ids.add(location_id)
+
+    all_room_names = tuple(by_name)
+    overview_url = canonical_overview_url(all_room_names, location_ids)
 
     horizons: dict[str, int] = {}
     selected_metadata: dict[str, Mapping[str, Any]] = {}
@@ -210,7 +293,9 @@ def build_live_room_policy(catalog: Any, preferences: RoomPreferences) -> LiveRo
         site_minimum_booking_gap_minutes=site_gap,
         minimum_block_minutes=preferences.minimum_block_minutes,
         allow_fragmented_sessions=preferences.allow_fragmented_sessions,
-        all_room_names=tuple(by_name),
+        all_room_names=all_room_names,
+        all_room_location_ids=MappingProxyType(location_ids),
+        overview_url=overview_url,
         site_clock_offset_bounds=clock_bounds,
     )
 

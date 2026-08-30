@@ -208,6 +208,58 @@ class RoomCatalogReconciliationTests(unittest.TestCase):
             ("B0.29", "The Hopkins Studio"),
         )
 
+    def test_default_named_room_priority_is_independent_of_site_order(self):
+        preferences = load_room_preferences({})
+
+        self.assertEqual(
+            DEFAULT_ORDERED_ROOMS[:3],
+            ("Weston Gallery", "Corus Recital Room", "B0.29"),
+        )
+        self.assertEqual(
+            effective_room_order(
+                preferences,
+                ["B0.29", "Corus Recital Room", "Weston Gallery", "B1.09"],
+            ),
+            ("Weston Gallery", "Corus Recital Room", "B0.29", "B1.09"),
+        )
+
+    def test_temporarily_absent_named_rooms_resume_their_default_ranks(self):
+        preferences = load_room_preferences({})
+
+        self.assertEqual(
+            effective_room_order(preferences, ["B1.09", "B0.29"]),
+            ("B0.29", "B1.09"),
+        )
+        self.assertEqual(
+            effective_room_order(
+                preferences,
+                ["B1.09", "Weston Gallery", "B0.29", "Corus Recital Room"],
+            ),
+            ("Weston Gallery", "Corus Recital Room", "B0.29", "B1.09"),
+        )
+        self.assertEqual(preferences.ordered_rooms, DEFAULT_ORDERED_ROOMS)
+
+    def test_explicit_saved_order_is_not_overridden_by_new_defaults(self):
+        preferences = load_room_preferences(
+            {
+                "room_preferences": {
+                    "ordered_rooms": [
+                        "B0.29",
+                        "Corus Recital Room",
+                        "Weston Gallery",
+                    ]
+                }
+            }
+        )
+
+        self.assertEqual(
+            effective_room_order(
+                preferences,
+                ["Weston Gallery", "Corus Recital Room", "B0.29"],
+            ),
+            ("B0.29", "Corus Recital Room", "Weston Gallery"),
+        )
+
 
 class RoomMetadataFilterTests(unittest.TestCase):
     def setUp(self):
@@ -279,6 +331,40 @@ class RoomMetadataFilterTests(unittest.TestCase):
         self.assertEqual(
             filter_effective_rooms(preferences, self.metadata),
             ("A3.39", "B0.24"),
+        )
+
+    def test_named_room_priority_still_obeys_exclusions_and_filters(self):
+        metadata = {
+            "B0.29": {
+                "instrument_tags": ["Grand Piano"],
+                "room_type_tags": ["Practice Room"],
+                "features": ["Steinway grand piano"],
+            },
+            "Corus Recital Room": {
+                "instrument_tags": ["Grand Piano"],
+                "room_type_tags": ["Recital Room"],
+                "features": ["Steinway grand piano", "Concert lighting"],
+            },
+            "Weston Gallery": {
+                "instrument_tags": ["Grand Piano"],
+                "room_type_tags": ["Performance Space"],
+                "features": ["Steinway grand piano", "Natural light"],
+            },
+        }
+        preferences = load_room_preferences(
+            {
+                "room_preferences": {
+                    "ordered_rooms": list(DEFAULT_ORDERED_ROOMS),
+                    "excluded_rooms": ["Weston Gallery"],
+                    "acceptable_room_type_tags": ["Recital Room", "Practice Room"],
+                    "required_feature_terms": ["steinway"],
+                }
+            }
+        )
+
+        self.assertEqual(
+            filter_effective_rooms(preferences, metadata),
+            ("Corus Recital Room", "B0.29"),
         )
 
     def test_missing_metadata_category_does_not_satisfy_a_selected_filter(self):
