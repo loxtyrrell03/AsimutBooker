@@ -27,6 +27,25 @@ class LauncherTests(unittest.TestCase):
             text.index("book_week.py --headless %*"),
         )
 
+    def test_shared_dev_shortcut_releases_hidden_watcher_after_gui_exit(self):
+        dev_tools = ROOT.parent / ".dev-tools"
+        watcher_path = dev_tools / "Start-PythonWatch.ps1"
+        launcher_path = dev_tools / "Start-DevApp.ps1"
+        if not watcher_path.exists() or not launcher_path.exists():
+            self.skipTest("canonical shared development launcher is not installed")
+
+        watcher = watcher_path.read_text(encoding="utf-8")
+        launcher = launcher_path.read_text(encoding="utf-8")
+
+        self.assertIn("[switch] $ExitWhenChildExits", watcher)
+        self.assertRegex(
+            watcher,
+            r"if \(\$ExitWhenChildExits\) \{[\s\S]*?return[\s\S]*?\}",
+        )
+        asimut_block = launcher[launcher.index("'asimut' {") :]
+        asimut_block = asimut_block[: asimut_block.index("\n    }")]
+        self.assertIn("-ExitWhenChildExits", asimut_block)
+
     def test_scheduled_launcher_preserves_exit_code_and_utf8(self):
         text = (ROOT / "run_booker.bat").read_text(encoding="utf-8")
         command_index = text.index("book_week.py --headless %*")

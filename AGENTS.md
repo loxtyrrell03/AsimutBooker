@@ -720,6 +720,23 @@ python -m unittest discover -s tests
   constrained 1320x784 window kept every idle Overview section within the
   visible tab area without reducing the configured type size.
 
+## 2026-08-30 Shortcut Relaunch Lifecycle Milestone
+
+- The canonical Dev Apps shortcut still launches Asimut through the shared
+  hidden Python watcher, but this app now opts into exit-on-child behavior. When
+  the control-panel process closes or fails during startup, its hidden watcher
+  exits and releases the per-app mutex instead of silently blocking every later
+  shortcut click.
+- Live verification used the actual `Asimut Booker.lnk` and its shared Python
+  environment: it opened one visible responsive window, closing the GUI removed
+  the complete watcher chain, the same shortcut opened a fresh responsive
+  window, and another click while it was running preserved the exact two-process
+  Python GUI tree. The reopened control panel was left running.
+- Both shared PowerShell launch scripts parse without errors, a zero-work child
+  proved exit-on-child in under one second, and the focused GUI/launcher suite
+  passes 26 tests. Booking, scheduling, authentication, and Asimut browser state
+  were not invoked by this repair.
+
 ## 2026-08-30 Exact Extension Editor Route Milestone
 
 - Live read-only inspection proved that Asimut opens an existing reservation at
