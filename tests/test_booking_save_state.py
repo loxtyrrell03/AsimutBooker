@@ -203,7 +203,7 @@ class BookingSaveStateTests(unittest.TestCase):
         legacy_fallback=False,
     ):
         page = mock.MagicMock()
-        page.url = self.EVENT_URL
+        page.url = "https://rwcmd.asimut.net/event?eventId=4242"
         page.viewport_size = None
 
         panel = mock.MagicMock()
@@ -473,7 +473,13 @@ class BookingSaveStateTests(unittest.TestCase):
             result = book_week.edit_reservation_end_time(page, booking, self.END)
 
         self.assertTrue(result)
-        safe_goto.assert_called_once_with(page, book_week.ASIMUT_AGENDA_URL)
+        self.assertEqual(
+            safe_goto.call_args_list,
+            [
+                mock.call(page, book_week.ASIMUT_AGENDA_URL),
+                mock.call(page, self.EVENT_URL),
+            ],
+        )
         verify_page.assert_called_once_with(
             page,
             self.ROOM,
@@ -551,7 +557,7 @@ class BookingSaveStateTests(unittest.TestCase):
 
     def test_extension_refuses_a_different_positive_event_url(self):
         page = self._extension_edit_page()
-        page.url = "https://rwcmd.asimut.net/arrangement?eventId=4243"
+        page.url = "https://rwcmd.asimut.net/event?eventId=4243"
         booking = {
             "room": self.ROOM,
             "date": self.BOOKING_DATE.isoformat(),

@@ -613,7 +613,9 @@ python -m unittest discover -s tests
   completed boundary, never beyond the target or two-hour cap.
 - Both horizon creates and extensions re-prove form identity, values, warnings,
   and a fresh visible/enabled Save immediately before writing the receipt.
-  Extensions also require the page URL to equal the tracked positive event URL.
+  Extensions require the exact positive `/event?eventId=N` editor route to
+  match the tracked event ID both after opening and immediately before Save;
+  only the separate `/arrangement?eventId=N` route counts as persisted proof.
   Just-opened creates receive only a three-minute post-boundary grace.
 - `--horizon-only` and `--extensions-only` are scoped, action-capped live-test
   modes. They cannot fall through to ordinary booking and return after the
@@ -623,16 +625,12 @@ python -m unittest discover -s tests
 - Deterministic boundary coverage uses the default minimum at +29:59, exact
   +30, and every +15-minute extension
   through +120, missed-run catch-up, priority/order, action short-circuiting,
-  form drift, exact event URL, disabled Save, editor disappearance, and isolated
-  runtime modes. A complete live extension sequence remains pending a genuine
-  safe horizon candidate; never log out or create unrelated bookings to force
-  one.
-- The historical live `--check-only` pass reused the saved session without
-  sign-in, proved the complete three-event agenda and the eight dates then
-  exposed by the site (154 visible gaps), and left zero active extensions and
-  zero pending receipts. No live mutation was attempted because no genuine
-  extension record existed. Current suite totals are recorded in the latest
-  milestone above.
+  form drift, exact editor and persisted-event routes, disabled Save, editor
+  disappearance, and isolated runtime modes. Never log out or create unrelated
+  bookings to manufacture an extension candidate.
+- The initial historical `--check-only` pass left zero active extensions and
+  zero pending receipts. A later genuine tracked candidate and its bounded live
+  verification are recorded in the exact-editor milestone below.
 
 ## 2026-08-30 Daily Foresight and Booking-Plan Milestone
 
@@ -672,12 +670,28 @@ python -m unittest discover -s tests
   horizons, derived the eight-date window through 6 September 2026, scanned the
   complete five-event agenda, traversed every exposed day, and published a
   current eight-day plan. It identified a ready 90-minute B0.14 session on
-  1 September and correctly retained 30/90 minutes of tracked B1.09 extension
+  1 September and correctly retained 60/90 minutes of tracked B1.09 extension
   progress on 2 September. Pending mutation receipts remained zero and the
   read-only run made no Asimut mutation.
-- The complete offline suite passes 447 tests. A real Tk Month -> Plan -> Month
+- The complete offline suite passes 448 tests. A real Tk Month -> Plan -> Month
   smoke test also proves view-specific row/column geometry is reset instead of
   leaking a blank eighth column or oversized timeline rows.
+
+## 2026-08-30 Exact Extension Editor Route Milestone
+
+- Live read-only inspection proved that Asimut opens an existing reservation at
+  the exact `/event?eventId=N` editor route, while its durable read-only identity
+  remains `/arrangement?eventId=N`. The runtime now validates the trusted host,
+  exact path, sole canonical positive ID query, and the same tracked ID at both
+  editor checkpoints without weakening post-Save persistence proof.
+- A bounded `--extensions-only` run used the genuine tracked event 3580122 and
+  extended B1.09 on 2 September 2026 from 14:00-14:30 to 14:00-15:00. The run
+  was limited to that date, room, one action, and 30 minutes, then reload-verified
+  the exact persisted event before counting success; no create path ran.
+- A separate read-only `--plan-only` pass found the exact 14:00-15:00 agenda
+  reservation, retained its 15:30 target as 60/90 minutes confirmed, refreshed
+  all live 3-, 5-, and 7-day room horizons and the site-owned cutoff, and left
+  zero pending mutation receipts. The complete offline suite passes 448 tests.
 
 ## Maintenance Notes
 

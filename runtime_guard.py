@@ -246,6 +246,33 @@ def parse_confirmed_event_id(url: str) -> int | None:
         return None
 
 
+def parse_event_editor_id(url: str) -> int | None:
+    """Extract the positive event id from an exact existing-event edit URL.
+
+    Asimut uses ``/event?eventId=<positive integer>`` while an existing event is
+    being edited, but uses ``/arrangement?eventId=<positive integer>`` for the
+    persisted read-only event page.  Keeping these contracts separate prevents
+    an unsaved creation form, unrelated route, extra parameter, or foreign
+    origin from being treated as proof of the tracked editor identity.
+    """
+    if not isinstance(url, str) or not url or url != url.strip():
+        return None
+
+    parsed = _is_trusted_asimut_location(url)
+    if parsed is None:
+        return None
+    if parsed.path != "/event" or parsed.fragment:
+        return None
+
+    match = _CONFIRMED_EVENT_QUERY_RE.fullmatch(parsed.query)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def is_confirmed_post_save_url(url: str) -> bool:
     """Return whether ``url`` proves creation of a positive Asimut event id."""
     return parse_confirmed_event_id(url) is not None
@@ -391,4 +418,5 @@ __all__ = [
     "is_new_booking_form_url",
     "normalize_date",
     "parse_confirmed_event_id",
+    "parse_event_editor_id",
 ]

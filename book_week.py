@@ -109,6 +109,7 @@ from runtime_guard import (
     is_new_booking_form_url,
     normalize_date,
     parse_confirmed_event_id,
+    parse_event_editor_id,
 )
 
 try:
@@ -2877,6 +2878,14 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
             safe_goto(page, ASIMUT_AGENDA_URL)
             return False
 
+        if parse_event_editor_id(page.url) != event_id:
+            print(
+                "    Edit action did not open the exact tracked event "
+                f"{event_id}; refusing to edit"
+            )
+            safe_goto(page, ASIMUT_AGENDA_URL)
+            return False
+
         # 5. Find the end time input and update it
         extension_end_selector = (
             "#endDate, input[aria-label='End time'], "
@@ -2975,11 +2984,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
                 current_event_url = page.url
-                if (
-                    not is_confirmed_post_save_url(current_event_url)
-                    or current_event_url != event_url
-                    or parse_confirmed_event_id(current_event_url) != event_id
-                ):
+                if parse_event_editor_id(current_event_url) != event_id:
                     print(
                         "    Extension editor is no longer on the exact tracked "
                         f"event {event_id}; refusing to edit"

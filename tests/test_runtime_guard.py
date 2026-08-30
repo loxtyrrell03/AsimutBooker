@@ -18,6 +18,7 @@ from runtime_guard import (
     is_new_booking_form_url,
     normalize_date,
     parse_confirmed_event_id,
+    parse_event_editor_id,
 )
 
 
@@ -177,6 +178,33 @@ class PostSaveUrlTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertIsNone(parse_confirmed_event_id(url))
                 self.assertFalse(is_confirmed_post_save_url(url))
+
+    def test_existing_event_editor_requires_exact_positive_event_route(self):
+        self.assertEqual(parse_event_editor_id("/event?eventId=1"), 1)
+        self.assertEqual(
+            parse_event_editor_id(
+                "https://rwcmd.asimut.net/event?eventId=3580122"
+            ),
+            3580122,
+        )
+        for url in (
+            "/event?eventId=0",
+            "/event?eventId=01",
+            "/event?eventId=-1",
+            "/event?eventId=1&other=value",
+            "/event?other=value&eventId=1",
+            "/event?eventId=1&eventId=2",
+            "/event/?eventId=1",
+            "/event?eventId=1#edit",
+            "/arrangement?eventId=1",
+            "https://evil.example/event?eventId=1",
+            "http://rwcmd.asimut.net/event?eventId=1",
+            "https://rwcmd.asimut.net:443/event?eventId=1",
+            " /event?eventId=1",
+            "",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(parse_event_editor_id(url))
 
     def test_new_booking_form_requires_relative_or_canonical_asimut_origin(self):
         self.assertTrue(is_new_booking_form_url("/event?eventId=0"))
