@@ -6,6 +6,7 @@ import sys
 import subprocess
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -119,6 +120,82 @@ HEALTH_STATE_COLORS = {
     "error": "#b00020",
     "unknown": "#666666",
 }
+
+# A restrained Windows-native interpretation of Apple's interface principles:
+# strong typography, quiet surfaces, ample spacing, and one blue action color.
+# These are presentation tokens only; booking and health semantics stay in
+# their existing strict modules.
+UI_COLORS = {
+    "page": "#F5F5F7",
+    "surface": "#FFFFFF",
+    "surface_muted": "#FAFAFC",
+    "text": "#1D1D1F",
+    "secondary_text": "#6E6E73",
+    "tertiary_text": "#86868B",
+    "border": "#D9D9DE",
+    "accent": "#0071E3",
+    "accent_hover": "#0077ED",
+    "accent_pressed": "#0068D1",
+    "danger": "#D70015",
+    "danger_hover": "#E51C2E",
+    "selection": "#E8F2FF",
+    "log": "#111214",
+}
+
+HEALTH_LABELS = {
+    "last_success": "Last run",
+    "next_run": "Automatic schedule",
+    "saved_session": "Saved session",
+    "auth_cooldown": "Login recovery",
+    "pending_mutations": "Booking safety",
+    "physical_wake": "Wake from sleep",
+}
+
+
+def automation_health_summary(
+    items: Mapping[str, HealthItem],
+) -> tuple[str, str, str]:
+    """Condense independent evidence into a calm, truthful overview summary."""
+
+    readiness_keys = (
+        "next_run",
+        "saved_session",
+        "auth_cooldown",
+        "pending_mutations",
+    )
+    available = [items[key] for key in readiness_keys if key in items]
+    if len(available) < len(readiness_keys):
+        return (
+            "unknown",
+            "Checking automation",
+            "Reading the schedule, login state, and booking safety checks…",
+        )
+
+    for state, headline in (
+        ("error", "Action required"),
+        ("warn", "Check recommended"),
+    ):
+        affected = [item for item in available if item.state == state]
+        if affected:
+            first = affected[0]
+            return state, headline, f"{HEALTH_LABELS[first.key]}: {first.headline}"
+
+    unknown = [item for item in available if item.state == "unknown"]
+    if unknown:
+        first = unknown[0]
+        return (
+            "unknown",
+            "One check is still unproven",
+            f"{HEALTH_LABELS[first.key]}: {first.headline}",
+        )
+
+    wake = items.get("physical_wake")
+    detail = "Automatic booking is scheduled and its safety checks are clear."
+    if wake is not None and wake.state == "unknown":
+        detail += " Wake from sleep has not yet been physically proven."
+    elif wake is not None and wake.state in {"warn", "error"}:
+        detail += f" Wake from sleep: {wake.headline}."
+    return "ok", "Automation is ready", detail
 
 
 def is_exact_asimut_scan_url(
@@ -1214,23 +1291,10 @@ def catalog_booking_dates(
 class AsimutBookerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("AsimutBooker Control Panel")
-        self.root.geometry("1280x920")
-        self.root.minsize(1000, 720)
-
-        # Configure default font sizes - larger for better readability
-        default_font = ("Segoe UI", 13)
-        heading_font = ("Segoe UI", 14, "bold")
-
-        # Apply to all ttk widgets
-        style = ttk.Style()
-        style.configure(".", font=default_font)
-        style.configure("TLabel", font=default_font)
-        style.configure("TButton", font=default_font, padding=8)
-        style.configure("TLabelframe.Label", font=heading_font)
-        style.configure("TCheckbutton", font=default_font)
-        style.configure("TCombobox", font=default_font)
-        style.configure("TEntry", font=default_font)
+        self.root.title("Asimut Booker")
+        self.root.geometry("1320x920")
+        self.root.minsize(1040, 760)
+        self._configure_visual_system()
 
         # Set icon if available
         try:
@@ -1262,6 +1326,286 @@ class AsimutBookerGUI:
         self._apply_settings_availability_state()
         self.refresh_status()
 
+    def _configure_visual_system(self):
+        """Apply one readable visual language across the app and its dialogs."""
+
+        available_fonts = set(tkfont.families(self.root))
+        self.ui_font_family = (
+            "Segoe UI Variable Text"
+            if "Segoe UI Variable Text" in available_fonts
+            else "Segoe UI"
+        )
+        self.ui_display_font_family = (
+            "Segoe UI Variable Display"
+            if "Segoe UI Variable Display" in available_fonts
+            else self.ui_font_family
+        )
+        named_fonts = {
+            "TkDefaultFont": (self.ui_font_family, 12, "normal"),
+            "TkTextFont": (self.ui_font_family, 12, "normal"),
+            "TkHeadingFont": (self.ui_display_font_family, 12, "bold"),
+            "TkMenuFont": (self.ui_font_family, 11, "normal"),
+            "TkFixedFont": ("Cascadia Mono", 11, "normal"),
+        }
+        for name, (family, size, weight) in named_fonts.items():
+            try:
+                tkfont.nametofont(name).configure(
+                    family=family,
+                    size=size,
+                    weight=weight,
+                )
+            except tk.TclError:
+                continue
+
+        self.root.configure(background=UI_COLORS["page"])
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        body = (self.ui_font_family, 12)
+        body_semibold = (self.ui_font_family, 12, "bold")
+        caption = (self.ui_font_family, 10)
+        section = (self.ui_display_font_family, 16, "bold")
+        style.configure(".", font=body)
+        style.configure("TFrame", background=UI_COLORS["surface"])
+        style.configure(
+            "TLabel",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            font=body,
+        )
+        style.configure(
+            "TButton",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            lightcolor=UI_COLORS["surface"],
+            darkcolor=UI_COLORS["surface"],
+            font=body_semibold,
+            padding=(16, 11),
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[
+                ("pressed", "#E5E5EA"),
+                ("active", "#F2F2F4"),
+                ("disabled", "#EFEFF1"),
+            ],
+            foreground=[("disabled", "#AEAEB2")],
+            bordercolor=[("focus", UI_COLORS["accent"])],
+        )
+        style.configure(
+            "Primary.TButton",
+            background=UI_COLORS["accent"],
+            foreground="#FFFFFF",
+            bordercolor=UI_COLORS["accent"],
+            lightcolor=UI_COLORS["accent"],
+            darkcolor=UI_COLORS["accent"],
+            padding=(18, 12),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[
+                ("pressed", UI_COLORS["accent_pressed"]),
+                ("active", UI_COLORS["accent_hover"]),
+                ("disabled", "#A8CDEE"),
+            ],
+            foreground=[("disabled", "#F4F8FC")],
+        )
+        style.configure(
+            "Danger.TButton",
+            foreground=UI_COLORS["danger"],
+            padding=(16, 11),
+        )
+        style.map(
+            "Danger.TButton",
+            foreground=[
+                ("active", UI_COLORS["danger_hover"]),
+                ("disabled", "#B8B8BC"),
+            ],
+        )
+        style.configure(
+            "Toolbar.TButton",
+            font=(self.ui_font_family, 11, "bold"),
+            padding=(14, 9),
+        )
+
+        style.configure("Page.TFrame", background=UI_COLORS["page"])
+        style.configure(
+            "Card.TFrame",
+            background=UI_COLORS["surface"],
+            borderwidth=0,
+            relief="flat",
+        )
+        style.configure(
+            "StatusItem.TFrame",
+            background=UI_COLORS["surface_muted"],
+            borderwidth=1,
+            bordercolor=UI_COLORS["border"],
+            relief="solid",
+        )
+        for style_name, font, color in (
+            ("Card.TLabel", body, UI_COLORS["text"]),
+            ("CardStrong.TLabel", body_semibold, UI_COLORS["text"]),
+            ("CardCaption.TLabel", caption, UI_COLORS["secondary_text"]),
+            ("CardSection.TLabel", section, UI_COLORS["text"]),
+            (
+                "CardEyebrow.TLabel",
+                (self.ui_font_family, 10, "bold"),
+                UI_COLORS["tertiary_text"],
+            ),
+        ):
+            style.configure(
+                style_name,
+                background=UI_COLORS["surface"],
+                foreground=color,
+                font=font,
+            )
+        style.configure(
+            "StatusLabel.TLabel",
+            background=UI_COLORS["surface_muted"],
+            foreground=UI_COLORS["text"],
+            font=(self.ui_font_family, 11, "bold"),
+        )
+        style.configure(
+            "StatusCaption.TLabel",
+            background=UI_COLORS["surface_muted"],
+            foreground=UI_COLORS["secondary_text"],
+            font=(self.ui_font_family, 10),
+        )
+        style.configure(
+            "Title.TLabel",
+            background=UI_COLORS["page"],
+            foreground=UI_COLORS["text"],
+            font=(self.ui_display_font_family, 25, "bold"),
+        )
+        style.configure(
+            "Subtitle.TLabel",
+            background=UI_COLORS["page"],
+            foreground=UI_COLORS["secondary_text"],
+            font=(self.ui_font_family, 11),
+        )
+        style.configure(
+            "Hero.TLabel",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            font=(self.ui_display_font_family, 21, "bold"),
+        )
+        style.configure(
+            "TCheckbutton",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            font=body,
+            padding=(0, 5),
+        )
+        style.map("TCheckbutton", background=[("active", UI_COLORS["surface"])])
+        style.configure(
+            "TEntry",
+            fieldbackground=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            padding=(9, 8),
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=UI_COLORS["surface"],
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            arrowsize=16,
+            padding=(8, 7),
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            arrowsize=15,
+            padding=(8, 7),
+        )
+        style.configure(
+            "Treeview",
+            background=UI_COLORS["surface"],
+            fieldbackground=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            bordercolor=UI_COLORS["border"],
+            font=(self.ui_font_family, 11),
+            rowheight=34,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#F0F0F2",
+            foreground=UI_COLORS["text"],
+            font=(self.ui_font_family, 11, "bold"),
+            padding=(10, 9),
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", UI_COLORS["selection"])],
+            foreground=[("selected", UI_COLORS["text"])],
+        )
+        style.configure(
+            "TRadiobutton",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            font=body,
+            padding=(0, 5),
+        )
+        style.map("TRadiobutton", background=[("active", UI_COLORS["surface"])])
+        style.configure(
+            "TLabelframe",
+            background=UI_COLORS["surface"],
+            bordercolor=UI_COLORS["border"],
+            borderwidth=1,
+            relief="solid",
+        )
+        style.configure(
+            "TLabelframe.Label",
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["text"],
+            font=section,
+        )
+        style.configure(
+            "TNotebook",
+            background=UI_COLORS["page"],
+            borderwidth=0,
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background="#ECECEF",
+            foreground=UI_COLORS["secondary_text"],
+            font=(self.ui_font_family, 11, "bold"),
+            padding=(16, 10),
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", UI_COLORS["surface"]), ("active", "#E2E2E6")],
+            foreground=[("selected", UI_COLORS["text"])],
+        )
+        style.configure(
+            "Navigation.TNotebook",
+            background=UI_COLORS["page"],
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 10),
+        )
+        style.configure(
+            "Navigation.TNotebook.Tab",
+            background=UI_COLORS["page"],
+            foreground=UI_COLORS["secondary_text"],
+            borderwidth=0,
+            padding=(22, 12),
+            font=(self.ui_font_family, 12, "bold"),
+        )
+        style.map(
+            "Navigation.TNotebook.Tab",
+            background=[("selected", UI_COLORS["surface"]), ("active", "#ECECEF")],
+            foreground=[("selected", UI_COLORS["text"])],
+        )
+
     def create_menu(self):
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
@@ -1288,194 +1632,271 @@ class AsimutBookerGUI:
         help_menu.add_command(label="About", command=self.show_about)
 
     def create_main_layout(self):
-        # Main container with padding
-        main_frame = ttk.Frame(self.root, padding="15")
+        main_frame = ttk.Frame(
+            self.root,
+            style="Page.TFrame",
+            padding=(30, 20, 30, 24),
+        )
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Keep day-to-day monitoring separate from preference editing. This
-        # prevents the main window from becoming a long wall of controls and
-        # lets the activity log use the remaining height on smaller screens.
-        self.main_notebook = ttk.Notebook(main_frame)
+        title_bar = ttk.Frame(main_frame, style="Page.TFrame")
+        title_bar.pack(fill=tk.X, pady=(0, 14))
+        title_text = ttk.Frame(title_bar, style="Page.TFrame")
+        title_text.pack(side=tk.LEFT)
+        ttk.Label(title_text, text="Asimut Booker", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            title_text,
+            text="Practice-room automation, without the clutter.",
+            style="Subtitle.TLabel",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        self.main_notebook = ttk.Notebook(main_frame, style="Navigation.TNotebook")
         self.main_notebook.pack(fill=tk.BOTH, expand=True)
-        overview_tab = ttk.Frame(self.main_notebook, padding="12")
-        preferences_tab = ttk.Frame(self.main_notebook, padding="12")
+        overview_tab = ttk.Frame(
+            self.main_notebook,
+            style="Page.TFrame",
+            padding=(2, 2, 2, 2),
+        )
+        preferences_page = ttk.Frame(
+            self.main_notebook,
+            style="Page.TFrame",
+            padding=(2, 2, 2, 2),
+        )
+        activity_tab = ttk.Frame(
+            self.main_notebook,
+            style="Page.TFrame",
+            padding=(2, 2, 2, 2),
+        )
+        self.activity_tab = activity_tab
         self.main_notebook.add(overview_tab, text="Overview")
-        self.main_notebook.add(preferences_tab, text="Preferences")
+        self.main_notebook.add(preferences_page, text="Preferences")
+        self.main_notebook.add(activity_tab, text="Activity")
 
-        # Top section - Status
-        status_frame = ttk.LabelFrame(overview_tab, text="Health Dashboard", padding="12")
-        status_frame.pack(fill=tk.X, pady=(0, 15))
+        # Preferences use a quiet, vertically grouped settings layout. Scrolling
+        # keeps the generous type and spacing usable on smaller displays.
+        preferences_canvas = tk.Canvas(
+            preferences_page,
+            background=UI_COLORS["page"],
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        preferences_scrollbar = ttk.Scrollbar(
+            preferences_page,
+            orient=tk.VERTICAL,
+            command=preferences_canvas.yview,
+        )
+        preferences_canvas.configure(yscrollcommand=preferences_scrollbar.set)
+        preferences_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preferences_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        preferences_tab = ttk.Frame(
+            preferences_canvas,
+            style="Page.TFrame",
+            padding=(4, 2, 16, 24),
+        )
+        preferences_window = preferences_canvas.create_window(
+            (0, 0),
+            window=preferences_tab,
+            anchor="nw",
+        )
+        preferences_tab.bind(
+            "<Configure>",
+            lambda _event: preferences_canvas.configure(
+                scrollregion=preferences_canvas.bbox("all")
+            ),
+        )
+        preferences_canvas.bind(
+            "<Configure>",
+            lambda event: preferences_canvas.itemconfigure(
+                preferences_window,
+                width=event.width,
+            ),
+        )
 
-        health_header = ttk.Frame(status_frame)
-        health_header.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(preferences_tab, text="Preferences", style="Title.TLabel").pack(
+            anchor=tk.W,
+            pady=(2, 2),
+        )
         ttk.Label(
-            health_header,
-            text="What is ready, what needs attention, and what is still unproven.",
-            foreground="#555555",
-            font=("Segoe UI", 10),
-        ).pack(side=tk.LEFT)
+            preferences_tab,
+            text="Set your intent here. The booker still verifies every live rule before acting.",
+            style="Subtitle.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 18))
+
         self.health_updated_var = tk.StringVar(value="Checking…")
-        ttk.Label(
-            health_header,
-            textvariable=self.health_updated_var,
-            foreground="#666666",
-            font=("Segoe UI", 10),
-        ).pack(side=tk.RIGHT, padx=(12, 0))
-        ttk.Button(
-            health_header,
-            text="Refresh",
-            command=self.refresh_status,
-        ).pack(side=tk.RIGHT)
-
-        status_grid = ttk.Frame(status_frame)
-        status_grid.pack(fill=tk.X)
-        for column in range(3):
-            status_grid.columnconfigure(column, weight=1, uniform="health")
-
-        labels = {
-            "last_success": "Last successful run",
-            "next_run": "Next automatic run",
-            "saved_session": "Saved session",
-            "auth_cooldown": "Authentication recovery",
-            "pending_mutations": "Pending mutations",
-            "physical_wake": "Physical wake test",
+        self.health_headline_vars = {
+            key: tk.StringVar(value="Checking…") for key in HEALTH_CARD_ORDER
         }
-        self.health_headline_vars = {}
-        self.health_detail_vars = {}
+        self.health_detail_vars = {
+            key: tk.StringVar(value="") for key in HEALTH_CARD_ORDER
+        }
         self.health_state_labels = {}
-        for index, key in enumerate(HEALTH_CARD_ORDER):
-            row, column = divmod(index, 3)
-            card = ttk.Frame(status_grid, padding="9", relief="groove", borderwidth=1)
-            card.grid(row=row, column=column, sticky="nsew", padx=4, pady=4)
-            heading = ttk.Frame(card)
-            heading.pack(fill=tk.X)
-            state_label = ttk.Label(
-                heading,
-                text=HEALTH_STATE_SYMBOLS["unknown"],
-                foreground=HEALTH_STATE_COLORS["unknown"],
-                font=("Segoe UI", 12, "bold"),
-            )
-            state_label.pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Label(
-                heading,
-                text=labels[key],
-                font=("Segoe UI", 10, "bold"),
-            ).pack(side=tk.LEFT)
-            headline = tk.StringVar(value="Checking…")
-            detail = tk.StringVar(value="")
-            ttk.Label(
-                card,
-                textvariable=headline,
-                font=("Segoe UI", 10, "bold"),
-                wraplength=340,
-                justify=tk.LEFT,
-            ).pack(fill=tk.X, anchor=tk.W, pady=(5, 2))
-            ttk.Label(
-                card,
-                textvariable=detail,
-                foreground="#555555",
-                font=("Segoe UI", 9),
-                wraplength=340,
-                justify=tk.LEFT,
-            ).pack(fill=tk.X, anchor=tk.W)
-            self.health_headline_vars[key] = headline
-            self.health_detail_vars[key] = detail
-            self.health_state_labels[key] = state_label
+        self._health_items = {}
+        self.automation_status_var = tk.StringVar(value="Checking automation")
+        self.automation_detail_var = tk.StringVar(
+            value="Reading the schedule, login state, and booking safety checks…"
+        )
 
         # Backward-compatible variable names used by scheduler/login callbacks.
         self.login_status_var = self.health_headline_vars["saved_session"]
         self.tasks_status_var = self.health_headline_vars["next_run"]
         self.last_run_var = self.health_headline_vars["last_success"]
 
-        # Middle section - Run Controls
-        controls_frame = ttk.LabelFrame(overview_tab, text="Run Booker", padding="15")
-        controls_frame.pack(fill=tk.X, pady=(0, 15))
+        for column in range(3):
+            overview_tab.columnconfigure(column, weight=1, uniform="overview")
 
-        # Row 1: Run/Stop buttons
-        controls_row1 = ttk.Frame(controls_frame)
-        controls_row1.pack(fill=tk.X, pady=(0, 8))
-
-        # Run buttons
-        self.run_visible_btn = ttk.Button(
-            controls_row1,
-            text="▶ Run with Visible Browser",
-            command=lambda: self.run_booker(headless=False),
-            width=26
+        status_frame = ttk.Frame(
+            overview_tab,
+            style="Card.TFrame",
+            padding=(24, 20),
         )
-        self.run_visible_btn.pack(side=tk.LEFT, padx=5, pady=3)
+        status_frame.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="nsew",
+            padx=(0, 7),
+            pady=(0, 14),
+        )
+        ttk.Label(status_frame, text="AUTOMATION", style="CardEyebrow.TLabel").pack(
+            anchor=tk.W
+        )
+        hero = ttk.Frame(status_frame, style="Card.TFrame")
+        hero.pack(fill=tk.X, pady=(7, 3))
+        self.automation_state_label = ttk.Label(
+            hero,
+            text=HEALTH_STATE_SYMBOLS["unknown"],
+            foreground=HEALTH_STATE_COLORS["unknown"],
+            background=UI_COLORS["surface"],
+            font=(self.ui_font_family, 18, "bold"),
+        )
+        self.automation_state_label.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(
+            hero,
+            textvariable=self.automation_status_var,
+            style="Hero.TLabel",
+        ).pack(side=tk.LEFT)
+        ttk.Label(
+            status_frame,
+            textvariable=self.automation_detail_var,
+            style="CardCaption.TLabel",
+            wraplength=700,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, anchor=tk.W, pady=(2, 14))
+        status_highlights = ttk.Frame(status_frame, style="Card.TFrame")
+        status_highlights.pack(fill=tk.X)
+        for column in range(2):
+            status_highlights.columnconfigure(column, weight=1, uniform="summary")
+        for column, (caption_text, key) in enumerate(
+            (("NEXT AUTOMATIC RUN", "next_run"), ("LAST COMPLETED RUN", "last_success"))
+        ):
+            summary = ttk.Frame(status_highlights, style="Card.TFrame")
+            summary.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=(0, 18) if column == 0 else (18, 0),
+            )
+            ttk.Label(
+                summary,
+                text=caption_text,
+                style="CardEyebrow.TLabel",
+            ).pack(anchor=tk.W)
+            ttk.Label(
+                summary,
+                textvariable=self.health_headline_vars[key],
+                style="CardStrong.TLabel",
+                wraplength=330,
+                justify=tk.LEFT,
+            ).pack(fill=tk.X, anchor=tk.W, pady=(3, 0))
 
+        controls_frame = ttk.Frame(
+            overview_tab,
+            style="Card.TFrame",
+            padding=(22, 20),
+        )
+        controls_frame.grid(
+            row=0,
+            column=2,
+            sticky="nsew",
+            padx=(7, 0),
+            pady=(0, 14),
+        )
+        ttk.Label(controls_frame, text="RUN NOW", style="CardEyebrow.TLabel").pack(
+            anchor=tk.W
+        )
+        ttk.Label(controls_frame, text="Book practice rooms", style="CardSection.TLabel").pack(
+            anchor=tk.W,
+            pady=(5, 2),
+        )
+        ttk.Label(
+            controls_frame,
+            text="Runs safely in the background by default.",
+            style="CardCaption.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 13))
         self.run_headless_btn = ttk.Button(
-            controls_row1,
-            text="▶ Run Headless (Background)",
+            controls_frame,
+            text="Run in Background",
             command=lambda: self.run_booker(headless=True),
-            width=26
+            style="Primary.TButton",
         )
-        self.run_headless_btn.pack(side=tk.LEFT, padx=5, pady=3)
-
+        self.run_headless_btn.pack(fill=tk.X, pady=(0, 8))
+        secondary_actions = ttk.Frame(controls_frame, style="Card.TFrame")
+        secondary_actions.pack(fill=tk.X)
+        secondary_actions.columnconfigure(0, weight=1, uniform="run-actions")
+        secondary_actions.columnconfigure(1, weight=1, uniform="run-actions")
+        self.run_visible_btn = ttk.Button(
+            secondary_actions,
+            text="Run with Browser",
+            command=lambda: self.run_booker(headless=False),
+        )
+        self.run_visible_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.stop_btn = ttk.Button(
-            controls_row1,
-            text="⏹ Stop",
+            secondary_actions,
+            text="Stop",
             command=self.stop_booker,
-            width=10,
-            state=tk.DISABLED
+            style="Danger.TButton",
+            state=tk.DISABLED,
         )
-        self.stop_btn.pack(side=tk.LEFT, padx=5, pady=3)
-
-        # Row 2: Other tools
-        controls_row2 = ttk.Frame(controls_frame)
-        controls_row2.pack(fill=tk.X)
-
-        # Scan Available Rooms button - prominent placement
-        ttk.Button(
-            controls_row2,
-            text="🔍 Scan Available Rooms",
-            command=self.show_scan_rooms_dialog,
-            width=22
-        ).pack(side=tk.LEFT, padx=5, pady=3)
-
-        # View Logs button
-        ttk.Button(
-            controls_row2,
-            text="📋 View Logs",
-            command=self.show_logs_viewer,
-            width=14
-        ).pack(side=tk.LEFT, padx=5, pady=3)
-
-        # Automatic schedule button
-        ttk.Button(
-            controls_row2,
-            text="⏰ Automatic Schedule",
-            command=self.view_scheduled_tasks,
-            width=20
-        ).pack(side=tk.LEFT, padx=5, pady=3)
-
-        self.login_check_btn = ttk.Button(
-            controls_row2,
-            text="🔐 Check / Repair Login",
-            command=self.check_repair_login,
-            width=22,
-        )
-        self.login_check_btn.pack(side=tk.LEFT, padx=5, pady=3)
-        self.login_update_btn = ttk.Button(
-            controls_row2,
-            text="Update Secure Login",
-            command=self.update_secure_login,
-            width=21,
-        )
-        self.login_update_btn.pack(side=tk.LEFT, padx=5, pady=3)
-
-        # Progress indicator
+        self.stop_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self.progress_var = tk.StringVar(value="")
-        ttk.Label(controls_frame, textvariable=self.progress_var, foreground="blue", font=("Segoe UI", 11)).pack(anchor=tk.W, pady=(8, 0))
+        self.progress_label = ttk.Label(
+            controls_frame,
+            textvariable=self.progress_var,
+            background=UI_COLORS["surface"],
+            foreground=UI_COLORS["accent"],
+            font=(self.ui_font_family, 10, "bold"),
+            wraplength=330,
+            justify=tk.LEFT,
+        )
 
-        # Display-only forward plan.  It is generated from a complete live scan
-        # and is never treated as booking authority by either the GUI or runtime.
-        plan_frame = ttk.LabelFrame(overview_tab, text="Booking Plan", padding="12")
-        plan_frame.pack(fill=tk.X, pady=(0, 15))
-        plan_body = ttk.Frame(plan_frame)
-        plan_body.pack(fill=tk.X)
-        plan_text = ttk.Frame(plan_body)
-        plan_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        def sync_progress_label(*_args):
+            if self.progress_var.get().strip():
+                if not self.progress_label.winfo_manager():
+                    self.progress_label.pack(fill=tk.X, anchor=tk.W, pady=(9, 0))
+            elif self.progress_label.winfo_manager():
+                self.progress_label.pack_forget()
+
+        self.progress_var.trace_add("write", sync_progress_label)
+
+        # Display-only forward plan. It is never booking authority.
+        plan_frame = ttk.Frame(
+            overview_tab,
+            style="Card.TFrame",
+            padding=(24, 19),
+        )
+        plan_frame.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            pady=(0, 14),
+        )
+        plan_frame.columnconfigure(0, weight=1)
+        plan_text = ttk.Frame(plan_frame, style="Card.TFrame")
+        plan_text.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
+        ttk.Label(plan_text, text="NEXT BOOKING", style="CardEyebrow.TLabel").pack(
+            anchor=tk.W
+        )
         self.booking_plan_headline_var = tk.StringVar(value="No current plan")
         self.booking_plan_detail_var = tk.StringVar(
             value="Refresh the plan to preview likely bookings. Potential blocks are not reservations."
@@ -1483,39 +1904,150 @@ class AsimutBookerGUI:
         ttk.Label(
             plan_text,
             textvariable=self.booking_plan_headline_var,
-            font=("Segoe UI", 11, "bold"),
+            style="CardSection.TLabel",
             justify=tk.LEFT,
-        ).pack(fill=tk.X, anchor=tk.W)
+        ).pack(fill=tk.X, anchor=tk.W, pady=(5, 2))
         ttk.Label(
             plan_text,
             textvariable=self.booking_plan_detail_var,
-            foreground="#555555",
-            font=("Segoe UI", 10),
-            wraplength=840,
+            style="CardCaption.TLabel",
+            wraplength=880,
             justify=tk.LEFT,
-        ).pack(fill=tk.X, anchor=tk.W, pady=(3, 0))
-        plan_actions = ttk.Frame(plan_body)
-        plan_actions.pack(side=tk.RIGHT, padx=(18, 0))
-        self.plan_refresh_btn = ttk.Button(
-            plan_actions,
-            text="Refresh Plan (Read Only)",
-            command=self.refresh_booking_plan,
-            width=24,
-        )
-        self.plan_refresh_btn.pack(side=tk.LEFT, padx=4)
+        ).pack(fill=tk.X, anchor=tk.W)
+        plan_actions = ttk.Frame(plan_frame, style="Card.TFrame")
+        plan_actions.grid(row=0, column=1, sticky="e")
         ttk.Button(
             plan_actions,
-            text="Open Plan Calendar",
+            text="Open Calendar",
             command=lambda: self.show_calendar_dialog("plan"),
-            width=20,
-        ).pack(side=tk.LEFT, padx=4)
+            style="Primary.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        self.plan_refresh_btn = ttk.Button(
+            plan_actions,
+            text="Refresh Plan",
+            command=self.refresh_booking_plan,
+        )
+        self.plan_refresh_btn.pack(side=tk.LEFT)
         self.booking_plan_result = BookingPlanReadResult(
-            None, True, "No booking plan has been generated yet."
+            None,
+            True,
+            "No booking plan has been generated yet.",
         )
 
+        health_frame = ttk.Frame(
+            overview_tab,
+            style="Card.TFrame",
+            padding=(24, 18),
+        )
+        health_frame.grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="nsew",
+            pady=(0, 14),
+        )
+        health_header = ttk.Frame(health_frame, style="Card.TFrame")
+        health_header.pack(fill=tk.X)
+        ttk.Label(health_header, text="System status", style="CardSection.TLabel").pack(
+            side=tk.LEFT
+        )
+        ttk.Label(
+            health_header,
+            textvariable=self.health_updated_var,
+            style="CardCaption.TLabel",
+        ).pack(side=tk.RIGHT, padx=(12, 0))
+        ttk.Button(
+            health_header,
+            text="Refresh",
+            command=self.refresh_status,
+            style="Toolbar.TButton",
+        ).pack(side=tk.RIGHT)
+        ttk.Button(
+            health_header,
+            text="View Details",
+            command=self.show_health_details,
+            style="Toolbar.TButton",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        status_grid = ttk.Frame(health_header, style="Card.TFrame")
+        status_grid.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(24, 16))
+        for column in range(3):
+            status_grid.columnconfigure(column, weight=1, uniform="health")
+        for index, key in enumerate(HEALTH_CARD_ORDER):
+            row, column = divmod(index, 3)
+            status_item = ttk.Frame(status_grid, style="Card.TFrame")
+            status_item.grid(
+                row=row,
+                column=column,
+                sticky="w",
+                padx=(0 if column == 0 else 8, 8 if column < 2 else 0),
+                pady=(0 if row == 0 else 5, 5 if row == 0 else 0),
+            )
+            heading = ttk.Frame(status_item, style="Card.TFrame")
+            heading.pack(fill=tk.X)
+            state_label = ttk.Label(
+                heading,
+                text=HEALTH_STATE_SYMBOLS["unknown"],
+                foreground=HEALTH_STATE_COLORS["unknown"],
+                background=UI_COLORS["surface_muted"],
+                font=(self.ui_font_family, 12, "bold"),
+            )
+            state_label.pack(side=tk.LEFT, padx=(0, 7))
+            ttk.Label(
+                heading,
+                text=HEALTH_LABELS[key],
+                background=UI_COLORS["surface"],
+                foreground=UI_COLORS["secondary_text"],
+                font=(self.ui_font_family, 10, "bold"),
+            ).pack(side=tk.LEFT)
+            self.health_state_labels[key] = state_label
+
+        tools_frame = ttk.Frame(
+            overview_tab,
+            style="Card.TFrame",
+            padding=(20, 14),
+        )
+        tools_frame.grid(row=3, column=0, columnspan=3, sticky="ew")
+        ttk.Label(tools_frame, text="Tools", style="CardStrong.TLabel").pack(
+            side=tk.LEFT,
+            padx=(0, 18),
+        )
+        ttk.Button(
+            tools_frame,
+            text="Find Available Rooms",
+            command=self.show_scan_rooms_dialog,
+            style="Toolbar.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        self.login_check_btn = ttk.Button(
+            tools_frame,
+            text="Check Login",
+            command=self.check_repair_login,
+            style="Toolbar.TButton",
+        )
+        self.login_check_btn.pack(side=tk.LEFT, padx=(0, 7))
+        self.login_update_btn = ttk.Button(
+            tools_frame,
+            text="Secure Login",
+            command=self.update_secure_login,
+            style="Toolbar.TButton",
+        )
+        self.login_update_btn.pack(side=tk.LEFT, padx=(0, 7))
+        ttk.Button(
+            tools_frame,
+            text="Automatic Schedule",
+            command=self.view_scheduled_tasks,
+            style="Toolbar.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        ttk.Button(
+            tools_frame,
+            text="Open Activity",
+            command=lambda: self.main_notebook.select(self.activity_tab),
+            style="Toolbar.TButton",
+        ).pack(side=tk.RIGHT)
+
         # Booking Days section - collapsible calendar
-        days_frame = ttk.LabelFrame(preferences_tab, text="Booking Days", padding="15")
-        days_frame.pack(fill=tk.X, pady=(0, 15))
+        days_frame = ttk.LabelFrame(preferences_tab, text="Booking days", padding="20")
+        days_frame.pack(fill=tk.X, pady=(0, 14))
 
         days_inner = ttk.Frame(days_frame)
         days_inner.pack(fill=tk.X)
@@ -1527,9 +2059,10 @@ class AsimutBookerGUI:
         # Open calendar button
         self.calendar_btn = ttk.Button(
             days_inner,
-            text="📅 Open Calendar",
+            text="Choose Days",
             command=self.show_calendar_dialog,
-            width=18
+            width=18,
+            style="Primary.TButton",
         )
         self.calendar_btn.pack(side=tk.LEFT, padx=5)
         self._settings_controls.append(self.calendar_btn)
@@ -1542,8 +2075,8 @@ class AsimutBookerGUI:
         self._update_days_summary()
 
         # Practice Plan section - a default target with optional per-date overrides.
-        practice_frame = ttk.LabelFrame(preferences_tab, text="Practice Plan", padding="12")
-        practice_frame.pack(fill=tk.X, pady=(0, 12))
+        practice_frame = ttk.LabelFrame(preferences_tab, text="Practice target", padding="20")
+        practice_frame.pack(fill=tk.X, pady=(0, 14))
 
         practice_inner = ttk.Frame(practice_frame)
         practice_inner.pack(fill=tk.X)
@@ -1551,7 +2084,7 @@ class AsimutBookerGUI:
         self.practice_plan_enabled = tk.BooleanVar(value=False)
         self.practice_plan_enable_cb = ttk.Checkbutton(
             practice_inner,
-            text="Aim for roughly",
+            text="Aim for",
             variable=self.practice_plan_enabled,
             command=self.on_practice_plan_changed,
         )
@@ -1572,11 +2105,11 @@ class AsimutBookerGUI:
         self.practice_default_spin.bind("<FocusOut>", lambda _event: self.on_practice_plan_changed())
         self.practice_default_spin.bind("<Return>", lambda _event: self.on_practice_plan_changed())
 
-        ttk.Label(practice_inner, text="hours on each enabled day").pack(side=tk.LEFT, padx=(8, 18))
+        ttk.Label(practice_inner, text="hours on each enabled day").pack(side=tk.LEFT, padx=(8, 20))
 
         self.practice_plan_customize_btn = ttk.Button(
             practice_inner,
-            text="Customize Booking Window…",
+            text="Customize by Day",
             command=self.show_practice_plan_dialog,
             width=24,
         )
@@ -1587,7 +2120,7 @@ class AsimutBookerGUI:
             practice_inner,
             textvariable=self.practice_plan_summary_var,
             foreground="#555555",
-            font=("Segoe UI", 11),
+            font=(self.ui_font_family, 12),
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.settings_status_var = tk.StringVar(value="")
@@ -1595,7 +2128,7 @@ class AsimutBookerGUI:
             practice_frame,
             textvariable=self.settings_status_var,
             foreground="#b00020",
-            font=("Segoe UI", 10),
+            font=(self.ui_font_family, 11),
             wraplength=1150,
         )
         self.settings_status_label.pack(fill=tk.X, pady=(6, 0))
@@ -1608,21 +2141,21 @@ class AsimutBookerGUI:
 
         # Room preferences are edited in a focused dialog because ordering and
         # site-derived metadata need more space than a single settings row.
-        rooms_frame = ttk.LabelFrame(preferences_tab, text="Rooms", padding="12")
-        rooms_frame.pack(fill=tk.X, pady=(0, 12))
+        rooms_frame = ttk.LabelFrame(preferences_tab, text="Rooms", padding="20")
+        rooms_frame.pack(fill=tk.X, pady=(0, 14))
         rooms_inner = ttk.Frame(rooms_frame)
         rooms_inner.pack(fill=tk.X)
         self.room_preferences_summary_var = tk.StringVar(value="Loading…")
         ttk.Label(
             rooms_inner,
             textvariable=self.room_preferences_summary_var,
-            font=("Segoe UI", 11),
+            font=(self.ui_font_family, 12),
             wraplength=900,
             justify=tk.LEFT,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
         self.room_preferences_btn = ttk.Button(
             rooms_inner,
-            text="Edit Room Preferences…",
+            text="Choose Rooms",
             command=self.show_room_preferences_dialog,
             width=24,
         )
@@ -1633,7 +2166,7 @@ class AsimutBookerGUI:
             rooms_frame,
             textvariable=self.room_catalog_status_var,
             foreground="#666666",
-            font=("Segoe UI", 9),
+            font=(self.ui_font_family, 10),
             wraplength=1120,
             justify=tk.LEFT,
         ).pack(fill=tk.X, pady=(5, 0))
@@ -1645,8 +2178,8 @@ class AsimutBookerGUI:
         self.load_room_preferences_settings()
 
         # Time Preferences section
-        time_prefs_frame = ttk.LabelFrame(preferences_tab, text="Time Preferences", padding="15")
-        time_prefs_frame.pack(fill=tk.X, pady=(0, 15))
+        time_prefs_frame = ttk.LabelFrame(preferences_tab, text="Preferred time", padding="20")
+        time_prefs_frame.pack(fill=tk.X, pady=(0, 14))
 
         # Row 1: Enable checkbox and preset dropdown
         time_prefs_row1 = ttk.Frame(time_prefs_frame)
@@ -1656,7 +2189,7 @@ class AsimutBookerGUI:
         self.time_prefs_enabled = tk.BooleanVar(value=False)
         self.time_prefs_enable_cb = ttk.Checkbutton(
             time_prefs_row1,
-            text="Enable time preferences",
+            text="Prefer a time of day",
             variable=self.time_prefs_enabled,
             command=self.on_time_prefs_changed
         )
@@ -1690,7 +2223,7 @@ class AsimutBookerGUI:
         self.time_prefs_strict = tk.BooleanVar(value=False)
         self.time_prefs_strict_cb = ttk.Checkbutton(
             time_prefs_row1,
-            text="Strict mode (only book preferred times)",
+            text="Only book inside this time range",
             variable=self.time_prefs_strict,
             command=self.on_time_prefs_changed,
             state=tk.DISABLED
@@ -1777,8 +2310,8 @@ class AsimutBookerGUI:
 
         # Daily strategy is edited in a focused dialog so the everyday page
         # stays readable while still exposing every planning trade-off.
-        strategy_frame = ttk.LabelFrame(preferences_tab, text="Daily Booking Strategy", padding="15")
-        strategy_frame.pack(fill=tk.X, pady=(0, 15))
+        strategy_frame = ttk.LabelFrame(preferences_tab, text="Booking strategy", padding="20")
+        strategy_frame.pack(fill=tk.X, pady=(0, 14))
 
         strategy_inner = ttk.Frame(strategy_frame)
         strategy_inner.pack(fill=tk.X)
@@ -1787,13 +2320,13 @@ class AsimutBookerGUI:
         ttk.Label(
             strategy_inner,
             textvariable=self.booking_strategy_summary_var,
-            font=("Segoe UI", 11),
+            font=(self.ui_font_family, 12),
             wraplength=820,
             justify=tk.LEFT,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
         self.booking_strategy_btn = ttk.Button(
             strategy_inner,
-            text="Edit Daily Planning…",
+            text="Customize Strategy",
             command=self.show_booking_strategy_dialog,
             width=22,
         )
@@ -1844,38 +2377,179 @@ class AsimutBookerGUI:
         # Load saved strategy settings
         self.load_strategy_settings()
 
-        # Bottom section - Output Log
-        log_frame = ttk.LabelFrame(overview_tab, text="Output Log", padding="15")
-        log_frame.pack(fill=tk.BOTH, expand=True)
+        # Technical output is intentionally separate from the calm overview.
+        activity_header = ttk.Frame(activity_tab, style="Page.TFrame")
+        activity_header.pack(fill=tk.X, pady=(2, 16))
+        activity_titles = ttk.Frame(activity_header, style="Page.TFrame")
+        activity_titles.pack(fill=tk.X)
+        ttk.Label(activity_titles, text="Activity", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            activity_titles,
+            text="Live output and detailed history for troubleshooting.",
+            style="Subtitle.TLabel",
+        ).pack(anchor=tk.W, pady=(2, 0))
 
-        # Log text area - reduced height so buttons are visible on open
+        log_controls = ttk.Frame(activity_header, style="Page.TFrame")
+        log_controls.pack(fill=tk.X, pady=(14, 0))
+        ttk.Button(
+            log_controls,
+            text="Clear",
+            command=self.clear_log,
+            style="Toolbar.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        ttk.Button(
+            log_controls,
+            text="Open Today's Log",
+            command=self.open_todays_log,
+            style="Toolbar.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        ttk.Button(
+            log_controls,
+            text="Log Files",
+            command=self.show_logs_viewer,
+            style="Toolbar.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        ttk.Button(
+            log_controls,
+            text="Booking History",
+            command=self.show_history_dialog,
+            style="Toolbar.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        self.manage_events_btn = ttk.Button(
+            log_controls,
+            text="Manage Events",
+            command=self.show_events_dialog,
+            style="Toolbar.TButton",
+        )
+        self.manage_events_btn.pack(side=tk.LEFT)
+        self._settings_controls.append(self.manage_events_btn)
+
+        log_frame = ttk.Frame(
+            activity_tab,
+            style="Card.TFrame",
+            padding=(12, 12),
+        )
+        log_frame.pack(fill=tk.BOTH, expand=True)
         self.log_text = scrolledtext.ScrolledText(
             log_frame,
             wrap=tk.WORD,
-            font=("Consolas", 13),
-            height=8
+            font=("Cascadia Mono", 11),
+            background=UI_COLORS["log"],
+            foreground="#F2F2F7",
+            insertbackground="#FFFFFF",
+            selectbackground="#335F8A",
+            selectforeground="#FFFFFF",
+            relief=tk.FLAT,
+            borderwidth=0,
+            padx=16,
+            pady=14,
+            spacing1=2,
+            spacing3=2,
         )
         self.log_text.pack(fill=tk.BOTH, expand=True)
-
-        # Configure tags for colored output
-        self.log_text.tag_config("success", foreground="green")
-        self.log_text.tag_config("error", foreground="red")
-        self.log_text.tag_config("warning", foreground="orange")
-        self.log_text.tag_config("info", foreground="blue")
-
-        # Log controls
-        log_controls = ttk.Frame(log_frame)
-        log_controls.pack(fill=tk.X, pady=(10, 0))
-
-        ttk.Button(log_controls, text="Clear Log", command=self.clear_log).pack(side=tk.LEFT, padx=5)
-        ttk.Button(log_controls, text="Open Today's Log File", command=self.open_todays_log).pack(side=tk.LEFT, padx=5)
-        ttk.Button(log_controls, text="View Booking History", command=self.show_history_dialog).pack(side=tk.LEFT, padx=5)
-        self.manage_events_btn = ttk.Button(log_controls, text="Manage Events", command=self.show_events_dialog)
-        self.manage_events_btn.pack(side=tk.LEFT, padx=5)
-        self._settings_controls.append(self.manage_events_btn)
+        self.log_text.tag_config("success", foreground="#30D158")
+        self.log_text.tag_config("error", foreground="#FF453A")
+        self.log_text.tag_config("warning", foreground="#FFD60A")
+        self.log_text.tag_config("info", foreground="#64D2FF")
 
         if self.settings_error:
             self.log(self.settings_error, "error")
+
+    def show_health_details(self):
+        """Show the full independent evidence without crowding the overview."""
+
+        existing = getattr(self, "health_details_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        dialog = tk.Toplevel(self.root)
+        self.health_details_dialog = dialog
+        dialog.title("System Status Details")
+        dialog.geometry("900x660")
+        dialog.minsize(760, 560)
+        dialog.configure(background=UI_COLORS["page"])
+        dialog.transient(self.root)
+
+        content = ttk.Frame(
+            dialog,
+            style="Page.TFrame",
+            padding=(28, 24, 28, 24),
+        )
+        content.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(content, text="System status", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            content,
+            text="Each item comes from its own evidence source. An unproven item is not presented as a pass.",
+            style="Subtitle.TLabel",
+            wraplength=810,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, anchor=tk.W, pady=(3, 18))
+
+        grid = ttk.Frame(content, style="Page.TFrame")
+        grid.pack(fill=tk.BOTH, expand=True)
+        for column in range(2):
+            grid.columnconfigure(column, weight=1, uniform="health-detail")
+        for row in range(3):
+            grid.rowconfigure(row, weight=1)
+        for index, key in enumerate(HEALTH_CARD_ORDER):
+            row, column = divmod(index, 2)
+            card = ttk.Frame(
+                grid,
+                style="Card.TFrame",
+                padding=(18, 15),
+            )
+            card.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 7, 7 if column == 0 else 0),
+                pady=(0 if row == 0 else 7, 7 if row < 2 else 0),
+            )
+            heading = ttk.Frame(card, style="Card.TFrame")
+            heading.pack(fill=tk.X)
+            item = self._health_items.get(key)
+            state = item.state if item is not None else "unknown"
+            ttk.Label(
+                heading,
+                text=HEALTH_STATE_SYMBOLS[state],
+                foreground=HEALTH_STATE_COLORS[state],
+                background=UI_COLORS["surface"],
+                font=(self.ui_font_family, 13, "bold"),
+            ).pack(side=tk.LEFT, padx=(0, 8))
+            ttk.Label(
+                heading,
+                text=HEALTH_LABELS[key],
+                style="CardStrong.TLabel",
+            ).pack(side=tk.LEFT)
+            ttk.Label(
+                card,
+                textvariable=self.health_headline_vars[key],
+                style="CardStrong.TLabel",
+                wraplength=370,
+                justify=tk.LEFT,
+            ).pack(fill=tk.X, anchor=tk.W, pady=(8, 3))
+            ttk.Label(
+                card,
+                textvariable=self.health_detail_vars[key],
+                style="CardCaption.TLabel",
+                wraplength=370,
+                justify=tk.LEFT,
+            ).pack(fill=tk.X, anchor=tk.W)
+
+        footer = ttk.Frame(content, style="Page.TFrame")
+        footer.pack(fill=tk.X, pady=(16, 0))
+        ttk.Label(
+            footer,
+            textvariable=self.health_updated_var,
+            style="Subtitle.TLabel",
+        ).pack(side=tk.LEFT)
+        ttk.Button(dialog, text="Done", command=dialog.destroy).place(relx=1.0, x=-28, y=24, anchor="ne")
 
     def log(self, message, tag=None):
         """Add message to log with optional tag for coloring."""
@@ -2025,8 +2699,10 @@ class AsimutBookerGUI:
         for key in HEALTH_CARD_ORDER:
             if key == "next_run":
                 continue
+            self._health_items.pop(key, None)
             self.health_headline_vars[key].set("Checking…")
             self.health_detail_vars[key].set("")
+        self._update_automation_summary()
         self.health_updated_var.set("Refreshing…")
 
         def worker():
@@ -2054,12 +2730,25 @@ class AsimutBookerGUI:
 
         if item.key not in self.health_headline_vars:
             return
+        self._health_items[item.key] = item
         self.health_headline_vars[item.key].set(item.headline)
         self.health_detail_vars[item.key].set(item.detail)
         label = self.health_state_labels[item.key]
         label.configure(
             text=HEALTH_STATE_SYMBOLS[item.state],
             foreground=HEALTH_STATE_COLORS[item.state],
+        )
+        self._update_automation_summary()
+
+    def _update_automation_summary(self):
+        """Refresh the large overview message from the strict health evidence."""
+
+        state, headline, detail = automation_health_summary(self._health_items)
+        self.automation_status_var.set(headline)
+        self.automation_detail_var.set(detail)
+        self.automation_state_label.configure(
+            text=HEALTH_STATE_SYMBOLS[state],
+            foreground=HEALTH_STATE_COLORS[state],
         )
 
     def _apply_local_health_result(self, generation, snapshot, error):
@@ -3527,17 +4216,18 @@ class AsimutBookerGUI:
         catalog_metadata = getattr(self, "room_catalog_metadata", None)
         dialog = tk.Toplevel(self.root)
         dialog.title("Room Preferences")
-        dialog.geometry("980x720")
-        dialog.minsize(860, 650)
+        dialog.geometry("1120x740")
+        dialog.minsize(960, 680)
+        dialog.configure(background=UI_COLORS["page"])
         dialog.transient(self.root)
         dialog.grab_set()
 
-        content = ttk.Frame(dialog, padding="18")
+        content = ttk.Frame(dialog, style="Page.TFrame", padding=(24, 20))
         content.pack(fill=tk.BOTH, expand=True)
         content.columnconfigure(0, weight=3)
         content.columnconfigure(1, weight=2)
         content.rowconfigure(2, weight=1)
-        ttk.Label(content, text="Room Preferences", font=("Segoe UI", 16, "bold")).grid(
+        ttk.Label(content, text="Room Preferences", style="Title.TLabel").grid(
             row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4)
         )
         ttk.Label(
@@ -3568,7 +4258,7 @@ class AsimutBookerGUI:
             columns=("priority", "room", "status"),
             show="headings",
             selectmode="browse",
-            height=16,
+            height=13,
         )
         tree.heading("priority", text="#")
         tree.heading("room", text="Room")
@@ -3660,7 +4350,7 @@ class AsimutBookerGUI:
             rooms_frame,
             textvariable=excluded_status_var,
             foreground="#555555",
-            font=("Segoe UI", 9),
+            font=(self.ui_font_family, 10),
         ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(7, 0))
         tree.bind("<Double-1>", toggle_selected)
         tree.bind("<Alt-Up>", lambda _event: move_selected(-1))
@@ -3676,7 +4366,11 @@ class AsimutBookerGUI:
         fragmented_var = tk.BooleanVar()
 
         def add_text_control(row, title, explanation, variable):
-            ttk.Label(requirements, text=title, font=("Segoe UI", 10, "bold")).grid(
+            ttk.Label(
+                requirements,
+                text=title,
+                font=(self.ui_font_family, 11, "bold"),
+            ).grid(
                 row=row, column=0, sticky=tk.W, pady=(0, 2)
             )
             ttk.Entry(requirements, textvariable=variable).grid(
@@ -3686,7 +4380,7 @@ class AsimutBookerGUI:
                 requirements,
                 text=explanation,
                 foreground="#555555",
-                font=("Segoe UI", 9),
+                font=(self.ui_font_family, 10),
                 wraplength=340,
                 justify=tk.LEFT,
             ).grid(row=row + 2, column=0, sticky=tk.W, pady=(2, 11))
@@ -3710,7 +4404,11 @@ class AsimutBookerGUI:
             features_var,
         )
 
-        ttk.Label(requirements, text="Minimum useful block", font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(
+            requirements,
+            text="Minimum useful block",
+            font=(self.ui_font_family, 11, "bold"),
+        ).grid(
             row=9, column=0, sticky=tk.W, pady=(1, 2)
         )
         minimum_block = ttk.Combobox(
@@ -3725,7 +4423,7 @@ class AsimutBookerGUI:
             requirements,
             text="Shorter openings will be ignored.",
             foreground="#555555",
-            font=("Segoe UI", 9),
+            font=(self.ui_font_family, 10),
         ).grid(row=11, column=0, sticky=tk.W, pady=(2, 11))
         ttk.Checkbutton(
             requirements,
@@ -3736,7 +4434,7 @@ class AsimutBookerGUI:
             requirements,
             text="When off, the booker looks for one continuous block instead of combining shorter openings.",
             foreground="#555555",
-            font=("Segoe UI", 9),
+            font=(self.ui_font_family, 10),
             wraplength=340,
             justify=tk.LEFT,
         ).grid(row=13, column=0, sticky=tk.W, pady=(2, 10))
@@ -3762,7 +4460,7 @@ class AsimutBookerGUI:
             requirements,
             text=("Detected on the site — " + " • ".join(detected)) if detected else "No site metadata is loaded yet; saved terms can still be edited.",
             foreground="#555555",
-            font=("Segoe UI", 8),
+            font=(self.ui_font_family, 10),
             wraplength=340,
             justify=tk.LEFT,
         ).grid(row=14, column=0, sticky=tk.W, pady=(5, 0))
@@ -3855,17 +4553,18 @@ class AsimutBookerGUI:
 
         dialog = tk.Toplevel(self.root)
         dialog.title("Customize Practice Plan")
-        dialog.geometry("720x570")
-        dialog.minsize(650, 520)
+        dialog.geometry("820x650")
+        dialog.minsize(720, 580)
+        dialog.configure(background=UI_COLORS["page"])
         dialog.transient(self.root)
         dialog.grab_set()
 
-        content = ttk.Frame(dialog, padding="18")
+        content = ttk.Frame(dialog, style="Page.TFrame", padding=(24, 20))
         content.pack(fill=tk.BOTH, expand=True)
         ttk.Label(
             content,
             text=f"Current Booking Window ({len(window_dates)} days)",
-            font=("Segoe UI", 16, "bold"),
+            font=(self.ui_display_font_family, 20, "bold"),
         ).grid(
             row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 4)
         )
@@ -4172,17 +4871,18 @@ class AsimutBookerGUI:
         daily = self.booking_strategy.daily_planning
         dialog = tk.Toplevel(self.root)
         dialog.title("Daily Booking Strategy")
-        dialog.geometry("760x650")
-        dialog.minsize(680, 600)
+        dialog.geometry("860x720")
+        dialog.minsize(760, 650)
+        dialog.configure(background=UI_COLORS["page"])
         dialog.transient(self.root)
         dialog.grab_set()
 
-        body = ttk.Frame(dialog, padding="18")
+        body = ttk.Frame(dialog, style="Page.TFrame", padding=(24, 20))
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(
             body,
             text="Plan the whole day before committing scarce peak allowance",
-            font=("Segoe UI", 15, "bold"),
+            font=(self.ui_display_font_family, 20, "bold"),
         ).pack(anchor=tk.W)
         ttk.Label(
             body,
@@ -4192,7 +4892,7 @@ class AsimutBookerGUI:
                 "while a peak block is being held."
             ),
             foreground="#555555",
-            font=("Segoe UI", 10),
+            font=(self.ui_font_family, 11),
             wraplength=700,
             justify=tk.LEFT,
         ).pack(fill=tk.X, anchor=tk.W, pady=(4, 14))
@@ -4223,7 +4923,11 @@ class AsimutBookerGUI:
 
         def add_row(label, widget, help_text):
             nonlocal row
-            ttk.Label(form, text=label, font=("Segoe UI", 10, "bold")).grid(
+            ttk.Label(
+                form,
+                text=label,
+                font=(self.ui_font_family, 11, "bold"),
+            ).grid(
                 row=row, column=0, sticky="w", padx=(0, 16), pady=(5, 1)
             )
             widget.grid(row=row, column=1, sticky="w", pady=(5, 1))
@@ -4231,7 +4935,7 @@ class AsimutBookerGUI:
                 form,
                 text=help_text,
                 foreground="#666666",
-                font=("Segoe UI", 9),
+                font=(self.ui_font_family, 10),
                 wraplength=430,
                 justify=tk.LEFT,
             ).grid(row=row + 1, column=1, sticky="w", pady=(0, 5))
@@ -4406,7 +5110,9 @@ class AsimutBookerGUI:
         """Show dialog with booking history."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Booking History")
-        dialog.geometry("800x600")
+        dialog.geometry("900x680")
+        dialog.minsize(760, 560)
+        dialog.configure(background=UI_COLORS["page"])
         dialog.transient(self.root)
 
         # Header

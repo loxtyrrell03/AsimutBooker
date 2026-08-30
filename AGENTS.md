@@ -699,6 +699,27 @@ python -m unittest discover -s tests
   smoke test also proves view-specific row/column geometry is reset instead of
   leaking a blank eighth column or oversized timeline rows.
 
+## 2026-08-30 Readable Control Panel Redesign Milestone
+
+- The Tk control panel now uses one restrained, high-contrast visual system
+  across the main window and dialogs: a 12-point base font, Segoe UI Variable
+  when available, larger display headings, quiet grouped surfaces, 34-pixel
+  table rows, touch-friendly controls, and one blue primary-action treatment.
+- The Overview is organized around readiness, the next likely booking, and the
+  primary background run action. Independent health evidence remains truthful:
+  a pure summary reports errors and warnings before readiness, compact indicators
+  keep all six sources visible, and a focused details dialog retains the complete
+  evidence and the physical-wake proof boundary.
+- Technical output moved to a dedicated Activity tab with readable dark-console
+  presentation and direct history/log controls. Preferences are grouped on a
+  scrollable page with simplified language; room, practice-plan, strategy, and
+  history dialogs inherit the larger typography and spacing.
+- Booking, authentication, scheduling, and mutation behavior were not changed.
+  The complete offline suite passes 469 tests, including new deterministic
+  readiness-summary coverage. A real Tk layout smoke check at the host's
+  constrained 1320x784 window kept every idle Overview section within the
+  visible tab area without reducing the configured type size.
+
 ## 2026-08-30 Exact Extension Editor Route Milestone
 
 - Live read-only inspection proved that Asimut opens an existing reservation at
