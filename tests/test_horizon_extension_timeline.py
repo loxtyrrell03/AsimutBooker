@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import book_week
@@ -13,6 +13,20 @@ class HorizonExtensionTimelineTests(unittest.TestCase):
     start_hour = 10.0
     horizon_edge = datetime(2026, 8, 31, 10, 0, 0)
     booking_timestamp = "2026-08-31T10:30:00"
+    horizon_minutes = 5 * 24 * 60
+    horizon_observed_at = datetime(2026, 8, 30, 9, 55, tzinfo=timezone.utc)
+
+    def setUp(self):
+        self.live_policy = mock.patch.multiple(
+            book_week,
+            ACTIVE_ROOM_POLICY=mock.Mock(observed_at=self.horizon_observed_at),
+            ROOM_HORIZON_MINUTES={
+                "B0.29": self.horizon_minutes,
+                "B1.09": 3 * 24 * 60,
+            },
+        )
+        self.live_policy.start()
+        self.addCleanup(self.live_policy.stop)
 
     def calculate(self, elapsed_seconds, current_end, target_end=12.0):
         return book_week.calculate_max_extension(
@@ -142,7 +156,8 @@ class HorizonExtensionTimelineTests(unittest.TestCase):
             "endTime": "10:30",
             "target_end": "12:00",
             "created_at": self.booking_timestamp,
-            "horizon_days": 5,
+            "horizon_minutes": self.horizon_minutes,
+            "horizon_observed_at": self.horizon_observed_at.isoformat(),
             "eventId": 4242,
             "event_url": "https://rwcmd.asimut.net/arrangement?eventId=4242",
         }
@@ -181,7 +196,8 @@ class HorizonExtensionTimelineTests(unittest.TestCase):
             "endTime": "10:30",
             "target_end": "12:00",
             "created_at": self.booking_timestamp,
-            "horizon_days": 5,
+            "horizon_minutes": self.horizon_minutes,
+            "horizon_observed_at": self.horizon_observed_at.isoformat(),
             "eventId": 4242,
             "event_url": "https://rwcmd.asimut.net/arrangement?eventId=4242",
         }
@@ -204,7 +220,8 @@ class HorizonExtensionTimelineTests(unittest.TestCase):
             "endTime": "10:30",
             "target_end": "12:00",
             "created_at": self.booking_timestamp,
-            "horizon_days": 5,
+            "horizon_minutes": self.horizon_minutes,
+            "horizon_observed_at": self.horizon_observed_at.isoformat(),
             "eventId": 4242,
             "event_url": "https://rwcmd.asimut.net/arrangement?eventId=4242",
         }

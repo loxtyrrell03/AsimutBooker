@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from unittest import mock
 
 import book_week
@@ -9,6 +9,18 @@ class HorizonSnipeFlowTests(unittest.TestCase):
     NOW = datetime(2026, 8, 30, 10, 0, 0)
     TARGET_DATE = date(2026, 9, 4)
     EVENT_URL = "https://rwcmd.asimut.net/arrangement?eventId=5150"
+    HORIZON_MINUTES = 5 * 24 * 60
+    HORIZON_OBSERVED_AT = datetime(2026, 8, 30, 9, 55, tzinfo=timezone.utc)
+
+    def setUp(self):
+        self.live_policy = mock.patch.multiple(
+            book_week,
+            ACTIVE_ROOM_POLICY=mock.Mock(observed_at=self.HORIZON_OBSERVED_AT),
+            ROOM_HORIZON_MINUTES={"B0.29": self.HORIZON_MINUTES},
+            MINIMUM_BLOCK_MINUTES=30,
+        )
+        self.live_policy.start()
+        self.addCleanup(self.live_policy.stop)
 
     def build_page(self, *, changed_before_save=False):
         page = mock.MagicMock()
@@ -66,7 +78,8 @@ class HorizonSnipeFlowTests(unittest.TestCase):
             "end_hour": 12.0,
             "duration": 120,
             "bookable_from": self.NOW,
-            "horizon_days": 5,
+            "horizon_minutes": self.HORIZON_MINUTES,
+            "booking_minutes": 30,
         }
 
     def tracker(self):
@@ -199,6 +212,8 @@ class HorizonSnipeFlowTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertEqual(wait_seconds, 1.0)
         self.assertEqual(candidate["bookable_from"], expected_unlock)
+        self.assertEqual(candidate["horizon_minutes"], self.HORIZON_MINUTES)
+        self.assertEqual(candidate["booking_minutes"], 30)
 
         candidate, wait_seconds = self.find_candidate_at(expected_unlock)
         self.assertIsNotNone(candidate)

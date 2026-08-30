@@ -131,9 +131,9 @@ class CurrentArrangementDomTests(unittest.TestCase):
 
     def test_current_agenda_dom_extracts_exact_event_id_and_ignores_cancelled(self):
         today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(6))
         day_markup = []
-        for offset in range(8):
-            current = today + timedelta(days=offset)
+        for offset, current in enumerate(window_dates):
             header = current.strftime("%A %d %B %Y").replace(" 0", " ")
             events = ""
             if offset == 2:
@@ -184,6 +184,7 @@ class CurrentArrangementDomTests(unittest.TestCase):
                 tracker,
                 today,
                 ignored_events=[],
+                window_dates=window_dates,
             )
 
         self.assertEqual(event_count, 1)
@@ -201,9 +202,9 @@ class CurrentArrangementDomTests(unittest.TestCase):
 
     def test_agenda_rejects_event_id_assigned_to_previous_split_header_date(self):
         today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(6))
         day_markup = []
-        for offset in range(8):
-            current = today + timedelta(days=offset)
+        for offset, current in enumerate(window_dates):
             header = current.strftime("%A %d %B %Y").replace(" 0", " ")
             if offset == 1:
                 first, month, year = header.rsplit(" ", 2)
@@ -254,6 +255,7 @@ class CurrentArrangementDomTests(unittest.TestCase):
                 book_week.BookingTracker(),
                 today,
                 ignored_events=[],
+                window_dates=window_dates,
             )
 
 

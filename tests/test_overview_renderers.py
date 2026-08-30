@@ -2,11 +2,47 @@ import contextlib
 import copy
 import io
 import unittest
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
 import book_week
+
+
+def _install_test_live_policy(today, *, window_days):
+    """Install a valid non-default live window for run_booking integration."""
+
+    observed_at = datetime.combine(today, time(12), tzinfo=timezone.utc)
+    final_date = today + timedelta(days=window_days - 1)
+    policy = book_week.LiveRoomPolicy(
+        observed_at=observed_at,
+        booking_horizon=datetime.combine(
+            final_date,
+            time(12),
+            tzinfo=timezone.utc,
+        ),
+        global_horizon_minutes=(window_days - 1) * 24 * 60,
+        room_order=("B0.29", "B1.09"),
+        room_horizon_minutes={"B0.29": 3 * 24 * 60, "B1.09": 2 * 24 * 60},
+        room_metadata={
+            "B0.29": {
+                "instrument_tags": [],
+                "room_type_tags": [],
+                "features": [],
+            },
+            "B1.09": {
+                "instrument_tags": [],
+                "room_type_tags": [],
+                "features": [],
+            },
+        },
+        site_minimum_booking_minutes=30,
+        site_maximum_booking_minutes=120,
+        site_minimum_booking_gap_minutes=60,
+        minimum_block_minutes=30,
+        allow_fragmented_sessions=True,
+    )
+    return book_week.install_live_room_policy(policy, today=today)
 
 
 class _SnapshotPage:
@@ -98,7 +134,35 @@ class OverviewRendererTests(unittest.TestCase):
         self.assertIn("a[data-location-id]", script)
         self.assertIn("rect.closed-hours, rect.event-overlay", script)
         self.assertIn("7 + item.x / 60", script)
-        self.assertIn("const rowTop = 30 * index", script)
+        self.assertIn("rowIndex: uniqueLabels.length", script)
+        self.assertIn("const rowTop = 30 * rowIndex", script)
+
+    def test_site_named_room_is_not_truncated_to_its_first_word(self):
+        snapshot = self.svg_snapshot()
+        snapshot["rooms"][0]["room"] = "The Hopkins Studio"
+        page = _SnapshotPage(snapshot)
+
+        result = book_week.get_practice_room_grid_snapshot(
+            page,
+            configured_rooms=("The Hopkins Studio",),
+        )
+
+        self.assertEqual(result["rooms"][0]["room"], "The Hopkins Studio")
+        self.assertEqual(page.arguments[0], ["The Hopkins Studio"])
+
+    def test_overlapping_room_names_choose_the_unique_longest_match(self):
+        configured = ("Studio", "Studio 1")
+
+        self.assertEqual(
+            book_week._normalize_practice_room_name(
+                "Studio 1 (Practice room)", configured
+            ),
+            "Studio 1",
+        )
+        self.assertEqual(
+            book_week._normalize_practice_room_name("Studio", configured),
+            "Studio",
+        )
 
     def test_svg_blockers_produce_free_intervals_and_screen_coordinates(self):
         page = _SnapshotPage(self.svg_snapshot())
@@ -117,16 +181,18 @@ class OverviewRendererTests(unittest.TestCase):
     def test_coordinate_lookup_scrolls_svg_label_before_refreshing_transform(self):
         page = _SnapshotPage({"x": 640.0, "y": 75.0, "renderer": "svg"})
 
-        coordinates = book_week.get_room_slot_coordinates(
-            page,
-            "B1.09\u00a0(Practice: Grand Piano)",
-            16.0,
-            17.0,
-        )
+        with mock.patch.object(book_week, "LIVE_CATALOG_ROOM_NAMES", ["B1.09"]):
+            coordinates = book_week.get_room_slot_coordinates(
+                page,
+                "B1.09\u00a0(Practice: Grand Piano)",
+                16.0,
+                17.0,
+            )
 
         self.assertEqual(coordinates["renderer"], "svg")
-        self.assertEqual(page.arguments[0], ["B1.09", 16.5])
+        self.assertEqual(page.arguments[0], ["B1.09", 16.5, ["B1.09"]])
         script = page.scripts[0]
+        self.assertIn("configuredRoomFromText(item.textContent) === roomName", script)
         self.assertLess(script.index("label.scrollIntoView"), script.index("svg.getScreenCTM"))
         self.assertIn("point.x = 60 * (centerHour - 7)", script)
         self.assertIn("point.y = 30 * rowIndex + 15", script)
@@ -137,6 +203,11 @@ class OverviewRendererTests(unittest.TestCase):
         expected_date = datetime.now().date()
 
         with (
+            mock.patch.object(
+                book_week,
+                "LIVE_CATALOG_ROOM_NAMES",
+                ["B1.09", "B1.10"],
+            ),
             mock.patch.object(book_week, "page_is_authenticated", return_value=True),
             mock.patch.object(book_week, "assert_calendar_date") as assert_date,
         ):
@@ -192,6 +263,11 @@ class OverviewRendererTests(unittest.TestCase):
         page = _SnapshotPage(snapshot)
 
         with (
+            mock.patch.object(
+                book_week,
+                "LIVE_CATALOG_ROOM_NAMES",
+                ["B1.09", "B1.10"],
+            ),
             mock.patch.object(book_week, "page_is_authenticated", return_value=True),
             mock.patch.object(book_week, "assert_calendar_date") as assert_date,
         ):
@@ -362,6 +438,7 @@ class OverviewRendererTests(unittest.TestCase):
 class CheckOnlyRendererIntegrationTests(unittest.TestCase):
     def test_check_only_traverses_svg_grids_through_renderer_abstraction(self):
         args = SimpleNamespace(headless=True, check_only=True)
+        expected_window_days = 5
         page = mock.MagicMock()
         context = mock.MagicMock()
         context.new_page.return_value = page
@@ -371,13 +448,32 @@ class CheckOnlyRendererIntegrationTests(unittest.TestCase):
         playwright.chromium.launch.return_value = browser
         playwright_context = mock.MagicMock()
         playwright_context.__enter__.return_value = playwright
+        call_order = []
+
+        def refresh_policy(_page, _preferences, *, today=None):
+            call_order.append("refresh")
+            return _install_test_live_policy(
+                today,
+                window_days=expected_window_days,
+            )
+
+        def scan_agenda(*_args, **_kwargs):
+            call_order.append("scan")
+            return 0, []
+
+        refresh_policy_mock = mock.Mock(side_effect=refresh_policy)
+        agenda_scan_mock = mock.Mock(side_effect=scan_agenda)
 
         with (
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
             mock.patch.object(book_week, "restore_page_authentication"),
-            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.multiple(
+                book_week,
+                refresh_live_room_policy=refresh_policy_mock,
+                scan_agenda=agenda_scan_mock,
+            ),
             mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
             mock.patch.object(book_week, "load_ignored_events", return_value=[]),
             mock.patch.object(book_week, "open_practice_room_overview") as open_grid,
@@ -402,11 +498,18 @@ class CheckOnlyRendererIntegrationTests(unittest.TestCase):
             result = book_week.run_booking(args, {}, book_week.PracticePlan())
 
         self.assertEqual(result, 0)
+        refresh_policy_mock.assert_called_once()
+        agenda_scan_mock.assert_called_once()
+        self.assertEqual(call_order, ["refresh", "scan"])
+        self.assertEqual(
+            len(agenda_scan_mock.call_args.kwargs["window_dates"]),
+            expected_window_days,
+        )
         open_grid.assert_called_once()
-        self.assertEqual(navigate.call_count, 7)
-        self.assertEqual(wait_grid.call_count, 8)
-        self.assertEqual(room_names.call_count, 8)
-        self.assertEqual(available.call_count, 8)
+        self.assertEqual(navigate.call_count, expected_window_days - 1)
+        self.assertEqual(wait_grid.call_count, expected_window_days)
+        self.assertEqual(room_names.call_count, expected_window_days)
+        self.assertEqual(available.call_count, expected_window_days)
 
 
 if __name__ == "__main__":

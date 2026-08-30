@@ -17,6 +17,7 @@ data/browser_state/
 
 # Logs
 logs/*.log
+logs/**/*.log
 
 # Crash-recovery journal (runtime state)
 data/mutation_receipts.json
@@ -24,6 +25,10 @@ data/mutation_receipts.json.bak
 data/mutation_receipts.json.lock
 data/auth_recovery_state.json
 data/auth_recovery_state.json.lock
+data/room_catalog.json
+data/room_catalog.json.lock
+data/room_catalog.json.bak
+data/physical_wake_test.json
 data/booker-runtime.lock
 data/settings.json.lock
 data/settings.json.bak

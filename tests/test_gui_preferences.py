@@ -1,6 +1,9 @@
 import json
+import os
 import tempfile
 import unittest
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +11,7 @@ from app_settings import SettingsError
 from gui import (
     AsimutBookerGUI,
     PRACTICE_TARGET_CHOICES,
+    ROOM_MINIMUM_BLOCK_CHOICES,
     apply_booking_day_updates,
     apply_practice_plan_update,
     append_history_entry,
@@ -15,24 +19,70 @@ from gui import (
     build_login_check_command,
     build_scheduler_setup_command,
     build_secure_login_update_command,
+    catalog_booking_dates,
+    changed_room_preference_fields,
     format_practice_hours,
     load_history_document,
     ignored_v2_keys_from_selection,
     is_exact_asimut_scan_url,
     parse_recurring_task_status,
+    parse_room_preference_terms,
     parse_practice_target_choice,
     query_recurring_task_status,
     require_authenticated_scan_page,
     replace_history_document,
+    room_catalog_ui_view,
+    move_room_preference_item,
     validate_login_command,
     validate_booking_strategy_section,
     validate_time_preferences_section,
 )
 from event_identity import event_identity_v2, legacy_event_identity
 from practice_plan import PracticePlan, PracticePlanError
+from room_preferences import RoomPreferences, RoomPreferencesError
 
 
 class GuiSchedulerHelpersTests(unittest.TestCase):
+    def _healthy_task_payload(self):
+        root = Path(__file__).resolve().parents[1]
+        execute = str(
+            Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            / "System32"
+            / "cmd.exe"
+        )
+        return {
+            "TaskName": "AsimutBooker_Recurring",
+            "TaskPath": "\\",
+            "ActionCount": 1,
+            "TriggerCount": 1,
+            "State": "Ready",
+            "Enabled": True,
+            "NextRunTime": "2026-08-30 12:13",
+            "Execute": execute,
+            "Arguments": f'/d /c ""{root / "run_booker.bat"}" --scheduled"',
+            "WorkingDirectory": str(root),
+            "TriggerClass": "MSFT_TaskDailyTrigger",
+            "TriggerEnabled": True,
+            "DaysInterval": 1,
+            "StartLocalTime": "07:13",
+            "Interval": "PT15M",
+            "Duration": "PT14H46M",
+            "StopAtDurationEnd": False,
+            "WakeToRun": True,
+            "StartWhenAvailable": True,
+            "RunOnlyIfNetworkAvailable": True,
+            "DisallowStartIfOnBatteries": False,
+            "StopIfGoingOnBatteries": False,
+            "MultipleInstances": "IgnoreNew",
+            "ExecutionTimeLimit": "PT14M",
+            "RestartCount": 1,
+            "RestartInterval": "PT1M",
+            "PrincipalUserSid": "S-1-5-21-current-user",
+            "CurrentUserSid": "S-1-5-21-current-user",
+            "LogonType": "Interactive",
+            "RunLevel": "Limited",
+        }
+
     def test_setup_command_uses_headless_agent_uac_and_file_arguments(self):
         script = Path(r"C:\repo with spaces\setup_scheduled_tasks.ps1")
         command = build_scheduler_setup_command(
@@ -70,18 +120,7 @@ class GuiSchedulerHelpersTests(unittest.TestCase):
                 build_scheduler_setup_command(Path("setup_scheduled_tasks.ps1"))
 
     def test_status_parser_requires_exact_recurring_task(self):
-        healthy_payload = {
-            "TaskName": "AsimutBooker_Recurring",
-            "State": "Ready",
-            "NextRunTime": "2026-08-30 12:13",
-            "Execute": r"C:\Windows\System32\cmd.exe",
-            "Arguments": r'/d /c ""C:\repo\run_booker.bat" --scheduled"',
-            "Interval": "PT15M",
-            "Duration": "PT14H46M",
-            "WakeToRun": True,
-            "StartWhenAvailable": True,
-            "MultipleInstances": "IgnoreNew",
-        }
+        healthy_payload = self._healthy_task_payload()
         self.assertEqual(
             parse_recurring_task_status(json.dumps(healthy_payload)),
             {
@@ -109,6 +148,92 @@ class GuiSchedulerHelpersTests(unittest.TestCase):
         self.assertIn("wrong repetition window", parsed["problem"])
         self.assertIn("wake/recovery disabled", parsed["problem"])
 
+        wrong_shape = dict(
+            healthy_payload,
+            TaskPath="\\Other\\",
+            ActionCount=2,
+            TriggerCount=0,
+        )
+        parsed = parse_recurring_task_status(json.dumps(wrong_shape))
+        self.assertFalse(parsed["healthy"])
+        self.assertIn("wrong task path", parsed["problem"])
+        self.assertIn("wrong action count", parsed["problem"])
+        self.assertIn("wrong trigger count", parsed["problem"])
+
+    def test_status_parser_detects_drift_in_every_installer_contract_group(self):
+        healthy_payload = self._healthy_task_payload()
+        drift_cases = (
+            ("disabled task", {"Enabled": False}, "task is disabled"),
+            (
+                "launcher path",
+                {"Execute": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"},
+                "wrong executable",
+            ),
+            (
+                "launcher arguments",
+                {"Arguments": healthy_payload["Arguments"] + " --check-only"},
+                "wrong launcher arguments",
+            ),
+            (
+                "working directory",
+                {"WorkingDirectory": str(Path(healthy_payload["WorkingDirectory"]).parent)},
+                "wrong working directory",
+            ),
+            (
+                "trigger kind",
+                {"TriggerClass": "MSFT_TaskLogonTrigger"},
+                "wrong trigger type",
+            ),
+            ("trigger enabled", {"TriggerEnabled": False}, "trigger is disabled"),
+            ("daily interval", {"DaysInterval": 2}, "wrong daily interval"),
+            ("daily start", {"StartLocalTime": "07:14"}, "wrong daily start"),
+            (
+                "repetition end",
+                {"StopAtDurationEnd": True},
+                "repetition stops at duration end",
+            ),
+            (
+                "network gating",
+                {"RunOnlyIfNetworkAvailable": False},
+                "network requirement disabled",
+            ),
+            (
+                "battery start",
+                {"DisallowStartIfOnBatteries": True},
+                "battery policy drifted",
+            ),
+            (
+                "battery stop",
+                {"StopIfGoingOnBatteries": True},
+                "battery policy drifted",
+            ),
+            (
+                "execution limit",
+                {"ExecutionTimeLimit": "PT15M"},
+                "wrong execution time limit",
+            ),
+            ("restart count", {"RestartCount": 0}, "wrong restart policy"),
+            (
+                "restart interval",
+                {"RestartInterval": "PT2M"},
+                "wrong restart policy",
+            ),
+            (
+                "principal user",
+                {"PrincipalUserSid": "S-1-5-21-other-user"},
+                "wrong task principal",
+            ),
+            ("logon type", {"LogonType": "Password"}, "wrong principal mode"),
+            ("run level", {"RunLevel": "Highest"}, "wrong principal mode"),
+        )
+        for label, changes, reason in drift_cases:
+            with self.subTest(label=label):
+                parsed = parse_recurring_task_status(
+                    json.dumps(dict(healthy_payload, **changes))
+                )
+                self.assertFalse(parsed["healthy"])
+                self.assertIn(reason, parsed["problem"])
+
     @patch("gui.subprocess.run")
     def test_query_treats_only_the_exact_missing_exit_as_not_installed(self, run):
         run.return_value.returncode = 3
@@ -124,6 +249,21 @@ class GuiSchedulerHelpersTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:3], ["powershell.exe", "-NoProfile", "-Command"])
         self.assertIn("AsimutBooker_Recurring", command[-1])
+        for field in (
+            "WorkingDirectory",
+            "CimClassName",
+            "StartBoundary",
+            "StopAtDurationEnd",
+            "RunOnlyIfNetworkAvailable",
+            "DisallowStartIfOnBatteries",
+            "ExecutionTimeLimit",
+            "RestartInterval",
+            "PrincipalUserSid",
+            "LogonType",
+            "RunLevel",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, command[-1])
 
 
 class GuiLoginOperationTests(unittest.TestCase):
@@ -402,6 +542,282 @@ class GuiPracticePlanHelpersTests(unittest.TestCase):
         gui._update_settings.assert_not_called()
         showerror.assert_called_once()
 
+
+class GuiRoomPreferenceHelpersTests(unittest.TestCase):
+    class Variable:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class Catalog:
+        complete = True
+        source = "cache"
+        fresh = False
+        observed_at = datetime(2026, 8, 30, 11, 15, tzinfo=timezone.utc)
+
+        def as_live_metadata(self):
+            return {
+                "B0.29": {
+                    "instrument_tags": ["Piano"],
+                    "room_type_tags": ["Practice room"],
+                    "features": ["Adjustable piano stool"],
+                },
+                "B2.10": {
+                    "instrument_tags": ["Percussion"],
+                    "room_type_tags": ["Ensemble room"],
+                    "features": ["Music stands"],
+                },
+            }
+
+    def make_gui(self, preferences=None, catalog=None):
+        gui = object.__new__(AsimutBookerGUI)
+        gui.settings_available = True
+        gui.settings_error = ""
+        gui.room_preferences = preferences or RoomPreferences(
+            ordered_rooms=("B0.29",),
+        )
+        gui.room_catalog = catalog
+        gui.room_catalog_metadata = None
+        gui.room_preferences_summary_var = self.Variable()
+        gui.room_catalog_status_var = self.Variable()
+        return gui
+
+    def test_term_parser_and_move_helper_use_strict_room_contract(self):
+        self.assertEqual(ROOM_MINIMUM_BLOCK_CHOICES, tuple(range(30, 121, 15)))
+        self.assertEqual(
+            parse_room_preference_terms(" Piano,  Percussion\nOrgan ", "instrument tags"),
+            ("Piano", "Percussion", "Organ"),
+        )
+        with self.assertRaisesRegex(RoomPreferencesError, "duplicate"):
+            parse_room_preference_terms("Piano, piano", "instrument tags")
+
+        moved, selected = move_room_preference_item(
+            ("B0.29", "B1.09", "B2.10"), 1, -1
+        )
+        self.assertEqual(moved, ("B1.09", "B0.29", "B2.10"))
+        self.assertEqual(selected, 0)
+        self.assertEqual(
+            move_room_preference_item(moved, 0, -1),
+            (moved, 0),
+        )
+
+    def test_changed_fields_are_scoped_to_actual_dialog_edits(self):
+        opening = RoomPreferences(ordered_rooms=("B0.29",))
+        candidate = replace(opening, minimum_block_minutes=45)
+
+        self.assertEqual(
+            changed_room_preference_fields(opening, candidate),
+            {"minimum_block_minutes": 45},
+        )
+
+    def test_catalog_view_accepts_room_catalog_contract_and_labels_cache_stale(self):
+        metadata, status = room_catalog_ui_view(self.Catalog())
+
+        self.assertEqual(list(metadata), ["B0.29", "B2.10"])
+        self.assertEqual(metadata["B0.29"]["instrument_tags"], ["Piano"])
+        self.assertIn("2 rooms", status)
+        self.assertIn("saved observation", status)
+        self.assertIn("refresh required before booking", status)
+
+        incomplete = self.Catalog()
+        incomplete.complete = False
+        metadata, status = room_catalog_ui_view(incomplete)
+        self.assertIsNone(metadata)
+        self.assertIn("incomplete", status)
+
+    def test_catalog_view_accepts_real_room_catalog_dataclasses(self):
+        from room_catalog import RoomCatalog, RoomCatalogRoom
+
+        observed_at = datetime(2026, 8, 30, 11, 15, tzinfo=timezone.utc)
+        room = RoomCatalogRoom(
+            location_id=29,
+            name="B0.29",
+            secondary_name="Piano room",
+            description="Practice room",
+            inventory="Piano; adjustable stool",
+            instrument_tags=("Piano",),
+            room_type_tags=("Practice room",),
+            features=("Adjustable piano stool",),
+            horizon_minutes=5 * 24 * 60,
+            booking_cutoff=observed_at + timedelta(days=5),
+        )
+        catalog = RoomCatalog(
+            version=1,
+            observed_at=observed_at,
+            booking_horizon=observed_at + timedelta(days=7),
+            global_horizon_minutes=7 * 24 * 60,
+            minimum_booking_minutes=30,
+            maximum_booking_minutes=120,
+            minimum_booking_gap_minutes=60,
+            booking_category_id=56,
+            rooms=(room,),
+            fresh=False,
+        )
+
+        metadata, status = room_catalog_ui_view(catalog)
+
+        self.assertEqual(metadata["B0.29"]["features"], ["Adjustable piano stool"])
+        self.assertIn("saved observation", status)
+
+    def test_gui_loads_display_cache_and_refresh_reloads_it(self):
+        gui = self.make_gui()
+        cached = self.Catalog()
+        with patch("room_catalog.load_cached_catalog", return_value=cached) as load:
+            self.assertIs(gui.load_room_catalog_cache(), cached)
+        load.assert_called_once_with(missing_ok=True)
+        self.assertEqual(gui.room_catalog_load_error, "")
+
+        gui.load_room_catalog_cache = MagicMock()
+        gui.load_booking_days = MagicMock()
+        gui._update_days_summary = MagicMock()
+        gui._update_practice_plan_summary = MagicMock()
+        gui.load_room_preferences_settings = MagicMock()
+        gui._start_local_health_refresh = MagicMock()
+        gui.check_scheduled_tasks = MagicMock()
+        gui.refresh_status()
+        gui.load_room_catalog_cache.assert_called_once_with()
+        gui.load_booking_days.assert_called_once_with()
+        gui._update_days_summary.assert_called_once_with()
+        gui._update_practice_plan_summary.assert_called_once_with()
+        gui.load_room_preferences_settings.assert_called_once_with()
+
+    def test_booking_dates_follow_catalog_cutoff_instead_of_fixed_day_count(self):
+        catalog = MagicMock()
+        catalog.booking_horizon = datetime(
+            2026, 9, 4, 14, 45, tzinfo=timezone.utc
+        )
+
+        self.assertEqual(
+            catalog_booking_dates(catalog, today=datetime(2026, 8, 30).date()),
+            tuple(
+                datetime(2026, 8, 30).date() + timedelta(days=offset)
+                for offset in range(6)
+            ),
+        )
+
+    def test_loading_reconciles_new_catalog_rooms_without_dropping_saved_rank(self):
+        gui = self.make_gui(catalog=self.Catalog())
+        gui.load_settings = MagicMock(
+            return_value={
+                "unrelated": {"keep": True},
+                "room_preferences": {"ordered_rooms": ["B0.29"]},
+            }
+        )
+        gui._set_settings_error = MagicMock()
+
+        gui.load_room_preferences_settings()
+
+        self.assertEqual(gui.room_preferences.ordered_rooms, ("B0.29", "B2.10"))
+        self.assertIn("2 catalog eligible rooms", gui.room_preferences_summary_var.get())
+        self.assertIn("saved observation", gui.room_catalog_status_var.get())
+        gui._set_settings_error.assert_not_called()
+
+    def test_scoped_save_preserves_unrelated_and_concurrent_room_fields(self):
+        opening = RoomPreferences(ordered_rooms=("B0.29",))
+        candidate = replace(opening, minimum_block_minutes=45)
+        gui = self.make_gui(opening)
+        settings = {
+            "unrelated": {"keep": True},
+            "room_preferences": {
+                "ordered_rooms": ["B0.29"],
+                "acceptable_instrument_tags": ["Violin"],
+                "minimum_block_minutes": 30,
+            },
+        }
+
+        def update(mutator):
+            mutator(settings)
+            return True
+
+        gui._update_settings = update
+
+        self.assertTrue(
+            gui.save_room_preferences_settings(
+                candidate,
+                opening_preferences=opening,
+            )
+        )
+
+        self.assertEqual(settings["unrelated"], {"keep": True})
+        self.assertEqual(
+            settings["room_preferences"]["acceptable_instrument_tags"],
+            ["Violin"],
+        )
+        self.assertEqual(settings["room_preferences"]["minimum_block_minutes"], 45)
+        self.assertEqual(gui.room_preferences.acceptable_instrument_tags, ("Violin",))
+
+    def test_excluding_new_catalog_room_appends_only_missing_order_dependency(self):
+        opening = RoomPreferences(ordered_rooms=("B0.29", "B2.10"))
+        candidate = replace(opening, excluded_rooms=("B2.10",))
+        gui = self.make_gui(opening, self.Catalog())
+        gui.room_catalog_metadata, _ = room_catalog_ui_view(gui.room_catalog)
+        settings = {
+            "room_preferences": {
+                # B1.09 is a concurrent rank edit outside this dialog's
+                # exclusion change and must remain exactly where it is.
+                "ordered_rooms": ["B1.09", "B0.29"],
+            }
+        }
+
+        def update(mutator):
+            mutator(settings)
+            return True
+
+        gui._update_settings = update
+
+        self.assertTrue(
+            gui.save_room_preferences_settings(
+                candidate,
+                opening_preferences=opening,
+            )
+        )
+        self.assertEqual(
+            settings["room_preferences"]["ordered_rooms"],
+            ["B1.09", "B0.29", "B2.10"],
+        )
+        self.assertEqual(settings["room_preferences"]["excluded_rooms"], ["B2.10"])
+
+    def test_failed_write_restores_last_confirmed_room_model(self):
+        opening = RoomPreferences(ordered_rooms=("B0.29",))
+        candidate = replace(opening, allow_fragmented_sessions=False)
+        gui = self.make_gui(opening)
+        gui._update_settings = MagicMock(return_value=False)
+        gui._install_confirmed_room_preferences = MagicMock()
+
+        self.assertFalse(
+            gui.save_room_preferences_settings(
+                candidate,
+                opening_preferences=opening,
+            )
+        )
+        gui._install_confirmed_room_preferences.assert_called_once_with(opening)
+
+    def test_invalid_candidate_restores_model_without_attempting_a_write(self):
+        opening = RoomPreferences(ordered_rooms=("B0.29",))
+        invalid = RoomPreferences(ordered_rooms=(" room with outer space ",))
+        gui = self.make_gui(opening)
+        gui._update_settings = MagicMock()
+        gui._install_confirmed_room_preferences = MagicMock()
+
+        with patch("gui.messagebox.showerror") as showerror:
+            self.assertFalse(
+                gui.save_room_preferences_settings(
+                    invalid,
+                    opening_preferences=opening,
+                )
+            )
+
+        gui._update_settings.assert_not_called()
+        gui._install_confirmed_room_preferences.assert_called_once_with(opening)
+        showerror.assert_called_once()
+
+
+class GuiPracticePlanPersistenceTests(unittest.TestCase):
     def test_failed_plan_write_restores_last_confirmed_controls(self):
         class Variable:
             def __init__(self, value):
@@ -605,7 +1021,8 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
             patch("playwright.sync_api.sync_playwright", return_value=manager),
             patch("book_week.authenticated_runtime_context_options", return_value={}) as options,
             patch("book_week.restore_page_authentication") as restore,
-            patch("book_week.safe_goto", side_effect=RuntimeError("session recovery failed")) as safe_goto,
+            patch("room_catalog.refresh_from_site", side_effect=RuntimeError("session recovery failed")) as refresh_catalog,
+            patch("book_week.safe_goto") as safe_goto,
             patch("book_week.page_is_authenticated", return_value=False),
             patch("book_week.persist_storage_state") as persist,
         ):
@@ -613,7 +1030,8 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
 
         options.assert_called_once_with()
         restore.assert_called_once_with(page)
-        safe_goto.assert_called_once_with(page, "https://rwcmd.asimut.net/agenda")
+        refresh_catalog.assert_called_once_with(page)
+        safe_goto.assert_not_called()
         persist.assert_not_called()
         gui._update_settings.assert_not_called()
         self.assertEqual(len(scheduled), 1)

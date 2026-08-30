@@ -12,6 +12,21 @@ import book_week
 from event_identity import event_identity_v2
 
 
+class BookingNotificationFormattingTests(unittest.TestCase):
+    def test_multiword_site_room_name_is_preserved(self):
+        self.assertEqual(
+            book_week.format_booking_notification_detail(
+                "2026-09-02 The Hopkins Studio 16:00 17:30 90"
+            ),
+            "Wed 2 Sep: The Hopkins Studio 16:00-17:30 "
+            "(1 hour and 30 minutes)",
+        )
+
+    def test_malformed_detail_is_left_unchanged(self):
+        detail = "unstructured booking detail"
+        self.assertEqual(book_week.format_booking_notification_detail(detail), detail)
+
+
 class _YamlStub:
     class YAMLError(Exception):
         pass
@@ -47,10 +62,13 @@ class StrictConfigTests(unittest.TestCase):
             with mock.patch.object(book_week, "APP_DIR", Path(temp_dir)):
                 loaded = book_week.load_config()
 
-        loaded["priority_rooms"].append("Z9.99")
-        loaded["room_horizons"]["A3.39"] = 3
-        self.assertNotIn("Z9.99", book_week._DEFAULT_CONFIG["priority_rooms"])
-        self.assertEqual(book_week._DEFAULT_CONFIG["room_horizons"]["A3.39"], 7)
+        self.assertIsNot(loaded, book_week._DEFAULT_CONFIG)
+        loaded["rolling_quota"] = 1
+        loaded["test_only"] = True
+        self.assertEqual(book_week._DEFAULT_CONFIG["rolling_quota"], 28)
+        self.assertNotIn("test_only", book_week._DEFAULT_CONFIG)
+        self.assertNotIn("priority_rooms", loaded)
+        self.assertNotIn("room_horizons", loaded)
 
     def test_existing_config_requires_yaml_support(self):
         with self.assertRaisesRegex(
@@ -63,7 +81,7 @@ class StrictConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(book_week.ConfigError, "Could not read config.yaml"):
             self._load_existing_config(parse_error)
 
-    def test_supported_schema_accepts_a_wing_room_and_exact_rule_values(self):
+    def test_supported_schema_accepts_exact_advanced_rule_values(self):
         loaded = self._load_existing_config(
             {
                 "rules": {
@@ -74,14 +92,7 @@ class StrictConfigTests(unittest.TestCase):
                         "end": "17:00",
                         "max_hours": 3.5,
                     },
-                },
-                "rooms": {
-                    "priority": [
-                        {"room": "A3.39", "horizon": 7},
-                        {"room": "B1.09", "horizon": 3},
-                        {"room": "B0.29", "horizon": 5},
-                    ]
-                },
+                }
             }
         )
 
@@ -89,10 +100,24 @@ class StrictConfigTests(unittest.TestCase):
         self.assertEqual(loaded["same_room_gap_minutes"], 45)
         self.assertEqual((loaded["peak_start"], loaded["peak_end"]), (8, 17))
         self.assertEqual(loaded["max_peak_hours"], 3.5)
-        self.assertEqual(loaded["priority_rooms"], ["A3.39", "B1.09", "B0.29"])
-        self.assertEqual(
-            loaded["room_horizons"], {"A3.39": 7, "B1.09": 3, "B0.29": 5}
-        )
+        self.assertEqual(set(loaded), set(book_week._DEFAULT_CONFIG))
+
+    def test_yaml_room_order_and_horizons_are_rejected_as_site_owned(self):
+        legacy_room_settings = {
+            "room section": {
+                "rooms": {
+                    "priority": [{"room": "B0.29", "horizon": 5}],
+                }
+            },
+            "top-level horizons": {"room_horizons": {"B0.29": 5}},
+            "horizons under rules": {
+                "rules": {"room_horizons": {"B0.29": 5}}
+            },
+        }
+        for label, payload in legacy_room_settings.items():
+            with self.subTest(label=label):
+                with self.assertRaises(book_week.ConfigError):
+                    self._load_existing_config(payload)
 
     def test_invalid_existing_config_cases_fail_closed(self):
         invalid_cases = {
@@ -108,21 +133,6 @@ class StrictConfigTests(unittest.TestCase):
                 "rules": {
                     "peak_hours": {"start": "17:00", "end": "08:00"}
                 }
-            },
-            "empty priority": {"rooms": {"priority": []}},
-            "invalid room id": {
-                "rooms": {"priority": [{"room": "a3.39", "horizon": 7}]}
-            },
-            "duplicate room": {
-                "rooms": {
-                    "priority": [
-                        {"room": "A3.39", "horizon": 7},
-                        {"room": "A3.39", "horizon": 7},
-                    ]
-                }
-            },
-            "invalid horizon": {
-                "rooms": {"priority": [{"room": "A3.39", "horizon": 4}]}
             },
         }
 
@@ -156,10 +166,11 @@ class _CountLocator:
 class _AgendaPage:
     """Small, network-free page double for the Python side of agenda scanning."""
 
-    def __init__(self, today, raw_events):
+    def __init__(self, today, raw_events, window_dates):
         self.url = book_week.ASIMUT_AGENDA_URL
         self.today = today
         self.raw_events = raw_events
+        self.window_dates = tuple(window_dates)
         self.configured_rooms = None
         self.extraction_script = None
 
@@ -180,23 +191,27 @@ class _AgendaPage:
 
     @staticmethod
     def _configured_room(text, configured_rooms):
+        matches = []
         for room in configured_rooms:
             pattern = rf"(?<![A-Za-z0-9.]){re.escape(room)}(?![A-Za-z0-9.])"
             if re.search(pattern, text or "", flags=re.IGNORECASE):
-                return room
-        return None
+                matches.append(room)
+        if not matches:
+            return None
+        longest = max(len(room) for room in matches)
+        longest_matches = [room for room in matches if len(room) == longest]
+        return longest_matches[0] if len(longest_matches) == 1 else None
 
     def evaluate(self, expression, *args):
         if expression == "() => document.body.innerText":
-            return (self.today + timedelta(days=7)).strftime("%d %B %Y").lstrip("0")
+            return self.window_dates[-1].strftime("%d %B %Y").lstrip("0")
         if expression == "() => document.body.scrollHeight":
             return 1000
         if expression.startswith("window.scroll"):
             return None
         if "agendaDayStructure" in expression:
             days = []
-            for offset in range(8):
-                current = self.today + timedelta(days=offset)
+            for current in self.window_dates:
                 event_ids = [
                     event["eventId"]
                     for event in self.raw_events
@@ -211,12 +226,15 @@ class _AgendaPage:
                 })
             return {"agendaDayStructure": days}
         if "function configuredRoomFromText" in expression:
-            configured_rooms = list(args[0])
+            scan_policy = args[0]
+            configured_rooms = list(scan_policy["configuredRooms"])
             self.configured_rooms = configured_rooms
             self.extraction_script = expression
             events = []
             for raw_event in self.raw_events:
                 event = dict(raw_event)
+                if event.get("date") not in scan_policy["allowedDates"]:
+                    continue
                 location = event.pop("location", "")
                 event["room"] = self._configured_room(location, configured_rooms)
                 events.append(event)
@@ -244,8 +262,13 @@ class _AgendaTracker:
 
 
 class AgendaIdentityTests(unittest.TestCase):
+    @staticmethod
+    def _window_dates(today, count=6):
+        return tuple(today + timedelta(days=offset) for offset in range(count))
+
     def test_configured_room_extraction_and_dedup_use_complete_event_identity(self):
         today = date(2026, 8, 30)
+        window_dates = self._window_dates(today)
         common = {
             "date": today.isoformat(),
             "daysDiff": 0,
@@ -275,33 +298,84 @@ class AgendaIdentityTests(unittest.TestCase):
             },
             {
                 **common,
-                "title": "Reservation",
-                "isReservation": True,
+                "title": "Other",
+                "isReservation": False,
                 "location": "Unconfigured room A3.390",
             },
         ]
-        page = _AgendaPage(today, raw_events)
+        page = _AgendaPage(today, raw_events, window_dates)
         tracker = _AgendaTracker()
 
-        with redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(
+                book_week,
+                "LIVE_CATALOG_ROOM_NAMES",
+                ["A3.39", "B0.29"],
+            ),
+            redirect_stdout(io.StringIO()),
+        ):
             event_count, reservations = book_week.scan_agenda(
-                page, tracker, today, ignored_events=[]
+                page,
+                tracker,
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
             )
 
         self.assertEqual(event_count, 4)
         self.assertEqual(len(tracker.existing_events), 4)
-        self.assertEqual(len(reservations), 3)
+        self.assertEqual(len(reservations), 2)
         self.assertEqual(
             [reservation["room"] for reservation in reservations],
-            ["A3.39", "B0.29", None],
+            ["A3.39", "B0.29"],
         )
         self.assertIn("A3.39", page.configured_rooms)
         self.assertIn("configuredRoomFromText(locText)", page.extraction_script)
-        self.assertIn("identityRoomFromText(locText)", page.extraction_script)
-        self.assertIn("configuredRoomFromText(locText)", page.extraction_script)
+        self.assertNotIn("identityRoomFromText", page.extraction_script)
+
+    def test_reservation_without_one_exact_live_room_fails_closed(self):
+        today = date(2026, 8, 30)
+        window_dates = self._window_dates(today)
+        page = _AgendaPage(
+            today,
+            [
+                {
+                    "date": today.isoformat(),
+                    "daysDiff": 0,
+                    "startTime": "09:00",
+                    "endTime": "10:00",
+                    "title": "Reservation",
+                    "isReservation": True,
+                    "location": "A retired room not in the live catalog",
+                }
+            ],
+            window_dates,
+        )
+
+        with (
+            mock.patch.object(book_week, "LIVE_CATALOG_ROOM_NAMES", ["Studio"]),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "one exact live catalog name"),
+        ):
+            book_week.scan_agenda(
+                page,
+                _AgendaTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+    def test_overlapping_live_room_names_choose_longest_exact_candidate(self):
+        self.assertEqual(
+            _AgendaPage._configured_room(
+                "Studio 1 (Practice)", ["Studio", "Studio 1"]
+            ),
+            "Studio 1",
+        )
 
     def test_ambiguous_legacy_ignore_key_conservatively_ignores_neither_event(self):
         today = date(2026, 8, 31)  # Monday: peak accounting applies.
+        window_dates = self._window_dates(today)
         ignored_key = f"{today.isoformat()}_09:00_10:00"
         raw_events = [
             {
@@ -323,12 +397,16 @@ class AgendaIdentityTests(unittest.TestCase):
                 "location": "Class",
             },
         ]
-        page = _AgendaPage(today, raw_events)
+        page = _AgendaPage(today, raw_events, window_dates)
         tracker = book_week.BookingTracker()
 
         with redirect_stdout(io.StringIO()):
             event_count, reservations = book_week.scan_agenda(
-                page, tracker, today, ignored_events=[ignored_key]
+                page,
+                tracker,
+                today,
+                ignored_events=[ignored_key],
+                window_dates=window_dates,
             )
 
         # One old key cannot choose between the class and reservation, so both
@@ -349,6 +427,7 @@ class AgendaIdentityTests(unittest.TestCase):
 
     def test_v2_ignored_reservation_still_counts_quota_peak_and_room_gap(self):
         today = date(2026, 8, 31)
+        window_dates = self._window_dates(today)
         scanned_event = {
             "date": today.isoformat(),
             "daysDiff": 0,
@@ -363,7 +442,7 @@ class AgendaIdentityTests(unittest.TestCase):
             "location": "Music Practice Room B0.29 - AHC",
         }
         raw_event.pop("room")
-        page = _AgendaPage(today, [raw_event])
+        page = _AgendaPage(today, [raw_event], window_dates)
         tracker = book_week.BookingTracker()
 
         with redirect_stdout(io.StringIO()):
@@ -372,6 +451,7 @@ class AgendaIdentityTests(unittest.TestCase):
                 tracker,
                 today,
                 ignored_events=[event_identity_v2(scanned_event)],
+                window_dates=window_dates,
             )
 
         self.assertEqual(event_count, 0)
@@ -389,6 +469,7 @@ class AgendaIdentityTests(unittest.TestCase):
 
     def test_unique_legacy_ignore_key_remains_compatible(self):
         today = date(2026, 8, 31)
+        window_dates = self._window_dates(today)
         raw_event = {
             "date": today.isoformat(),
             "daysDiff": 0,
@@ -398,7 +479,7 @@ class AgendaIdentityTests(unittest.TestCase):
             "isReservation": False,
             "location": "Class",
         }
-        page = _AgendaPage(today, [raw_event])
+        page = _AgendaPage(today, [raw_event], window_dates)
         tracker = book_week.BookingTracker()
 
         with redirect_stdout(io.StringIO()):
@@ -407,6 +488,7 @@ class AgendaIdentityTests(unittest.TestCase):
                 tracker,
                 today,
                 ignored_events=[f"{today.isoformat()}_09:00_10:00"],
+                window_dates=window_dates,
             )
 
         self.assertEqual(event_count, 0)

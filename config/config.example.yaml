@@ -1,7 +1,9 @@
 # AsimutBooker configuration
 # Copy this file to config.yaml only when you want to override the built-in
-# RWCMD rules or room order. Per-day hours, disabled dates, time preferences,
-# and booking strategy are configured in the desktop app instead.
+# RWCMD rule overrides. Room order, exclusions, requirements, minimum block,
+# fragmentation, per-day hours, disabled dates, time preferences, and booking
+# strategy are configured in the desktop app instead. Room booking horizons
+# are always refreshed from Asimut and cannot be configured here.
 
 rules:
   rolling_quota: 28
@@ -10,31 +12,3 @@ rules:
     start: "09:00"
     end: "16:00"
     max_hours: 2
-
-rooms:
-  # Exact booking priority, first choice first. Every entry must specify one of
-  # the supported RWCMD horizons: 3, 5, or 7 days.
-  priority:
-    - { room: "B0.29", horizon: 5 }
-    - { room: "B1.09", horizon: 3 }
-    - { room: "B0.11", horizon: 7 }
-    - { room: "B1.16", horizon: 3 }
-    - { room: "B0.15", horizon: 7 }
-    - { room: "B0.13", horizon: 7 }
-    - { room: "B0.14", horizon: 7 }
-    - { room: "B0.27", horizon: 5 }
-    - { room: "B1.14", horizon: 5 }
-    - { room: "B1.17", horizon: 5 }
-    - { room: "A3.39", horizon: 7 }
-    - { room: "B0.16", horizon: 7 }
-    - { room: "B1.20", horizon: 5 }
-    - { room: "B1.18", horizon: 5 }
-    - { room: "B1.21", horizon: 5 }
-    - { room: "B1.19", horizon: 5 }
-    - { room: "B1.06", horizon: 5 }
-    - { room: "B1.07", horizon: 5 }
-    - { room: "B1.08", horizon: 5 }
-    - { room: "B1.10", horizon: 5 }
-    - { room: "B1.11", horizon: 5 }
-    - { room: "B1.15", horizon: 5 }
-    - { room: "B0.23", horizon: 5 }

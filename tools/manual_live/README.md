@@ -13,9 +13,6 @@ it does **not** make a command read-only.
 These modes do not intentionally create or edit an Asimut reservation:
 
 ```powershell
-# Offline calculations plus a read of local extendable-booking state.
-python tools/manual_live/extension_live.py --dry-run
-
 # Read local extendable-booking state only.
 python tools/manual_live/extension_live.py --list
 
@@ -35,9 +32,6 @@ These do not intentionally save an Asimut reservation, but they modify
 `data/settings.json`:
 
 ```powershell
-# Adds a synthetic extendable-booking entry to local settings.
-python tools/manual_live/extension_live.py --add-test --dry-run
-
 # Removes every locally tracked extendable booking.
 python tools/manual_live/extension_live.py --clear
 ```
@@ -56,14 +50,14 @@ python tools/manual_live/book_feb6_live.py
 # Finds a reservation and attempts to extend its end time by 15 minutes.
 python tools/manual_live/edit_reservation_live.py
 
-# Runs the extension UI workflow for locally tracked pending extensions.
-python tools/manual_live/extension_live.py
-python tools/manual_live/extension_live.py --headless
+# Canonical scoped extension verification; this refreshes live room policy,
+# scans the complete agenda, and retains receipt/reload safeguards.
+python book_week.py --headless --extensions-only --only-date YYYY-MM-DD --only-room ROOM --max-actions 1 --max-action-minutes 30
 ```
 
 For `edit_reservation_live.py`, `--date`, `--time`, and `--room` narrow the
-target but do not prevent editing. For `extension_live.py`, omitting
-`--dry-run` permits the real edit workflow; `--headless` is equally dangerous.
+target but do not prevent editing. The old direct extension helper is retired;
+only the canonical scoped command above may attempt a tracked extension.
 
 Before any dangerous command, verify the intended date, room, start/end time,
 current quota, and saved login account. Prefer adding deterministic coverage in

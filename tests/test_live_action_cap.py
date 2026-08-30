@@ -1,11 +1,59 @@
 import contextlib
 import io
 import unittest
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
 import book_week
+
+
+def _install_test_live_policy(today, *, window_days=8):
+    """Install one valid site-shaped policy for a mocked authenticated refresh."""
+
+    observed_at = datetime.combine(today, time(12), tzinfo=timezone.utc)
+    final_date = today + timedelta(days=window_days - 1)
+    booking_horizon = datetime.combine(
+        final_date,
+        time(12),
+        tzinfo=timezone.utc,
+    )
+    policy = book_week.LiveRoomPolicy(
+        observed_at=observed_at,
+        booking_horizon=booking_horizon,
+        global_horizon_minutes=max(24 * 60, (window_days - 1) * 24 * 60),
+        room_order=("B0.29", "B1.09"),
+        room_horizon_minutes={"B0.29": 5 * 24 * 60, "B1.09": 3 * 24 * 60},
+        room_metadata={
+            "B0.29": {
+                "instrument_tags": [],
+                "room_type_tags": [],
+                "features": [],
+            },
+            "B1.09": {
+                "instrument_tags": [],
+                "room_type_tags": [],
+                "features": [],
+            },
+        },
+        site_minimum_booking_minutes=30,
+        site_maximum_booking_minutes=120,
+        site_minimum_booking_gap_minutes=60,
+        minimum_block_minutes=30,
+        allow_fragmented_sessions=True,
+    )
+    return book_week.install_live_room_policy(policy, today=today)
+
+
+def _refresh_test_live_policy(call_order=None, *, window_days=8):
+    """Build a refresh mock that installs policy before run_booking continues."""
+
+    def refresh(_page, _preferences, *, today=None):
+        if call_order is not None:
+            call_order.append("refresh")
+        return _install_test_live_policy(today, window_days=window_days)
+
+    return refresh
 
 
 class LiveActionCliBoundaryTests(unittest.TestCase):
@@ -31,6 +79,19 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
                     ]
                 )
                 self.assertEqual(args.max_action_minutes, minutes)
+
+        named = self.parse_validated(
+            [
+                "--only-room",
+                "The Hopkins Studio",
+                "--max-action-minutes",
+                "30",
+            ]
+        )
+        self.assertEqual(named.only_room, "The Hopkins Studio")
+        self.assert_rejected(
+            ["--only-room", " room ", "--max-action-minutes", "30"]
+        )
 
         for minutes in (0, 29, 31, 44, 121, 150):
             with self.subTest(invalid_minutes=minutes):
@@ -236,12 +297,23 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             "end_hour": 23.0,
             "strict_mode": False,
         }
+        call_order = []
+
+        def scan_agenda(*_args, **_kwargs):
+            call_order.append("scan")
+            return 0, []
+
+        refresh_policy = mock.Mock(side_effect=_refresh_test_live_policy(call_order))
         with (
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
             mock.patch.object(book_week, "restore_page_authentication"),
-            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.multiple(
+                book_week,
+                refresh_live_room_policy=refresh_policy,
+                scan_agenda=mock.Mock(side_effect=scan_agenda),
+            ),
             mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
             mock.patch.object(book_week, "safe_goto"),
             mock.patch.object(book_week, "open_practice_room_overview"),
@@ -274,6 +346,8 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             result = book_week.run_booking(args, {}, book_week.PracticePlan())
 
         self.assertEqual(result, 0)
+        refresh_policy.assert_called_once()
+        self.assertEqual(call_order[:2], ["refresh", "scan"])
         self.assertEqual(extend.call_count, 1)
         discover_snipes.assert_not_called()
         self.assertEqual(save_history.call_args.args[0], 1)
@@ -306,6 +380,10 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             order.append("extensions")
             return 1, False
 
+        def scan_agenda(*_args, **_kwargs):
+            order.append("scan")
+            return 0, []
+
         def discover_snipes(*_args, **_kwargs):
             order.append("snipes")
             return [], 0
@@ -319,12 +397,17 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             "end_hour": 23.0,
             "strict_mode": False,
         }
+        refresh_policy = mock.Mock(side_effect=_refresh_test_live_policy(order))
         with (
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
             mock.patch.object(book_week, "restore_page_authentication"),
-            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.multiple(
+                book_week,
+                refresh_live_room_policy=refresh_policy,
+                scan_agenda=mock.Mock(side_effect=scan_agenda),
+            ),
             mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
             mock.patch.object(
                 book_week,
@@ -361,7 +444,11 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             result = book_week.run_booking(args, {}, book_week.PracticePlan())
 
         self.assertEqual(result, 0)
-        self.assertEqual(order, ["extensions", "overview", "snipes"])
+        refresh_policy.assert_called_once()
+        self.assertEqual(
+            order,
+            ["refresh", "scan", "extensions", "overview", "snipes"],
+        )
 
     def test_horizon_only_never_extends_refreshes_or_books_normally(self):
         args = SimpleNamespace(
@@ -398,14 +485,25 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             "days_ahead": 5,
             "target_date": target_date,
             "bookable_from": datetime.now(),
+            "booking_minutes": 30,
         }
+        call_order = []
 
+        def scan_agenda(*_args, **_kwargs):
+            call_order.append("scan")
+            return 0, []
+
+        refresh_policy = mock.Mock(side_effect=_refresh_test_live_policy(call_order))
         with (
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
             mock.patch.object(book_week, "restore_page_authentication"),
-            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.multiple(
+                book_week,
+                refresh_live_room_policy=refresh_policy,
+                scan_agenda=mock.Mock(side_effect=scan_agenda),
+            ),
             mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
             mock.patch.object(book_week, "open_practice_room_overview"),
             mock.patch.object(book_week, "refresh_practice_room_overview") as refresh,
@@ -446,6 +544,8 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             result = book_week.run_booking(args, {}, book_week.PracticePlan())
 
         self.assertEqual(result, 0)
+        refresh_policy.assert_called_once()
+        self.assertEqual(call_order[:2], ["refresh", "scan"])
         extensions.assert_not_called()
         discover.assert_called_once()
         horizon_snipe.assert_called_once()

@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -103,7 +103,7 @@ class _FakePage:
             return _FakeLocator(count=1, visible=True, text=self.rejection_text)
         return _FakeLocator()
 
-    def evaluate(self, _script):
+    def evaluate(self, _script, _argument=None):
         if not self.snapshots:
             return ""
         if len(self.snapshots) == 1:
@@ -116,8 +116,9 @@ class _SnapshotScriptPage:
         self.result = result
         self.script = None
 
-    def evaluate(self, script):
+    def evaluate(self, script, argument=None):
         self.script = script
+        self.argument = argument
         return self.result
 
 
@@ -127,6 +128,8 @@ class BookingSaveStateTests(unittest.TestCase):
     START = "09:30"
     END = "11:00"
     EVENT_URL = "https://rwcmd.asimut.net/arrangement?eventId=4242"
+    HORIZON_MINUTES = 5 * 24 * 60
+    HORIZON_OBSERVED_AT = datetime(2026, 8, 30, 9, 55, tzinfo=timezone.utc)
     EXACT_SNAPSHOT = {
         "room": ROOM,
         "date": BOOKING_DATE.isoformat(),
@@ -169,6 +172,13 @@ class BookingSaveStateTests(unittest.TestCase):
                 event_url=event_url,
                 path=self.receipts_path,
             ),
+        )
+
+    def _fresh_room_policy(self):
+        return mock.patch.multiple(
+            book_week,
+            ACTIVE_ROOM_POLICY=mock.Mock(observed_at=self.HORIZON_OBSERVED_AT),
+            ROOM_HORIZON_MINUTES={self.ROOM: self.HORIZON_MINUTES},
         )
 
     def _wait_for_outcome(self, page, receipt, *, timeout_seconds=4, clock_step=0.25):
@@ -709,7 +719,10 @@ class BookingSaveStateTests(unittest.TestCase):
     def test_new_extendable_state_carries_verified_event_identity(self):
         settings_path = Path(self.temporary_directory.name) / "settings.json"
 
-        with mock.patch.object(book_week, "settings_file", settings_path):
+        with (
+            mock.patch.object(book_week, "settings_file", settings_path),
+            self._fresh_room_policy(),
+        ):
             book_week.save_extendable_booking(
                 self.ROOM,
                 self.BOOKING_DATE,
@@ -722,11 +735,19 @@ class BookingSaveStateTests(unittest.TestCase):
 
         self.assertEqual(saved["eventId"], 4242)
         self.assertEqual(saved["event_url"], self.EVENT_URL)
+        self.assertEqual(saved["horizon_minutes"], self.HORIZON_MINUTES)
+        self.assertEqual(
+            saved["horizon_observed_at"],
+            self.HORIZON_OBSERVED_AT.isoformat(),
+        )
 
     def test_save_extendable_booking_rejects_duplicate_local_tuple(self):
         settings_path = Path(self.temporary_directory.name) / "settings.json"
 
-        with mock.patch.object(book_week, "settings_file", settings_path):
+        with (
+            mock.patch.object(book_week, "settings_file", settings_path),
+            self._fresh_room_policy(),
+        ):
             book_week.save_extendable_booking(
                 self.ROOM,
                 self.BOOKING_DATE,
@@ -765,7 +786,10 @@ class BookingSaveStateTests(unittest.TestCase):
         settings_path = Path(self.temporary_directory.name) / "settings.json"
         changed_url = "https://rwcmd.asimut.net/arrangement?eventId=4243"
 
-        with mock.patch.object(book_week, "settings_file", settings_path):
+        with (
+            mock.patch.object(book_week, "settings_file", settings_path),
+            self._fresh_room_policy(),
+        ):
             book_week.save_extendable_booking(
                 self.ROOM,
                 self.BOOKING_DATE,
@@ -939,6 +963,7 @@ class BookingSaveStateTests(unittest.TestCase):
         self.assertEqual(book_week.page_booking_snapshot(page), self.EXACT_SNAPSHOT)
         self.assertIsInstance(page.script, str)
         self.assertNotIn("document.body", page.script)
+        self.assertIn("B0.29", page.argument)
 
     def test_snapshot_extractor_supports_current_arrangement_event_card(self):
         page = _SnapshotScriptPage(self.EXACT_SNAPSHOT)

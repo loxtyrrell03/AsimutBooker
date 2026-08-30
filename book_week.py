@@ -1,11 +1,11 @@
-"""Book practice rooms for the entire week (up to 7 days ahead).
+"""Book practice rooms throughout Asimut's current live booking window.
 
 This script applies all RWCMD booking rules:
 - Rolling quota of 28 reservation hours
 - Maximum 2hr peak allowance (Mon-Fri 9am-4pm)
 - Minimum 30 min, maximum 2hr per booking
 - 60-minute gap between same room bookings
-- Room-specific booking horizons (3, 5, or 7 days in advance)
+- Room-specific booking horizons freshly discovered from Asimut each run
 
 Usage:
     python book_week.py              # Run with visible browser
@@ -24,7 +24,7 @@ import urllib.error
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from playwright.sync_api import sync_playwright
 
 from asimut_auth import (
@@ -64,6 +64,20 @@ from mutation_receipts import (
     record_pending_create,
     record_pending_extension,
 )
+from live_room_policy import (
+    LiveRoomPolicy,
+    LiveRoomPolicyError,
+    build_live_room_policy,
+    format_horizon_minutes,
+)
+from room_catalog import RoomCatalogError, refresh_from_site as refresh_room_catalog
+from room_preferences import (
+    DEFAULT_ORDERED_ROOMS,
+    RoomPreferences,
+    RoomPreferencesError,
+    load_room_preferences,
+    validate_room_name,
+)
 from runtime_guard import (
     SingleInstanceLock,
     booking_identity_matches,
@@ -92,29 +106,16 @@ settings_file = APP_DIR / "data" / "settings.json"
 NTFY_TOPIC = "asimut-loxty"
 NTFY_ENABLED = True  # Set to False to disable notifications
 
-# Default values used only when no user config.yaml exists. Existing invalid
-# configuration fails closed rather than silently changing booking policy.
+# Advanced College-rule overrides used only when no user config.yaml exists.
+# Room order, exclusions, requirements, block length, and fragmentation are
+# ordinary GUI settings.  Room horizons are never accepted from configuration;
+# every authenticated run observes them afresh from Asimut.
 _DEFAULT_CONFIG = {
     'rolling_quota': 28,
     'peak_start': 9,
     'peak_end': 16,
     'max_peak_hours': 2,
     'same_room_gap_minutes': 60,
-    'priority_rooms': [
-        "B0.29", "B1.09", "B0.11", "B1.16", "B0.15", "B0.13", "B0.14", "B0.27",
-        "B1.14", "B1.17", "A3.39", "B0.16", "B1.20", "B1.18", "B1.21", "B1.19",
-        "B1.06", "B1.07", "B1.08", "B1.10", "B1.11", "B1.15",
-        "B0.23"
-    ],
-    'room_horizons': {
-        "B1.09": 3, "B1.16": 3,
-        "B0.23": 5, "B0.24": 5, "B0.27": 5, "B0.29": 5,
-        "B1.06": 5, "B1.07": 5, "B1.08": 5, "B1.10": 5, "B1.11": 5,
-        "B1.14": 5, "B1.15": 5, "B1.17": 5, "B1.18": 5, "B1.19": 5,
-        "B1.20": 5, "B1.21": 5,
-        "A3.39": 7, "B0.16": 7,
-    },
-    'default_horizon': 7,
 }
 
 
@@ -151,7 +152,7 @@ def load_config():
 
     if not isinstance(cfg, dict):
         raise ConfigError("config.yaml must contain a YAML mapping")
-    unknown_top = set(cfg) - {"rules", "rooms"}
+    unknown_top = set(cfg) - {"rules"}
     if unknown_top:
         raise ConfigError(f"Unsupported config section(s): {', '.join(sorted(unknown_top))}")
 
@@ -196,34 +197,6 @@ def load_config():
         result["max_peak_hours"] = _config_number(
             peak["max_hours"], "rules.peak_hours.max_hours", minimum=0, maximum=24
         )
-
-    rooms_section = cfg.get("rooms", {})
-    if not isinstance(rooms_section, dict):
-        raise ConfigError("rooms must be a mapping")
-    unknown_rooms = set(rooms_section) - {"priority"}
-    if unknown_rooms:
-        raise ConfigError(f"Unsupported rooms setting(s): {', '.join(sorted(unknown_rooms))}")
-    if "priority" in rooms_section:
-        rooms = rooms_section["priority"]
-        if not isinstance(rooms, list) or not rooms:
-            raise ConfigError("rooms.priority must be a non-empty list")
-        priority = []
-        horizons = {}
-        for index, entry in enumerate(rooms):
-            if not isinstance(entry, dict) or set(entry) - {"room", "horizon"}:
-                raise ConfigError(f"rooms.priority[{index}] must contain only room and horizon")
-            room = entry.get("room")
-            horizon = entry.get("horizon", result["default_horizon"])
-            if not isinstance(room, str) or re.fullmatch(r"[A-Z][0-9]+\.[0-9]{2}", room) is None:
-                raise ConfigError(f"Invalid room id at rooms.priority[{index}]")
-            if room in priority:
-                raise ConfigError(f"Duplicate room in priority list: {room}")
-            if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon not in {3, 5, 7}:
-                raise ConfigError(f"Room horizon for {room} must be 3, 5, or 7 days")
-            priority.append(room)
-            horizons[room] = horizon
-        result["priority_rooms"] = priority
-        result["room_horizons"] = horizons
 
     return result
 
@@ -278,15 +251,23 @@ def _extension_target_end_hour(start_hour, current_end_hour, max_possible_durati
 
     proposed_end = start_hour + max_possible_duration / 60
     return proposed_end if current_end_hour + 1e-9 < proposed_end else None
-PREFERRED_MIN_MINUTES = 60  # Prefer slots at least 1 hour
 PEAK_START = _CONFIG['peak_start']
 PEAK_END = _CONFIG['peak_end']
 MAX_PEAK_HOURS = _CONFIG['max_peak_hours']
 SAME_ROOM_GAP_MINUTES = _CONFIG['same_room_gap_minutes']
+CONFIGURED_SAME_ROOM_GAP_MINUTES = SAME_ROOM_GAP_MINUTES
 DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted based on enabled days
-PRIORITY_ROOMS = _CONFIG['priority_rooms']
-ROOM_HORIZONS = _CONFIG['room_horizons']
-DEFAULT_HORIZON = _CONFIG['default_horizon']
+# These run-scoped values are installed only after a fresh, complete catalog
+# has been collected in the authenticated browser.  The default room order is
+# available for non-horizon parsing and preference migration, but no horizon
+# fallback exists.
+ACTIVE_ROOM_POLICY: LiveRoomPolicy | None = None
+PRIORITY_ROOMS = list(DEFAULT_ORDERED_ROOMS)
+LIVE_CATALOG_ROOM_NAMES = list(DEFAULT_ORDERED_ROOMS)
+ROOM_HORIZON_MINUTES: dict[str, int] = {}
+BOOKING_WINDOW_DATES: tuple = ()
+MINIMUM_BLOCK_MINUTES = MIN_BOOKING_MINUTES
+ALLOW_FRAGMENTED_SESSIONS = True
 EXTENSION_PREP_WINDOW_SECONDS = 180
 HORIZON_SAVE_SETTLE_SECONDS = 0.25
 HORIZON_SNIPE_GRACE_SECONDS = 180
@@ -294,6 +275,106 @@ HORIZON_SNIPE_GRACE_SECONDS = 180
 ASIMUT_BASE_URL = "https://rwcmd.asimut.net"
 ASIMUT_AGENDA_URL = f"{ASIMUT_BASE_URL}/agenda"
 ASIMUT_OVERVIEW_URL = f"{ASIMUT_BASE_URL}/overview?locationGroupId=10"
+
+
+def install_live_room_policy(policy, *, today=None):
+    """Install one freshly observed immutable policy for this process run."""
+
+    if not isinstance(policy, LiveRoomPolicy):
+        raise LiveRoomPolicyError("policy must be a LiveRoomPolicy")
+    policy_dates = policy.booking_dates(today)
+    if policy.site_minimum_booking_minutes != MIN_BOOKING_MINUTES:
+        raise LiveRoomPolicyError(
+            "Asimut's live minimum booking length changed from the supported "
+            f"{MIN_BOOKING_MINUTES} minutes to "
+            f"{policy.site_minimum_booking_minutes} minutes"
+        )
+    if policy.site_maximum_booking_minutes != MAX_BOOKING_HOURS * 60:
+        raise LiveRoomPolicyError(
+            "Asimut's live maximum booking length changed from the supported "
+            f"{MAX_BOOKING_HOURS * 60} minutes to "
+            f"{policy.site_maximum_booking_minutes} minutes"
+        )
+
+    global ACTIVE_ROOM_POLICY
+    global PRIORITY_ROOMS
+    global LIVE_CATALOG_ROOM_NAMES
+    global ROOM_HORIZON_MINUTES
+    global BOOKING_WINDOW_DATES
+    global MINIMUM_BLOCK_MINUTES
+    global ALLOW_FRAGMENTED_SESSIONS
+    global SAME_ROOM_GAP_MINUTES
+    ACTIVE_ROOM_POLICY = policy
+    PRIORITY_ROOMS = list(policy.room_order)
+    LIVE_CATALOG_ROOM_NAMES = list(policy.all_room_names or policy.room_order)
+    ROOM_HORIZON_MINUTES = dict(policy.room_horizon_minutes)
+    BOOKING_WINDOW_DATES = policy_dates
+    MINIMUM_BLOCK_MINUTES = policy.minimum_block_minutes
+    ALLOW_FRAGMENTED_SESSIONS = policy.allow_fragmented_sessions
+    SAME_ROOM_GAP_MINUTES = max(
+        CONFIGURED_SAME_ROOM_GAP_MINUTES,
+        policy.site_minimum_booking_gap_minutes,
+    )
+    return policy
+
+
+def require_live_room_policy():
+    """Return the current run policy or fail before any room timing decision."""
+
+    if ACTIVE_ROOM_POLICY is None:
+        raise LiveRoomPolicyError(
+            "Room policy has not been freshly observed from Asimut in this run"
+        )
+    return ACTIVE_ROOM_POLICY
+
+
+def room_horizon_minutes(room):
+    """Return one exact fresh horizon; there is deliberately no default."""
+
+    if not isinstance(room, str) or room not in ROOM_HORIZON_MINUTES:
+        raise LiveRoomPolicyError(
+            f"Room {room!r} has no freshly observed booking horizon"
+        )
+    return ROOM_HORIZON_MINUTES[room]
+
+
+def booking_window_dates(today=None):
+    """Return the installed live calendar dates, confirming the first is today."""
+
+    today = today or datetime.now().date()
+    if isinstance(today, datetime) or not isinstance(today, date):
+        raise LiveRoomPolicyError("today must be a date")
+    dates = tuple(BOOKING_WINDOW_DATES)
+    if not dates or dates[0] != today or any(
+        value != today + timedelta(days=index)
+        for index, value in enumerate(dates)
+    ):
+        raise LiveRoomPolicyError(
+            "The live booking-window dates are missing or stale for today"
+        )
+    return dates
+
+
+def booking_window_day_offsets(today=None):
+    """Return navigation offsets from the installed absolute live cutoff."""
+
+    return tuple(range(len(booking_window_dates(today))))
+
+
+def refresh_live_room_policy(page, preferences, *, today=None):
+    """Refresh every room from Asimut and install the resulting run policy."""
+
+    catalog = refresh_room_catalog(page)
+    policy = build_live_room_policy(catalog, preferences)
+    install_live_room_policy(policy, today=today)
+    horizons = sorted(set(policy.room_horizon_minutes.values()), reverse=True)
+    horizon_text = ", ".join(format_horizon_minutes(value) for value in horizons)
+    print(
+        "  Fresh room policy: "
+        f"{len(policy.room_order)} eligible rooms; horizons {horizon_text}; "
+        f"window ends {policy.booking_horizon.astimezone():%Y-%m-%d %H:%M %Z}"
+    )
+    return policy
 
 
 def is_horizon_snipe_timing_candidate(seconds_until_bookable):
@@ -425,7 +506,7 @@ def page_booking_snapshot(page):
     fields stay null so verification fails closed.
     """
 
-    return page.evaluate(r"""() => {
+    return page.evaluate(r"""(configuredRooms) => {
         const startSelectors = [
             '#startDate',
             "input[aria-label='Start time']",
@@ -530,9 +611,19 @@ def page_booking_snapshot(page):
             typeof element.className === 'string' ? element.className : ''
         ].filter(Boolean).join(' ')).toLowerCase();
         const unique = (values) => [...new Set(values.filter(Boolean))];
-        const roomTokens = (value) => unique(
-            clean(value).match(/(?<![A-Za-z0-9.])[A-Z][0-9]+\.[0-9]{2}(?![A-Za-z0-9.])/gi) || []
-        ).map((value) => value.toUpperCase());
+        const roomTokens = (value) => {
+            const text = clean(value);
+            const matches = unique(configuredRooms.filter((room) => {
+                const escaped = room.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                return new RegExp(
+                    `(^|[^A-Za-z0-9.])${escaped}(?=$|[^A-Za-z0-9.])`,
+                    'i'
+                ).test(text);
+            }));
+            if (!matches.length) return [];
+            const longest = Math.max(...matches.map(room => room.length));
+            return matches.filter(room => room.length === longest);
+        };
         const only = (values) => {
             const candidates = unique(values);
             return candidates.length === 1 ? candidates[0] : null;
@@ -660,7 +751,7 @@ def page_booking_snapshot(page):
             partial = snapshot;
         }
         return partial;
-    }""")
+    }""", LIVE_CATALOG_ROOM_NAMES)
 
 
 def verify_persisted_booking_page(page, room, target_date, start_time, end_time):
@@ -1214,11 +1305,11 @@ def is_room_available_to_book(room, target_date, slot_start_hour):
     Returns:
         Tuple of (is_available, reason_if_not)
     """
-    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+    horizon_minutes = room_horizon_minutes(room)
     now = datetime.now()
 
     # Calculate when this slot becomes available
-    # The slot becomes bookable exactly horizon_days before the slot time
+    # The slot becomes bookable exactly the freshly observed horizon before it.
     # Handle both date and datetime objects
     if hasattr(target_date, 'date'):
         target_date_obj = target_date.date()
@@ -1231,19 +1322,28 @@ def is_room_available_to_book(room, target_date, slot_start_hour):
     )
 
     # When does this slot become available?
-    available_from = slot_datetime - timedelta(days=horizon_days)
+    available_from = slot_datetime - timedelta(minutes=horizon_minutes)
 
     if now < available_from:
         time_until = available_from - now
         hours_until = time_until.total_seconds() / 3600
         if hours_until < 1:
             mins_until = int(time_until.total_seconds() / 60)
-            return False, f"Available in {mins_until}min (horizon: {horizon_days}d)"
+            return False, (
+                f"Available in {mins_until}min "
+                f"(live horizon: {format_horizon_minutes(horizon_minutes)})"
+            )
         elif hours_until < 24:
-            return False, f"Available in {hours_until:.1f}h (horizon: {horizon_days}d)"
+            return False, (
+                f"Available in {hours_until:.1f}h "
+                f"(live horizon: {format_horizon_minutes(horizon_minutes)})"
+            )
         else:
             days_until = hours_until / 24
-            return False, f"Available in {days_until:.1f}d (horizon: {horizon_days}d)"
+            return False, (
+                f"Available in {days_until:.1f}d "
+                f"(live horizon: {format_horizon_minutes(horizon_minutes)})"
+            )
 
     return True, ""
 
@@ -1256,8 +1356,8 @@ def is_any_room_bookable_on_day(target_date):
     """
     Check if ANY room from PRIORITY_ROOMS is bookable on a given day.
 
-    Rooms become bookable at 7:30 AM on their horizon day. If no rooms
-    are bookable yet (e.g., it's midnight and we're checking 7 days ahead),
+    Rooms become bookable at 7:30 AM on their horizon date. If no rooms
+    are bookable yet (for example, before the furthest live cutoff opens),
     we should skip that day to avoid wasted navigation.
 
     Args:
@@ -1286,10 +1386,10 @@ def is_any_room_bookable_on_day(target_date):
     # Find the shortest wait time across all rooms
     min_wait = None
     for room in PRIORITY_ROOMS:
-        horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+        horizon_minutes = room_horizon_minutes(room)
         slot_datetime = datetime.combine(target_date_obj, datetime.min.time())
         slot_datetime = slot_datetime.replace(hour=7, minute=30)
-        available_from = slot_datetime - timedelta(days=horizon_days)
+        available_from = slot_datetime - timedelta(minutes=horizon_minutes)
 
         now = datetime.now()
         if now < available_from:
@@ -1309,6 +1409,26 @@ def is_any_room_bookable_on_day(target_date):
             return False, f"No rooms bookable yet (opens in {days_until:.1f}d)"
 
     return False, "No rooms bookable"
+
+
+def fragmentation_allows_new_booking(tracker, target_date):
+    """Enforce the user's single-contiguous-session choice for new creates."""
+
+    if ALLOW_FRAGMENTED_SESSIONS:
+        return True, ""
+    date_key = as_date(target_date).isoformat()
+    has_existing_reservation = bool(tracker.reservation_ranges.get(date_key))
+    has_new_booking = any(
+        as_date(booking_date) == as_date(target_date)
+        for _room, booking_date, _start, _end in tracker.bookings
+    )
+    if has_existing_reservation or has_new_booking:
+        return (
+            False,
+            "A reservation already exists on this date and fragmented sessions "
+            "are disabled",
+        )
+    return True, ""
 
 
 def adjust_slot_for_peak_quota(slot_start, slot_end, target_date, remaining_peak_mins):
@@ -1583,7 +1703,8 @@ def load_extendable_bookings(settings=None):
 
     Returns:
         List of dicts with: date, startTime, endTime, room, created_at,
-        target_end, horizon_days, plus eventId/event_url after identity migration.
+        target_end, observed horizon evidence, plus eventId/event_url after
+        identity migration. Historical horizon evidence is never current policy.
     """
     if settings is None:
         settings = load_settings_document(settings_file)
@@ -1607,8 +1728,10 @@ def load_extendable_bookings(settings=None):
         except (TypeError, ValueError) as exc:
             raise SettingsError(f"Invalid extendable booking: {exc}") from exc
         room = booking["room"]
-        if not isinstance(room, str) or room not in PRIORITY_ROOMS:
-            raise SettingsError(f"Extendable booking uses an unconfigured room: {room!r}")
+        try:
+            validate_room_name(room, "Extendable booking room")
+        except RoomPreferencesError as exc:
+            raise SettingsError(str(exc)) from exc
 
         parsed_minutes = {}
         for field in ("startTime", "endTime", "target_end"):
@@ -1626,13 +1749,31 @@ def load_extendable_bookings(settings=None):
         ):
             raise SettingsError("Extendable booking times are out of order or exceed 2 hours")
 
-        horizon_days = booking.get("horizon_days", ROOM_HORIZONS.get(room, DEFAULT_HORIZON))
-        if (
-            isinstance(horizon_days, bool)
-            or not isinstance(horizon_days, int)
-            or horizon_days != ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+        observed_horizon = booking.get("horizon_minutes")
+        legacy_horizon_days = booking.get("horizon_days")
+        if observed_horizon is None and legacy_horizon_days is None:
+            raise SettingsError(
+                f"Extendable booking has no observed horizon evidence for {room}"
+            )
+        if observed_horizon is not None and (
+            isinstance(observed_horizon, bool)
+            or not isinstance(observed_horizon, int)
+            or observed_horizon <= 0
+            or observed_horizon % 15
         ):
-            raise SettingsError(f"Extendable booking horizon is invalid for {room}")
+            raise SettingsError(f"Extendable booking horizon_minutes is invalid for {room}")
+        if legacy_horizon_days is not None and (
+            isinstance(legacy_horizon_days, bool)
+            or not isinstance(legacy_horizon_days, int)
+            or legacy_horizon_days <= 0
+        ):
+            raise SettingsError(f"Legacy extendable horizon_days is invalid for {room}")
+        if (
+            observed_horizon is not None
+            and legacy_horizon_days is not None
+            and observed_horizon != legacy_horizon_days * 24 * 60
+        ):
+            raise SettingsError(f"Extendable booking horizon evidence conflicts for {room}")
 
         has_event_id = "eventId" in booking
         has_event_url = "event_url" in booking
@@ -1658,7 +1799,7 @@ def load_extendable_bookings(settings=None):
         age_seconds = (comparable_now - created_at).total_seconds()
         if age_seconds < -300:
             raise SettingsError("Extendable booking creation timestamp is in the future")
-        if booking_date >= today and age_seconds / 86400 < 7:
+        if booking_date >= today:
             valid_bookings.append(booking)
     return valid_bookings
 
@@ -1707,7 +1848,8 @@ def save_extendable_booking(
         "room": room,
         "created_at": datetime.now().isoformat(),
         "target_end": f"{target_h:02d}:{target_m:02d}",
-        "horizon_days": ROOM_HORIZONS.get(room, DEFAULT_HORIZON),
+        "horizon_minutes": room_horizon_minutes(room),
+        "horizon_observed_at": require_live_room_policy().observed_at.isoformat(),
         "eventId": event_id,
         "event_url": event_url,
     }
@@ -1743,6 +1885,9 @@ def save_extendable_booking(
                 )
             match["endTime"] = booking["endTime"]
             match["target_end"] = booking["target_end"]
+            match["horizon_minutes"] = booking["horizon_minutes"]
+            match["horizon_observed_at"] = booking["horizon_observed_at"]
+            match.pop("horizon_days", None)
 
         now = datetime.now()
         today = now.date()
@@ -1750,7 +1895,6 @@ def save_extendable_booking(
             entry for entry in entries
             if isinstance(entry, dict)
             and datetime.strptime(entry["date"], '%Y-%m-%d').date() >= today
-            and (now - datetime.fromisoformat(entry["created_at"])).days < 7
         ]
 
     update_settings(mutate, settings_file)
@@ -2029,8 +2173,8 @@ def plan_horizon_extension(
     slot_datetime = datetime.combine(slot_date, datetime.min.time()) + timedelta(
         minutes=start_minutes
     )
-    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
-    horizon_edge = slot_datetime - timedelta(days=horizon_days)
+    horizon_minutes = room_horizon_minutes(room)
+    horizon_edge = slot_datetime - timedelta(minutes=horizon_minutes)
     try:
         elapsed_seconds = (now - horizon_edge).total_seconds()
     except (AttributeError, TypeError):
@@ -2830,7 +2974,8 @@ def try_extend_booking(
     Args:
         page: Playwright page object
         booking: Dict from extendable_bookings with:
-            date, startTime, endTime, room, created_at, target_end, horizon_days
+            date, startTime, endTime, room, created_at, target_end, and
+            historical horizon evidence
         tracker: BookingTracker instance for quota/gap validation (optional)
 
     Returns:
@@ -3161,7 +3306,7 @@ def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
 
     Args:
         remaining_quota_hours: Hours left in the weekly quota (28h max)
-        enabled_days_count: Number of days that are enabled for booking (1-8)
+        enabled_days_count: Number of live-window dates enabled for booking
 
     Returns:
         Maximum bookings per day (integer, minimum 1, maximum based on quota)
@@ -3578,20 +3723,54 @@ class BookingTracker:
         return sum(1 for _, booking_date, _, _ in self.bookings if as_date(booking_date) == target)
 
 
-def _normalize_practice_room_name(value):
-    """Reduce legacy or descriptive SVG labels to the configured room token."""
+def _normalize_practice_room_name(value, configured_rooms=None):
+    """Resolve a renderer label to one exact live room name."""
 
     if not isinstance(value, str):
         return ""
-    tokens = value.strip().split()
-    return tokens[0] if tokens else ""
+    text = " ".join(value.split())
+    if not text:
+        return ""
+    configured = tuple(configured_rooms or LIVE_CATALOG_ROOM_NAMES)
+    matches = []
+    for room in configured:
+        try:
+            validate_room_name(room, "configured room")
+        except RoomPreferencesError:
+            return ""
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9.]){re.escape(room)}(?![A-Za-z0-9.])",
+            re.IGNORECASE,
+        )
+        if pattern.search(text):
+            matches.append(room)
+    if not matches:
+        return ""
+    longest = max(len(room) for room in matches)
+    longest_matches = [room for room in matches if len(room) == longest]
+    return longest_matches[0] if len(longest_matches) == 1 else ""
 
 
-def get_practice_room_grid_snapshot(page):
+def get_practice_room_grid_snapshot(page, configured_rooms=None):
     """Return one normalized snapshot for either Asimut overview renderer."""
 
-    snapshot = page.evaluate(r"""() => {
-        const roomToken = value => (value || '').trim().split(/[\s\u00a0]+/)[0];
+    configured_rooms = tuple(configured_rooms or LIVE_CATALOG_ROOM_NAMES)
+    snapshot = page.evaluate(r"""(configuredRooms) => {
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+        const configuredRoomFromText = value => {
+            const text = clean(value);
+            const matches = configuredRooms.filter(room => {
+                const escaped = room.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                return new RegExp(
+                    `(^|[^A-Za-z0-9.])${escaped}(?=$|[^A-Za-z0-9.])`,
+                    'i'
+                ).test(text);
+            });
+            if (!matches.length) return null;
+            const longest = Math.max(...matches.map(room => room.length));
+            const longestMatches = matches.filter(room => room.length === longest);
+            return longestMatches.length === 1 ? longestMatches[0] : null;
+        };
         const number = value => {
             const parsed = Number(value);
             return Number.isFinite(parsed) ? parsed : null;
@@ -3613,13 +3792,18 @@ def get_practice_room_grid_snapshot(page):
                 return { renderer: 'svg', rooms: [] };
             }
             const seenLocations = new Set();
-            const labels = rawLabels.filter(label => {
-                    const id = label.getAttribute('data-location-id');
-                    const room = roomToken(label.textContent);
-                    if (!id || !room || seenLocations.has(id)) return false;
-                    seenLocations.add(id);
-                    return true;
+            const uniqueLabels = [];
+            for (const label of rawLabels) {
+                const id = label.getAttribute('data-location-id');
+                if (!id || seenLocations.has(id)) continue;
+                seenLocations.add(id);
+                uniqueLabels.push({
+                    label,
+                    room: configuredRoomFromText(label.textContent),
+                    rowIndex: uniqueLabels.length,
                 });
+            }
+            const labels = uniqueLabels.filter(item => item.room);
             const blockers = Array.from(
                 svgRoot.querySelectorAll('rect.closed-hours, rect.event-overlay')
             ).map(rect => {
@@ -3645,8 +3829,8 @@ def get_practice_room_grid_snapshot(page):
                 const screen = point.matrixTransform(matrix);
                 return { x: screen.x, y: screen.y };
             };
-            const rooms = labels.map((label, index) => {
-                const rowTop = 30 * index;
+            const rooms = labels.map(({label, room, rowIndex}) => {
+                const rowTop = 30 * rowIndex;
                 const rowBottom = rowTop + 30;
                 const rowCenter = rowTop + 15;
                 const origin = toScreen(0, rowCenter);
@@ -3661,7 +3845,7 @@ def get_practice_room_grid_snapshot(page):
                         closed: item.closed,
                     }));
                 return {
-                    room: roomToken(label.textContent),
+                    room,
                     blockedRanges,
                     clickOriginX: origin.x,
                     clickPixelsPerHour: nextHour.x - origin.x,
@@ -3708,7 +3892,7 @@ def get_practice_room_grid_snapshot(page):
                 return { startHour: pctToHour(left), endHour: pctToHour(left + width), closed: true };
             });
             return {
-                room: roomToken(row.textContent),
+                room: configuredRoomFromText(row.textContent),
                 blockedRanges: [...eventRanges, ...closedRanges],
                 clickOriginX: dayRect.left,
                 clickPixelsPerHour: dayRect.width / 16,
@@ -3716,14 +3900,17 @@ def get_practice_room_grid_snapshot(page):
             };
         }).filter(Boolean);
         return { renderer: 'legacy', rooms };
-    }""")
+    }""", list(configured_rooms))
     if isinstance(snapshot, dict) and isinstance(snapshot.get("rooms"), list):
         normalized_rooms = []
         for item in snapshot["rooms"]:
             if not isinstance(item, dict):
                 continue
             normalized = dict(item)
-            normalized["room"] = _normalize_practice_room_name(item.get("room"))
+            normalized["room"] = _normalize_practice_room_name(
+                item.get("room"),
+                configured_rooms,
+            )
             if normalized["room"]:
                 normalized_rooms.append(normalized)
         snapshot = dict(snapshot)
@@ -4167,8 +4354,24 @@ def get_room_slot_coordinates(page, room, start_hour, end_hour):
     if not room:
         return None
     center_hour = (float(start_hour) + float(end_hour)) / 2
-    return page.evaluate(r"""([roomName, centerHour]) => {
-        const roomToken = value => (value || '').trim().split(/[\s\u00a0]+/)[0];
+    return page.evaluate(r"""([roomName, centerHour, configuredRooms]) => {
+        const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+        const configuredRoomFromText = value => {
+            const text = clean(value);
+            const matches = configuredRooms.filter(candidate => {
+                const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                return new RegExp(
+                    `(^|[^A-Za-z0-9.])${escaped}(?=$|[^A-Za-z0-9.])`,
+                    'i'
+                ).test(text);
+            });
+            if (!matches.length) return null;
+            const longest = Math.max(...matches.map(candidate => candidate.length));
+            const longestMatches = matches.filter(
+                candidate => candidate.length === longest
+            );
+            return longestMatches.length === 1 ? longestMatches[0] : null;
+        };
         const svgRoot = Array.from(document.querySelectorAll('app-overview-svg'))
             .find(root => {
                 const rect = root.getBoundingClientRect();
@@ -4176,7 +4379,9 @@ def get_room_slot_coordinates(page, room, start_hour, end_hour):
             });
         if (svgRoot) {
             const labels = Array.from(svgRoot.querySelectorAll('a[data-location-id]'));
-            const label = labels.find(item => roomToken(item.textContent) === roomName);
+            const label = labels.find(
+                item => configuredRoomFromText(item.textContent) === roomName
+            );
             const svg = label?.ownerSVGElement || svgRoot.querySelector('svg');
             if (!label || !svg) return null;
             label.scrollIntoView({ behavior: 'instant', block: 'center' });
@@ -4203,7 +4408,9 @@ def get_room_slot_coordinates(page, room, start_hour, end_hour):
             "[data-cy='overview-location-row'], " +
             ".location-name-container .location-row"
         ));
-        const row = rows.find(item => roomToken(item.textContent) === roomName);
+        const row = rows.find(
+            item => configuredRoomFromText(item.textContent) === roomName
+        );
         if (!row) return null;
         row.scrollIntoView({ behavior: 'instant', block: 'center' });
         void row.getBoundingClientRect();
@@ -4221,7 +4428,7 @@ def get_room_slot_coordinates(page, room, start_hour, end_hour):
             y: rowMidY,
             renderer: 'legacy',
         };
-    }""", [room, center_hour])
+    }""", [room, center_hour, LIVE_CATALOG_ROOM_NAMES])
 
 
 def try_book_slot(
@@ -4241,7 +4448,7 @@ def try_book_slot(
     # Calculate maximum bookable duration based on horizon constraint
     # At the horizon edge, you can only book time that has "passed" the edge
     # E.g., at 9:30 AM, a 9:00 AM slot has 30 min past the horizon, so you can book 9:00-9:30
-    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+    horizon_minutes = room_horizon_minutes(room)
     now = datetime.now()
 
     # Calculate when this slot became available
@@ -4254,7 +4461,7 @@ def try_book_slot(
         hour=int(start_hour),
         minute=int((start_hour % 1) * 60)
     )
-    available_from = slot_datetime - timedelta(days=horizon_days)
+    available_from = slot_datetime - timedelta(minutes=horizon_minutes)
 
     # How much time has passed since the slot became available?
     time_since_available_mins = (now - available_from).total_seconds() / 60
@@ -4285,13 +4492,21 @@ def try_book_slot(
         max_action_minutes,
     )
 
-    # Check if we have at least 30 minutes to book
-    if booking_duration < MIN_BOOKING_MINUTES:
-        mins_until_bookable = max(0, MIN_BOOKING_MINUTES - horizon_limited_duration)
+    # The College minimum and the user's chosen contiguous block minimum are
+    # separate.  A larger preference waits for that complete block to unlock.
+    if booking_duration < MINIMUM_BLOCK_MINUTES:
+        mins_until_bookable = max(
+            0,
+            MINIMUM_BLOCK_MINUTES - horizon_limited_duration,
+        )
         start_h = int(start_hour)
         start_m = int((start_hour % 1) * 60)
         book_start = f"{start_h:02d}:{start_m:02d}"
-        print(f"  Skipping {room} {book_start}: Only {horizon_limited_duration:.0f}min past horizon (need {MIN_BOOKING_MINUTES}min, wait {mins_until_bookable:.0f}min)")
+        print(
+            f"  Skipping {room} {book_start}: Only "
+            f"{horizon_limited_duration:.0f}min past live horizon "
+            f"(need {MINIMUM_BLOCK_MINUTES}min, wait {mins_until_bookable:.0f}min)"
+        )
         # Extra debug for horizon issues
         print(f"    [DEBUG] Horizon calc: now={now.strftime('%H:%M:%S')}, slot={slot_datetime.strftime('%Y-%m-%d %H:%M')}, "
               f"available_from={available_from.strftime('%Y-%m-%d %H:%M')}, mins_since={time_since_available_mins:.1f}")
@@ -4800,7 +5015,7 @@ def navigate_to_day(page, target_day, current_day):
 
     Args:
         page: Playwright page object
-        target_day: Day to navigate to (0 = today, 7 = 7 days ahead)
+        target_day: Live-window day offset (0 = today)
         current_day: Current calendar position
 
     Returns:
@@ -4854,7 +5069,7 @@ def navigate_to_day(page, target_day, current_day):
 
 def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
     """
-    Find a slot that's about to become bookable (currently <30min past horizon).
+    Find a slot whose complete selected minimum block is about to become bookable.
 
     Returns: (slot_info, seconds_until_bookable) or (None, None) if no candidate found.
     """
@@ -4865,6 +5080,13 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
     else:
         target_date_obj = target_date
 
+    fragmentation_ok, _ = fragmentation_allows_new_booking(
+        tracker,
+        target_date_obj,
+    )
+    if not fragmentation_ok:
+        return None, None
+
     best_candidate = None
     best_wait_seconds = float('inf')
 
@@ -4873,29 +5095,33 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
         if room_name not in PRIORITY_ROOMS:
             continue
 
-        horizon_days = ROOM_HORIZONS.get(room_name, DEFAULT_HORIZON)
+        horizon_minutes = room_horizon_minutes(room_name)
         room_priority = PRIORITY_ROOMS.index(room_name)
 
         for slot in room_data["slots"]:
             start_hour = slot['startHour']
             slot_duration = (slot['endHour'] - slot['startHour']) * 60
 
-            if slot_duration < MIN_BOOKING_MINUTES:
+            if slot_duration < MINIMUM_BLOCK_MINUTES:
                 continue
 
             # Check time preferences if strict mode is on
             if time_prefs["enabled"] and time_prefs["strict_mode"]:
-                if not is_preferred_time(start_hour, time_prefs):
+                if not interval_is_strictly_preferred(
+                    start_hour,
+                    start_hour + MINIMUM_BLOCK_MINUTES / 60,
+                    time_prefs,
+                ):
                     continue
 
-            # Calculate when this slot becomes bookable (30 min past horizon)
+            # Calculate when the user's complete minimum block becomes bookable.
             slot_datetime = datetime.combine(target_date_obj, datetime.min.time())
             slot_datetime = slot_datetime.replace(
                 hour=int(start_hour),
                 minute=int((start_hour % 1) * 60)
             )
-            available_from = slot_datetime - timedelta(days=horizon_days)
-            bookable_from = available_from + timedelta(minutes=MIN_BOOKING_MINUTES)
+            available_from = slot_datetime - timedelta(minutes=horizon_minutes)
+            bookable_from = available_from + timedelta(minutes=MINIMUM_BLOCK_MINUTES)
 
             # How long until this slot is bookable?
             seconds_until_bookable = (bookable_from - now).total_seconds()
@@ -4904,7 +5130,12 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
             # when a priority extension consumed the exact boundary first.
             if is_horizon_snipe_timing_candidate(seconds_until_bookable):
                 # Check if we can actually book this (quota, conflicts, etc.)
-                can_book, reason = tracker.can_book(room_name, target_date, start_hour, MIN_BOOKING_MINUTES)
+                can_book, reason = tracker.can_book(
+                    room_name,
+                    target_date,
+                    start_hour,
+                    MINIMUM_BLOCK_MINUTES,
+                )
                 if not can_book:
                     continue
 
@@ -4920,7 +5151,8 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
                         "click_x": slot["clickX"],
                         "click_y": slot["clickY"],
                         "bookable_from": bookable_from,
-                        "horizon_days": horizon_days
+                        "horizon_minutes": horizon_minutes,
+                        "booking_minutes": MINIMUM_BLOCK_MINUTES,
                     }
                     best_wait_seconds = seconds_until_bookable
 
@@ -4938,7 +5170,7 @@ def find_all_snipe_candidates_multi_day(
     practice_plan=None,
 ):
     """
-    Scan all horizon days (7, 5, 3) for snipe candidates.
+    Scan every date in the freshly observed global window for snipe candidates.
 
     This navigates to each horizon day, collects available slots, and identifies
     candidates that become bookable within three minutes either side of now.
@@ -4983,15 +5215,13 @@ def find_all_snipe_candidates_multi_day(
         if extension_keys:
             print(f"\n  Found {len(extension_keys)} pending extension(s) - will skip conflicting snipe candidates")
 
-    # Get unique horizon values and sort in reverse order (furthest first): 7, 5, 3
-    horizon_days_to_check = sorted(set(ROOM_HORIZONS.values()), reverse=True)
+    day_offsets = tuple(reversed(booking_window_day_offsets(today)))
+    print(
+        f"\n  Scanning {len(day_offsets)} live-window dates for "
+        f"snipe candidates: {list(day_offsets)}"
+    )
 
-    print(f"\n  Scanning {len(horizon_days_to_check)} horizon days for snipe candidates: {horizon_days_to_check}")
-
-    for horizon_value in horizon_days_to_check:
-        # The day we need to check is "horizon_value" days ahead
-        # (e.g., 7-day horizon rooms become bookable on day 7)
-        days_ahead = horizon_value
+    for days_ahead in day_offsets:
         target_date = today + timedelta(days=days_ahead)
 
         if is_date_disabled(target_date, disabled_dates):
@@ -5002,11 +5232,24 @@ def find_all_snipe_candidates_multi_day(
             target_date,
             tracker.get_hours_for_day(target_date),
         )
-        if daily_remaining is not None and daily_remaining < MIN_BOOKING_MINUTES / 60:
+        if daily_remaining is not None and daily_remaining < MINIMUM_BLOCK_MINUTES / 60:
             print(f"\n    Skipping Day {days_ahead} ({target_date}): daily practice target met")
             continue
+        fragmentation_ok, fragmentation_reason = fragmentation_allows_new_booking(
+            tracker,
+            target_date,
+        )
+        if not fragmentation_ok:
+            print(
+                f"\n    Skipping Day {days_ahead} ({target_date}): "
+                f"{fragmentation_reason}"
+            )
+            continue
 
-        print(f"\n    Scanning Day {days_ahead} ({target_date.strftime('%Y-%m-%d')}) for {horizon_value}-day horizon rooms...")
+        print(
+            f"\n    Scanning Day {days_ahead} "
+            f"({target_date.strftime('%Y-%m-%d')}) with live room cutoffs..."
+        )
 
         # Navigate to this day
         current_calendar_day = navigate_to_day(page, days_ahead, current_calendar_day)
@@ -5022,12 +5265,7 @@ def find_all_snipe_candidates_multi_day(
             if room_name not in PRIORITY_ROOMS:
                 continue
 
-            room_horizon = ROOM_HORIZONS.get(room_name, DEFAULT_HORIZON)
-
-            # Only check rooms whose horizon matches this day
-            # (e.g., on Day 7, only check 7-day horizon rooms)
-            if room_horizon != horizon_value:
-                continue
+            horizon_minutes = room_horizon_minutes(room_name)
 
             room_priority = PRIORITY_ROOMS.index(room_name)
 
@@ -5035,26 +5273,30 @@ def find_all_snipe_candidates_multi_day(
                 start_hour = slot['startHour']
                 slot_duration = (slot['endHour'] - slot['startHour']) * 60
 
-                if slot_duration < MIN_BOOKING_MINUTES:
+                if slot_duration < MINIMUM_BLOCK_MINUTES:
                     continue
 
                 # Check time preferences if strict mode is on
                 if time_prefs["enabled"] and time_prefs["strict_mode"]:
                     if not interval_is_strictly_preferred(
                         start_hour,
-                        start_hour + MIN_BOOKING_MINUTES / 60,
+                        start_hour + MINIMUM_BLOCK_MINUTES / 60,
                         time_prefs,
                     ):
                         continue
 
-                # Calculate when this slot becomes bookable (30 min past horizon)
+                # Calculate when the complete preferred block becomes bookable.
                 slot_datetime = datetime.combine(target_date, datetime.min.time())
                 slot_datetime = slot_datetime.replace(
                     hour=int(start_hour),
                     minute=int((start_hour % 1) * 60)
                 )
-                available_from = slot_datetime - timedelta(days=room_horizon)
-                bookable_from = available_from + timedelta(minutes=MIN_BOOKING_MINUTES)
+                available_from = slot_datetime - timedelta(
+                    minutes=horizon_minutes
+                )
+                bookable_from = available_from + timedelta(
+                    minutes=MINIMUM_BLOCK_MINUTES
+                )
 
                 # How long until this slot is bookable?
                 seconds_until_bookable = (bookable_from - datetime.now()).total_seconds()
@@ -5070,7 +5312,12 @@ def find_all_snipe_candidates_multi_day(
                         continue
 
                     # Check if we can actually book this (quota, conflicts, etc.)
-                    can_book, reason = tracker.can_book(room_name, target_date, start_hour, MIN_BOOKING_MINUTES)
+                    can_book, reason = tracker.can_book(
+                        room_name,
+                        target_date,
+                        start_hour,
+                        MINIMUM_BLOCK_MINUTES,
+                    )
                     if not can_book:
                         print(f"      Skipping {room_name} at {start_hour:.2f}: {reason}")
                         continue
@@ -5084,7 +5331,8 @@ def find_all_snipe_candidates_multi_day(
                         "click_x": slot["clickX"],
                         "click_y": slot["clickY"],
                         "bookable_from": bookable_from,
-                        "horizon_days": room_horizon,
+                        "horizon_minutes": horizon_minutes,
+                        "booking_minutes": MINIMUM_BLOCK_MINUTES,
                         "days_ahead": days_ahead,
                         "target_date": target_date,
                         "seconds_until": seconds_until_bookable
@@ -5141,23 +5389,38 @@ def try_horizon_snipe(
     room = slot['room']
     start_hour = slot['start_hour']
     bookable_from = slot['bookable_from']
-    horizon_days = slot['horizon_days']
-    _action_maximum_minutes(max_action_minutes)
+    horizon_minutes = slot.get('horizon_minutes')
+    booking_minutes = slot.get('booking_minutes')
+    if horizon_minutes != room_horizon_minutes(room):
+        print("  [SNIPE] Candidate horizon is stale; aborting")
+        return False
+    if booking_minutes != MINIMUM_BLOCK_MINUTES:
+        print("  [SNIPE] Candidate minimum block is stale; aborting")
+        return False
+    if booking_minutes > _action_maximum_minutes(max_action_minutes):
+        print("  [SNIPE] Controlled action ceiling is below the chosen minimum block")
+        return False
+    fragmentation_ok, fragmentation_reason = fragmentation_allows_new_booking(
+        tracker,
+        target_date,
+    )
+    if not fragmentation_ok:
+        print(f"  [SNIPE] Candidate is no longer valid: {fragmentation_reason}")
+        return False
 
-    # Calculate the 30-minute booking window
-    end_hour = start_hour + MIN_BOOKING_MINUTES / 60
+    end_hour = start_hour + booking_minutes / 60
 
     # Candidates can become stale while earlier snipes are attempted.
     can_book, reason = tracker.can_book(
         room,
         target_date,
         start_hour,
-        MIN_BOOKING_MINUTES,
+        booking_minutes,
     )
     if not can_book:
         print(f"  [SNIPE] Candidate is no longer valid: {reason}")
         return False
-    if remaining_daily_hours is not None and remaining_daily_hours < MIN_BOOKING_MINUTES / 60:
+    if remaining_daily_hours is not None and remaining_daily_hours < booking_minutes / 60:
         print("  [SNIPE] Daily practice target is already met")
         return False
     if time_prefs and not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
@@ -5428,7 +5691,7 @@ def try_horizon_snipe(
     max_possible_duration = _bounded_create_duration_minutes(
         min(slot['duration'], MAX_BOOKING_HOURS * 60),
         remaining_daily_hours,
-        tracker.get_remaining_quota_hours() + MIN_BOOKING_MINUTES / 60,
+        tracker.get_remaining_quota_hours() + booking_minutes / 60,
         max_action_minutes,
     )
     if time_prefs and time_prefs.get("enabled") and time_prefs.get("strict_mode"):
@@ -5470,8 +5733,15 @@ def go_back(page, days_ahead=None):
     print("  [DEBUG] Back on verified practice-room calendar")
 
 
-def _assert_complete_agenda_extraction(page, today, events_data):
-    """Require exact current-week day coverage and event-card extraction."""
+def _assert_complete_agenda_extraction(page, window_dates, events_data):
+    """Require exact live-window day coverage and event-card extraction."""
+
+    window_dates = tuple(window_dates)
+    if not window_dates or any(
+        not isinstance(value, date) or isinstance(value, datetime)
+        for value in window_dates
+    ):
+        raise RuntimeError("Agenda verification requires live booking-window dates")
 
     structure = page.evaluate(r"""() => {
         const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -5552,8 +5822,8 @@ def _assert_complete_agenda_extraction(page, today, events_data):
     }""")
 
     expected_headers = [
-        (today + timedelta(days=offset)).strftime("%A %d %B %Y").replace(" 0", " ")
-        for offset in range(8)
+        value.strftime("%A %d %B %Y").replace(" 0", " ")
+        for value in window_dates
     ]
     if (
         not isinstance(structure, dict)
@@ -5573,7 +5843,7 @@ def _assert_complete_agenda_extraction(page, today, events_data):
             header for header in expected_headers if headers.count(header) != 1
         ]
         raise RuntimeError(
-            "Agenda extraction did not cover each of the eight required dates "
+            "Agenda extraction did not cover each live-window date "
             f"exactly once (missing or duplicated: {missing_or_duplicate})"
         )
     invalid_cards = [
@@ -5587,8 +5857,8 @@ def _assert_complete_agenda_extraction(page, today, events_data):
             "identity, title, or time fields"
         )
     header_dates = {
-        header: (today + timedelta(days=offset)).isoformat()
-        for offset, header in enumerate(expected_headers)
+        header: value.isoformat()
+        for header, value in zip(expected_headers, window_dates)
     }
     dom_event_associations = sorted(
         (event_id, header_dates[entry["header"]])
@@ -5612,8 +5882,11 @@ def _assert_complete_agenda_extraction(page, today, events_data):
         )
 
 
-def scan_agenda(page, tracker, today, ignored_events=None):
-    """Scan the My Agenda page to find all existing events and reservations for the next 7 days."""
+def scan_agenda(page, tracker, today, ignored_events=None, *, window_dates=None):
+    """Scan every date in the freshly observed live booking window."""
+    window_dates = tuple(window_dates or booking_window_dates(today))
+    if not window_dates or window_dates[0] != today:
+        raise RuntimeError("Agenda scan requires a current live booking window")
     print("\n" + "="*60)
     print("SCANNING MY AGENDA FOR EXISTING EVENTS")
     print("="*60)
@@ -5624,8 +5897,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
     page.wait_for_timeout(3000)
     print(f"  [DEBUG] Agenda page loaded, URL: {page.url[:50]}...")
 
-    # Calculate the target date (7 days from now)
-    target_date = today + timedelta(days=7)
+    target_date = window_dates[-1]
     target_date_str = target_date.strftime("%d %B %Y").lstrip("0")  # e.g., "7 February 2026"
     print(f"  Scrolling until we reach {target_date_str}...")
 
@@ -5697,8 +5969,10 @@ def scan_agenda(page, tracker, today, ignored_events=None):
 
     # Extract events using JavaScript to get structured data
     # This version checks for cancelled events and also captures event titles to identify reservations
-    events_data = page.evaluate(r"""(configuredRooms) => {
+    events_data = page.evaluate(r"""(scanPolicy) => {
         const events = [];
+        const configuredRooms = scanPolicy.configuredRooms;
+        const allowedDateSet = new Set(scanPolicy.allowedDates);
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -5706,19 +5980,16 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                           'July', 'August', 'September', 'October', 'November', 'December'];
 
         function configuredRoomFromText(text) {
+            const matches = [];
             for (const room of configuredRooms) {
                 const escaped = room.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const pattern = new RegExp(`(^|[^A-Za-z0-9.])${escaped}(?=$|[^A-Za-z0-9.])`, 'i');
-                if (pattern.test(text || '')) return room;
+                if (pattern.test(text || '')) matches.push(room);
             }
-            return null;
-        }
-
-        function identityRoomFromText(text) {
-            const match = (text || '').match(
-                /(?:^|[^A-Za-z0-9.])([A-Z][0-9]+\.[0-9]{2})(?=$|[^A-Za-z0-9.])/i
-            );
-            return match ? match[1].toUpperCase() : null;
+            if (!matches.length) return null;
+            const longest = Math.max(...matches.map(room => room.length));
+            const longestMatches = matches.filter(room => room.length === longest);
+            return longestMatches.length === 1 ? longestMatches[0] : null;
         }
 
         // Helper function to check if an element or its parents indicate a cancelled event
@@ -5831,7 +6102,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                     const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                     if (locationLink) {
                         const locText = (locationLink.textContent || '').trim();
-                        return configuredRoomFromText(locText) || identityRoomFromText(locText);
+                        return configuredRoomFromText(locText);
                     }
                     return null;
                 }
@@ -5898,12 +6169,12 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                     today.getDate()
                 );
                 const daysDiff = Math.round((currentOrdinal - todayOrdinal) / (1000 * 60 * 60 * 24));
-                if (daysDiff >= 0 && daysDiff <= 7) {
-                    const localDate = [
-                        currentDate.getFullYear().toString().padStart(4, '0'),
-                        (currentDate.getMonth() + 1).toString().padStart(2, '0'),
-                        currentDate.getDate().toString().padStart(2, '0')
-                    ].join('-');
+                const localDate = [
+                    currentDate.getFullYear().toString().padStart(4, '0'),
+                    (currentDate.getMonth() + 1).toString().padStart(2, '0'),
+                    currentDate.getDate().toString().padStart(2, '0')
+                ].join('-');
+                if (allowedDateSet.has(localDate)) {
                     events.push({
                         date: localDate,
                         daysDiff: daysDiff,
@@ -5919,9 +6190,24 @@ def scan_agenda(page, tracker, today, ignored_events=None):
         }
 
         return events;
-    }""", PRIORITY_ROOMS)
+    }""", {
+        "configuredRooms": LIVE_CATALOG_ROOM_NAMES,
+        "allowedDates": [value.isoformat() for value in window_dates],
+    })
 
-    _assert_complete_agenda_extraction(page, today, events_data)
+    _assert_complete_agenda_extraction(page, window_dates, events_data)
+    unknown_reservation_rooms = [
+        event
+        for event in events_data
+        if isinstance(event, dict)
+        and event.get("isReservation") is True
+        and event.get("room") not in LIVE_CATALOG_ROOM_NAMES
+    ]
+    if unknown_reservation_rooms:
+        raise RuntimeError(
+            "Agenda contained a reservation whose room was not one exact live "
+            "catalog name; booking stopped before mutation"
+        )
     print(f"  [DEBUG] Raw events extracted: {len(events_data)}")
 
     # Remove only exact logical duplicates. Events sharing a time remain
@@ -6068,11 +6354,56 @@ def send_notification(title, message, priority="default"):
         print(f"Notification error: {e}")
 
 
-def save_history(bookings_made, events_detected, booking_details, *, notify=True):
+def format_booking_notification_detail(detail):
+    """Render one history detail while preserving exact multiword room names."""
+
+    parts = detail.split()
+    if len(parts) < 5:
+        return detail
+
+    try:
+        date_obj = datetime.strptime(parts[0], "%Y-%m-%d")
+        room = " ".join(parts[1:-3])
+        start_time, end_time = parts[-3:-1]
+        duration_mins = int(parts[-1])
+        if not room:
+            return detail
+
+        if duration_mins == 60:
+            duration_str = "1 hour"
+        elif duration_mins < 60:
+            duration_str = f"{duration_mins} minutes"
+        elif duration_mins % 60 == 0:
+            duration_str = f"{duration_mins // 60} hours"
+        else:
+            hours, mins = divmod(duration_mins, 60)
+            duration_str = (
+                f"{hours} hour{'s' if hours > 1 else ''} and {mins} minutes"
+            )
+
+        return (
+            f"{date_obj.strftime('%a')} {date_obj.day} {date_obj.strftime('%b')}: "
+            f"{room} {start_time}-{end_time} ({duration_str})"
+        )
+    except (TypeError, ValueError):
+        return detail
+
+
+def save_history(
+    bookings_made,
+    events_detected,
+    booking_details,
+    *,
+    notify=True,
+    outcome="completed",
+):
     """Save run to booking history file."""
     try:
+        if outcome not in {"completed", "reconciliation_required", "failed"}:
+            raise ValueError(f"Unsupported booking history outcome: {outcome!r}")
         entry = {
             "timestamp": datetime.now().isoformat(),
+            "outcome": outcome,
             "bookings_made": bookings_made,
             "events_detected": events_detected,
             "details": "; ".join(booking_details[:5]) if booking_details else "No bookings made"
@@ -6098,37 +6429,12 @@ def save_history(bookings_made, events_detected, booking_details, *, notify=True
             return
         if bookings_made > 0:
             title = f"Booked {bookings_made} room{'s' if bookings_made > 1 else ''}"
-            # Format: "2026-02-04 B1.09 13:00 15:00 120" -> "Wed 4 Feb: B1.09 13:00-15:00 (2 hours)"
-            formatted = []
-            for detail in booking_details[:5]:
-                parts = detail.split()
-                if len(parts) >= 5:
-                    try:
-                        date_obj = datetime.strptime(parts[0], "%Y-%m-%d")
-                        day_name = date_obj.strftime("%a")
-                        day_num = date_obj.day
-                        month = date_obj.strftime("%b")
-                        room = parts[1]
-                        start_time = parts[2]
-                        end_time = parts[3]
-                        duration_mins = int(parts[4])
-                        # Format duration nicely
-                        if duration_mins == 60:
-                            duration_str = "1 hour"
-                        elif duration_mins < 60:
-                            duration_str = f"{duration_mins} minutes"
-                        elif duration_mins % 60 == 0:
-                            hours = duration_mins // 60
-                            duration_str = f"{hours} hours"
-                        else:
-                            hours = duration_mins // 60
-                            mins = duration_mins % 60
-                            duration_str = f"{hours} hour{'s' if hours > 1 else ''} and {mins} minutes"
-                        formatted.append(f"{day_name} {day_num} {month}: {room} {start_time}-{end_time} ({duration_str})")
-                    except:
-                        formatted.append(detail)
-                else:
-                    formatted.append(detail)
+            # Parse the stable suffix from the right so exact site room names may
+            # contain spaces (for example, "The Hopkins Studio").
+            formatted = [
+                format_booking_notification_detail(detail)
+                for detail in booking_details[:5]
+            ]
             message = "\n".join(formatted)
             if len(booking_details) > 5:
                 message += f"\n+{len(booking_details) - 5} more"
@@ -6203,10 +6509,15 @@ def process_pending_extensions(
 
     only_date = getattr(args, "only_date", None)
     only_room = getattr(args, "only_room", None)
+    live_window_date_strings = {
+        value.isoformat() for value in booking_window_dates()
+    }
     eligible_bookings = [
         booking
         for booking in extendable_bookings
-        if (not only_date or booking["date"] == only_date)
+        if booking["room"] in PRIORITY_ROOMS
+        and booking["date"] in live_window_date_strings
+        and (not only_date or booking["date"] == only_date)
         and (not only_room or booking["room"] == only_room)
     ]
     if not eligible_bookings:
@@ -6280,15 +6591,45 @@ def process_pending_extensions(
     return total_booked, True
 
 
-def run_booking(args, settings, practice_plan):
+def validate_live_scope(args, policy, *, today=None):
+    """Validate CLI room/date limits only after current site policy is known."""
+
+    today = today or datetime.now().date()
+    live_dates = set(policy.booking_dates(today))
+    if getattr(args, "only_room", None) and args.only_room not in policy.room_order:
+        raise LiveRoomPolicyError(
+            f"--only-room is not eligible in the current live room policy: {args.only_room}"
+        )
+    if getattr(args, "only_date", None):
+        selected_date = datetime.strptime(args.only_date, "%Y-%m-%d").date()
+        if selected_date not in live_dates:
+            first = min(live_dates).isoformat()
+            last = max(live_dates).isoformat()
+            raise LiveRoomPolicyError(
+                f"--only-date must be inside Asimut's current {first} to {last} window"
+            )
+    max_action_minutes = getattr(args, "max_action_minutes", None)
+    if (
+        max_action_minutes is not None
+        and max_action_minutes < policy.minimum_block_minutes
+        and not getattr(args, "extensions_only", False)
+    ):
+        raise LiveRoomPolicyError(
+            f"--max-action-minutes is below the selected "
+            f"{policy.minimum_block_minutes}-minute block minimum"
+        )
+
+
+def run_booking(args, settings, practice_plan, room_preferences=None):
     """Run one authenticated booking pass with already-validated inputs."""
     today = datetime.now().date()
+    room_preferences = room_preferences or load_room_preferences(settings)
 
     print("="*60)
     print("ASIMUT WEEK BOOKER")
     print("="*60)
     print(f"Today: {today}")
-    print(f"Booking for: {today} to {today + timedelta(days=7)}")
+    print("Booking window: refreshing from Asimut after authentication")
     print(f"Mode: {'Headless' if args.headless else 'Visible browser'}")
     print("="*60)
 
@@ -6309,23 +6650,33 @@ def run_booking(args, settings, practice_plan):
         # recover before any agenda scan or booking mutation is attempted.
         restore_page_authentication(page)
 
+        print("\nREFRESHING LIVE ROOM POLICY (READ ONLY)")
+        policy = refresh_live_room_policy(page, room_preferences, today=today)
+        validate_live_scope(args, policy, today=today)
+        live_dates = booking_window_dates(today)
+        print(f"Booking for: {live_dates[0]} to {live_dates[-1]}")
+
         # First, scan the agenda to learn about existing events
         events_detected, all_reservations = scan_agenda(
             page,
             tracker,
             today,
             ignored_events=load_ignored_events(settings),
+            window_dates=live_dates,
         )
         reconcile_pending_mutation_receipts(page, all_reservations)
 
         if args.check_only:
-            print("\nChecking all eight practice-room calendar days (read only)...")
+            print(
+                f"\nChecking all {len(live_dates)} live-window practice-room "
+                "calendar days (read only)..."
+            )
             open_practice_room_overview(page, today)
             current_calendar_day = 0
             seen_configured_rooms = set()
             total_slot_count = 0
             daily_summaries = []
-            for days_ahead in range(8):
+            for days_ahead in booking_window_day_offsets(today):
                 target_date = today + timedelta(days=days_ahead)
                 if days_ahead:
                     current_calendar_day = navigate_to_day(
@@ -6372,7 +6723,7 @@ def run_booking(args, settings, practice_plan):
             persist_storage_state(context)
             print(
                 "CHECK PASSED: authenticated session, complete agenda, date "
-                f"navigation, and eight room grids are usable "
+                f"navigation, and {len(live_dates)} room grids are usable "
                 f"({len(seen_configured_rooms)} configured rooms, "
                 f"{total_slot_count} visible gaps)."
             )
@@ -6474,7 +6825,7 @@ def run_booking(args, settings, practice_plan):
 
         # Build list of enabled dates for smart redistribution
         enabled_dates = []
-        for d in range(0, 8):
+        for d in booking_window_day_offsets(today):
             check_date = today + timedelta(days=d)
             if not is_date_disabled(check_date, disabled_dates):
                 enabled_dates.append(check_date)
@@ -6484,7 +6835,7 @@ def run_booking(args, settings, practice_plan):
 
         plan_label = "Practice plan" if practice_plan.enabled else "Smart redistribution"
         print(f"\n  {plan_label} calculation:")
-        print(f"    Enabled days: {len(enabled_dates)}/8")
+        print(f"    Enabled days: {len(enabled_dates)}/{len(live_dates)}")
         print(f"    Remaining quota: {remaining_quota:.1f}h")
         if practice_plan.enabled:
             print(f"    Default daily target: {practice_plan.default_hours:.1f}h")
@@ -6505,7 +6856,7 @@ def run_booking(args, settings, practice_plan):
         # Filter out disabled dates AND days with no bookable rooms (horizon not reached)
         enabled_day_order = []
         skipped_horizon_days = []
-        for d in range(0, 8):
+        for d in booking_window_day_offsets(today):
             check_date = today + timedelta(days=d)
             if is_date_disabled(check_date, disabled_dates):
                 continue
@@ -6516,7 +6867,13 @@ def run_booking(args, settings, practice_plan):
                 check_date,
                 tracker.get_hours_for_day(check_date),
             )
-            if daily_remaining is not None and daily_remaining < MIN_BOOKING_MINUTES / 60:
+            if daily_remaining is not None and daily_remaining < MINIMUM_BLOCK_MINUTES / 60:
+                continue
+            fragmentation_ok, _ = fragmentation_allows_new_booking(
+                tracker,
+                check_date,
+            )
+            if not fragmentation_ok:
                 continue
             # Check if any room is bookable on this day
             any_bookable, horizon_reason = is_any_room_bookable_on_day(check_date)
@@ -6548,16 +6905,15 @@ def run_booking(args, settings, practice_plan):
         # Wait for target time if specified (prep is done, ready to book)
         if args.target_time and not extensions_only:
             # =================================================================
-            # HORIZON SNIPE: Check ALL horizon days for slots about to become bookable
+            # HORIZON SNIPE: Check every live-window date for exact room edges.
             # =================================================================
-            # Pre-scan all horizon days (7, 5, 3) to find snipe candidates.
-            # This happens BEFORE target time so we know all candidates upfront.
+            # Pre-scan before target time so all candidates are known upfront.
 
             print("\n" + "="*60)
             print("CHECKING FOR HORIZON SNIPE OPPORTUNITIES (MULTI-DAY)")
             print("="*60)
 
-            # Pre-scan ALL horizon days while we have time (before target time)
+            # Pre-scan the complete live window while we have time.
             all_snipe_candidates, current_calendar_day = find_all_snipe_candidates_multi_day(
                 page,
                 tracker,
@@ -6632,11 +6988,13 @@ def run_booking(args, settings, practice_plan):
                     if snipe_success:
                         snipes_successful += 1
                         total_booked += 1
+                        snipe_minutes = candidate["booking_minutes"]
+                        snipe_end_hour = candidate["start_hour"] + snipe_minutes / 60
                         booking_details.append(
                             f"{snipe_target_date.strftime('%Y-%m-%d')} {candidate['room']} "
                             f"{int(candidate['start_hour']):02d}:{int((candidate['start_hour'] % 1) * 60):02d} "
-                            f"{int(candidate['start_hour'] + 0.5):02d}:{int(((candidate['start_hour'] + 0.5) % 1) * 60):02d} "
-                            f"{MIN_BOOKING_MINUTES}"
+                            f"{int(snipe_end_hour):02d}:{int((snipe_end_hour % 1) * 60):02d} "
+                            f"{snipe_minutes}"
                         )
                         print(f"    [SNIPE {idx + 1}] SUCCESS!")
 
@@ -6780,11 +7138,21 @@ def run_booking(args, settings, practice_plan):
                 practice_plan=practice_plan,
             )
             current_day_hours = tracker.get_hours_for_day(target_date)
-            # A target may need many short bookings when availability is fragmented.
-            # The daily budget, not an optimistic two-hour booking count, is authoritative.
+            # Fragmented mode can use multiple complete preferred blocks; single-
+            # block mode attempts at most one new reservation on the date.
             max_bookings_per_day = (
-                min(24, int(target_hours * 2 + 0.999999))
-                if target_hours >= MIN_BOOKING_MINUTES / 60
+                (
+                    min(
+                        24,
+                        int(
+                            (target_hours * 60 + MINIMUM_BLOCK_MINUTES - 1)
+                            // MINIMUM_BLOCK_MINUTES
+                        ),
+                    )
+                    if ALLOW_FRAGMENTED_SESSIONS
+                    else 1
+                )
+                if target_hours >= MINIMUM_BLOCK_MINUTES / 60
                 else 0
             )
             print(f"  [Smart redistribution] Current: {current_day_hours:.1f}h, Target: +{target_hours:.1f}h, Max bookings: {max_bookings_per_day}")
@@ -6821,23 +7189,32 @@ def run_booking(args, settings, practice_plan):
             # Get available slots
             available_data = get_available_slots(page)
 
-            # Debug: Show earliest slot start times for 7-day horizon rooms
-            # This helps verify the page refresh is working correctly
-            seven_day_rooms = [r for r, h in ROOM_HORIZONS.items() if h == 7]
+            # Debug the rooms with the furthest current site-derived horizon.
+            furthest_horizon = max(ROOM_HORIZON_MINUTES.values())
+            furthest_rooms = [
+                room
+                for room, horizon in ROOM_HORIZON_MINUTES.items()
+                if horizon == furthest_horizon
+            ]
             earliest_by_room = {}
             for room_data in available_data:
                 room_name = room_data["room"]
-                if room_name in seven_day_rooms and room_data["slots"]:
+                if room_name in furthest_rooms and room_data["slots"]:
                     earliest_start = min(s['startHour'] for s in room_data["slots"])
                     earliest_h = int(earliest_start)
                     earliest_m = int((earliest_start % 1) * 60)
                     earliest_by_room[room_name] = f"{earliest_h:02d}:{earliest_m:02d}"
             if earliest_by_room:
-                print(f"  [DEBUG] Earliest slots for 7-day horizon rooms: {earliest_by_room}")
-                # Calculate what time SHOULD be the earliest based on current time
-                expected_earliest = scan_time - timedelta(days=7)
+                print(
+                    "  [DEBUG] Earliest slots for furthest live-horizon rooms "
+                    f"({format_horizon_minutes(furthest_horizon)}): {earliest_by_room}"
+                )
+                expected_earliest = scan_time - timedelta(minutes=furthest_horizon)
                 expected_earliest_str = expected_earliest.strftime('%H:%M')
-                print(f"  [DEBUG] Expected earliest (now - 7 days): ~{expected_earliest_str} on target date")
+                print(
+                    "  [DEBUG] Expected earliest from the live horizon: "
+                    f"~{expected_earliest_str} on target date"
+                )
 
             # Build sorted slot list - prefer longer slots
             all_slots = []
@@ -6853,7 +7230,7 @@ def run_booking(args, settings, practice_plan):
 
                 for slot in room_data["slots"]:
                     slot_duration = slot['endHour'] - slot['startHour']
-                    if slot_duration * 60 < MIN_BOOKING_MINUTES:
+                    if slot_duration * 60 < MINIMUM_BLOCK_MINUTES:
                         continue  # Too short
 
                     # For today (days_ahead == 0), skip slots that have already started
@@ -6867,8 +7244,10 @@ def run_booking(args, settings, practice_plan):
                             horizon_skipped[room_name] = horizon_reason
                         continue
 
-                    # Prefer longer slots (at least 1 hour)
-                    is_good_slot = slot_duration >= 1.0
+                    is_good_slot = (
+                        slot_duration * 60
+                        >= max(MINIMUM_BLOCK_MINUTES, 60)
+                    )
 
                     all_slots.append({
                         "room": room_name,
@@ -6946,7 +7325,7 @@ def run_booking(args, settings, practice_plan):
                     if b_start > current_start:
                         gap_start = current_start
                         gap_end = min(b_start, slot_end)
-                        if gap_end > gap_start and (gap_end - gap_start) * 60 >= MIN_BOOKING_MINUTES:
+                        if gap_end > gap_start and (gap_end - gap_start) * 60 >= MINIMUM_BLOCK_MINUTES:
                             usable.append((gap_start, gap_end))
 
                     # Move past this block
@@ -6957,7 +7336,7 @@ def run_booking(args, settings, practice_plan):
                         break
 
                 # Check for usable time after all blocks
-                if current_start < slot_end and (slot_end - current_start) * 60 >= MIN_BOOKING_MINUTES:
+                if current_start < slot_end and (slot_end - current_start) * 60 >= MINIMUM_BLOCK_MINUTES:
                     usable.append((current_start, slot_end))
 
                 return usable
@@ -7044,7 +7423,7 @@ def run_booking(args, settings, practice_plan):
                         (seg_end - seg_start) * 60,
                         daily_remaining,
                         tracker.get_remaining_quota_hours(),
-                        minimum_minutes=MIN_BOOKING_MINUTES,
+                        minimum_minutes=MINIMUM_BLOCK_MINUTES,
                         maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
                     )
                     if allowed_minutes == 0:
@@ -7053,7 +7432,7 @@ def run_booking(args, settings, practice_plan):
                     seg_end = seg_start + allowed_minutes / 60
 
                     # Final validation and add as new slot
-                    if seg_start < seg_end and (seg_end - seg_start) * 60 >= MIN_BOOKING_MINUTES:
+                    if seg_start < seg_end and (seg_end - seg_start) * 60 >= MINIMUM_BLOCK_MINUTES:
                         new_slot = s.copy()
                         new_slot['start_hour'] = seg_start
                         new_slot['duration'] = seg_end - seg_start
@@ -7122,7 +7501,7 @@ def run_booking(args, settings, practice_plan):
                     slot['duration'] * 60,
                     daily_remaining,
                     tracker.get_remaining_quota_hours(),
-                    minimum_minutes=MIN_BOOKING_MINUTES,
+                    minimum_minutes=MINIMUM_BLOCK_MINUTES,
                     maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
                 )
                 if allowed_minutes == 0:
@@ -7213,7 +7592,7 @@ def run_booking(args, settings, practice_plan):
                         for slot_data in room_data["slots"]:
                             raw_start = slot_data['startHour']
                             raw_end = slot_data['endHour']
-                            if (raw_end - raw_start) * 60 < MIN_BOOKING_MINUTES:
+                            if (raw_end - raw_start) * 60 < MINIMUM_BLOCK_MINUTES:
                                 continue
 
                             is_available, _ = is_room_available_to_book(
@@ -7272,7 +7651,7 @@ def run_booking(args, settings, practice_plan):
                                     (slot_end - slot_start) * 60,
                                     daily_remaining,
                                     tracker.get_remaining_quota_hours(),
-                                    minimum_minutes=MIN_BOOKING_MINUTES,
+                                    minimum_minutes=MINIMUM_BLOCK_MINUTES,
                                     maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
                                 )
                                 if allowed_minutes == 0:
@@ -7286,7 +7665,10 @@ def run_booking(args, settings, practice_plan):
                                     "end_hour": slot_end,
                                     "duration": slot_duration,
                                     "room_priority": room_priority,
-                                    "is_good": slot_duration >= 1.0,
+                                    "is_good": (
+                                        slot_duration * 60
+                                        >= max(MINIMUM_BLOCK_MINUTES, 60)
+                                    ),
                                     "click_x": slot_data["clickX"],
                                     "click_y": slot_data["clickY"]
                                 })
@@ -7420,7 +7802,7 @@ def build_argument_parser():
         action="store_true",
         help=(
             "Controlled live-test mode: attempt only imminent horizon-edge "
-            "30-minute creates, never extensions or ordinary bookings"
+            "minimum-block creates, never extensions or ordinary bookings"
         ),
     )
     parser.add_argument(
@@ -7472,8 +7854,11 @@ def _validate_cli_args(parser, args):
         and args.max_action_minutes not in LIVE_ACTION_MINUTES
     ):
         parser.error("--max-action-minutes must be 30-120 in 15-minute steps")
-    if args.only_room and args.only_room not in PRIORITY_ROOMS:
-        parser.error(f"--only-room is not configured: {args.only_room}")
+    if args.only_room:
+        try:
+            validate_room_name(args.only_room, "--only-room")
+        except RoomPreferencesError as exc:
+            parser.error(str(exc))
     if args.only_date:
         try:
             selected_date = datetime.strptime(args.only_date, "%Y-%m-%d").date()
@@ -7481,9 +7866,6 @@ def _validate_cli_args(parser, args):
             parser.error("--only-date must use a valid YYYY-MM-DD date")
         if selected_date.isoformat() != args.only_date:
             parser.error("--only-date must use zero-padded YYYY-MM-DD")
-        days_ahead = (selected_date - datetime.now().date()).days
-        if not 0 <= days_ahead <= 7:
-            parser.error("--only-date must be today or one of the next 7 days")
 
     if args.check_only and (
         args.only_date
@@ -7527,10 +7909,14 @@ def _load_and_validate_runtime_settings():
     load_extendable_bookings(settings)
     list_pending_mutation_receipts()
     try:
+        room_preferences = load_room_preferences(settings)
+    except RoomPreferencesError as exc:
+        raise SettingsError(str(exc)) from exc
+    try:
         practice_plan = load_practice_plan(settings)
     except PracticePlanError as exc:
         raise SettingsError(str(exc)) from exc
-    return settings, practice_plan
+    return settings, practice_plan, room_preferences
 
 
 def main(argv=None):
@@ -7595,7 +7981,7 @@ def main(argv=None):
             args.target_time = _scheduled_target_time()
 
     try:
-        settings, practice_plan = _load_and_validate_runtime_settings()
+        settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
     except SettingsError as exc:
         print(f"ERROR: {exc}")
         print("Autonomous booking stopped because the saved settings cannot be trusted.")
@@ -7606,17 +7992,27 @@ def main(argv=None):
         if not runtime_lock.acquire():
             print("Another AsimutBooker run is already active; this run will exit cleanly.")
             return 0
-        return run_booking(args, settings, practice_plan) or 0
+        return run_booking(args, settings, practice_plan, room_preferences) or 0
     except KeyboardInterrupt:
         print("Booking run cancelled.")
         return 130
     except AutonomousLoginError as exc:
         print(f"ERROR: Autonomous login could not complete: {exc}")
         return 2
+    except (RoomCatalogError, LiveRoomPolicyError) as exc:
+        print(f"ERROR: Live room policy could not be verified: {exc}")
+        print("Autonomous booking stopped before any room mutation.")
+        return 4
     except BookingVerificationError as exc:
         message = f"RECONCILIATION REQUIRED: {exc}"
         print(f"ERROR: {message}")
-        save_history(0, 0, [message], notify=False)
+        save_history(
+            0,
+            0,
+            [message],
+            notify=False,
+            outcome="reconciliation_required",
+        )
         send_notification(
             "AsimutBooker needs attention",
             str(exc),

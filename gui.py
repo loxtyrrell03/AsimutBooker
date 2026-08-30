@@ -1,6 +1,7 @@
 """AsimutBooker GUI - Desktop control panel for managing practice room bookings."""
 
 import os
+import ntpath
 import sys
 import subprocess
 import threading
@@ -11,7 +12,7 @@ from datetime import date, datetime, timedelta
 import json
 import csv
 import calendar as cal
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from app_settings import (
@@ -37,6 +38,20 @@ from practice_plan import (
     PracticePlanError,
     load_practice_plan,
 )
+from health_status import HealthItem, collect_local_health
+from room_preferences import (
+    BLOCK_STEP_MINUTES,
+    MAX_BLOCK_MINUTES,
+    MIN_BLOCK_MINUTES,
+    RoomPreferences,
+    RoomPreferencesError,
+    apply_room_preferences_update,
+    filter_effective_rooms,
+    load_room_preferences as strict_load_room_preferences,
+    reconcile_room_preferences,
+    room_preferences_to_dict,
+    summarize_room_preferences,
+)
 
 # Constants
 APP_DIR = Path(__file__).resolve().parent
@@ -48,12 +63,40 @@ SETTINGS_FILE = APP_DIR / "data" / "settings.json"
 RECURRING_TASK_NAME = "AsimutBooker_Recurring"
 RECURRING_TASK_PATH = "\\"
 RECURRING_SCHEDULE_TEXT = "Every 15 minutes, 07:13-21:58"
+RECURRING_FIRST_RUN_LOCAL = "07:13"
+RECURRING_INTERVAL_ISO = "PT15M"
+RECURRING_DURATION_ISO = "PT14H46M"
+RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
+RECURRING_RESTART_INTERVAL_ISO = "PT1M"
 ASIMUT_AGENDA_URL = "https://rwcmd.asimut.net/agenda"
 ASIMUT_OVERVIEW_URL = "https://rwcmd.asimut.net/overview?locationGroupId=10"
 
 TIME_PREFERENCE_PRESET_KEYS = frozenset(
     {"morning", "afternoon", "evening", "afternoon_evening", "custom"}
 )
+ROOM_MINIMUM_BLOCK_CHOICES = tuple(
+    range(MIN_BLOCK_MINUTES, MAX_BLOCK_MINUTES + 1, BLOCK_STEP_MINUTES)
+)
+HEALTH_CARD_ORDER = (
+    "last_success",
+    "next_run",
+    "saved_session",
+    "auth_cooldown",
+    "pending_mutations",
+    "physical_wake",
+)
+HEALTH_STATE_SYMBOLS = {
+    "ok": "●",
+    "warn": "●",
+    "error": "●",
+    "unknown": "●",
+}
+HEALTH_STATE_COLORS = {
+    "ok": "#147d34",
+    "warn": "#a85d00",
+    "error": "#b00020",
+    "unknown": "#666666",
+}
 
 
 def is_exact_asimut_scan_url(
@@ -227,6 +270,24 @@ def build_scheduler_remove_command(
     ]
 
 
+def _same_windows_path(actual: str, expected: str) -> bool:
+    """Compare absolute Windows paths without weakening component equality."""
+
+    return ntpath.normcase(ntpath.normpath(actual)) == ntpath.normcase(
+        ntpath.normpath(expected)
+    )
+
+
+def _expected_recurring_action(app_dir: Path = APP_DIR) -> tuple[str, str, str]:
+    """Return the exact action registered by setup_scheduled_tasks.ps1."""
+
+    root = Path(app_dir).resolve()
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    execute = str(system_root / "System32" / "cmd.exe")
+    arguments = f'/d /c ""{root / "run_booker.bat"}" --scheduled"'
+    return execute, arguments, str(root)
+
+
 def parse_recurring_task_status(payload: str) -> dict[str, Any]:
     """Validate the recurring task's complete safety-relevant shape."""
     try:
@@ -238,39 +299,105 @@ def parse_recurring_task_status(payload: str) -> dict[str, Any]:
         raise RuntimeError("Task Scheduler returned status for an unexpected task")
 
     text_fields = (
+        "TaskPath",
         "State",
         "NextRunTime",
         "Execute",
         "Arguments",
+        "WorkingDirectory",
+        "TriggerClass",
+        "StartLocalTime",
         "Interval",
         "Duration",
         "MultipleInstances",
+        "ExecutionTimeLimit",
+        "RestartInterval",
+        "PrincipalUserSid",
+        "CurrentUserSid",
+        "LogonType",
+        "RunLevel",
     )
-    bool_fields = ("WakeToRun", "StartWhenAvailable")
+    bool_fields = (
+        "Enabled",
+        "TriggerEnabled",
+        "StopAtDurationEnd",
+        "WakeToRun",
+        "StartWhenAvailable",
+        "RunOnlyIfNetworkAvailable",
+        "DisallowStartIfOnBatteries",
+        "StopIfGoingOnBatteries",
+    )
     if any(not isinstance(value.get(field), str) for field in text_fields) or any(
         not isinstance(value.get(field), bool) for field in bool_fields
     ):
         raise RuntimeError("Task Scheduler returned incomplete status data")
+    int_fields = ("ActionCount", "TriggerCount", "DaysInterval", "RestartCount")
+    if any(
+        isinstance(value.get(field), bool) or not isinstance(value.get(field), int)
+        for field in int_fields
+    ):
+        raise RuntimeError("Task Scheduler returned incomplete task cardinality")
 
     reasons = []
     state = value["State"]
     next_run = value["NextRunTime"]
     execute = value["Execute"]
     arguments = value["Arguments"]
+    expected_execute, expected_arguments, expected_working_directory = (
+        _expected_recurring_action()
+    )
+    if value["TaskPath"] != RECURRING_TASK_PATH:
+        reasons.append("wrong task path")
+    if value["ActionCount"] != 1:
+        reasons.append("wrong action count")
+    if value["TriggerCount"] != 1:
+        reasons.append("wrong trigger count")
     if state.casefold() not in {"ready", "running"}:
         reasons.append(f"state is {state}")
+    if not value["Enabled"]:
+        reasons.append("task is disabled")
     if next_run == "Not scheduled":
         reasons.append("no next run")
-    if not execute.casefold().endswith("\\cmd.exe"):
+    if not _same_windows_path(execute, expected_execute):
         reasons.append("wrong executable")
-    if "run_booker.bat" not in arguments.casefold() or "--scheduled" not in arguments:
+    if arguments != expected_arguments:
         reasons.append("wrong launcher arguments")
-    if value["Interval"] != "PT15M" or value["Duration"] != "PT14H46M":
+    if not _same_windows_path(value["WorkingDirectory"], expected_working_directory):
+        reasons.append("wrong working directory")
+    if value["TriggerClass"] != "MSFT_TaskDailyTrigger":
+        reasons.append("wrong trigger type")
+    if not value["TriggerEnabled"]:
+        reasons.append("trigger is disabled")
+    if value["DaysInterval"] != 1:
+        reasons.append("wrong daily interval")
+    if value["StartLocalTime"] != RECURRING_FIRST_RUN_LOCAL:
+        reasons.append("wrong daily start")
+    if (
+        value["Interval"] != RECURRING_INTERVAL_ISO
+        or value["Duration"] != RECURRING_DURATION_ISO
+    ):
         reasons.append("wrong repetition window")
+    if value["StopAtDurationEnd"]:
+        reasons.append("repetition stops at duration end")
     if not value["WakeToRun"] or not value["StartWhenAvailable"]:
         reasons.append("wake/recovery disabled")
+    if not value["RunOnlyIfNetworkAvailable"]:
+        reasons.append("network requirement disabled")
+    if value["DisallowStartIfOnBatteries"] or value["StopIfGoingOnBatteries"]:
+        reasons.append("battery policy drifted")
     if value["MultipleInstances"] != "IgnoreNew":
         reasons.append("overlap protection disabled")
+    if value["ExecutionTimeLimit"] != RECURRING_EXECUTION_LIMIT_ISO:
+        reasons.append("wrong execution time limit")
+    if (
+        value["RestartCount"] != 1
+        or value["RestartInterval"] != RECURRING_RESTART_INTERVAL_ISO
+    ):
+        reasons.append("wrong restart policy")
+    if value["PrincipalUserSid"] != value["CurrentUserSid"]:
+        reasons.append("wrong task principal")
+    if value["LogonType"] != "Interactive" or value["RunLevel"] != "Limited":
+        reasons.append("wrong principal mode")
 
     return {
         "task_name": RECURRING_TASK_NAME,
@@ -284,22 +411,55 @@ def parse_recurring_task_status(payload: str) -> dict[str, Any]:
 def query_recurring_task_status(timeout: int = 30) -> dict[str, Any] | None:
     """Return the one supported recurring task, or None when it is absent."""
     command = (
-        "$task = Get-ScheduledTask -TaskName 'AsimutBooker_Recurring' "
-        "-TaskPath '\\' -ErrorAction SilentlyContinue; "
-        "if ($null -eq $task) { exit 3 }; "
+        "$ErrorActionPreference = 'Stop'; "
+        "try { $tasks = @(Get-ScheduledTask -TaskName 'AsimutBooker_Recurring' "
+        "-TaskPath '\\' -ErrorAction Stop) } catch { "
+        "if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { exit 3 }; throw }; "
+        "if ($tasks.Count -ne 1) { throw 'Expected exactly one recurring task' }; "
+        "$task = $tasks[0]; "
         "$info = Get-ScheduledTaskInfo -TaskName $task.TaskName "
         "-TaskPath $task.TaskPath -ErrorAction Stop; "
         "$nextRun = if ($info.NextRunTime -and $info.NextRunTime.Year -gt 1900) "
         "{ $info.NextRunTime.ToString('yyyy-MM-dd HH:mm') } else { 'Not scheduled' }; "
-        "$trigger = @($task.Triggers)[0]; $action = @($task.Actions)[0]; "
-        "[pscustomobject]@{ TaskName = $task.TaskName; State = [string]$task.State; "
+        "$triggers = @($task.Triggers); $actions = @($task.Actions); "
+        "$trigger = $triggers[0]; $action = $actions[0]; "
+        "try { $start = [DateTimeOffset]::Parse([string]$trigger.StartBoundary, "
+        "[Globalization.CultureInfo]::InvariantCulture); "
+        "$startLocal = $start.ToLocalTime().ToString('HH:mm', "
+        "[Globalization.CultureInfo]::InvariantCulture) } catch { "
+        "throw 'The recurring task has an unreadable start boundary' }; "
+        "$principalName = New-Object System.Security.Principal.NTAccount "
+        "-ArgumentList ([string]$task.Principal.UserId); "
+        "$principalSid = $principalName.Translate("
+        "[System.Security.Principal.SecurityIdentifier]).Value; "
+        "$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+        "[pscustomobject]@{ TaskName = $task.TaskName; "
+        "TaskPath = [string]$task.TaskPath; "
+        "ActionCount = $actions.Count; TriggerCount = $triggers.Count; "
+        "State = [string]$task.State; "
+        "Enabled = [bool]$task.Settings.Enabled; "
         "NextRunTime = $nextRun; Execute = [string]$action.Execute; "
         "Arguments = [string]$action.Arguments; "
+        "WorkingDirectory = [string]$action.WorkingDirectory; "
+        "TriggerClass = [string]$trigger.CimClass.CimClassName; "
+        "TriggerEnabled = [bool]$trigger.Enabled; "
+        "DaysInterval = [int]$trigger.DaysInterval; "
+        "StartLocalTime = $startLocal; "
         "Interval = [string]$trigger.Repetition.Interval; "
         "Duration = [string]$trigger.Repetition.Duration; "
+        "StopAtDurationEnd = [bool]$trigger.Repetition.StopAtDurationEnd; "
         "WakeToRun = [bool]$task.Settings.WakeToRun; "
         "StartWhenAvailable = [bool]$task.Settings.StartWhenAvailable; "
-        "MultipleInstances = [string]$task.Settings.MultipleInstances } | "
+        "RunOnlyIfNetworkAvailable = [bool]$task.Settings.RunOnlyIfNetworkAvailable; "
+        "DisallowStartIfOnBatteries = [bool]$task.Settings.DisallowStartIfOnBatteries; "
+        "StopIfGoingOnBatteries = [bool]$task.Settings.StopIfGoingOnBatteries; "
+        "MultipleInstances = [string]$task.Settings.MultipleInstances; "
+        "ExecutionTimeLimit = [string]$task.Settings.ExecutionTimeLimit; "
+        "RestartCount = [int]$task.Settings.RestartCount; "
+        "RestartInterval = [string]$task.Settings.RestartInterval; "
+        "PrincipalUserSid = $principalSid; CurrentUserSid = $currentSid; "
+        "LogonType = [string]$task.Principal.LogonType; "
+        "RunLevel = [string]$task.Principal.RunLevel } | "
         "ConvertTo-Json -Compress"
     )
     result = subprocess.run(
@@ -318,6 +478,52 @@ def query_recurring_task_status(timeout: int = 30) -> dict[str, Any] | None:
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(detail or f"Task Scheduler query failed ({result.returncode})")
     return parse_recurring_task_status(result.stdout.strip())
+
+
+def scheduler_health_item(
+    task: Mapping[str, Any] | None,
+    error: Exception | None = None,
+) -> HealthItem:
+    """Build the dashboard's honest Task Scheduler card."""
+
+    if error is not None:
+        return HealthItem(
+            "next_run",
+            "Next automatic run",
+            "error",
+            "Automatic schedule status could not be read",
+            "Task Scheduler returned an error; this is not treated as an absent task.",
+        )
+    if task is None:
+        return HealthItem(
+            "next_run",
+            "Next automatic run",
+            "unknown",
+            "Automatic schedule is not installed",
+            "Install or repair the schedule to enable background runs.",
+        )
+    if not task.get("healthy"):
+        problem = task.get("problem") or "the saved task does not match the required contract"
+        return HealthItem(
+            "next_run",
+            "Next automatic run",
+            "error",
+            "Automatic schedule needs repair",
+            f"Next reported run: {task.get('next_run', 'unknown')}. Problem: {problem}.",
+        )
+    state = str(task.get("state", "")).casefold()
+    headline = (
+        "Automatic booking is running now"
+        if state == "running"
+        else f"Next automatic run: {task['next_run']}"
+    )
+    return HealthItem(
+        "next_run",
+        "Next automatic run",
+        "ok",
+        headline,
+        "Every 15 minutes in the daily window; Windows wake is requested, while physical wake proof is shown separately.",
+    )
 
 
 def _require_bool(value: Any, label: str) -> bool:
@@ -579,6 +785,212 @@ def apply_practice_plan_update(
     return validated
 
 
+def parse_room_preference_terms(value: str, label: str) -> tuple[str, ...]:
+    """Parse a friendly comma/newline list using the strict saved schema rules."""
+
+    if not isinstance(value, str):
+        raise RoomPreferencesError(f"{label} must be text")
+    values = [item.strip() for item in value.replace("\n", ",").split(",")]
+    values = [item for item in values if item]
+    # The shared loader owns printable-text and case-insensitive duplicate
+    # validation, so values typed here cannot diverge from autonomous runs.
+    field_name = {
+        "instrument tags": "acceptable_instrument_tags",
+        "room-type tags": "acceptable_room_type_tags",
+        "required features": "required_feature_terms",
+    }.get(label, "required_feature_terms")
+    preferences = strict_load_room_preferences(
+        {"room_preferences": {field_name: values}}
+    )
+    return tuple(getattr(preferences, field_name))
+
+
+def move_room_preference_item(
+    rooms: Sequence[str],
+    selected_index: int,
+    direction: int,
+) -> tuple[tuple[str, ...], int]:
+    """Move one ranked room by one row, returning the new order and selection."""
+
+    if direction not in (-1, 1):
+        raise ValueError("direction must be -1 or 1")
+    ordered = list(rooms)
+    if not ordered:
+        return (), -1
+    if isinstance(selected_index, bool) or not isinstance(selected_index, int):
+        raise TypeError("selected_index must be an integer")
+    if selected_index < 0 or selected_index >= len(ordered):
+        return tuple(ordered), -1
+    destination = selected_index + direction
+    if destination < 0 or destination >= len(ordered):
+        return tuple(ordered), selected_index
+    ordered[selected_index], ordered[destination] = (
+        ordered[destination],
+        ordered[selected_index],
+    )
+    return tuple(ordered), destination
+
+
+def changed_room_preference_fields(
+    opening: RoomPreferences,
+    candidate: RoomPreferences,
+) -> dict[str, Any]:
+    """Return only fields actually edited in an isolated preferences dialog."""
+
+    opening_values = room_preferences_to_dict(opening)
+    candidate_values = room_preferences_to_dict(candidate)
+    return {
+        field: value
+        for field, value in candidate_values.items()
+        if value != opening_values[field]
+    }
+
+
+def _catalog_entry_metadata(entry: Any) -> dict[str, list[str]]:
+    """Extract the preference-facing metadata fields from one catalog room."""
+
+    result = {}
+    for field in ("instrument_tags", "room_type_tags", "features"):
+        if isinstance(entry, Mapping):
+            raw = entry.get(field, [])
+        else:
+            raw = getattr(entry, field, ())
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+            raise RoomPreferencesError(f"Catalog room {field} must be a list")
+        result[field] = list(raw)
+    return result
+
+
+def _catalog_metadata(catalog: Any) -> dict[str, dict[str, list[str]]]:
+    """Normalize RoomCatalog or its strict JSON representation for the GUI."""
+
+    converter = getattr(catalog, "as_live_metadata", None)
+    if callable(converter):
+        raw_metadata = converter()
+        if not isinstance(raw_metadata, Mapping):
+            raise RoomPreferencesError("Room catalog metadata must be an object")
+        return {
+            room: _catalog_entry_metadata(metadata)
+            for room, metadata in raw_metadata.items()
+        }
+
+    if isinstance(catalog, Mapping):
+        rooms = catalog.get("rooms", catalog)
+    else:
+        rooms = getattr(catalog, "rooms", None)
+    if isinstance(rooms, Mapping):
+        return {
+            room: _catalog_entry_metadata(metadata)
+            for room, metadata in rooms.items()
+        }
+    if isinstance(rooms, Sequence) and not isinstance(
+        rooms, (str, bytes, bytearray)
+    ):
+        metadata = {}
+        for entry in rooms:
+            if isinstance(entry, str):
+                room = entry
+            elif isinstance(entry, Mapping):
+                room = entry.get("name") or entry.get("room_id") or entry.get("id")
+            else:
+                room = getattr(entry, "name", None) or getattr(entry, "room_id", None)
+            if not isinstance(room, str):
+                raise RoomPreferencesError("Each catalog room must have a room name")
+            if room in metadata:
+                raise RoomPreferencesError(f"Room catalog contains duplicate room {room}")
+            metadata[room] = _catalog_entry_metadata(entry)
+        return metadata
+    raise RoomPreferencesError("Room catalog does not contain a room list")
+
+
+def _catalog_attribute(catalog: Any, name: str, default: Any = None) -> Any:
+    if isinstance(catalog, Mapping):
+        return catalog.get(name, default)
+    return getattr(catalog, name, default)
+
+
+def room_catalog_ui_view(
+    catalog: Any,
+) -> tuple[dict[str, dict[str, list[str]]] | None, str]:
+    """Return validated display metadata and an honest freshness sentence."""
+
+    if catalog is None:
+        return None, "Room catalog not loaded — using the saved room list."
+    if _catalog_attribute(catalog, "complete", True) is not True:
+        return None, "Room catalog is incomplete — using the saved room list."
+
+    try:
+        metadata = _catalog_metadata(catalog)
+        if not metadata:
+            raise RoomPreferencesError("Room catalog contains no rooms")
+        # This walks every metadata record through the shared strict validator.
+        filter_effective_rooms(RoomPreferences(), metadata)
+    except (RoomPreferencesError, TypeError, ValueError) as exc:
+        return None, f"Room catalog cannot be used safely: {exc}"
+
+    observed_at = _catalog_attribute(
+        catalog,
+        "observed_at",
+        _catalog_attribute(catalog, "fetched_at"),
+    )
+    if isinstance(observed_at, str):
+        try:
+            observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            observed_at = None
+    observed_text = (
+        observed_at.astimezone().strftime("%d %b %Y %H:%M")
+        if isinstance(observed_at, datetime) and observed_at.tzinfo is not None
+        else observed_at.strftime("%d %b %Y %H:%M")
+        if isinstance(observed_at, datetime)
+        else "time unknown"
+    )
+    source = _catalog_attribute(catalog, "source", "unknown")
+    fresh = _catalog_attribute(catalog, "fresh", None)
+    if source == "live" and fresh is not False:
+        freshness = f"updated from Asimut {observed_text}"
+    elif source == "cache" or fresh is False:
+        freshness = f"saved observation {observed_text}; refresh required before booking"
+    else:
+        freshness = f"observed {observed_text}; freshness unknown"
+    return metadata, f"Room catalog: {len(metadata)} rooms • {freshness}."
+
+
+def catalog_booking_dates(
+    catalog: Any,
+    *,
+    today: date | None = None,
+) -> tuple[date, ...]:
+    """Return UI dates from the catalog's absolute cutoff, never a fixed count."""
+
+    if catalog is None:
+        return ()
+    today = today or datetime.now().date()
+    if isinstance(today, datetime) or not isinstance(today, date):
+        raise ValueError("today must be a date")
+    booking_horizon = _catalog_attribute(catalog, "booking_horizon")
+    if isinstance(booking_horizon, str):
+        try:
+            booking_horizon = datetime.fromisoformat(
+                booking_horizon.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise ValueError("Room catalog booking_horizon is invalid") from exc
+    if not isinstance(booking_horizon, datetime):
+        raise ValueError("Room catalog has no booking_horizon")
+    final_date = (
+        booking_horizon.astimezone().date()
+        if booking_horizon.tzinfo is not None
+        else booking_horizon.date()
+    )
+    if final_date < today:
+        return ()
+    return tuple(
+        today + timedelta(days=offset)
+        for offset in range((final_date - today).days + 1)
+    )
+
+
 class AsimutBookerGUI:
     def __init__(self, root):
         self.root = root
@@ -619,6 +1031,8 @@ class AsimutBookerGUI:
         self.schedule_remove_in_progress = False
         self.login_operation_in_progress = False
         self._schedule_status_generation = 0
+        self._health_generation = 0
+        self._health_refresh_after_id = None
         self._calendar_scan_generation = 0
 
         # Create UI
@@ -657,35 +1071,103 @@ class AsimutBookerGUI:
         main_frame = ttk.Frame(self.root, padding="15")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Keep day-to-day monitoring separate from preference editing. This
+        # prevents the main window from becoming a long wall of controls and
+        # lets the activity log use the remaining height on smaller screens.
+        self.main_notebook = ttk.Notebook(main_frame)
+        self.main_notebook.pack(fill=tk.BOTH, expand=True)
+        overview_tab = ttk.Frame(self.main_notebook, padding="12")
+        preferences_tab = ttk.Frame(self.main_notebook, padding="12")
+        self.main_notebook.add(overview_tab, text="Overview")
+        self.main_notebook.add(preferences_tab, text="Preferences")
+
         # Top section - Status
-        status_frame = ttk.LabelFrame(main_frame, text="Status", padding="15")
+        status_frame = ttk.LabelFrame(overview_tab, text="Health Dashboard", padding="12")
         status_frame.pack(fill=tk.X, pady=(0, 15))
 
-        # Status indicators
+        health_header = ttk.Frame(status_frame)
+        health_header.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(
+            health_header,
+            text="What is ready, what needs attention, and what is still unproven.",
+            foreground="#555555",
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT)
+        self.health_updated_var = tk.StringVar(value="Checking…")
+        ttk.Label(
+            health_header,
+            textvariable=self.health_updated_var,
+            foreground="#666666",
+            font=("Segoe UI", 10),
+        ).pack(side=tk.RIGHT, padx=(12, 0))
+        ttk.Button(
+            health_header,
+            text="Refresh",
+            command=self.refresh_status,
+        ).pack(side=tk.RIGHT)
+
         status_grid = ttk.Frame(status_frame)
         status_grid.pack(fill=tk.X)
+        for column in range(3):
+            status_grid.columnconfigure(column, weight=1, uniform="health")
 
-        # Login status
-        ttk.Label(status_grid, text="Login Status:", font=("Segoe UI", 12)).grid(row=0, column=0, sticky=tk.W, padx=5, pady=3)
-        self.login_status_var = tk.StringVar(value="Checking...")
-        self.login_status_label = ttk.Label(status_grid, textvariable=self.login_status_var, font=("Segoe UI", 12, "bold"))
-        self.login_status_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=3)
+        labels = {
+            "last_success": "Last successful run",
+            "next_run": "Next automatic run",
+            "saved_session": "Saved session",
+            "auth_cooldown": "Authentication recovery",
+            "pending_mutations": "Pending mutations",
+            "physical_wake": "Physical wake test",
+        }
+        self.health_headline_vars = {}
+        self.health_detail_vars = {}
+        self.health_state_labels = {}
+        for index, key in enumerate(HEALTH_CARD_ORDER):
+            row, column = divmod(index, 3)
+            card = ttk.Frame(status_grid, padding="9", relief="groove", borderwidth=1)
+            card.grid(row=row, column=column, sticky="nsew", padx=4, pady=4)
+            heading = ttk.Frame(card)
+            heading.pack(fill=tk.X)
+            state_label = ttk.Label(
+                heading,
+                text=HEALTH_STATE_SYMBOLS["unknown"],
+                foreground=HEALTH_STATE_COLORS["unknown"],
+                font=("Segoe UI", 12, "bold"),
+            )
+            state_label.pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Label(
+                heading,
+                text=labels[key],
+                font=("Segoe UI", 10, "bold"),
+            ).pack(side=tk.LEFT)
+            headline = tk.StringVar(value="Checking…")
+            detail = tk.StringVar(value="")
+            ttk.Label(
+                card,
+                textvariable=headline,
+                font=("Segoe UI", 10, "bold"),
+                wraplength=340,
+                justify=tk.LEFT,
+            ).pack(fill=tk.X, anchor=tk.W, pady=(5, 2))
+            ttk.Label(
+                card,
+                textvariable=detail,
+                foreground="#555555",
+                font=("Segoe UI", 9),
+                wraplength=340,
+                justify=tk.LEFT,
+            ).pack(fill=tk.X, anchor=tk.W)
+            self.health_headline_vars[key] = headline
+            self.health_detail_vars[key] = detail
+            self.health_state_labels[key] = state_label
 
-        # Automatic recurring schedule
-        ttk.Label(status_grid, text="Automatic Schedule:", font=("Segoe UI", 12)).grid(row=0, column=2, sticky=tk.W, padx=(30, 5), pady=3)
-        self.tasks_status_var = tk.StringVar(value="Checking...")
-        ttk.Label(status_grid, textvariable=self.tasks_status_var, font=("Segoe UI", 12, "bold")).grid(row=0, column=3, sticky=tk.W, padx=5, pady=3)
-
-        # Last run
-        ttk.Label(status_grid, text="Last Run:", font=("Segoe UI", 12)).grid(row=1, column=0, sticky=tk.W, padx=5, pady=(8, 3))
-        self.last_run_var = tk.StringVar(value="Checking...")
-        ttk.Label(status_grid, textvariable=self.last_run_var, font=("Segoe UI", 12)).grid(row=1, column=1, columnspan=3, sticky=tk.W, padx=5, pady=(8, 3))
-
-        # Refresh button
-        ttk.Button(status_grid, text="Refresh", command=self.refresh_status).grid(row=0, column=4, rowspan=2, padx=(30, 0), pady=3)
+        # Backward-compatible variable names used by scheduler/login callbacks.
+        self.login_status_var = self.health_headline_vars["saved_session"]
+        self.tasks_status_var = self.health_headline_vars["next_run"]
+        self.last_run_var = self.health_headline_vars["last_success"]
 
         # Middle section - Run Controls
-        controls_frame = ttk.LabelFrame(main_frame, text="Run Booker", padding="15")
+        controls_frame = ttk.LabelFrame(overview_tab, text="Run Booker", padding="15")
         controls_frame.pack(fill=tk.X, pady=(0, 15))
 
         # Row 1: Run/Stop buttons
@@ -766,7 +1248,7 @@ class AsimutBookerGUI:
         ttk.Label(controls_frame, textvariable=self.progress_var, foreground="blue", font=("Segoe UI", 11)).pack(anchor=tk.W, pady=(8, 0))
 
         # Booking Days section - collapsible calendar
-        days_frame = ttk.LabelFrame(main_frame, text="Booking Days", padding="15")
+        days_frame = ttk.LabelFrame(preferences_tab, text="Booking Days", padding="15")
         days_frame.pack(fill=tk.X, pady=(0, 15))
 
         days_inner = ttk.Frame(days_frame)
@@ -794,7 +1276,7 @@ class AsimutBookerGUI:
         self._update_days_summary()
 
         # Practice Plan section - a default target with optional per-date overrides.
-        practice_frame = ttk.LabelFrame(main_frame, text="Practice Plan", padding="12")
+        practice_frame = ttk.LabelFrame(preferences_tab, text="Practice Plan", padding="12")
         practice_frame.pack(fill=tk.X, pady=(0, 12))
 
         practice_inner = ttk.Frame(practice_frame)
@@ -828,7 +1310,7 @@ class AsimutBookerGUI:
 
         self.practice_plan_customize_btn = ttk.Button(
             practice_inner,
-            text="Customize Next 8 Days…",
+            text="Customize Booking Window…",
             command=self.show_practice_plan_dialog,
             width=24,
         )
@@ -858,8 +1340,46 @@ class AsimutBookerGUI:
         self.practice_plan_overrides = {}
         self.load_practice_plan_settings()
 
+        # Room preferences are edited in a focused dialog because ordering and
+        # site-derived metadata need more space than a single settings row.
+        rooms_frame = ttk.LabelFrame(preferences_tab, text="Rooms", padding="12")
+        rooms_frame.pack(fill=tk.X, pady=(0, 12))
+        rooms_inner = ttk.Frame(rooms_frame)
+        rooms_inner.pack(fill=tk.X)
+        self.room_preferences_summary_var = tk.StringVar(value="Loading…")
+        ttk.Label(
+            rooms_inner,
+            textvariable=self.room_preferences_summary_var,
+            font=("Segoe UI", 11),
+            wraplength=900,
+            justify=tk.LEFT,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
+        self.room_preferences_btn = ttk.Button(
+            rooms_inner,
+            text="Edit Room Preferences…",
+            command=self.show_room_preferences_dialog,
+            width=24,
+        )
+        self.room_preferences_btn.pack(side=tk.RIGHT)
+        self._settings_controls.append(self.room_preferences_btn)
+        self.room_catalog_status_var = tk.StringVar(value="")
+        ttk.Label(
+            rooms_frame,
+            textvariable=self.room_catalog_status_var,
+            foreground="#666666",
+            font=("Segoe UI", 9),
+            wraplength=1120,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(5, 0))
+        if not hasattr(self, "room_catalog"):
+            self.room_catalog = None
+            self.room_catalog_load_error = ""
+        self.load_room_catalog_cache()
+        self.room_preferences = RoomPreferences()
+        self.load_room_preferences_settings()
+
         # Time Preferences section
-        time_prefs_frame = ttk.LabelFrame(main_frame, text="Time Preferences", padding="15")
+        time_prefs_frame = ttk.LabelFrame(preferences_tab, text="Time Preferences", padding="15")
         time_prefs_frame.pack(fill=tk.X, pady=(0, 15))
 
         # Row 1: Enable checkbox and preset dropdown
@@ -989,7 +1509,7 @@ class AsimutBookerGUI:
         )
 
         # Booking Strategy section
-        strategy_frame = ttk.LabelFrame(main_frame, text="Booking Strategy", padding="15")
+        strategy_frame = ttk.LabelFrame(preferences_tab, text="Booking Strategy", padding="15")
         strategy_frame.pack(fill=tk.X, pady=(0, 15))
 
         strategy_inner = ttk.Frame(strategy_frame)
@@ -1012,7 +1532,7 @@ class AsimutBookerGUI:
         # Explanation label
         ttk.Label(
             strategy_row1,
-            text="(Start from 7 days ahead instead of today)",
+            text="(Start from the furthest enabled live-window date)",
             foreground="gray",
             font=("Segoe UI", 11)
         ).pack(side=tk.LEFT)
@@ -1040,7 +1560,7 @@ class AsimutBookerGUI:
         self.load_strategy_settings()
 
         # Bottom section - Output Log
-        log_frame = ttk.LabelFrame(main_frame, text="Output Log", padding="15")
+        log_frame = ttk.LabelFrame(overview_tab, text="Output Log", padding="15")
         log_frame.pack(fill=tk.BOTH, expand=True)
 
         # Log text area - reduced height so buttons are visible on open
@@ -1083,25 +1603,97 @@ class AsimutBookerGUI:
 
     def refresh_status(self):
         """Refresh all status indicators."""
-        # Check login status
-        if STATE_FILE.exists():
-            try:
-                mtime = datetime.fromtimestamp(STATE_FILE.stat().st_mtime)
-                age = datetime.now() - mtime
-                if age.days > 7:
-                    self.login_status_var.set(f"⚠️ May be expired ({age.days} days old)")
-                else:
-                    self.login_status_var.set(f"✅ Saved ({mtime.strftime('%Y-%m-%d %H:%M')})")
-            except:
-                self.login_status_var.set("⚠️ Unknown")
-        else:
-            self.login_status_var.set("❌ Not logged in")
-
-        # Check scheduled tasks
+        # Scheduled and manual booker runs replace this display-only cache.
+        # Reloading it with the one-minute dashboard refresh keeps room names,
+        # metadata, and freshness visible without requiring a GUI restart.
+        if hasattr(self, "room_preferences"):
+            self.load_room_catalog_cache()
+            self.load_booking_days()
+            self._update_days_summary()
+            self._update_practice_plan_summary()
+            self.load_room_preferences_settings()
+        self._start_local_health_refresh()
         self.check_scheduled_tasks()
 
-        # Check last run from log
-        self.check_last_run()
+    def _start_local_health_refresh(self):
+        """Read file-backed health evidence away from the Tk event loop."""
+
+        self._health_generation += 1
+        generation = self._health_generation
+        for key in HEALTH_CARD_ORDER:
+            if key == "next_run":
+                continue
+            self.health_headline_vars[key].set("Checking…")
+            self.health_detail_vars[key].set("")
+        self.health_updated_var.set("Refreshing…")
+
+        def worker():
+            try:
+                snapshot = collect_local_health()
+                error = None
+            except Exception as exc:
+                snapshot = None
+                error = exc
+            try:
+                self.root.after(
+                    0,
+                    self._apply_local_health_result,
+                    generation,
+                    snapshot,
+                    error,
+                )
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_health_item(self, item):
+        """Render one presentation-ready health item."""
+
+        if item.key not in self.health_headline_vars:
+            return
+        self.health_headline_vars[item.key].set(item.headline)
+        self.health_detail_vars[item.key].set(item.detail)
+        label = self.health_state_labels[item.key]
+        label.configure(
+            text=HEALTH_STATE_SYMBOLS[item.state],
+            foreground=HEALTH_STATE_COLORS[item.state],
+        )
+
+    def _apply_local_health_result(self, generation, snapshot, error):
+        """Apply only the newest independently collected local snapshot."""
+
+        if generation != self._health_generation:
+            return
+        if error is not None or snapshot is None:
+            for key in HEALTH_CARD_ORDER:
+                if key == "next_run":
+                    continue
+                self._apply_health_item(
+                    HealthItem(
+                        key,
+                        key.replace("_", " ").title(),
+                        "error",
+                        "Health evidence could not be read",
+                        "The local health collector failed before this card could be verified.",
+                    )
+                )
+            self.health_updated_var.set("Refresh failed")
+        else:
+            for item in snapshot.items:
+                self._apply_health_item(item)
+            self.health_updated_var.set(
+                f"Updated {snapshot.collected_at.astimezone():%H:%M:%S}"
+            )
+
+        # Keep the dashboard useful while it remains open, without invoking a
+        # live login repair or any other state-changing action.
+        if self._health_refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self._health_refresh_after_id)
+            except (RuntimeError, tk.TclError):
+                pass
+        self._health_refresh_after_id = self.root.after(60_000, self.refresh_status)
 
     def check_scheduled_tasks(self):
         """Start a non-blocking check of the supported recurring task."""
@@ -1150,21 +1742,30 @@ class AsimutBookerGUI:
         if generation != self._schedule_status_generation:
             return
 
+        has_dashboard = hasattr(self, "health_headline_vars")
+        if has_dashboard:
+            self._apply_health_item(scheduler_health_item(task, error))
+
         if error is not None:
-            self.tasks_status_var.set("⚠️ Could not check schedule")
+            if not has_dashboard:
+                self.tasks_status_var.set("⚠️ Could not check schedule")
             self.log(f"Could not read automatic schedule status: {error}", "error")
         elif task is None:
-            self.tasks_status_var.set("❌ Not installed")
+            if not has_dashboard:
+                self.tasks_status_var.set("❌ Not installed")
         elif not task["healthy"]:
-            self.tasks_status_var.set("⚠️ Installed but needs repair")
+            if not has_dashboard:
+                self.tasks_status_var.set("⚠️ Installed but needs repair")
             self.log(
                 f"Automatic schedule needs repair: {task['problem']}",
                 "warning",
             )
         elif task["state"].casefold() == "running":
-            self.tasks_status_var.set("✅ Running (15-minute schedule)")
+            if not has_dashboard:
+                self.tasks_status_var.set("✅ Running (15-minute schedule)")
         else:
-            self.tasks_status_var.set("✅ Active (every 15 min)")
+            if not has_dashboard:
+                self.tasks_status_var.set("✅ Active (every 15 min)")
 
         tree = getattr(self, "tasks_tree", None)
         if tree is None:
@@ -2163,11 +2764,19 @@ class AsimutBookerGUI:
             self._set_settings_error(str(exc))
             disabled_dates = set()
 
-        # Initialize day_vars for next 60 days (to cover month view)
         today = datetime.now().date()
+        if not hasattr(self, "room_catalog"):
+            self.room_catalog = None
+            self.room_catalog_load_error = ""
+            self.load_room_catalog_cache()
+        try:
+            current_dates = catalog_booking_dates(self.room_catalog, today=today)
+        except ValueError as exc:
+            current_dates = ()
+            self.room_catalog_load_error = f"Room booking window is unavailable: {exc}"
+        self.booking_dates = current_dates
         self.day_vars = {}
-        for i in range(60):
-            target_date = today + timedelta(days=i)
+        for target_date in current_dates:
             date_str = target_date.strftime('%Y-%m-%d')
             # Default to enabled unless in disabled list
             var = tk.BooleanVar(value=(date_str not in disabled_dates))
@@ -2195,12 +2804,16 @@ class AsimutBookerGUI:
 
     def _update_days_summary(self):
         """Update the days summary label."""
-        today = datetime.now().date()
+        current_dates = tuple(getattr(self, "booking_dates", ()))
+        if not current_dates:
+            self.days_summary_var.set(
+                "Booking window unavailable — run a read-only site refresh"
+            )
+            return
         enabled_count = 0
-        total_count = 8  # Today + 7 days
+        total_count = len(current_dates)
 
-        for i in range(total_count):
-            target_date = today + timedelta(days=i)
+        for target_date in current_dates:
             date_str = target_date.strftime('%Y-%m-%d')
             if date_str in self.day_vars and self.day_vars[date_str].get():
                 enabled_count += 1
@@ -2305,18 +2918,20 @@ class AsimutBookerGUI:
         self.practice_plan_customize_btn.configure(state=tk.NORMAL)
 
     def _update_practice_plan_summary(self):
-        """Show a concise eight-day plan summary."""
+        """Show a concise summary for the catalog-derived booking window."""
         if not hasattr(self, "practice_plan_summary_var"):
             return
         if not self.practice_plan_enabled.get():
             self.practice_plan_summary_var.set("Daily targets off — using legacy allocation")
             return
 
-        today = datetime.now().date()
+        current_dates = tuple(getattr(self, "booking_dates", ()))
+        if not current_dates:
+            self.practice_plan_summary_var.set("Booking window unavailable")
+            return
         enabled_count = 0
         override_parts = []
-        for offset in range(8):
-            target_date = today + timedelta(days=offset)
+        for target_date in current_dates:
             date_key = target_date.isoformat()
             if date_key in self.day_vars and self.day_vars[date_key].get():
                 enabled_count += 1
@@ -2326,7 +2941,7 @@ class AsimutBookerGUI:
                     )
 
         default_text = format_practice_hours(self.practice_plan.default_hours)
-        summary = f"{enabled_count}/8 days • {default_text}h default"
+        summary = f"{enabled_count}/{len(current_dates)} days • {default_text}h default"
         if override_parts:
             shown = ", ".join(override_parts[:3])
             if len(override_parts) > 3:
@@ -2334,10 +2949,461 @@ class AsimutBookerGUI:
             summary += f" • {shown}"
         self.practice_plan_summary_var.set(summary)
 
+    def load_room_catalog_cache(self):
+        """Load the strict display-only cache without authorizing booking policy."""
+
+        try:
+            # Keep this import local so a missing optional timezone dependency
+            # leaves the control panel usable with its saved preference list.
+            from room_catalog import load_cached_catalog
+
+            self.room_catalog = load_cached_catalog(missing_ok=True)
+            self.room_catalog_load_error = ""
+        except Exception as exc:
+            self.room_catalog = None
+            self.room_catalog_load_error = (
+                f"Room catalog is unavailable: {exc}. Using the saved room list."
+            )
+        return self.room_catalog
+
+    def load_room_preferences_settings(self):
+        """Load strict room preferences and reconcile site-discovered rooms."""
+
+        settings = self.load_settings()
+        try:
+            preferences = strict_load_room_preferences(settings)
+        except RoomPreferencesError as exc:
+            self._set_settings_error(str(exc))
+            preferences = RoomPreferences()
+        self._install_confirmed_room_preferences(preferences)
+
+    def _install_confirmed_room_preferences(
+        self,
+        preferences: RoomPreferences,
+    ) -> None:
+        """Install one confirmed model and refresh both room summary labels."""
+
+        catalog = getattr(self, "room_catalog", None)
+        metadata, catalog_status = room_catalog_ui_view(catalog)
+        if catalog is None and getattr(self, "room_catalog_load_error", ""):
+            catalog_status = self.room_catalog_load_error
+        if metadata is not None:
+            try:
+                preferences = reconcile_room_preferences(preferences, metadata)
+            except RoomPreferencesError as exc:
+                metadata = None
+                catalog_status = f"Room catalog cannot be reconciled safely: {exc}"
+
+        self.room_preferences = preferences
+        self.room_catalog_metadata = metadata
+        try:
+            summary = summarize_room_preferences(preferences, metadata)
+            catalog_is_current_live = (
+                _catalog_attribute(catalog, "source") == "live"
+                and _catalog_attribute(catalog, "fresh", True) is not False
+            )
+            if metadata is not None and not catalog_is_current_live:
+                summary = summary.replace(" live eligible room", " catalog eligible room")
+        except (RoomPreferencesError, TypeError, ValueError) as exc:
+            # A display-only metadata problem must never turn an otherwise
+            # valid saved preference document into a silently different one.
+            summary = summarize_room_preferences(preferences)
+            catalog_status = f"Room catalog cannot be used safely: {exc}"
+        if hasattr(self, "room_preferences_summary_var"):
+            self.room_preferences_summary_var.set(summary)
+        if hasattr(self, "room_catalog_status_var"):
+            self.room_catalog_status_var.set(catalog_status)
+
+    def save_room_preferences_settings(
+        self,
+        candidate: RoomPreferences,
+        *,
+        opening_preferences: RoomPreferences | None = None,
+    ) -> bool:
+        """Persist only edited room fields and restore confirmed state on failure."""
+
+        previous = self.room_preferences
+        opening = opening_preferences or previous
+        try:
+            # Round-trip through the strict schema even when the caller built a
+            # dataclass. This keeps this public save boundary fail-closed.
+            candidate = strict_load_room_preferences(
+                {"room_preferences": room_preferences_to_dict(candidate)}
+            )
+            updates = changed_room_preference_fields(opening, candidate)
+        except (RoomPreferencesError, TypeError, ValueError) as exc:
+            self._install_confirmed_room_preferences(previous)
+            messagebox.showerror("Invalid Room Preferences", str(exc))
+            return False
+
+        if not updates:
+            # A no-op Save still resynchronizes from disk so concurrent changes
+            # do not leave this window displaying a stale in-memory model.
+            self.load_room_preferences_settings()
+            return self.settings_available
+
+        saved_preferences = []
+
+        def mutate(settings):
+            scoped_updates = dict(updates)
+            if "excluded_rooms" in scoped_updates and "ordered_rooms" not in scoped_updates:
+                # A newly discovered catalog room may be excluded before its
+                # rank was ever persisted. Append only that missing dependency
+                # to the latest concurrent order instead of replacing it with
+                # the dialog's unedited opening order.
+                current = strict_load_room_preferences(settings)
+                missing = [
+                    room
+                    for room in candidate.excluded_rooms
+                    if room not in current.ordered_rooms
+                ]
+                if missing:
+                    scoped_updates["ordered_rooms"] = list(current.ordered_rooms) + missing
+            saved_preferences.append(
+                apply_room_preferences_update(settings, scoped_updates)
+            )
+
+        if not self._update_settings(mutate):
+            self._install_confirmed_room_preferences(previous)
+            return False
+        self._install_confirmed_room_preferences(saved_preferences[0])
+        return True
+
+    def show_room_preferences_dialog(self):
+        """Edit room ranking, exclusions, requirements, and session shape."""
+
+        if not self.settings_available:
+            messagebox.showerror("Settings Unavailable", self.settings_error)
+            return
+
+        opening_preferences = self.room_preferences
+        catalog_metadata = getattr(self, "room_catalog_metadata", None)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Room Preferences")
+        dialog.geometry("980x720")
+        dialog.minsize(860, 650)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        content = ttk.Frame(dialog, padding="18")
+        content.pack(fill=tk.BOTH, expand=True)
+        content.columnconfigure(0, weight=3)
+        content.columnconfigure(1, weight=2)
+        content.rowconfigure(2, weight=1)
+        ttk.Label(content, text="Room Preferences", font=("Segoe UI", 16, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4)
+        )
+        ttk.Label(
+            content,
+            text=(
+                "Rooms at the top are tried first. Excluded rooms are never selected. "
+                "Tag filters accept any listed tag; every required feature phrase must match."
+            ),
+            foreground="#555555",
+            wraplength=900,
+            justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(0, 14))
+
+        rooms_frame = ttk.LabelFrame(content, text="Room order and exclusions", padding="10")
+        rooms_frame.grid(row=2, column=0, sticky="nsew", padx=(0, 12))
+        rooms_frame.columnconfigure(0, weight=1)
+        rooms_frame.rowconfigure(1, weight=1)
+        ttk.Label(
+            rooms_frame,
+            text="Use Up and Down to set priority. Double-click a room to include or exclude it.",
+            foreground="#555555",
+            wraplength=520,
+            justify=tk.LEFT,
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 8))
+
+        tree = ttk.Treeview(
+            rooms_frame,
+            columns=("priority", "room", "status"),
+            show="headings",
+            selectmode="browse",
+            height=16,
+        )
+        tree.heading("priority", text="#")
+        tree.heading("room", text="Room")
+        tree.heading("status", text="Booking")
+        tree.column("priority", width=45, minwidth=40, anchor=tk.CENTER, stretch=False)
+        tree.column("room", width=180, anchor=tk.W)
+        tree.column("status", width=110, anchor=tk.CENTER, stretch=False)
+        tree.grid(row=1, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(rooms_frame, orient=tk.VERTICAL, command=tree.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        working_order = list(opening_preferences.ordered_rooms)
+        working_excluded = set(opening_preferences.excluded_rooms)
+        excluded_status_var = tk.StringVar()
+
+        def selected_index():
+            selection = tree.selection()
+            if not selection:
+                return -1
+            try:
+                return int(selection[0])
+            except (TypeError, ValueError):
+                return -1
+
+        def refresh_rooms(select_at=-1):
+            children = tree.get_children()
+            if children:
+                tree.delete(*children)
+            for index, room in enumerate(working_order):
+                tree.insert(
+                    "",
+                    tk.END,
+                    iid=str(index),
+                    values=(index + 1, room, "Excluded" if room in working_excluded else "Use"),
+                    tags=("excluded",) if room in working_excluded else (),
+                )
+            tree.tag_configure("excluded", foreground="#777777")
+            excluded_status_var.set(
+                f"{len(working_excluded)} excluded • "
+                f"{len(working_order) - len(working_excluded)} available before filters"
+            )
+            if 0 <= select_at < len(working_order):
+                item = str(select_at)
+                tree.selection_set(item)
+                tree.focus(item)
+                tree.see(item)
+
+        def move_selected(direction):
+            current = selected_index()
+            moved, destination = move_room_preference_item(
+                working_order, current, direction
+            )
+            working_order[:] = moved
+            refresh_rooms(destination)
+
+        def toggle_selected(_event=None):
+            index = selected_index()
+            if index < 0:
+                return
+            room = working_order[index]
+            if room in working_excluded:
+                working_excluded.remove(room)
+            else:
+                working_excluded.add(room)
+            refresh_rooms(index)
+
+        room_buttons = ttk.Frame(rooms_frame)
+        room_buttons.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(9, 0))
+        ttk.Button(
+            room_buttons,
+            text="↑ Up",
+            command=lambda: move_selected(-1),
+            width=9,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            room_buttons,
+            text="↓ Down",
+            command=lambda: move_selected(1),
+            width=9,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            room_buttons,
+            text="Include / Exclude",
+            command=toggle_selected,
+            width=18,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(
+            rooms_frame,
+            textvariable=excluded_status_var,
+            foreground="#555555",
+            font=("Segoe UI", 9),
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(7, 0))
+        tree.bind("<Double-1>", toggle_selected)
+        tree.bind("<Alt-Up>", lambda _event: move_selected(-1))
+        tree.bind("<Alt-Down>", lambda _event: move_selected(1))
+
+        requirements = ttk.LabelFrame(content, text="Room and session requirements", padding="12")
+        requirements.grid(row=2, column=1, sticky="nsew")
+        requirements.columnconfigure(0, weight=1)
+        instrument_var = tk.StringVar()
+        room_type_var = tk.StringVar()
+        features_var = tk.StringVar()
+        minimum_block_var = tk.StringVar()
+        fragmented_var = tk.BooleanVar()
+
+        def add_text_control(row, title, explanation, variable):
+            ttk.Label(requirements, text=title, font=("Segoe UI", 10, "bold")).grid(
+                row=row, column=0, sticky=tk.W, pady=(0, 2)
+            )
+            ttk.Entry(requirements, textvariable=variable).grid(
+                row=row + 1, column=0, sticky=tk.EW
+            )
+            ttk.Label(
+                requirements,
+                text=explanation,
+                foreground="#555555",
+                font=("Segoe UI", 9),
+                wraplength=340,
+                justify=tk.LEFT,
+            ).grid(row=row + 2, column=0, sticky=tk.W, pady=(2, 11))
+
+        add_text_control(
+            0,
+            "Acceptable instrument tags",
+            "Comma separated. Blank accepts any instrument; otherwise a room may match any listed tag.",
+            instrument_var,
+        )
+        add_text_control(
+            3,
+            "Acceptable room-type tags",
+            "Comma separated. Blank accepts any type; otherwise a room may match any listed tag.",
+            room_type_var,
+        )
+        add_text_control(
+            6,
+            "Required features",
+            "Comma separated. Every phrase is required, for example: grand piano, adjustable stool.",
+            features_var,
+        )
+
+        ttk.Label(requirements, text="Minimum useful block", font=("Segoe UI", 10, "bold")).grid(
+            row=9, column=0, sticky=tk.W, pady=(1, 2)
+        )
+        minimum_block = ttk.Combobox(
+            requirements,
+            textvariable=minimum_block_var,
+            values=tuple(f"{minutes} minutes" for minutes in ROOM_MINIMUM_BLOCK_CHOICES),
+            state="readonly",
+            width=20,
+        )
+        minimum_block.grid(row=10, column=0, sticky=tk.W)
+        ttk.Label(
+            requirements,
+            text="Shorter openings will be ignored.",
+            foreground="#555555",
+            font=("Segoe UI", 9),
+        ).grid(row=11, column=0, sticky=tk.W, pady=(2, 11))
+        ttk.Checkbutton(
+            requirements,
+            text="Allow fragmented sessions",
+            variable=fragmented_var,
+        ).grid(row=12, column=0, sticky=tk.W)
+        ttk.Label(
+            requirements,
+            text="When off, the booker looks for one continuous block instead of combining shorter openings.",
+            foreground="#555555",
+            font=("Segoe UI", 9),
+            wraplength=340,
+            justify=tk.LEFT,
+        ).grid(row=13, column=0, sticky=tk.W, pady=(2, 10))
+
+        known_values = {}
+        for key in ("instrument_tags", "room_type_tags", "features"):
+            known_values[key] = sorted(
+                {
+                    value
+                    for metadata in (catalog_metadata or {}).values()
+                    for value in metadata.get(key, [])
+                },
+                key=str.casefold,
+            )
+        detected = []
+        if known_values["instrument_tags"]:
+            detected.append("Instruments: " + ", ".join(known_values["instrument_tags"][:6]))
+        if known_values["room_type_tags"]:
+            detected.append("Types: " + ", ".join(known_values["room_type_tags"][:6]))
+        if known_values["features"]:
+            detected.append("Features: " + ", ".join(known_values["features"][:6]))
+        ttk.Label(
+            requirements,
+            text=("Detected on the site — " + " • ".join(detected)) if detected else "No site metadata is loaded yet; saved terms can still be edited.",
+            foreground="#555555",
+            font=("Segoe UI", 8),
+            wraplength=340,
+            justify=tk.LEFT,
+        ).grid(row=14, column=0, sticky=tk.W, pady=(5, 0))
+
+        def reset_working(preferences):
+            working_order[:] = preferences.ordered_rooms
+            working_excluded.clear()
+            working_excluded.update(preferences.excluded_rooms)
+            instrument_var.set(", ".join(preferences.acceptable_instrument_tags))
+            room_type_var.set(", ".join(preferences.acceptable_room_type_tags))
+            features_var.set(", ".join(preferences.required_feature_terms))
+            minimum_block_var.set(f"{preferences.minimum_block_minutes} minutes")
+            fragmented_var.set(preferences.allow_fragmented_sessions)
+            refresh_rooms(0 if working_order else -1)
+
+        reset_working(opening_preferences)
+
+        buttons = ttk.Frame(dialog, padding=(18, 8, 18, 18))
+        buttons.pack(fill=tk.X)
+
+        def save_and_close():
+            try:
+                instrument_tags = parse_room_preference_terms(
+                    instrument_var.get(), "instrument tags"
+                )
+                room_type_tags = parse_room_preference_terms(
+                    room_type_var.get(), "room-type tags"
+                )
+                required_features = parse_room_preference_terms(
+                    features_var.get(), "required features"
+                )
+                minimum_text = minimum_block_var.get().removesuffix(" minutes")
+                candidate = strict_load_room_preferences(
+                    {
+                        "room_preferences": {
+                            "ordered_rooms": list(working_order),
+                            "excluded_rooms": [
+                                room for room in working_order if room in working_excluded
+                            ],
+                            "acceptable_instrument_tags": list(instrument_tags),
+                            "acceptable_room_type_tags": list(room_type_tags),
+                            "required_feature_terms": list(required_features),
+                            "minimum_block_minutes": int(minimum_text),
+                            "allow_fragmented_sessions": fragmented_var.get(),
+                        }
+                    }
+                )
+            except (RoomPreferencesError, TypeError, ValueError) as exc:
+                reset_working(self.room_preferences)
+                messagebox.showerror(
+                    "Invalid Room Preferences", str(exc), parent=dialog
+                )
+                return
+
+            if not self.save_room_preferences_settings(
+                candidate,
+                opening_preferences=opening_preferences,
+            ):
+                reset_working(self.room_preferences)
+                return
+            self.log("Room preferences saved", "info")
+            dialog.destroy()
+
+        ttk.Button(
+            buttons,
+            text="Save Preferences",
+            command=save_and_close,
+            width=18,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(
+            buttons,
+            text="Cancel",
+            command=dialog.destroy,
+            width=10,
+        ).pack(side=tk.RIGHT)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
     def show_practice_plan_dialog(self):
         """Edit enabled days and per-date targets using isolated working copies."""
         if not self.settings_available:
             messagebox.showerror("Settings Unavailable", self.settings_error)
+            return
+        window_dates = tuple(getattr(self, "booking_dates", ()))
+        if not window_dates:
+            messagebox.showerror(
+                "Booking Window Unavailable",
+                "Run a read-only site refresh before editing date-specific targets.",
+            )
             return
 
         dialog = tk.Toplevel(self.root)
@@ -2349,7 +3415,11 @@ class AsimutBookerGUI:
 
         content = ttk.Frame(dialog, padding="18")
         content.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(content, text="Next 8 Days", font=("Segoe UI", 16, "bold")).grid(
+        ttk.Label(
+            content,
+            text=f"Current Booking Window ({len(window_dates)} days)",
+            font=("Segoe UI", 16, "bold"),
+        ).grid(
             row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 4)
         )
         ttk.Label(
@@ -2380,15 +3450,14 @@ class AsimutBookerGUI:
         target_widgets = {}
         opening_day_states = {}
         opening_overrides = {}
-        today = datetime.now().date()
+        today = window_dates[0]
 
         def update_row_state(date_key):
             target_widgets[date_key].configure(
                 state="readonly" if day_working[date_key].get() else tk.DISABLED
             )
 
-        for offset in range(8):
-            target_date = today + timedelta(days=offset)
+        for offset, target_date in enumerate(window_dates):
             date_key = target_date.isoformat()
             row = offset + 3
             enabled = self.day_vars.get(date_key).get() if date_key in self.day_vars else True
@@ -3272,6 +4341,7 @@ class AsimutBookerGUI:
                 restore_page_authentication,
                 safe_goto,
             )
+            from room_catalog import refresh_from_site as refresh_room_catalog
 
             today = datetime.now().date()
             context_options = authenticated_runtime_context_options()
@@ -3281,6 +4351,13 @@ class AsimutBookerGUI:
                 context = browser.new_context(**context_options)
                 page = context.new_page()
                 restore_page_authentication(page)
+                catalog = refresh_room_catalog(page)
+                live_dates = catalog_booking_dates(catalog, today=today)
+                if not live_dates:
+                    raise RuntimeError(
+                        "Asimut returned no current booking-window dates; "
+                        "the existing event cache was preserved"
+                    )
                 safe_goto(page, ASIMUT_AGENDA_URL)
                 require_authenticated_scan_page(
                     page,
@@ -3289,8 +4366,12 @@ class AsimutBookerGUI:
                 )
                 page.wait_for_timeout(1000)
 
-                # Scroll to load events
-                target_date = today + timedelta(days=45)
+                # The agenda window follows the current absolute cutoff from
+                # Asimut.  No fixed seven/eight-day (or other) assumption is
+                # allowed to authorize the GUI's event cache.
+                target_date = live_dates[-1]
+                allowed_date_strings = [value.isoformat() for value in live_dates]
+                live_room_names = [room.name for room in catalog.rooms]
                 target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
                 alternate_target_date_str = target_date.strftime("%d %B %Y")
 
@@ -3336,13 +4417,33 @@ class AsimutBookerGUI:
                     page.wait_for_timeout(300)
 
                 # Extract events (same JS as before)
-                events_data = page.evaluate("""() => {
+                events_data = page.evaluate("""(scanPolicy) => {
                     const events = [];
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
+                    const allowedDateSet = new Set(scanPolicy.allowedDates);
+                    const configuredRooms = scanPolicy.roomNames;
 
                     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                                       'July', 'August', 'September', 'October', 'November', 'December'];
+
+                    function configuredRoomFromText(value) {
+                        const text = String(value || '').toLocaleLowerCase();
+                        const boundary = character => !character || !/[A-Za-z0-9.]/.test(character);
+                        const matches = configuredRooms.filter(room => {
+                            const needle = room.toLocaleLowerCase();
+                            let index = text.indexOf(needle);
+                            while (index >= 0) {
+                                if (boundary(text[index - 1]) && boundary(text[index + needle.length])) {
+                                    return true;
+                                }
+                                index = text.indexOf(needle, index + 1);
+                            }
+                            return false;
+                        });
+                        if (!matches.length) return null;
+                        const longest = Math.max(...matches.map(room => room.length));
+                        const longestMatches = matches.filter(room => room.length === longest);
+                        return longestMatches.length === 1 ? longestMatches[0] : null;
+                    }
 
                     function isCancelled(element) {
                         let el = element;
@@ -3381,10 +4482,9 @@ class AsimutBookerGUI:
                                 container.classList.contains('as-event-panel')) {
                                 const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                                 if (locationLink) {
-                                    const roomMatch = (locationLink.textContent || '').match(
-                                        /(?:^|[^A-Za-z0-9.])([A-Z][0-9]+\\.[0-9]{2})(?=$|[^A-Za-z0-9.])/i
-                                    );
-                                    if (roomMatch) return roomMatch[1].toUpperCase();
+                                    const locationText = locationLink.textContent || '';
+                                    const configuredRoom = configuredRoomFromText(locationText);
+                                    if (configuredRoom) return configuredRoom;
                                 }
                                 return null;
                             }
@@ -3395,6 +4495,13 @@ class AsimutBookerGUI:
 
                     const allElements = document.querySelectorAll('*');
                     let currentDate = null;
+
+                    function localDateString(value) {
+                        const year = value.getFullYear();
+                        const month = String(value.getMonth() + 1).padStart(2, '0');
+                        const day = String(value.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                    }
 
                     for (const element of allElements) {
                         if (element.children.length > 0) {
@@ -3418,10 +4525,10 @@ class AsimutBookerGUI:
                         if (timeMatch && currentDate) {
                             if (isCancelled(element)) continue;
 
-                            const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
-                            if (daysDiff >= 0 && daysDiff <= 60) {
+                            const dateString = localDateString(currentDate);
+                            if (allowedDateSet.has(dateString)) {
                                 events.push({
-                                    date: currentDate.toISOString().split('T')[0],
+                                    date: dateString,
                                     startTime: timeMatch[1],
                                     endTime: timeMatch[2],
                                     title: getEventTitle(element),
@@ -3432,7 +4539,10 @@ class AsimutBookerGUI:
                         }
                     }
                     return events;
-                }""")
+                }""", {
+                    "allowedDates": allowed_date_strings,
+                    "roomNames": live_room_names,
+                })
                 require_authenticated_scan_page(
                     page,
                     page_is_authenticated,
@@ -3740,6 +4850,7 @@ class AsimutBookerGUI:
                 restore_page_authentication,
                 safe_goto,
             )
+            from room_catalog import refresh_from_site as refresh_room_catalog
 
             events = []
             today = datetime.now().date()
@@ -3750,9 +4861,25 @@ class AsimutBookerGUI:
                 context = browser.new_context(**context_options)
                 page = context.new_page()
 
-                # Navigate to agenda
-                self.root.after(0, lambda: self.events_progress_var.set("Loading agenda page..."))
+                # Refresh the authoritative room/window policy before reading
+                # the agenda.  The saved catalog remains display-only.
+                self.root.after(
+                    0,
+                    lambda: self.events_progress_var.set(
+                        "Refreshing booking window from Asimut..."
+                    ),
+                )
                 restore_page_authentication(page)
+                catalog = refresh_room_catalog(page)
+                live_dates = catalog_booking_dates(catalog, today=today)
+                if not live_dates:
+                    raise RuntimeError(
+                        "Asimut returned no current booking-window dates; "
+                        "the existing event cache was preserved"
+                    )
+                allowed_date_strings = [value.isoformat() for value in live_dates]
+                live_room_names = [room.name for room in catalog.rooms]
+                self.root.after(0, lambda: self.events_progress_var.set("Loading agenda page..."))
                 safe_goto(page, ASIMUT_AGENDA_URL)
                 require_authenticated_scan_page(
                     page,
@@ -3761,8 +4888,8 @@ class AsimutBookerGUI:
                 )
                 page.wait_for_timeout(1000)
 
-                # Scroll to load all events for the next 7 days
-                target_date = today + timedelta(days=7)
+                # Scroll only as far as the absolute cutoff supplied by Asimut.
+                target_date = live_dates[-1]
                 target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
 
                 self.root.after(0, lambda: self.events_progress_var.set("Scrolling to load events..."))
@@ -3818,13 +4945,35 @@ class AsimutBookerGUI:
                 self.root.after(0, lambda: self.events_progress_var.set("Extracting events..."))
 
                 # Extract events using same JavaScript as book_week.py
-                events_data = page.evaluate("""() => {
+                events_data = page.evaluate("""(scanPolicy) => {
                     const events = [];
+                    const allowedDateSet = new Set(scanPolicy.allowedDates);
+                    const configuredRooms = scanPolicy.roomNames;
                     const today = new Date();
                     today.setHours(0, 0, 0, 0);
 
                     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                                       'July', 'August', 'September', 'October', 'November', 'December'];
+
+                    function configuredRoomFromText(value) {
+                        const text = String(value || '').toLocaleLowerCase();
+                        const boundary = character => !character || !/[A-Za-z0-9.]/.test(character);
+                        const matches = configuredRooms.filter(room => {
+                            const needle = room.toLocaleLowerCase();
+                            let index = text.indexOf(needle);
+                            while (index >= 0) {
+                                if (boundary(text[index - 1]) && boundary(text[index + needle.length])) {
+                                    return true;
+                                }
+                                index = text.indexOf(needle, index + 1);
+                            }
+                            return false;
+                        });
+                        if (!matches.length) return null;
+                        const longest = Math.max(...matches.map(room => room.length));
+                        const longestMatches = matches.filter(room => room.length === longest);
+                        return longestMatches.length === 1 ? longestMatches[0] : null;
+                    }
 
                     function isCancelled(element) {
                         let el = element;
@@ -3876,12 +5025,8 @@ class AsimutBookerGUI:
                                 const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                                 if (locationLink) {
                                     const locText = (locationLink.textContent || '').trim();
-                                    const roomMatch = locText.match(
-                                        /(?:^|[^A-Za-z0-9.])([A-Z][0-9]+\\.[0-9]{2})(?=$|[^A-Za-z0-9.])/i
-                                    );
-                                    if (roomMatch) {
-                                        return roomMatch[1].toUpperCase();
-                                    }
+                                    const configuredRoom = configuredRoomFromText(locText);
+                                    if (configuredRoom) return configuredRoom;
                                 }
                                 return null;
                             }
@@ -3892,6 +5037,13 @@ class AsimutBookerGUI:
 
                     const allElements = document.querySelectorAll('*');
                     let currentDate = null;
+
+                    function localDateString(value) {
+                        const year = value.getFullYear();
+                        const month = String(value.getMonth() + 1).padStart(2, '0');
+                        const day = String(value.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                    }
 
                     for (const element of allElements) {
                         if (element.children.length > 0) {
@@ -3923,10 +5075,11 @@ class AsimutBookerGUI:
                             const eventTitle = getEventTitle(element);
                             const eventRoom = getEventRoom(element);
 
-                            const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
-                            if (daysDiff >= 0 && daysDiff <= 7) {
+                            const daysDiff = Math.round((currentDate - today) / (1000 * 60 * 60 * 24));
+                            const dateString = localDateString(currentDate);
+                            if (allowedDateSet.has(dateString)) {
                                 events.push({
-                                    date: currentDate.toISOString().split('T')[0],
+                                    date: dateString,
                                     daysDiff: daysDiff,
                                     startTime: startTime,
                                     endTime: endTime,
@@ -3939,7 +5092,10 @@ class AsimutBookerGUI:
                     }
 
                     return events;
-                }""")
+                }""", {
+                    "allowedDates": allowed_date_strings,
+                    "roomNames": live_room_names,
+                })
                 require_authenticated_scan_page(
                     page,
                     page_is_authenticated,
@@ -4000,6 +5156,14 @@ class AsimutBookerGUI:
 
     def show_scan_rooms_dialog(self):
         """Show dialog for scanning available rooms with date range selection."""
+        window_dates = tuple(getattr(self, "booking_dates", ()))
+        if not window_dates:
+            messagebox.showerror(
+                "Booking Window Unavailable",
+                "No site-derived booking dates are available yet. Run a read-only "
+                "check or refresh status after the next successful scheduled run.",
+            )
+            return
         dialog = tk.Toplevel(self.root)
         dialog.title("Scan Available Rooms")
         dialog.geometry("900x700")
@@ -4055,9 +5219,8 @@ class AsimutBookerGUI:
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # Create date checkboxes for next 8 days (today + 7)
-        for i in range(8):
-            target_date = today + timedelta(days=i)
+        # Dates come only from the latest site-derived absolute cutoff.
+        for i, target_date in enumerate(window_dates):
             date_str = target_date.strftime('%Y-%m-%d')
             day_name = target_date.strftime('%A')
 
@@ -4158,10 +5321,7 @@ class AsimutBookerGUI:
 
     def _select_next_n_days(self, n: int):
         """Select the next N days for scanning."""
-        today = datetime.now().date()
-        selected_dates = set()
-        for i in range(n):
-            selected_dates.add((today + timedelta(days=i)).strftime('%Y-%m-%d'))
+        selected_dates = set(sorted(self.scan_date_vars)[:n])
 
         for date_str, var in self.scan_date_vars.items():
             var.set(date_str in selected_dates)
@@ -4195,6 +5355,7 @@ class AsimutBookerGUI:
                 restore_page_authentication,
                 safe_goto,
             )
+            from room_catalog import refresh_from_site as refresh_room_catalog
 
             all_slots = []  # List of {date, room, start_time, end_time, duration}
             today = datetime.now().date()
@@ -4206,9 +5367,29 @@ class AsimutBookerGUI:
                 context = browser.new_context(**context_options)
                 page = context.new_page()
 
-                # Navigate to practice rooms page
-                self.root.after(0, lambda: self.scan_rooms_progress_var.set("Loading booking page..."))
+                # Revalidate the date choices against a fresh complete site
+                # catalog before traversing the room grid.
+                self.root.after(
+                    0,
+                    lambda: self.scan_rooms_progress_var.set(
+                        "Refreshing booking window from Asimut..."
+                    ),
+                )
                 restore_page_authentication(page)
+                catalog = refresh_room_catalog(page)
+                live_date_strings = {
+                    value.isoformat()
+                    for value in catalog_booking_dates(catalog, today=today)
+                }
+                if not live_date_strings:
+                    raise RuntimeError("Asimut returned no current booking-window dates")
+                outside_live_window = sorted(set(selected_dates) - live_date_strings)
+                if outside_live_window:
+                    raise RuntimeError(
+                        "The booking window changed while this dialog was open. "
+                        "Close it, refresh status, and choose dates again."
+                    )
+                self.root.after(0, lambda: self.scan_rooms_progress_var.set("Loading booking page..."))
                 safe_goto(page, ASIMUT_OVERVIEW_URL)
                 require_authenticated_scan_page(
                     page,
