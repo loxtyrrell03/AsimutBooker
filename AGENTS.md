@@ -50,6 +50,10 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Location Category**: Music Practice Rooms - AHC
 - **Authentication**: Microsoft 365 SSO
 
+### Authentication Recovery for Agents
+
+- If Asimut is signed out, use the `rwcmd-outlook` skill to sign back in through the established RWCMD Microsoft authentication and verification workflow. Do not improvise a separate login flow or store credentials or verification codes in the repository.
+
 ## Directory Structure
 
 ```
