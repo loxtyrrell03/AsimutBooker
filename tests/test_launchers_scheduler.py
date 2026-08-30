@@ -2,8 +2,11 @@
 
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
+import xml.etree.ElementTree as ET
 
 from gui import AsimutBookerGUI, build_scheduler_remove_command
 
@@ -71,7 +74,7 @@ class SchedulerInstallerTests(unittest.TestCase):
         self.assertIn("-TaskPath $legacyTask.TaskPath", self.text)
         self.assertIn("-Force |", self.text)
         self.assertLess(
-            self.text.index('throw "The task was registered without the expected scheduled launcher action."'),
+            self.text.index('throw "The task was registered without the exact scheduled launcher contract."'),
             self.text.index('$legacyTasks = @('),
         )
 
@@ -94,6 +97,159 @@ class SchedulerInstallerTests(unittest.TestCase):
             self.text.index("Register-ScheduledTask"),
         )
         self.assertNotIn("ReadKey", self.text)
+
+    def test_registered_task_readback_verifies_exact_action_and_trigger(self):
+        required_checks = (
+            "$RegisteredTask.Settings.Enabled",
+            '[string]$RegisteredTask.State -cne $ExpectedState',
+            "@($RegisteredTask.Actions).Count -ne 1",
+            "$RegisteredAction.Execute -ine $CmdPath",
+            "$RegisteredAction.Arguments -cne $ActionArguments",
+            "$RegisteredAction.WorkingDirectory -ine $WorkingDir",
+            "@($RegisteredTask.Triggers).Count -ne 1",
+            '$RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskDailyTrigger"',
+            "$RegisteredTrigger.Enabled",
+            "$RegisteredTrigger.DaysInterval -ne 1",
+            '$RegisteredTrigger.Repetition.Interval -ne "PT15M"',
+            "$RegisteredTrigger.Repetition.Duration -ne $RepeatDurationIso",
+            "$RegisteredTrigger.Repetition.StopAtDurationEnd",
+            "$RegisteredTrigger.StartBoundary",
+            "$RegisteredLocalTime -ne $FirstRunTime",
+        )
+        for check in required_checks:
+            with self.subTest(check=check):
+                self.assertIn(check, self.text)
+
+        verification_start = self.text.index("function Assert-RegisteredTaskContract")
+        legacy_removal = self.text.index("$legacyTasks = @(")
+        for check in required_checks:
+            self.assertLess(verification_start, self.text.index(check))
+            self.assertLess(self.text.index(check), legacy_removal)
+
+    def test_registered_task_readback_verifies_all_runtime_and_principal_settings(self):
+        required_checks = (
+            "$RegisteredTask.Settings.WakeToRun",
+            "$RegisteredTask.Settings.StartWhenAvailable",
+            "$RegisteredTask.Settings.RunOnlyIfNetworkAvailable",
+            "$RegisteredTask.Settings.DisallowStartIfOnBatteries",
+            "$RegisteredTask.Settings.StopIfGoingOnBatteries",
+            '$RegisteredTask.Settings.MultipleInstances -ne "IgnoreNew"',
+            '$RegisteredTask.Settings.ExecutionTimeLimit -ne "PT14M"',
+            "$RegisteredTask.Settings.RestartCount -ne 1",
+            '$RegisteredTask.Settings.RestartInterval -ne "PT1M"',
+            "$CurrentUserSid = $CurrentIdentity.User.Value",
+            "$RegisteredPrincipalName.Translate(",
+            "$RegisteredUserSid -ne $CurrentUserSid",
+            '[string]$RegisteredTask.Principal.LogonType -ne "Interactive"',
+            '[string]$RegisteredTask.Principal.RunLevel -ne "Limited"',
+        )
+        for check in required_checks:
+            with self.subTest(check=check):
+                self.assertIn(check, self.text)
+
+    def test_replacement_is_fully_verified_while_disabled_before_enable(self):
+        settings = self.text.index("$Settings = New-ScheduledTaskSettingsSet")
+        disabled_setting = self.text.index("-Disable `", settings)
+        registration = self.text.index("Register-ScheduledTask `")
+        disabled_readback = self.text.index("-ExpectedEnabled $false", registration)
+        disabled_state = self.text.index('-ExpectedState "Disabled"', disabled_readback)
+        enable = self.text.index("Enable-ScheduledTask `", disabled_state)
+        enabled_readback = self.text.index("-ExpectedEnabled $true", enable)
+        ready_state = self.text.index('-ExpectedState "Ready"', enabled_readback)
+
+        self.assertLess(settings, disabled_setting)
+        self.assertLess(disabled_setting, registration)
+        self.assertLess(registration, disabled_readback)
+        self.assertLess(disabled_readback, disabled_state)
+        self.assertLess(disabled_state, enable)
+        self.assertLess(enable, enabled_readback)
+        self.assertLess(enabled_readback, ready_state)
+
+    def test_failure_path_removes_unverified_task_and_restores_safely(self):
+        registration = self.text.index("Register-ScheduledTask `")
+        transaction_catch = self.text.index("} catch {", registration)
+        cleanup_call = self.text.index(
+            "Remove-ReplacementTaskFailClosed", transaction_catch
+        )
+        legacy_removal = self.text.index("$legacyTasks = @(", registration)
+
+        self.assertLess(registration, legacy_removal)
+        self.assertLess(legacy_removal, transaction_catch)
+        self.assertLess(transaction_catch, cleanup_call)
+        self.assertIn("function Remove-ReplacementTaskFailClosed", self.text)
+        self.assertIn("Disable-ScheduledTask -TaskName $TaskName", self.text)
+        self.assertIn("Unregister-ScheduledTask `", self.text)
+        self.assertIn("$RemainingTask = Get-ReplacementTaskExact", self.text)
+        self.assertIn(
+            'throw "The unverified replacement task could not be disabled and removed."',
+            self.text,
+        )
+
+        self.assertIn("$PreviousTaskXml = Export-ScheduledTask `", self.text)
+        self.assertIn("ConvertTo-DisabledTaskXml", self.text)
+        self.assertIn("-Xml $PreviousTaskDisabledXml", self.text)
+        self.assertIn("$PreviousTaskCanBeReenabled", self.text)
+        self.assertIn(
+            '[string]$RestoredTask.State -cne "Disabled"', self.text
+        )
+
+    def test_rollback_xml_inserts_missing_enabled_element_in_task_namespace(self):
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+        if powershell is None:
+            self.skipTest("Windows PowerShell is required for this installer test")
+
+        function_start = self.text.index("function ConvertTo-DisabledTaskXml")
+        function_end = self.text.index(
+            "function Get-ReplacementTaskExact", function_start
+        )
+        function_source = self.text[function_start:function_end]
+        task_namespace = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+        fixture = (
+            f'<Task xmlns="{task_namespace}">'
+            "<Settings><WakeToRun>true</WakeToRun><Hidden>false</Hidden></Settings>"
+            "</Task>"
+        )
+        command = (
+            '$ErrorActionPreference = "Stop"\n'
+            f"{function_source}\n"
+            "$TaskXml = @'\n"
+            f"{fixture}\n"
+            "'@\n"
+            "ConvertTo-DisabledTaskXml -TaskXml $TaskXml"
+        )
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        root = ET.fromstring(result.stdout.strip())
+        settings = root.find(f"{{{task_namespace}}}Settings")
+        self.assertIsNotNone(settings)
+        enabled = settings.find(f"{{{task_namespace}}}Enabled")
+        self.assertIsNotNone(enabled)
+        self.assertEqual(enabled.text, "false")
+        self.assertEqual(
+            len(settings.findall(f"{{{task_namespace}}}Enabled")),
+            1,
+        )
+
+    def test_task_enumeration_errors_are_not_treated_as_absence(self):
+        exact_query_start = self.text.index("function Get-ReplacementTaskExact")
+        exact_query_end = self.text.index(
+            "function Remove-ReplacementTaskFailClosed", exact_query_start
+        )
+        exact_query = self.text[exact_query_start:exact_query_end]
+        self.assertIn("Get-ScheduledTask -ErrorAction Stop", exact_query)
+        self.assertNotIn("SilentlyContinue", exact_query)
+
+        transaction_start = self.text.index("$ReplacementRegistrationStarted = $false")
+        transaction_end = self.text.index('Write-Host "Created: $TaskName"')
+        transaction = self.text[transaction_start:transaction_end]
+        self.assertNotIn("Get-ScheduledTask -ErrorAction SilentlyContinue", transaction)
 
 
 class GuiSchedulerSafetyTests(unittest.TestCase):

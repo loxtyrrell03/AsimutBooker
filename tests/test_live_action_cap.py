@@ -100,6 +100,8 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             "target_end": "19:00",
             "created_at": "2026-08-27T17:30:00",
             "horizon_days": 5,
+            "eventId": 4242,
+            "event_url": "https://rwcmd.asimut.net/arrangement?eventId=4242",
         }
         page = object()
 
@@ -180,6 +182,7 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
             mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
             mock.patch.object(book_week, "safe_goto"),
+            mock.patch.object(book_week, "open_practice_room_overview"),
             mock.patch.object(book_week, "assert_calendar_date"),
             mock.patch.object(book_week, "load_disabled_dates", return_value=set()),
             mock.patch.object(book_week, "load_time_preferences", return_value=time_preferences),

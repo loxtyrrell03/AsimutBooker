@@ -193,6 +193,23 @@ class _AgendaPage:
             return 1000
         if expression.startswith("window.scroll"):
             return None
+        if "agendaDayStructure" in expression:
+            days = []
+            for offset in range(8):
+                current = self.today + timedelta(days=offset)
+                event_ids = [
+                    event["eventId"]
+                    for event in self.raw_events
+                    if event.get("date") == current.isoformat()
+                    and isinstance(event.get("eventId"), int)
+                    and event["eventId"] > 0
+                ]
+                days.append({
+                    "header": current.strftime("%A %d %B %Y").replace(" 0", " "),
+                    "eventIds": event_ids,
+                    "invalidCards": [],
+                })
+            return {"agendaDayStructure": days}
         if "function configuredRoomFromText" in expression:
             configured_rooms = list(args[0])
             self.configured_rooms = configured_rooms

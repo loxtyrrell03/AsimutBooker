@@ -1,0 +1,413 @@
+import contextlib
+import copy
+import io
+import unittest
+from datetime import datetime
+from types import SimpleNamespace
+from unittest import mock
+
+import book_week
+
+
+class _SnapshotPage:
+    def __init__(self, snapshot):
+        self.url = book_week.ASIMUT_OVERVIEW_URL
+        self.snapshot = snapshot
+        self.scripts = []
+        self.arguments = []
+
+    def evaluate(self, script, argument=None):
+        self.scripts.append(script)
+        self.arguments.append(argument)
+        return copy.deepcopy(self.snapshot)
+
+    def wait_for_timeout(self, _milliseconds):
+        return None
+
+
+class _SequenceSnapshotPage(_SnapshotPage):
+    def __init__(self, snapshots):
+        super().__init__(snapshots[-1])
+        self.snapshots = list(snapshots)
+
+    def evaluate(self, script, argument=None):
+        self.scripts.append(script)
+        self.arguments.append(argument)
+        if len(self.snapshots) > 1:
+            return copy.deepcopy(self.snapshots.pop(0))
+        return copy.deepcopy(self.snapshots[0])
+
+
+class _DelayedFormControl:
+    def __init__(self, page):
+        self.page = page
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1
+
+    def is_visible(self):
+        return self.page.wait_count >= 1
+
+
+class _DelayedFormPage:
+    def __init__(self):
+        self.url = (
+            "https://rwcmd.asimut.net/event?eventId=0&prefillTime=true&"
+            "start=2026-09-01T11%3A00%3A00.000%2B01%3A00&categoryId=56&locationId=85"
+        )
+        self.wait_count = 0
+
+    def locator(self, _selector):
+        return _DelayedFormControl(self)
+
+    def wait_for_timeout(self, _milliseconds):
+        self.wait_count += 1
+
+
+class OverviewRendererTests(unittest.TestCase):
+    def svg_snapshot(self):
+        return {
+            "renderer": "svg",
+            "rooms": [
+                {
+                    "room": "B1.09\u00a0(Practice: Grand Piano)",
+                    "blockedRanges": [
+                        {"startHour": 7.0, "endHour": 8.0, "closed": True},
+                        {"startHour": 9.0, "endHour": 10.0, "closed": False},
+                        {"startHour": 22.0, "endHour": 23.0, "closed": True},
+                    ],
+                    "clickOriginX": 100.0,
+                    "clickPixelsPerHour": 60.0,
+                    "clickY": 45.0,
+                }
+            ],
+        }
+
+    def test_svg_room_labels_are_reduced_to_configured_room_tokens(self):
+        page = _SnapshotPage(self.svg_snapshot())
+
+        snapshot = book_week.get_practice_room_grid_snapshot(page)
+
+        self.assertEqual(snapshot["rooms"][0]["room"], "B1.09")
+        script = page.scripts[0]
+        self.assertIn("app-overview-svg", script)
+        self.assertIn("a[data-location-id]", script)
+        self.assertIn("rect.closed-hours, rect.event-overlay", script)
+        self.assertIn("7 + item.x / 60", script)
+        self.assertIn("const rowTop = 30 * index", script)
+
+    def test_svg_blockers_produce_free_intervals_and_screen_coordinates(self):
+        page = _SnapshotPage(self.svg_snapshot())
+
+        rooms = book_week.get_available_slots(page)
+
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0]["room"], "B1.09")
+        self.assertEqual(
+            [(slot["startHour"], slot["endHour"]) for slot in rooms[0]["slots"]],
+            [(8.0, 9.0), (10.0, 22.0)],
+        )
+        self.assertEqual(rooms[0]["slots"][0]["clickX"], 190.0)
+        self.assertEqual(rooms[0]["slots"][0]["clickY"], 45.0)
+
+    def test_coordinate_lookup_scrolls_svg_label_before_refreshing_transform(self):
+        page = _SnapshotPage({"x": 640.0, "y": 75.0, "renderer": "svg"})
+
+        coordinates = book_week.get_room_slot_coordinates(
+            page,
+            "B1.09\u00a0(Practice: Grand Piano)",
+            16.0,
+            17.0,
+        )
+
+        self.assertEqual(coordinates["renderer"], "svg")
+        self.assertEqual(page.arguments[0], ["B1.09", 16.5])
+        script = page.scripts[0]
+        self.assertLess(script.index("label.scrollIntoView"), script.index("svg.getScreenCTM"))
+        self.assertIn("point.x = 60 * (centerHour - 7)", script)
+        self.assertIn("point.y = 30 * rowIndex + 15", script)
+        self.assertIn(".location-day", script)
+
+    def test_grid_readiness_accepts_svg_without_waiting_on_legacy_class(self):
+        page = _SnapshotPage(self.svg_snapshot())
+        expected_date = datetime.now().date()
+
+        with (
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(book_week, "assert_calendar_date") as assert_date,
+        ):
+            snapshot = book_week.wait_for_practice_room_grid(
+                page,
+                expected_date,
+                timeout_ms=100,
+            )
+
+        self.assertEqual(snapshot["renderer"], "svg")
+        assert_date.assert_called_once()
+        self.assertFalse(hasattr(page, "wait_for_selector"))
+
+    def test_grid_readiness_waits_for_svg_event_overlays(self):
+        complete = self.svg_snapshot()
+        incomplete = copy.deepcopy(complete)
+        incomplete["rooms"][0]["blockedRanges"] = [
+            item
+            for item in incomplete["rooms"][0]["blockedRanges"]
+            if item["closed"]
+        ]
+        page = _SequenceSnapshotPage([incomplete, complete])
+
+        with (
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(book_week, "assert_calendar_date") as assert_date,
+        ):
+            snapshot = book_week.wait_for_practice_room_grid(
+                page,
+                datetime.now().date(),
+                timeout_ms=100,
+            )
+
+        self.assertEqual(snapshot["renderer"], "svg")
+        self.assertEqual(snapshot["rooms"][0]["room"], "B1.09")
+        self.assertTrue(
+            any(
+                item["closed"] is False
+                for item in snapshot["rooms"][0]["blockedRanges"]
+            )
+        )
+        self.assertEqual(len(page.scripts), 3)
+        assert_date.assert_called_once()
+
+    def test_grid_readiness_allows_empty_room_when_another_room_has_events(self):
+        snapshot = self.svg_snapshot()
+        empty_room = copy.deepcopy(snapshot["rooms"][0])
+        empty_room["room"] = "B1.10"
+        empty_room["blockedRanges"] = [
+            item for item in empty_room["blockedRanges"] if item["closed"]
+        ]
+        snapshot["rooms"].append(empty_room)
+        page = _SnapshotPage(snapshot)
+
+        with (
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(book_week, "assert_calendar_date") as assert_date,
+        ):
+            result = book_week.wait_for_practice_room_grid(
+                page,
+                datetime.now().date(),
+                timeout_ms=100,
+            )
+
+        self.assertEqual([room["room"] for room in result["rooms"]], ["B1.09", "B1.10"])
+        self.assertEqual(len(page.scripts), 2)
+        assert_date.assert_called_once()
+
+    def test_grid_readiness_accepts_stably_empty_svg_day(self):
+        empty = self.svg_snapshot()
+        empty["rooms"][0]["blockedRanges"] = [
+            item for item in empty["rooms"][0]["blockedRanges"] if item["closed"]
+        ]
+        page = _SnapshotPage(empty)
+
+        with (
+            mock.patch.object(book_week, "_SVG_EMPTY_GRID_STABLE_POLLS", 3),
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(book_week, "assert_calendar_date") as assert_date,
+        ):
+            result = book_week.wait_for_practice_room_grid(
+                page,
+                datetime.now().date(),
+                timeout_ms=100,
+            )
+
+        self.assertEqual(result["renderer"], "svg")
+        self.assertFalse(
+            any(
+                item["closed"] is False
+                for item in result["rooms"][0]["blockedRanges"]
+            )
+        )
+        self.assertEqual(len(page.scripts), 3)
+        assert_date.assert_called_once()
+
+    def test_labels_only_transient_cannot_win_before_overlays_stabilize(self):
+        complete = self.svg_snapshot()
+        labels_only = copy.deepcopy(complete)
+        labels_only["rooms"][0]["blockedRanges"] = [
+            item
+            for item in labels_only["rooms"][0]["blockedRanges"]
+            if item["closed"]
+        ]
+        page = _SequenceSnapshotPage(
+            [labels_only, labels_only, complete, complete]
+        )
+
+        with (
+            mock.patch.object(book_week, "_SVG_EMPTY_GRID_STABLE_POLLS", 3),
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(book_week, "assert_calendar_date") as assert_date,
+        ):
+            result = book_week.wait_for_practice_room_grid(
+                page,
+                datetime.now().date(),
+                timeout_ms=100,
+            )
+
+        self.assertTrue(
+            any(
+                item["closed"] is False
+                for item in result["rooms"][0]["blockedRanges"]
+            )
+        )
+        self.assertEqual(len(page.scripts), 4)
+        assert_date.assert_called_once()
+
+    def test_stable_grid_signature_rejects_ambiguous_or_invalid_rows(self):
+        duplicate = self.svg_snapshot()
+        duplicate["rooms"].append(copy.deepcopy(duplicate["rooms"][0]))
+        invalid_range = self.svg_snapshot()
+        invalid_range["rooms"][0]["blockedRanges"][0]["endHour"] = None
+
+        for snapshot in (duplicate, invalid_range):
+            with self.subTest(snapshot=snapshot):
+                self.assertIsNone(
+                    book_week._practice_room_grid_content_signature(snapshot)
+                )
+
+    def test_overview_open_retries_one_incomplete_spa_load(self):
+        page = object()
+        recovered = self.svg_snapshot()
+        with (
+            mock.patch.object(book_week, "safe_goto") as goto,
+            mock.patch.object(
+                book_week,
+                "wait_for_practice_room_grid",
+                side_effect=[RuntimeError("renderer empty"), recovered],
+            ) as wait_grid,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            result = book_week.open_practice_room_overview(
+                page,
+                datetime.now().date(),
+            )
+
+        self.assertEqual(result, recovered)
+        self.assertEqual(goto.call_count, 2)
+        self.assertEqual(wait_grid.call_count, 2)
+
+    def test_overview_refresh_reloads_then_waits_for_verified_grid(self):
+        page = object()
+        expected_date = datetime.now().date()
+        recovered = self.svg_snapshot()
+        call_order = mock.Mock()
+        with (
+            mock.patch.object(book_week, "safe_reload") as reload_page,
+            mock.patch.object(
+                book_week,
+                "wait_for_practice_room_grid",
+                return_value=recovered,
+            ) as wait_grid,
+        ):
+            call_order.attach_mock(reload_page, "reload")
+            call_order.attach_mock(wait_grid, "wait")
+
+            result = book_week.refresh_practice_room_overview(page, expected_date)
+
+        self.assertEqual(result, recovered)
+        self.assertEqual(
+            call_order.mock_calls,
+            [mock.call.reload(page), mock.call.wait(page, expected_date)],
+        )
+
+    def test_delayed_booking_menu_and_aria_labelled_form_are_supported(self):
+        option = mock.MagicMock()
+        option.count.return_value = 1
+        option.is_visible.return_value = True
+        locator = mock.MagicMock()
+        locator.first = option
+        page = mock.MagicMock()
+        page.url = book_week.ASIMUT_OVERVIEW_URL
+        page.locator.return_value = locator
+
+        found = book_week.wait_for_student_booking_option(page)
+
+        self.assertIs(found, option)
+        page.locator.assert_called_once_with(
+            "mat-list-item:has-text('Student booking provisional')"
+        )
+        page.evaluate.return_value = {
+            "room": "B1.09",
+            "date": "2026-08-31",
+            "start": "09:00",
+            "end": "10:00",
+        }
+        book_week.page_booking_snapshot(page)
+        snapshot_script = page.evaluate.call_args.args[0]
+        self.assertIn("input[aria-label='Start time']", snapshot_script)
+        self.assertIn("input[aria-label='End time']", snapshot_script)
+        self.assertIn("input[aria-label='Event date']", snapshot_script)
+        self.assertIn("input[aria-label='Event location']", snapshot_script)
+        self.assertIn("element.getAttribute && element.getAttribute('aria-label')", snapshot_script)
+
+    def test_new_booking_form_waits_for_delayed_time_controls(self):
+        page = _DelayedFormPage()
+
+        self.assertTrue(book_week.wait_for_new_booking_form(page, timeout_ms=500))
+        self.assertEqual(page.wait_count, 1)
+
+
+class CheckOnlyRendererIntegrationTests(unittest.TestCase):
+    def test_check_only_traverses_svg_grids_through_renderer_abstraction(self):
+        args = SimpleNamespace(headless=True, check_only=True)
+        page = mock.MagicMock()
+        context = mock.MagicMock()
+        context.new_page.return_value = page
+        browser = mock.MagicMock()
+        browser.new_context.return_value = context
+        playwright = mock.MagicMock()
+        playwright.chromium.launch.return_value = browser
+        playwright_context = mock.MagicMock()
+        playwright_context.__enter__.return_value = playwright
+
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
+            mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
+            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
+            mock.patch.object(book_week, "load_ignored_events", return_value=[]),
+            mock.patch.object(book_week, "open_practice_room_overview") as open_grid,
+            mock.patch.object(
+                book_week,
+                "navigate_to_day",
+                side_effect=lambda _page, target, _current: target,
+            ) as navigate,
+            mock.patch.object(book_week, "wait_for_practice_room_grid") as wait_grid,
+            mock.patch.object(
+                book_week,
+                "get_practice_room_names",
+                return_value={"B0.29", "B1.09"},
+            ) as room_names,
+            mock.patch.object(
+                book_week,
+                "get_available_slots",
+                return_value=[{"room": "B0.29", "slots": []}],
+            ) as available,
+            mock.patch.object(book_week, "persist_storage_state"),
+        ):
+            result = book_week.run_booking(args, {}, book_week.PracticePlan())
+
+        self.assertEqual(result, 0)
+        open_grid.assert_called_once()
+        self.assertEqual(navigate.call_count, 7)
+        self.assertEqual(wait_grid.call_count, 8)
+        self.assertEqual(room_names.call_count, 8)
+        self.assertEqual(available.call_count, 8)
+
+
+if __name__ == "__main__":
+    unittest.main()

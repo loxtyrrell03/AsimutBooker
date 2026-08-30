@@ -291,6 +291,39 @@ class GuiPracticePlanHelpersTests(unittest.TestCase):
         )
         self.assertEqual(plan.default_hours, 2.5)
 
+    def test_plan_save_scopes_day_and_target_changes_independently(self):
+        settings = {
+            "disabled_dates": ["2026-09-01"],
+            "practice_plan": {
+                "enabled": True,
+                "default_hours": 3.0,
+                "date_overrides": {
+                    "2026-09-01": 1.0,
+                    "2026-09-02": 2.0,
+                },
+            },
+        }
+
+        plan = apply_practice_plan_update(
+            settings,
+            plan_enabled=True,
+            # The per-date dialog did not edit the default or 2 September's
+            # target, so concurrent values for both must survive.
+            default_hours=None,
+            day_states={"2026-09-02": False},
+            date_overrides={"2026-09-01": 1.5},
+        )
+
+        self.assertEqual(
+            settings["disabled_dates"],
+            ["2026-09-01", "2026-09-02"],
+        )
+        self.assertEqual(
+            settings["practice_plan"]["date_overrides"],
+            {"2026-09-01": 1.5, "2026-09-02": 2.0},
+        )
+        self.assertEqual(plan.default_hours, 3.0)
+
     def test_invalid_existing_day_settings_fail_closed(self):
         settings = {"disabled_dates": "2026-09-01"}
         with self.assertRaises(PracticePlanError):
@@ -368,6 +401,149 @@ class GuiPracticePlanHelpersTests(unittest.TestCase):
         gui._update_practice_plan_summary.assert_called_once_with()
         gui._update_settings.assert_not_called()
         showerror.assert_called_once()
+
+    def test_failed_plan_write_restores_last_confirmed_controls(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        gui = object.__new__(AsimutBookerGUI)
+        gui.settings_available = True
+        gui.practice_plan = PracticePlan(
+            enabled=True,
+            default_hours=2.0,
+            date_overrides={"2026-09-01": 1.0},
+        )
+        gui.practice_plan_overrides = {"2026-09-01": 1.0}
+        gui.practice_default_hours = Variable("3")
+        gui.practice_plan_enabled = Variable(False)
+        gui._update_practice_plan_ui_state = MagicMock()
+        gui._update_practice_plan_summary = MagicMock()
+        gui._update_settings = MagicMock(return_value=False)
+
+        gui.on_practice_plan_changed()
+
+        self.assertEqual(gui.practice_default_hours.get(), "2")
+        self.assertTrue(gui.practice_plan_enabled.get())
+        self.assertEqual(gui.practice_plan_overrides, {"2026-09-01": 1.0})
+        gui._update_practice_plan_ui_state.assert_called_once_with()
+        gui._update_practice_plan_summary.assert_called_once_with()
+
+    def test_compact_plan_save_merges_only_the_field_the_user_changed(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        cases = (
+            {
+                "name": "default changed locally while enabled changed elsewhere",
+                "ui_enabled": True,
+                "ui_default": "3",
+                "latest": {
+                    "enabled": False,
+                    "default_hours": 2.5,
+                    "date_overrides": {"2026-09-01": 1.0},
+                },
+                "expected_enabled": False,
+                "expected_default": 3.0,
+            },
+            {
+                "name": "enabled changed locally while default changed elsewhere",
+                "ui_enabled": False,
+                "ui_default": "2",
+                "latest": {
+                    "enabled": True,
+                    "default_hours": 3.5,
+                    "date_overrides": {"2026-09-01": 1.0},
+                },
+                "expected_enabled": False,
+                "expected_default": 3.5,
+            },
+        )
+
+        for case in cases:
+            with self.subTest(case["name"]):
+                gui = object.__new__(AsimutBookerGUI)
+                gui.settings_available = True
+                gui.practice_plan = PracticePlan(
+                    enabled=True,
+                    default_hours=2.0,
+                    date_overrides={"2026-09-01": 1.0},
+                )
+                gui.practice_plan_overrides = {"2026-09-01": 1.0}
+                gui.practice_plan_enabled = Variable(case["ui_enabled"])
+                gui.practice_default_hours = Variable(case["ui_default"])
+                gui._update_practice_plan_ui_state = MagicMock()
+                gui._update_practice_plan_summary = MagicMock()
+                settings = {"practice_plan": dict(case["latest"])}
+
+                def update(mutator):
+                    mutator(settings)
+                    return True
+
+                gui._update_settings = update
+
+                gui.on_practice_plan_changed()
+
+                saved = settings["practice_plan"]
+                self.assertEqual(saved["enabled"], case["expected_enabled"])
+                self.assertEqual(saved["default_hours"], case["expected_default"])
+                self.assertEqual(
+                    saved["date_overrides"],
+                    {"2026-09-01": 1.0},
+                )
+                self.assertEqual(
+                    gui.practice_plan_enabled.get(),
+                    case["expected_enabled"],
+                )
+                self.assertEqual(
+                    gui.practice_default_hours.get(),
+                    format_practice_hours(case["expected_default"]),
+                )
+
+    def test_install_confirmed_plan_resyncs_every_compact_widget(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        gui = object.__new__(AsimutBookerGUI)
+        gui.practice_plan_enabled = Variable(False)
+        gui.practice_default_hours = Variable("2")
+        gui.practice_plan_overrides = {}
+        gui._update_practice_plan_ui_state = MagicMock()
+        gui._update_practice_plan_summary = MagicMock()
+        saved_plan = PracticePlan(
+            enabled=True,
+            default_hours=3.5,
+            date_overrides={"2026-09-02": 1.5},
+        )
+
+        gui._install_confirmed_practice_plan(saved_plan)
+
+        self.assertIs(gui.practice_plan, saved_plan)
+        self.assertTrue(gui.practice_plan_enabled.get())
+        self.assertEqual(gui.practice_default_hours.get(), "3.5")
+        self.assertEqual(gui.practice_plan_overrides, {"2026-09-02": 1.5})
+        gui._update_practice_plan_ui_state.assert_called_once_with()
+        gui._update_practice_plan_summary.assert_called_once_with()
 
 
 class GuiAuthenticatedScanTests(unittest.TestCase):

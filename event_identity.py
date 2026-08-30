@@ -123,12 +123,32 @@ def is_v2_event_identity_key(value: object) -> bool:
 def deduplicate_events(
     events: Iterable[Mapping[str, object]],
 ) -> list[Mapping[str, object]]:
-    """Remove only exact logical duplicates while preserving scan order."""
+    """Remove repeated DOM copies while preserving distinct remote events.
+
+    Current Asimut cards expose a positive eventId. Repeated lazy-rendered
+    copies of one card share that id, while two genuinely separate events may
+    otherwise have the same room/date/time/title identity. Legacy/cache records
+    without an id continue to use the complete v2 logical identity.
+    """
 
     unique_events: list[Mapping[str, object]] = []
     seen: set[str] = set()
     for event in events:
-        key = event_identity_v2(event)
+        event_id = event.get("eventId")
+        if isinstance(event_id, bool):
+            event_id = None
+        if isinstance(event_id, int) and event_id > 0:
+            key = f"event-id:{event_id}"
+        elif (
+            isinstance(event_id, str)
+            and event_id
+            and event_id.isascii()
+            and event_id.isdecimal()
+            and not event_id.startswith("0")
+        ):
+            key = f"event-id:{event_id}"
+        else:
+            key = event_identity_v2(event)
         if key in seen:
             continue
         seen.add(key)

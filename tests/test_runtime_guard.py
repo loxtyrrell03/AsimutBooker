@@ -183,6 +183,20 @@ class PostSaveUrlTests(unittest.TestCase):
         self.assertTrue(
             is_new_booking_form_url("https://rwcmd.asimut.net/event?eventId=0")
         )
+        current_prefill = (
+            "https://rwcmd.asimut.net/event?eventId=0&prefillTime=true&"
+            "start=2026-09-01T09%3A45%3A00.000%2B01%3A00&"
+            "categoryId=56&locationId=85"
+        )
+        self.assertTrue(is_new_booking_form_url(current_prefill))
+        self.assertTrue(
+            is_new_booking_form_url(
+                "https://rwcmd.asimut.net/event?locationId=85&categoryId=56&"
+                "start=2026-09-01T09%3A45%3A00.000%2B01%3A00&"
+                "prefillTime=true&eventId=0"
+            ),
+            "the known prefill tuple is order-independent",
+        )
         for url in (
             "http://rwcmd.asimut.net/event?eventId=0",
             "https://evil.example/event?eventId=0",
@@ -190,6 +204,16 @@ class PostSaveUrlTests(unittest.TestCase):
             "https://rwcmd.asimut.net:443/event?eventId=0",
             "https://rwcmd.asimut.net/event?eventId=0#form",
             "https://rwcmd.asimut.net/event?eventId=1",
+            current_prefill + "&unexpected=true",
+            current_prefill.replace("eventId=0", "eventId=0&eventId=0"),
+            current_prefill.replace("prefillTime=true&", ""),
+            current_prefill.replace("prefillTime=true", "prefillTime=false"),
+            current_prefill.replace("categoryId=56", "categoryId=0"),
+            current_prefill.replace("locationId=85", "locationId=-85"),
+            current_prefill.replace(
+                "2026-09-01T09%3A45%3A00.000%2B01%3A00",
+                "2026-09-01T09%3A45%3A00",
+            ),
         ):
             with self.subTest(url=url):
                 self.assertFalse(is_new_booking_form_url(url))

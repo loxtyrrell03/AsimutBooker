@@ -520,43 +520,53 @@ def apply_practice_plan_update(
     settings: dict[str, Any],
     *,
     plan_enabled: bool,
-    default_hours: float,
+    default_hours: float | None,
     day_states: Mapping[str, bool],
     date_overrides: Mapping[str, float | None],
 ) -> PracticePlan:
-    """Apply one scoped UI save while preserving unrelated and out-of-window data."""
+    """Apply one scoped UI save while preserving concurrent, unedited values.
+
+    ``day_states`` and ``date_overrides`` are independent changed-value maps.
+    Passing ``None`` for ``default_hours`` preserves the latest persisted
+    default, which is useful for a per-date editor that does not itself edit
+    that value.
+    """
     if not isinstance(plan_enabled, bool):
         raise PracticePlanError("Practice plan enabled state must be true or false")
 
     current_plan = load_practice_plan(settings)
-    editable_dates = set()
+    editable_day_dates = set()
     for date_key, enabled in day_states.items():
-        editable_dates.add(validate_iso_date_key(date_key, "Practice-plan date"))
+        editable_day_dates.add(validate_iso_date_key(date_key, "Practice-plan date"))
         if not isinstance(enabled, bool):
             raise PracticePlanError(f"Enabled state for {date_key} must be true or false")
+    editable_override_dates = {
+        validate_iso_date_key(date_key, "Practice-plan override date")
+        for date_key in date_overrides
+    }
 
     disabled_raw = settings.get("disabled_dates", [])
     if not isinstance(disabled_raw, list) or not all(isinstance(item, str) for item in disabled_raw):
         raise PracticePlanError("disabled_dates must be a list of YYYY-MM-DD strings")
     disabled_dates = {
         validate_iso_date_key(item, "Disabled date") for item in disabled_raw
-    } - editable_dates
+    } - editable_day_dates
     disabled_dates.update(date_key for date_key, enabled in day_states.items() if not enabled)
 
     merged_overrides = {
         key: value
         for key, value in (current_plan.date_overrides or {}).items()
-        if key not in editable_dates
+        if key not in editable_override_dates
     }
     for date_key, value in date_overrides.items():
-        if date_key not in editable_dates:
-            raise PracticePlanError(f"Unexpected practice-plan date: {date_key}")
         if value is not None:
             merged_overrides[date_key] = value
 
     candidate = {
         "enabled": plan_enabled,
-        "default_hours": default_hours,
+        "default_hours": (
+            current_plan.default_hours if default_hours is None else default_hours
+        ),
         "date_overrides": merged_overrides,
     }
     validated = load_practice_plan({"practice_plan": candidate})
@@ -2211,6 +2221,10 @@ class AsimutBookerGUI:
             self._set_settings_error(str(exc))
             plan = PracticePlan()
 
+        self._install_confirmed_practice_plan(plan)
+
+    def _install_confirmed_practice_plan(self, plan: PracticePlan):
+        """Synchronize every compact control from one successfully saved plan."""
         self.practice_plan = plan
         self.practice_plan_overrides = dict(plan.date_overrides or {})
         self.practice_plan_enabled.set(plan.enabled)
@@ -2236,21 +2250,23 @@ class AsimutBookerGUI:
         try:
             default_hours = self._validated_default_practice_hours()
         except PracticePlanError as exc:
-            self.practice_default_hours.set(format_practice_hours(self.practice_plan.default_hours))
-            self.practice_plan_enabled.set(self.practice_plan.enabled)
-            self._update_practice_plan_ui_state()
-            self._update_practice_plan_summary()
+            self._restore_practice_plan_controls()
             messagebox.showerror("Invalid Practice Target", str(exc))
             return
 
         enabled = self.practice_plan_enabled.get()
+        previous_plan = self.practice_plan
+        enabled_changed = enabled != previous_plan.enabled
+        default_changed = default_hours != previous_plan.default_hours
         saved_plan = []
 
         def mutate(settings):
             current_plan = load_practice_plan(settings)
             candidate = {
-                "enabled": enabled,
-                "default_hours": default_hours,
+                "enabled": enabled if enabled_changed else current_plan.enabled,
+                "default_hours": (
+                    default_hours if default_changed else current_plan.default_hours
+                ),
                 "date_overrides": current_plan.date_overrides or {},
             }
             plan = load_practice_plan({"practice_plan": candidate})
@@ -2262,11 +2278,15 @@ class AsimutBookerGUI:
             saved_plan.append(plan)
 
         if self._update_settings(mutate):
-            self.practice_plan = saved_plan[0]
-            self.practice_plan_overrides = dict(self.practice_plan.date_overrides or {})
-            self.practice_default_hours.set(format_practice_hours(default_hours))
-            self._update_practice_plan_ui_state()
-            self._update_practice_plan_summary()
+            self._install_confirmed_practice_plan(saved_plan[0])
+        else:
+            # The click/spinbox callback has already changed the Tk variables.
+            # Never leave those unsaved values visible after a failed write.
+            self._restore_practice_plan_controls()
+
+    def _restore_practice_plan_controls(self):
+        """Restore compact controls to the last plan confirmed in settings."""
+        self._install_confirmed_practice_plan(self.practice_plan)
 
     def _update_practice_plan_ui_state(self):
         """Reflect whether daily targets and settings persistence are available."""
@@ -2336,9 +2356,12 @@ class AsimutBookerGUI:
             content,
             text=(
                 "Turn days off or choose a target that replaces the default for that date. "
-                "Saving this screen turns daily targets on."
+                "Saving this screen turns daily targets on. Targets are aims: existing events, "
+                "room availability, and RWCMD booking limits can mean less is booked."
             ),
             foreground="#555555",
+            wraplength=660,
+            justify=tk.LEFT,
         ).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(0, 14))
         ttk.Label(content, text="Book", font=("Segoe UI", 11, "bold")).grid(row=2, column=0, sticky=tk.W)
         ttk.Label(content, text="Date", font=("Segoe UI", 11, "bold")).grid(row=2, column=1, sticky=tk.W)
@@ -2355,6 +2378,8 @@ class AsimutBookerGUI:
         day_working = {}
         target_working = {}
         target_widgets = {}
+        opening_day_states = {}
+        opening_overrides = {}
         today = datetime.now().date()
 
         def update_row_state(date_key):
@@ -2367,8 +2392,10 @@ class AsimutBookerGUI:
             date_key = target_date.isoformat()
             row = offset + 3
             enabled = self.day_vars.get(date_key).get() if date_key in self.day_vars else True
+            opening_day_states[date_key] = enabled
             day_working[date_key] = tk.BooleanVar(value=enabled)
             target_value = self.practice_plan_overrides.get(date_key)
+            opening_overrides[date_key] = target_value
             selected = (
                 f"{format_practice_hours(target_value)}h"
                 if target_value is not None
@@ -2412,6 +2439,17 @@ class AsimutBookerGUI:
                 messagebox.showerror("Invalid Practice Target", str(exc), parent=dialog)
                 return
 
+            changed_states = {
+                date_key: enabled
+                for date_key, enabled in states.items()
+                if enabled != opening_day_states[date_key]
+            }
+            changed_overrides = {
+                date_key: target
+                for date_key, target in overrides.items()
+                if target != opening_overrides[date_key]
+            }
+
             saved_plan = []
 
             def mutate(settings):
@@ -2422,24 +2460,22 @@ class AsimutBookerGUI:
                         # inactive targets.  The top-level checkbox remains the
                         # explicit way to turn daily targets off again.
                         plan_enabled=True,
-                        default_hours=default_hours,
-                        day_states=states,
-                        date_overrides=overrides,
+                        # This dialog does not edit the default. Preserve a
+                        # concurrent top-level/default change made elsewhere.
+                        default_hours=None,
+                        day_states=changed_states,
+                        date_overrides=changed_overrides,
                     )
                 )
 
             if not self._update_settings(mutate):
                 return
 
-            for date_key, enabled in states.items():
-                if date_key in self.day_vars:
-                    self.day_vars[date_key].set(enabled)
-            self.practice_plan_enabled.set(True)
-            self.practice_plan = saved_plan[0]
-            self.practice_plan_overrides = dict(self.practice_plan.date_overrides or {})
-            self._update_practice_plan_ui_state()
+            # Reload the merged day document so concurrent, unedited rows are
+            # reflected instead of leaving stale in-memory BooleanVars behind.
+            self.load_booking_days()
+            self._install_confirmed_practice_plan(saved_plan[0])
             self._update_days_summary()
-            self._update_practice_plan_summary()
             self.log("Practice plan saved", "info")
             dialog.destroy()
 

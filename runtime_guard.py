@@ -16,12 +16,17 @@ from pathlib import Path
 from types import TracebackType
 from collections.abc import Mapping
 from typing import IO, TextIO
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 
 _ISO_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _HHMM_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 _CONFIRMED_EVENT_QUERY_RE = re.compile(r"eventId=([1-9][0-9]*)")
+_PREFILLED_EVENT_START_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\."
+    r"[0-9]{3}[+-](?:0[0-9]|1[0-4]):[0-5][0-9]"
+)
 _ASIMUT_HOST = "rwcmd.asimut.net"
 _LOCK_CONTENTION_ERRNOS = {
     errno.EACCES,
@@ -247,14 +252,55 @@ def is_confirmed_post_save_url(url: str) -> bool:
 
 
 def is_new_booking_form_url(url: str) -> bool:
-    """Return whether ``url`` is the exact unsaved Asimut booking form."""
+    """Return whether ``url`` is a canonical unsaved Asimut booking form.
+
+    Asimut's current overview adds a complete prefill tuple to the legacy
+    ``eventId=0`` route. Only that exact known tuple is accepted; duplicate,
+    partial, malformed, or additional parameters still fail closed.
+    """
 
     if not isinstance(url, str) or not url or url != url.strip():
         return False
     parsed = _is_trusted_asimut_location(url)
     if parsed is None:
         return False
-    return parsed.path == "/event" and parsed.query == "eventId=0" and not parsed.fragment
+    if parsed.path != "/event" or parsed.fragment:
+        return False
+    if parsed.query == "eventId=0":
+        return True
+    try:
+        pairs = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+    except ValueError:
+        return False
+    keys = [key for key, _value in pairs]
+    expected_keys = {
+        "eventId",
+        "prefillTime",
+        "start",
+        "categoryId",
+        "locationId",
+    }
+    if len(keys) != len(expected_keys) or set(keys) != expected_keys:
+        return False
+    values = dict(pairs)
+    if values["eventId"] != "0" or values["prefillTime"] != "true":
+        return False
+    if re.fullmatch(r"[1-9][0-9]*", values["categoryId"]) is None:
+        return False
+    if re.fullmatch(r"[1-9][0-9]*", values["locationId"]) is None:
+        return False
+    start = values["start"]
+    if _PREFILLED_EVENT_START_RE.fullmatch(start) is None:
+        return False
+    try:
+        parsed_start = datetime.fromisoformat(start)
+    except ValueError:
+        return False
+    return parsed_start.tzinfo is not None and parsed_start.utcoffset() is not None
 
 
 def hhmm_values_match(requested: str, actual: str) -> bool:

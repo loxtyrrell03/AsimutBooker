@@ -28,6 +28,7 @@ from playwright.sync_api import sync_playwright
 
 from asimut_auth import (
     AutonomousLoginError,
+    clear_auth_recovery_block,
     configure_windows_credential_interactive,
     ensure_asimut_session,
     windows_credential_is_configured,
@@ -70,6 +71,8 @@ from runtime_guard import (
     configure_utf8_stdio,
     is_confirmed_post_save_url,
     is_new_booking_form_url,
+    normalize_date,
+    parse_confirmed_event_id,
 )
 
 try:
@@ -411,6 +414,7 @@ def page_booking_snapshot(page):
     return page.evaluate(r"""() => {
         const startSelectors = [
             '#startDate',
+            "input[aria-label='Start time']",
             "input[data-cy='time-range-start-time']",
             "input[formcontrolname='startTime']",
             "input[data-cy*='start-time']",
@@ -418,10 +422,21 @@ def page_booking_snapshot(page):
         ];
         const endSelectors = [
             '#endDate',
+            "input[aria-label='End time']",
             "input[data-cy='time-range-end-time']",
             "input[formcontrolname='endTime']",
             "input[data-cy*='end-time']",
             "input[name*='endTime' i]"
+        ];
+        const roomSelectors = [
+            "input[aria-label='Event location']",
+            "input[data-cy*='event-location']",
+            "input[formcontrolname*='location' i]"
+        ];
+        const dateSelectors = [
+            "input[aria-label='Event date']",
+            "input[data-cy*='event-date']",
+            "input[formcontrolname*='date' i]"
         ];
         const componentSelector = [
             'app-event-form', 'app-event-editor', 'app-event-detail',
@@ -461,6 +476,33 @@ def page_booking_snapshot(page):
                 );
                 if ((hasStart && hasEnd) || isDetails) addRoot(root);
             }
+        }
+        // The current arrangement page renders one exact event card instead
+        // of an app-event-detail component. Bind it to the positive event id
+        // in this canonical arrangement URL; another card cannot confirm it.
+        let expectedEventId = null;
+        try {
+            const current = new URL(window.location.href);
+            const eventIds = current.searchParams.getAll('eventId');
+            if (
+                current.protocol === 'https:' &&
+                current.hostname === 'rwcmd.asimut.net' &&
+                current.port === '' &&
+                current.pathname === '/arrangement' &&
+                current.hash === '' &&
+                eventIds.length === 1 &&
+                /^[1-9][0-9]*$/.test(eventIds[0])
+            ) expectedEventId = eventIds[0];
+        } catch (_error) {
+            expectedEventId = null;
+        }
+        if (expectedEventId) {
+            // A persisted arrangement may contain other reusable event/form
+            // components. Discard every generic candidate and bind extraction
+            // exclusively to the card whose id is proven by the current URL.
+            roots.length = 0;
+            addRoot(document.querySelector(`[data-cy="event_${expectedEventId}"]`));
+            addRoot(document.getElementById(`event_${expectedEventId}`));
         }
 
         const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -513,6 +555,10 @@ def page_booking_snapshot(page):
             while ((match = numeric.exec(text)) !== null) {
                 results.push(canonicalDateParts(match[3], match[2], match[1]));
             }
+            const numericShortYear = /(?<![0-9])([0-9]{1,2})[\/-]([0-9]{1,2})[\/-]([0-9]{2})(?![0-9])/g;
+            while ((match = numericShortYear.exec(text)) !== null) {
+                results.push(canonicalDateParts(`20${match[3]}`, match[2], match[1]));
+            }
             const dayMonth = /(?<![A-Za-z0-9])([0-9]{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+([0-9]{4})(?![0-9])/gi;
             while ((match = dayMonth.exec(text)) !== null) {
                 results.push(canonicalDateParts(match[3], monthNumbers[match[2].toLowerCase()], match[1]));
@@ -538,6 +584,11 @@ def page_booking_snapshot(page):
             let end = canonicalTime(controlValue(rootEnd));
 
             const selectedRooms = [];
+            const labelledRoom = firstMatch(root, roomSelectors);
+            if (labelledRoom) {
+                selectedRooms.push(...roomTokens(controlValue(labelledRoom)));
+                selectedRooms.push(...roomTokens(labelledRoom.textContent));
+            }
             for (const element of root.querySelectorAll(
                 "select option:checked, [aria-selected='true'], [data-selected='true'], mat-chip, .mat-chip, .mat-mdc-chip"
             )) {
@@ -559,6 +610,11 @@ def page_booking_snapshot(page):
             if (!room) room = only(roomTokens(root.innerText));
 
             const directDates = [];
+            const labelledDate = firstMatch(root, dateSelectors);
+            if (labelledDate) {
+                directDates.push(...dateTokens(controlValue(labelledDate)));
+                directDates.push(...dateTokens(labelledDate.textContent));
+            }
             for (const element of root.querySelectorAll('input, select, textarea, time, [datetime], [data-date]')) {
                 if (!/(date|day|calendar)/.test(semanticName(element)) &&
                     !element.hasAttribute('datetime') && !element.hasAttribute('data-date')) continue;
@@ -618,7 +674,7 @@ def verify_persisted_booking_page(page, room, target_date, start_time, end_time)
 
     raise BookingVerificationError(
         "Asimut assigned an event id, but its persisted room/date/time did not match "
-        f"{room} {as_date(target_date).isoformat()} {start_time}-{end_time}. "
+        f"{room} {normalize_date(target_date).isoformat()} {start_time}-{end_time}. "
         "The run stopped to avoid making duplicate bookings."
     )
 
@@ -642,6 +698,60 @@ def _visible_save_rejection(page):
         except Exception:
             continue
     return None
+
+
+def wait_for_student_booking_option(page, *, timeout_ms=5000):
+    """Wait for Asimut's delayed provisional-booking menu item."""
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    selectors = (
+        "mat-list-item:has-text('Student booking provisional')",
+        "[role='menuitem']:has-text('Student booking provisional')",
+        "text=Student booking provisional",
+    )
+    while time.monotonic() < deadline:
+        if is_new_booking_form_url(page.url):
+            return None
+        for selector in selectors:
+            try:
+                option = page.locator(selector).first
+                if option.count() > 0 and option.is_visible():
+                    return option
+            except Exception:
+                continue
+        page.wait_for_timeout(100)
+    return None
+
+
+def wait_for_new_booking_form(page, *, timeout_ms=10000):
+    """Wait for an exact eventId=0 form whose time controls are usable."""
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if is_new_booking_form_url(page.url):
+            start_input = page.locator(
+                "#startDate, input[aria-label='Start time'], "
+                "input[data-cy='time-range-start-time'], "
+                "input[formcontrolname='startTime']"
+            ).first
+            end_input = page.locator(
+                "#endDate, input[aria-label='End time'], "
+                "input[data-cy='time-range-end-time'], "
+                "input[formcontrolname='endTime']"
+            ).first
+            try:
+                if (
+                    start_input.count() > 0
+                    and end_input.count() > 0
+                    and start_input.is_visible()
+                    and end_input.is_visible()
+                ):
+                    return True
+            except Exception:
+                # Angular can replace the controls between locator reads.
+                pass
+        page.wait_for_timeout(100)
+    return False
 
 
 def wait_for_created_booking_outcome(
@@ -720,19 +830,18 @@ def reconcile_pending_mutation_receipts(page, reservations):
     if not pending:
         return
 
-    exact_reservations = {
-        (
-            reservation.get("room"),
-            reservation.get("date"),
-            normalize_time_string(reservation.get("startTime", "")),
-            normalize_time_string(reservation.get("endTime", "")),
-        )
-        for reservation in reservations
-        if reservation.get("room")
-    }
+    reservation_records = [
+        reservation for reservation in reservations if reservation.get("room")
+    ]
 
     print(f"\nReconciling {len(pending)} interrupted booking mutation(s)...")
     for receipt in pending:
+        event_url = receipt.get("event_url")
+        if event_url is not None and not is_confirmed_post_save_url(event_url):
+            raise BookingVerificationError(
+                f"Interrupted mutation receipt {receipt['id']} contains a noncanonical "
+                f"event URL; the receipt remains pending"
+            )
         receipt_end = datetime.strptime(
             f"{receipt['date']} {receipt['end']}",
             "%Y-%m-%d %H:%M",
@@ -755,12 +864,42 @@ def reconcile_pending_mutation_receipts(page, reservations):
             receipt["start"],
             receipt["end"],
         )
-        event_url = receipt.get("event_url")
-        if intended in exact_reservations:
-            verify_mutation_receipt(receipt["id"], event_url=event_url)
-            print(f"  Reconciled receipt {receipt['id']}: exact agenda reservation found")
-            continue
-        if event_url and is_confirmed_post_save_url(event_url):
+        agenda_matches = [
+            reservation
+            for reservation in reservation_records
+            if (
+                reservation.get("room"),
+                reservation.get("date"),
+                normalize_time_string(reservation.get("startTime", "")),
+                normalize_time_string(reservation.get("endTime", "")),
+            )
+            == intended
+        ]
+        if event_url is None:
+            if len(agenda_matches) > 1:
+                raise BookingVerificationError(
+                    f"Interrupted mutation receipt {receipt['id']} matched multiple agenda "
+                    "reservations. Autonomous mutations remain stopped."
+                )
+            if len(agenda_matches) == 0:
+                raise BookingVerificationError(
+                    f"Interrupted mutation receipt {receipt['id']} was not found exactly in the agenda. "
+                    "Autonomous mutations remain stopped to prevent a duplicate or wrong booking."
+                )
+            agenda_event_id = agenda_matches[0].get("eventId")
+            if (
+                isinstance(agenda_event_id, bool)
+                or not isinstance(agenda_event_id, int)
+                or agenda_event_id <= 0
+            ):
+                raise BookingVerificationError(
+                    f"The exact agenda reservation for receipt {receipt['id']} did not expose "
+                    "a positive event id; the receipt remains pending"
+                )
+            event_url = f"{ASIMUT_BASE_URL}/arrangement?eventId={agenda_event_id}"
+
+        expected_event_id = parse_confirmed_event_id(event_url)
+        try:
             safe_goto(page, event_url)
             verify_persisted_booking_page(
                 page,
@@ -769,12 +908,35 @@ def reconcile_pending_mutation_receipts(page, reservations):
                 receipt["start"],
                 receipt["end"],
             )
+        except BookingVerificationError:
+            raise
+        except Exception as exc:
+            raise BookingVerificationError(
+                f"Exact event reconciliation failed for receipt {receipt['id']}: {exc}; "
+                "the receipt remains pending"
+            ) from exc
+        if len(agenda_matches) != 1:
+            raise BookingVerificationError(
+                f"Recorded event {expected_event_id} verified, but the complete agenda "
+                f"contained {len(agenda_matches)} exact reservations for receipt "
+                f"{receipt['id']}; the receipt remains pending"
+            )
+        agenda_event_id = agenda_matches[0].get("eventId")
+        if agenda_event_id != expected_event_id:
+            raise BookingVerificationError(
+                f"Recorded event {expected_event_id} verified, but the exact agenda "
+                f"reservation reported event id {agenda_event_id!r}; the receipt remains pending"
+            )
+        try:
             verify_mutation_receipt(receipt["id"], event_url=event_url)
-            print(f"  Reconciled receipt {receipt['id']}: persisted event verified")
-            continue
-        raise BookingVerificationError(
-            f"Interrupted mutation receipt {receipt['id']} was not found exactly in the agenda. "
-            "Autonomous mutations remain stopped to prevent a duplicate or wrong booking."
+        except Exception as exc:
+            raise BookingVerificationError(
+                f"Exact event {expected_event_id} was verified, but receipt "
+                f"{receipt['id']} could not be finalized: {exc}; the receipt remains pending"
+            ) from exc
+        print(
+            f"  Reconciled receipt {receipt['id']}: persisted event and exact "
+            "agenda reservation verified"
         )
 
 
@@ -849,7 +1011,7 @@ def login_only(*, headless=True):
         browser = playwright.chromium.launch(headless=headless)
         context = browser.new_context(**context_options)
         page = context.new_page()
-        result = ensure_asimut_session(page)
+        result = ensure_asimut_session(page, explicit_retry=True)
         persist_storage_state(context)
         context.close()
         browser.close()
@@ -890,6 +1052,7 @@ def setup_login(timeout_seconds=600):
                 candidate_key = id(candidate)
                 if page_is_authenticated(candidate):
                     persist_storage_state(context)
+                    clear_auth_recovery_block()
                     print(f"Login saved successfully: {state_file}")
                     context.close()
                     browser.close()
@@ -1352,7 +1515,8 @@ def load_extendable_bookings(settings=None):
     """Load bookings that may be extendable from settings.
 
     Returns:
-        List of dicts with: date, startTime, endTime, room, created_at, target_end, horizon_days
+        List of dicts with: date, startTime, endTime, room, created_at,
+        target_end, horizon_days, plus eventId/event_url after identity migration.
     """
     if settings is None:
         settings = load_settings_document(settings_file)
@@ -1403,6 +1567,26 @@ def load_extendable_bookings(settings=None):
         ):
             raise SettingsError(f"Extendable booking horizon is invalid for {room}")
 
+        has_event_id = "eventId" in booking
+        has_event_url = "event_url" in booking
+        if has_event_id != has_event_url:
+            raise SettingsError(
+                "Extendable booking eventId and event_url must either both be present or both be absent"
+            )
+        if has_event_id:
+            event_id = booking["eventId"]
+            event_url = booking["event_url"]
+            if (
+                isinstance(event_id, bool)
+                or not isinstance(event_id, int)
+                or event_id <= 0
+                or not isinstance(event_url, str)
+                or parse_confirmed_event_id(event_url) != event_id
+            ):
+                raise SettingsError(
+                    "Extendable booking must use one exact positive Asimut event identity"
+                )
+
         comparable_now = datetime.now(created_at.tzinfo) if created_at.tzinfo else now
         age_seconds = (comparable_now - created_at).total_seconds()
         if age_seconds < -300:
@@ -1412,7 +1596,15 @@ def load_extendable_bookings(settings=None):
     return valid_bookings
 
 
-def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_hour):
+def save_extendable_booking(
+    room,
+    target_date,
+    start_hour,
+    end_hour,
+    target_end_hour,
+    *,
+    event_url,
+):
     """Save a booking as potentially extendable.
 
     Args:
@@ -1421,7 +1613,13 @@ def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_
         start_hour: Start time as decimal (e.g., 9.5 for 9:30)
         end_hour: Current end time as decimal
         target_end_hour: Target end time we wanted but couldn't book
+        event_url: Exact positive arrangement URL verified after Save
     """
+    event_id = parse_confirmed_event_id(event_url)
+    if event_id is None:
+        raise SettingsError(
+            "Cannot track an extendable booking without a verified positive event URL"
+        )
     # Format times
     if hasattr(target_date, 'strftime'):
         date_str = target_date.strftime('%Y-%m-%d')
@@ -1442,7 +1640,9 @@ def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_
         "room": room,
         "created_at": datetime.now().isoformat(),
         "target_end": f"{target_h:02d}:{target_m:02d}",
-        "horizon_days": ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+        "horizon_days": ROOM_HORIZONS.get(room, DEFAULT_HORIZON),
+        "eventId": event_id,
+        "event_url": event_url,
     }
 
     def mutate(settings):
@@ -1450,19 +1650,30 @@ def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_
         if not isinstance(entries, list):
             raise SettingsError("extendable_bookings must be a JSON list")
 
-        match = next(
-            (
-                entry for entry in entries
-                if isinstance(entry, dict)
-                and entry.get("date") == booking["date"]
-                and entry.get("room") == booking["room"]
-                and entry.get("startTime") == booking["startTime"]
-            ),
-            None,
-        )
-        if match is None:
+        matches = [
+            entry for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("date") == booking["date"]
+            and entry.get("room") == booking["room"]
+            and entry.get("startTime") == booking["startTime"]
+        ]
+        if len(matches) > 1:
+            raise SettingsError(
+                "Duplicate extendable booking state exists for the verified date/room/start; "
+                "nothing was updated"
+            )
+        if not matches:
             entries.append(booking)
         else:
+            match = matches[0]
+            if (
+                match.get("eventId") != booking["eventId"]
+                or match.get("event_url") != booking["event_url"]
+            ):
+                raise SettingsError(
+                    "Existing extendable booking state has a different or unverified event "
+                    "identity; nothing was updated"
+                )
             match["endTime"] = booking["endTime"]
             match["target_end"] = booking["target_end"]
 
@@ -1478,6 +1689,122 @@ def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_
     update_settings(mutate, settings_file)
 
     print(f"  [EXTEND] Saved for extension: {room} {date_str} {booking['startTime']}->{booking['target_end']}")
+
+
+def ensure_extendable_booking_event_identity(booking, agenda_reservations):
+    """Return an event-bound extension record, migrating one legacy record safely."""
+
+    event_id = booking.get("eventId")
+    event_url = booking.get("event_url")
+    if event_id is not None or event_url is not None:
+        if (
+            isinstance(event_id, bool)
+            or not isinstance(event_id, int)
+            or event_id <= 0
+            or not isinstance(event_url, str)
+            or parse_confirmed_event_id(event_url) != event_id
+        ):
+            raise SettingsError(
+                "Extendable booking has an invalid or inconsistent event identity"
+            )
+        return dict(booking)
+
+    if not isinstance(agenda_reservations, list):
+        raise SettingsError(
+            "Legacy extension identity cannot be migrated without a complete agenda scan"
+        )
+    try:
+        start_time = normalize_time_string(booking.get("startTime", ""))
+    except (AttributeError, IndexError, TypeError, ValueError) as exc:
+        raise SettingsError(f"Legacy extension start time is invalid: {exc}") from exc
+    matches = []
+    for reservation in agenda_reservations:
+        if not isinstance(reservation, dict):
+            continue
+        try:
+            reservation_start = normalize_time_string(
+                reservation.get("startTime", "")
+            )
+            reservation_end = normalize_time_string(
+                reservation.get("endTime", "")
+            )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            continue
+        if (
+            reservation.get("room") == booking.get("room")
+            and reservation.get("date") == booking.get("date")
+            and reservation_start == start_time
+        ):
+            matches.append((reservation, reservation_end))
+    if len(matches) != 1:
+        raise SettingsError(
+            "Legacy extension identity matched "
+            f"{len(matches)} agenda reservations; exactly one is required"
+        )
+    migrated_reservation, migrated_end = matches[0]
+    migrated_event_id = migrated_reservation.get("eventId")
+    if (
+        isinstance(migrated_event_id, bool)
+        or not isinstance(migrated_event_id, int)
+        or migrated_event_id <= 0
+    ):
+        raise SettingsError(
+            "The unique agenda reservation has no positive event id for extension migration"
+        )
+    migrated_event_url = (
+        f"{ASIMUT_BASE_URL}/arrangement?eventId={migrated_event_id}"
+    )
+    start_minutes = int(start_time[:2]) * 60 + int(start_time[3:])
+    end_minutes = int(migrated_end[:2]) * 60 + int(migrated_end[3:])
+    target_end = normalize_time_string(booking.get("target_end", ""))
+    target_minutes = int(target_end[:2]) * 60 + int(target_end[3:])
+    if not start_minutes < end_minutes <= target_minutes:
+        raise SettingsError(
+            "The unique agenda reservation has an end time outside the legacy extension target"
+        )
+
+    def mutate(settings):
+        entries = settings.get("extendable_bookings", [])
+        if not isinstance(entries, list):
+            raise SettingsError("extendable_bookings must be a JSON list")
+        local_matches = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise SettingsError(
+                    "Legacy extension state changed during identity migration; "
+                    "no edit was attempted"
+                )
+            try:
+                entry_start = normalize_time_string(entry.get("startTime", ""))
+            except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                raise SettingsError(
+                    "Legacy extension state changed during identity migration; "
+                    "no edit was attempted"
+                ) from exc
+            if (
+                entry.get("date") == booking.get("date")
+                and entry.get("room") == booking.get("room")
+                and entry_start == start_time
+            ):
+                local_matches.append(entry)
+        if len(local_matches) != 1:
+            raise SettingsError(
+                "Legacy extension state changed during identity migration; no edit was attempted"
+            )
+        if local_matches[0] != booking:
+            raise SettingsError(
+                "Legacy extension state changed during identity migration; no edit was attempted"
+            )
+        local_matches[0]["eventId"] = migrated_event_id
+        local_matches[0]["event_url"] = migrated_event_url
+        local_matches[0]["endTime"] = migrated_end
+
+    update_settings(mutate, settings_file)
+    migrated = dict(booking)
+    migrated["eventId"] = migrated_event_id
+    migrated["event_url"] = migrated_event_url
+    migrated["endTime"] = migrated_end
+    return migrated
 
 
 def remove_extendable_booking(room, date_str, start_time):
@@ -1826,8 +2153,20 @@ def edit_reservation_end_time(page, booking, new_end_time):
     start_time = normalize_time_string(booking['startTime'])
     current_end = booking['endTime']
     room = booking.get('room', 'Unknown')
+    event_id = booking.get("eventId")
+    event_url = booking.get("event_url")
     save_clicked = False
     save_receipt_id = None
+
+    if (
+        isinstance(event_id, bool)
+        or not isinstance(event_id, int)
+        or event_id <= 0
+        or not isinstance(event_url, str)
+        or parse_confirmed_event_id(event_url) != event_id
+    ):
+        print("    Extension state has no verified exact event identity")
+        return False
 
     print(f"  Editing reservation: {room} on {date_str}")
     print(f"    Current: {start_time}-{current_end}")
@@ -1842,8 +2181,40 @@ def edit_reservation_end_time(page, booking, new_end_time):
         def find_matching_panel():
             """Use JavaScript to search DOM for matching reservation panel by date, room, and time."""
             return page.evaluate("""(args) => {
-                const { room, time, targetDate } = args;
-                const panels = document.querySelectorAll('.as-event-panel');
+                const { eventId, room, time, currentEnd, targetDate } = args;
+                const targetMarker = 'data-asimutbooker-extension-target';
+                document.querySelectorAll(`[${targetMarker}]`).forEach(
+                    element => element.removeAttribute(targetMarker)
+                );
+                const exactSelector = `[data-cy="event_${eventId}"], #event_${eventId}`;
+                const exactCards = Array.from(new Set(
+                    document.querySelectorAll(exactSelector)
+                ));
+                if (exactCards.length > 1) return -2;
+                let panels = Array.from(new Set(
+                    exactCards.map(
+                        card => card.closest('.as-event-panel') || card
+                    )
+                ));
+                if (panels.length === 0) {
+                    panels = Array.from(document.querySelectorAll('.as-event-panel')).filter(
+                        panel => Array.from(panel.querySelectorAll('a[href]')).some(link => {
+                            try {
+                                const url = new URL(
+                                    link.getAttribute('href'),
+                                    window.location.origin
+                                );
+                                return url.origin === window.location.origin
+                                    && url.pathname === '/arrangement'
+                                    && url.hash === ''
+                                    && url.search === `?eventId=${eventId}`;
+                            } catch (_error) {
+                                return false;
+                            }
+                        })
+                    );
+                }
+                if (panels.length !== 1) return -2;
 
                 // Parse target date for comparison (YYYY-MM-DD format)
                 const [targetYear, targetMonth, targetDay] = targetDate.split('-').map(Number);
@@ -1881,18 +2252,25 @@ def edit_reservation_end_time(page, booking, new_end_time):
                     const panel = panels[i];
                     const text = panel.innerText || '';
 
-                    // Must be a Reservation
-                    if (!text.includes('Reservation')) continue;
+                    // Must be the exact reservation card, not nearby text.
+                    const displayNames = panel.querySelectorAll(
+                        '[data-cy="event-display-name"]'
+                    );
+                    if (
+                        displayNames.length !== 1
+                        || (displayNames[0].textContent || '').trim() !== 'Reservation'
+                    ) continue;
 
                     // Must match room (case insensitive)
                     if (!text.toLowerCase().includes(room.toLowerCase())) continue;
 
                     // Must match start time
-                    const timeMatch = text.match(/(\\d{2}):(\\d{2})\\s*-\\s*(\\d{2}):(\\d{2})/);
+                    const timeMatch = text.match(/(\\d{2}):(\\d{2})\\s*[-–]\\s*(\\d{2}):(\\d{2})/);
                     if (!timeMatch) continue;
 
                     const startTime = timeMatch[1] + ':' + timeMatch[2];
-                    if (startTime !== time) continue;
+                    const endTime = timeMatch[3] + ':' + timeMatch[4];
+                    if (startTime !== time || endTime !== currentEnd) continue;
 
                     // Must match date
                     const panelDate = getPanelDate(panel);
@@ -1909,12 +2287,17 @@ def edit_reservation_end_time(page, booking, new_end_time):
                     }
 
                     // Check if cancelled (strikethrough)
-                    const allElements = panel.querySelectorAll('*');
+                    const allElements = [panel, ...panel.querySelectorAll('*')];
                     let isCancelled = false;
                     for (const el of allElements) {
                         const style = window.getComputedStyle(el);
+                        const className = String(el.className || '').toLowerCase();
                         if (style.textDecoration.includes('line-through') ||
-                            style.textDecorationLine.includes('line-through')) {
+                            style.textDecorationLine.includes('line-through') ||
+                            className.includes('cancelled') ||
+                            className.includes('canceled') ||
+                            className.includes('deleted') ||
+                            className.includes('removed')) {
                             isCancelled = true;
                             break;
                         }
@@ -1922,21 +2305,34 @@ def edit_reservation_end_time(page, booking, new_end_time):
                     if (isCancelled) continue;
 
                     // Found a valid match
+                    panel.setAttribute(targetMarker, String(eventId));
                     return i;
                 }
                 return -1;
-            }""", {"room": room, "time": start_time, "targetDate": date_str})
+            }""", {
+                "eventId": event_id,
+                "room": room,
+                "time": start_time,
+                "currentEnd": normalize_time_string(current_end),
+                "targetDate": date_str,
+            })
 
         # First try without scrolling
         matching_index = find_matching_panel()
 
         # If not found, scroll down and try again (booking may be further in future)
+        if matching_index == -2:
+            print(f"    Exact event id {event_id} was missing or ambiguous")
+            return False
         if matching_index < 0:
             print(f"    Not found in visible area, scrolling...")
             for scroll_attempt in range(10):
                 page.evaluate("window.scrollBy(0, 2000)")
                 page.wait_for_timeout(300)
                 matching_index = find_matching_panel()
+                if matching_index == -2:
+                    print(f"    Exact event id {event_id} became ambiguous")
+                    return False
                 if matching_index >= 0:
                     break
 
@@ -1945,10 +2341,39 @@ def edit_reservation_end_time(page, booking, new_end_time):
             # Already on agenda page, no need to navigate
             return False
 
-        # Get the panel and scroll it into view
-        all_panels = page.locator('.as-event-panel').all()
-        reservation_card = all_panels[matching_index]
-        print(f"    Found matching event card (panel #{matching_index})")
+        # Resolve the exact current card, expanding to its legacy panel only
+        # when that ancestor contains the same proven event-id card. If the
+        # current renderer exposes only legacy panels, use only the unique DOM
+        # node marked by the same-origin canonical-link proof above.
+        exact_cards = page.locator(
+            f"[data-cy='event_{event_id}'], #event_{event_id}"
+        )
+        exact_card_count = exact_cards.count()
+        if exact_card_count > 1:
+            print(f"    Exact event {event_id} became ambiguous before editing")
+            return False
+        if exact_card_count == 1:
+            exact_card = exact_cards.first
+            legacy_panel = exact_card.locator(
+                "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+                "' as-event-panel ')][1]"
+            ).first
+            reservation_card = legacy_panel if legacy_panel.count() > 0 else exact_card
+        else:
+            marked_panels = page.locator(
+                f'[data-asimutbooker-extension-target="{event_id}"]'
+            )
+            if marked_panels.count() != 1:
+                print(
+                    f"    Canonical legacy event {event_id} disappeared or became ambiguous "
+                    "before editing"
+                )
+                return False
+            reservation_card = marked_panels.first
+        if reservation_card.count() != 1:
+            print(f"    Exact event {event_id} disappeared before editing")
+            return False
+        print(f"    Found exact event card {event_id}")
 
         reservation_card.scroll_into_view_if_needed()
         page.wait_for_timeout(500)
@@ -1988,9 +2413,12 @@ def edit_reservation_end_time(page, booking, new_end_time):
             return False
 
         # 5. Find the end time input and update it
-        end_input = page.locator("#endDate").first
-        if end_input.count() == 0:
-            end_input = page.locator("input[data-cy='time-range-end-time']").first
+        extension_end_selector = (
+            "#endDate, input[aria-label='End time'], "
+            "input[data-cy='time-range-end-time'], "
+            "input[formcontrolname='endTime']"
+        )
+        end_input = page.locator(extension_end_selector).first
 
         if end_input.count() > 0 and end_input.is_visible():
             # Click and fill the new time
@@ -2083,6 +2511,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
                     ) from exc
 
                 deadline = time.monotonic() + 30
+                editor_closed = False
                 while time.monotonic() < deadline:
                     rejection = _visible_save_rejection(page)
                     if rejection:
@@ -2099,10 +2528,17 @@ def edit_reservation_end_time(page, booking, new_end_time):
                         print(f"    Extension rejected: {rejection}")
                         safe_goto(page, ASIMUT_AGENDA_URL)
                         return False
-                    editing = page.locator("#endDate").first
+                    editing = page.locator(extension_end_selector).first
                     if editing.count() == 0 or not editing.is_visible():
+                        editor_closed = True
                         break
                     page.wait_for_timeout(250)
+
+                if not editor_closed:
+                    raise BookingVerificationError(
+                        f"Extension Save outcome is uncertain after 30s (receipt {receipt['id']}); "
+                        "the editor never reached a settled post-Save state"
+                    )
 
                 if page.url != event_url:
                     safe_goto(page, event_url)
@@ -2173,6 +2609,7 @@ def try_extend_booking(
     remaining_daily_hours=None,
     time_prefs=None,
     max_action_minutes=None,
+    agenda_reservations=None,
 ):
     """Attempt to extend an existing booking using Asimut's edit feature.
 
@@ -2215,6 +2652,19 @@ def try_extend_booking(
                 f"Daily practice target is met, but extension state could not be cleared: {exc}",
             )
         return False, None, "Daily practice target is met; extension state cleared"
+
+    try:
+        booking = ensure_extendable_booking_event_identity(
+            booking,
+            agenda_reservations,
+        )
+    except SettingsError as exc:
+        return False, None, f"Extension identity could not be proven: {exc}"
+
+    # A legacy migration may update the authoritative current end time.
+    current_end = booking["endTime"]
+    end_parts = current_end.split(':')
+    current_end_hour = int(end_parts[0]) + int(end_parts[1]) / 60
 
     # Reconcile stale local extension state against the authoritative agenda.
     if tracker is not None:
@@ -2876,111 +3326,251 @@ class BookingTracker:
         return sum(1 for _, booking_date, _, _ in self.bookings if as_date(booking_date) == target)
 
 
-def get_available_slots(page):
-    """Get available slots from the current calendar view."""
-    return page.evaluate("""() => {
-        const rows = document.querySelectorAll('.location-name-container .location-row');
-        const locationDays = document.querySelectorAll('.location-day');
+def _normalize_practice_room_name(value):
+    """Reduce legacy or descriptive SVG labels to the configured room token."""
 
-        function parseStylePct(style, prop) {
-            const match = style.match(new RegExp(prop + ':\\\\s*calc\\\\(([\\\\d.]+)%'));
-            return match ? parseFloat(match[1]) : null;
-        }
+    if not isinstance(value, str):
+        return ""
+    tokens = value.strip().split()
+    return tokens[0] if tokens else ""
 
-        const pctPerHour = 6.25;
-        let gridStartHour = 7.0;
 
-        function pctToHour(pct) {
-            return gridStartHour + (pct / pctPerHour);
-        }
+def get_practice_room_grid_snapshot(page):
+    """Return one normalized snapshot for either Asimut overview renderer."""
 
-        function hourToPct(hour) {
-            return (hour - gridStartHour) * pctPerHour;
-        }
+    snapshot = page.evaluate(r"""() => {
+        const roomToken = value => (value || '').trim().split(/[\s\u00a0]+/)[0];
+        const number = value => {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+        };
+        const visible = element => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return rect.width > 0 && rect.height > 0
+                && style.display !== 'none' && style.visibility !== 'hidden';
+        };
 
-        const roomData = Array.from(rows).map((row, rowIdx) => {
-            const rect = row.getBoundingClientRect();
-            const roomName = row.textContent.trim();
-            const midY = (rect.top + rect.bottom) / 2;
-
-            let dayContainer = null;
-            let dayRect = null;
-            locationDays.forEach(day => {
-                const dRect = day.getBoundingClientRect();
-                if (Math.abs((dRect.top + dRect.bottom) / 2 - midY) < 30) {
-                    dayContainer = day;
-                    dayRect = dRect;
-                }
-            });
-
-            if (!dayContainer) return { room: roomName, slots: [] };
-
-            const events = dayContainer.querySelectorAll('.location-event');
-            const blockedRanges = Array.from(events).map(ev => {
-                const style = ev.getAttribute('style') || '';
-                const leftPct = parseStylePct(style, 'left') || 0;
-                const widthPct = parseStylePct(style, 'width') || 0;
-                return {
-                    startHour: pctToHour(leftPct),
-                    endHour: pctToHour(leftPct + widthPct)
-                };
-            });
-
-            const closedAreas = dayContainer.querySelectorAll('.location-closed');
-            const closedRanges = Array.from(closedAreas).map(cl => {
-                const style = cl.getAttribute('style') || '';
-                const leftPct = parseStylePct(style, 'left') || 0;
-                const widthPct = parseStylePct(style, 'width') || 0;
-                return {
-                    startHour: pctToHour(leftPct),
-                    endHour: pctToHour(leftPct + widthPct)
-                };
-            });
-
-            const allBlocked = [...blockedRanges, ...closedRanges]
-                .sort((a, b) => a.startHour - b.startHour);
-
-            const gaps = [];
-            let lastEndHour = 7.2;
-
-            let dayEndHour = 22.25;
-            closedRanges.forEach(r => {
-                if (r.startHour > 20) {
-                    dayEndHour = r.startHour;
-                }
-            });
-
-            allBlocked.forEach(range => {
-                if (range.startHour > lastEndHour + 0.25) {
-                    const startHour = Math.round(lastEndHour * 4) / 4;
-                    const endHour = Math.round(range.startHour * 4) / 4;
-                    if (endHour > startHour) {
-                        const gapCenterPct = hourToPct((lastEndHour + range.startHour) / 2);
-                        const clickX = dayRect.left + (gapCenterPct / 100) * dayRect.width;
-                        gaps.push({ startHour, endHour, clickX, clickY: midY, roomName });
-                    }
-                }
-                lastEndHour = Math.max(lastEndHour, range.endHour);
-            });
-
-            if (lastEndHour < dayEndHour - 0.25) {
-                const startHour = Math.round(lastEndHour * 4) / 4;
-                const endHour = Math.round(dayEndHour * 4) / 4;
-                if (endHour > startHour) {
-                    const gapCenterPct = hourToPct((lastEndHour + dayEndHour) / 2);
-                    const clickX = dayRect.left + (gapCenterPct / 100) * dayRect.width;
-                    gaps.push({ startHour, endHour, clickX, clickY: midY, roomName });
-                }
+        const svgRoot = Array.from(document.querySelectorAll('app-overview-svg'))
+            .find(visible);
+        if (svgRoot) {
+            const rawLabels = Array.from(svgRoot.querySelectorAll('a[data-location-id]'));
+            const svg = rawLabels[0]?.ownerSVGElement || svgRoot.querySelector('svg');
+            if (!svg || !svg.getScreenCTM()) {
+                return { renderer: 'svg', rooms: [] };
             }
-
-            return {
-                room: roomName,
-                slots: gaps
+            const seenLocations = new Set();
+            const labels = rawLabels.filter(label => {
+                    const id = label.getAttribute('data-location-id');
+                    const room = roomToken(label.textContent);
+                    if (!id || !room || seenLocations.has(id)) return false;
+                    seenLocations.add(id);
+                    return true;
+                });
+            const blockers = Array.from(
+                svgRoot.querySelectorAll('rect.closed-hours, rect.event-overlay')
+            ).map(rect => {
+                let box;
+                try {
+                    box = rect.getBBox();
+                } catch (_) {
+                    box = { x: 0, y: 0, width: 0, height: 0 };
+                }
+                return {
+                    x: number(rect.getAttribute('x')) ?? number(box.x) ?? 0,
+                    y: number(rect.getAttribute('y')) ?? number(box.y) ?? 0,
+                    width: number(rect.getAttribute('width')) ?? number(box.width) ?? 0,
+                    height: number(rect.getAttribute('height')) ?? number(box.height) ?? 0,
+                    closed: rect.classList.contains('closed-hours'),
+                };
+            });
+            const matrix = svg.getScreenCTM();
+            const toScreen = (x, y) => {
+                const point = svg.createSVGPoint();
+                point.x = x;
+                point.y = y;
+                const screen = point.matrixTransform(matrix);
+                return { x: screen.x, y: screen.y };
             };
-        });
+            const rooms = labels.map((label, index) => {
+                const rowTop = 30 * index;
+                const rowBottom = rowTop + 30;
+                const rowCenter = rowTop + 15;
+                const origin = toScreen(0, rowCenter);
+                const nextHour = toScreen(60, rowCenter);
+                const blockedRanges = blockers
+                    .filter(item => item.height > 0 && item.y < rowBottom
+                        && item.y + item.height > rowTop)
+                    .filter(item => item.width > 0)
+                    .map(item => ({
+                        startHour: 7 + item.x / 60,
+                        endHour: 7 + (item.x + item.width) / 60,
+                        closed: item.closed,
+                    }));
+                return {
+                    room: roomToken(label.textContent),
+                    blockedRanges,
+                    clickOriginX: origin.x,
+                    clickPixelsPerHour: nextHour.x - origin.x,
+                    clickY: origin.y,
+                };
+            });
+            return { renderer: 'svg', rooms };
+        }
 
-        return roomData.filter(r => r.slots.length > 0);
+        const rows = Array.from(document.querySelectorAll(
+            "[data-cy='overview-location-row'], " +
+            ".location-name-container .location-row"
+        ));
+        const locationDays = Array.from(document.querySelectorAll('.location-day'));
+        const parseStylePct = (style, prop) => {
+            const match = style.match(new RegExp(prop + ':\\s*calc\\(([\\d.]+)%'));
+            return match ? parseFloat(match[1]) : null;
+        };
+        const pctToHour = pct => 7 + pct / 6.25;
+        const rooms = rows.map(row => {
+            const rowRect = row.getBoundingClientRect();
+            const midY = (rowRect.top + rowRect.bottom) / 2;
+            const day = locationDays.find(candidate => {
+                const rect = candidate.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0
+                    && Math.abs((rect.top + rect.bottom) / 2 - midY) < 30;
+            });
+            if (!day) return null;
+            const dayRect = day.getBoundingClientRect();
+            const eventRanges = Array.from(
+                day.querySelectorAll('.location-event')
+            ).map(element => {
+                const style = element.getAttribute('style') || '';
+                const left = parseStylePct(style, 'left') || 0;
+                const width = parseStylePct(style, 'width') || 0;
+                return { startHour: pctToHour(left), endHour: pctToHour(left + width), closed: false };
+            });
+            const closedRanges = Array.from(
+                day.querySelectorAll('.location-closed')
+            ).map(element => {
+                const style = element.getAttribute('style') || '';
+                const left = parseStylePct(style, 'left') || 0;
+                const width = parseStylePct(style, 'width') || 0;
+                return { startHour: pctToHour(left), endHour: pctToHour(left + width), closed: true };
+            });
+            return {
+                room: roomToken(row.textContent),
+                blockedRanges: [...eventRanges, ...closedRanges],
+                clickOriginX: dayRect.left,
+                clickPixelsPerHour: dayRect.width / 16,
+                clickY: midY,
+            };
+        }).filter(Boolean);
+        return { renderer: 'legacy', rooms };
     }""")
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("rooms"), list):
+        normalized_rooms = []
+        for item in snapshot["rooms"]:
+            if not isinstance(item, dict):
+                continue
+            normalized = dict(item)
+            normalized["room"] = _normalize_practice_room_name(item.get("room"))
+            if normalized["room"]:
+                normalized_rooms.append(normalized)
+        snapshot = dict(snapshot)
+        snapshot["rooms"] = normalized_rooms
+    return snapshot
+
+
+def _is_finite_grid_number(value):
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and float("-inf") < float(value) < float("inf")
+    )
+
+
+def _available_slots_from_grid_snapshot(snapshot):
+    """Calculate free intervals from a renderer-independent grid snapshot."""
+
+    if not isinstance(snapshot, dict) or snapshot.get("renderer") not in {"legacy", "svg"}:
+        raise RuntimeError("Practice-room overview returned an unknown grid renderer")
+    rooms = snapshot.get("rooms")
+    if not isinstance(rooms, list):
+        raise RuntimeError("Practice-room overview returned invalid room data")
+
+    result = []
+    for room_data in rooms:
+        if not isinstance(room_data, dict):
+            continue
+        room = room_data.get("room")
+        origin_x = room_data.get("clickOriginX")
+        pixels_per_hour = room_data.get("clickPixelsPerHour")
+        click_y = room_data.get("clickY")
+        if (
+            not isinstance(room, str)
+            or not room.strip()
+            or not all(
+                _is_finite_grid_number(value)
+                for value in (origin_x, pixels_per_hour, click_y)
+            )
+            or pixels_per_hour <= 0
+        ):
+            continue
+
+        blocked = []
+        closing_hours = []
+        for item in room_data.get("blockedRanges", []):
+            if not isinstance(item, dict):
+                continue
+            start = item.get("startHour")
+            end = item.get("endHour")
+            if not (_is_finite_grid_number(start) and _is_finite_grid_number(end)):
+                continue
+            start = max(7.0, min(23.0, float(start)))
+            end = max(7.0, min(23.0, float(end)))
+            if end <= start:
+                continue
+            blocked.append((start, end))
+            if item.get("closed") and start > 20:
+                closing_hours.append(start)
+        blocked.sort()
+
+        day_end = min(closing_hours) if closing_hours else 22.25
+        last_end = 7.2
+        gaps = []
+        for start, end in blocked:
+            if start > last_end + 0.25:
+                gap_start = int(last_end * 4 + 0.5) / 4
+                gap_end = int(start * 4 + 0.5) / 4
+                if gap_end > gap_start:
+                    center = (last_end + start) / 2
+                    gaps.append({
+                        "startHour": gap_start,
+                        "endHour": gap_end,
+                        "clickX": origin_x + (center - 7) * pixels_per_hour,
+                        "clickY": click_y,
+                        "roomName": room.strip(),
+                    })
+            last_end = max(last_end, end)
+        if last_end < day_end - 0.25:
+            gap_start = int(last_end * 4 + 0.5) / 4
+            gap_end = int(day_end * 4 + 0.5) / 4
+            if gap_end > gap_start:
+                center = (last_end + day_end) / 2
+                gaps.append({
+                    "startHour": gap_start,
+                    "endHour": gap_end,
+                    "clickX": origin_x + (center - 7) * pixels_per_hour,
+                    "clickY": click_y,
+                    "roomName": room.strip(),
+                })
+        if gaps:
+            result.append({"room": room.strip(), "slots": gaps})
+    return result
+
+
+def get_available_slots(page):
+    """Get free slots from either the legacy HTML or current SVG overview."""
+
+    return _available_slots_from_grid_snapshot(get_practice_room_grid_snapshot(page))
 
 
 _CALENDAR_DATE_RE = re.compile(
@@ -3063,6 +3653,323 @@ def assert_calendar_date(page, expected_date, *, timeout_ms=6000):
         f"Calendar date verification failed: expected {expected_date.isoformat()}, "
         f"visible dates were {seen_text}"
     )
+
+
+def _is_exact_practice_room_overview_url(url):
+    """Return whether ``url`` is the canonical AHC practice-room overview."""
+
+    try:
+        parsed = urlsplit(url)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname == "rwcmd.asimut.net"
+            and parsed.port is None
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path == "/overview"
+            and parsed.query == "locationGroupId=10"
+            and not parsed.fragment
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+_SVG_POPULATED_GRID_STABLE_POLLS = 2
+_SVG_EMPTY_GRID_STABLE_POLLS = 20
+
+
+def _practice_room_grid_snapshot_is_complete(snapshot, *, allow_empty=False):
+    """Return whether a grid snapshot has a complete, usable structure.
+
+    A populated SVG grid is complete once event overlays exist anywhere in the
+    structurally valid grid. A genuinely empty day has no event overlays, so it
+    is admitted only by ``wait_for_practice_room_grid`` after a much longer
+    unchanged quiet period. This avoids requiring every room to contain an
+    event while still rejecting Asimut's transient labels-before-overlays frame.
+    """
+
+    if not isinstance(snapshot, dict):
+        return False
+    rooms = snapshot.get("rooms")
+    if not isinstance(rooms, list) or not rooms:
+        return False
+    if snapshot.get("renderer") == "legacy":
+        return True
+    if snapshot.get("renderer") != "svg":
+        return False
+    if not all(
+        isinstance(room, dict) and isinstance(room.get("blockedRanges"), list)
+        for room in rooms
+    ):
+        return False
+    has_event_overlay = any(
+        isinstance(item, dict) and item.get("closed") is False
+        for room in rooms
+        for item in room["blockedRanges"]
+    )
+    return has_event_overlay or allow_empty
+
+
+def _practice_room_grid_content_signature(snapshot):
+    """Return a stable SVG content signature, excluding viewport coordinates."""
+
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("renderer") not in {"legacy", "svg"}
+        or not isinstance(snapshot.get("rooms"), list)
+    ):
+        return None
+    signature_rooms = []
+    seen_rooms = set()
+    for room in snapshot["rooms"]:
+        if not isinstance(room, dict) or not isinstance(room.get("blockedRanges"), list):
+            return None
+        room_name = room.get("room")
+        if (
+            not isinstance(room_name, str)
+            or not room_name
+            or room_name != room_name.strip()
+            or room_name in seen_rooms
+        ):
+            return None
+        seen_rooms.add(room_name)
+        ranges = []
+        for item in room["blockedRanges"]:
+            if (
+                not isinstance(item, dict)
+                or not _is_finite_grid_number(item.get("startHour"))
+                or not _is_finite_grid_number(item.get("endHour"))
+                or float(item["endHour"]) <= float(item["startHour"])
+                or not isinstance(item.get("closed"), bool)
+            ):
+                return None
+            ranges.append(
+                (
+                    float(item["startHour"]),
+                    float(item["endHour"]),
+                    item["closed"],
+                )
+            )
+        signature_rooms.append((room_name, tuple(ranges)))
+    return snapshot.get("renderer"), tuple(signature_rooms)
+
+
+def wait_for_practice_room_grid(page, expected_date, *, timeout_ms=20000):
+    """Wait for a stable legacy or SVG practice-room overview."""
+
+    expected_date = as_date(expected_date)
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_snapshot = None
+    last_error = None
+    last_signature = None
+    stable_polls = 0
+    while time.monotonic() < deadline:
+        if not _is_exact_practice_room_overview_url(page.url):
+            raise RuntimeError(
+                "Practice-room grid verification requires the exact "
+                "/overview?locationGroupId=10 route"
+            )
+        if not page_is_authenticated(page):
+            raise RuntimeError(
+                "Asimut session is no longer authenticated while loading the practice-room grid"
+            )
+        try:
+            last_snapshot = get_practice_room_grid_snapshot(page)
+            rooms = (
+                last_snapshot.get("rooms", [])
+                if isinstance(last_snapshot, dict)
+                and isinstance(last_snapshot.get("rooms"), list)
+                else []
+            )
+            usable_rooms = [
+                room
+                for room in rooms
+                if isinstance(room, dict)
+                and _is_finite_grid_number(room.get("clickOriginX"))
+                and _is_finite_grid_number(room.get("clickPixelsPerHour"))
+                and room.get("clickPixelsPerHour", 0) > 0
+                and _is_finite_grid_number(room.get("clickY"))
+            ]
+            structurally_usable = (
+                isinstance(last_snapshot, dict)
+                and last_snapshot.get("renderer") in {"legacy", "svg"}
+                and len(usable_rooms) == len(rooms)
+                and bool(rooms)
+            )
+            signature = (
+                _practice_room_grid_content_signature(last_snapshot)
+                if structurally_usable
+                else None
+            )
+            if signature is not None and signature == last_signature:
+                stable_polls += 1
+            elif signature is not None:
+                last_signature = signature
+                stable_polls = 1
+            else:
+                last_signature = None
+                stable_polls = 0
+
+            renderer = last_snapshot.get("renderer") if structurally_usable else None
+            if renderer == "legacy":
+                required_stable_polls = 1
+                complete = _practice_room_grid_snapshot_is_complete(last_snapshot)
+            elif renderer == "svg":
+                has_loaded_event_overlay = _practice_room_grid_snapshot_is_complete(
+                    last_snapshot
+                )
+                required_stable_polls = (
+                    _SVG_POPULATED_GRID_STABLE_POLLS
+                    if has_loaded_event_overlay
+                    else _SVG_EMPTY_GRID_STABLE_POLLS
+                )
+                complete = _practice_room_grid_snapshot_is_complete(
+                    last_snapshot,
+                    allow_empty=stable_polls >= required_stable_polls,
+                )
+            else:
+                required_stable_polls = 1
+                complete = False
+
+            if complete and stable_polls >= required_stable_polls:
+                remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+                assert_calendar_date(
+                    page,
+                    expected_date,
+                    timeout_ms=min(6000, remaining_ms),
+                )
+                return last_snapshot
+            last_error = None
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            last_error = exc
+        page.wait_for_timeout(250)
+
+    renderer = (
+        last_snapshot.get("renderer", "none")
+        if isinstance(last_snapshot, dict)
+        else "none"
+    )
+    room_count = (
+        len(last_snapshot.get("rooms", []))
+        if isinstance(last_snapshot, dict)
+        and isinstance(last_snapshot.get("rooms"), list)
+        else 0
+    )
+    detail = f"; last probe error: {last_error}" if last_error else ""
+    raise RuntimeError(
+        f"Practice-room grid did not become usable within {timeout_ms}ms "
+        f"(renderer={renderer}, rooms={room_count}){detail}"
+    )
+
+
+def open_practice_room_overview(page, expected_date, *, attempts=2):
+    """Open and verify the AHC grid, retrying one incomplete SPA load."""
+
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        safe_goto(page, ASIMUT_OVERVIEW_URL)
+        try:
+            return wait_for_practice_room_grid(page, expected_date)
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            print(
+                f"  Practice-room grid load {attempt}/{attempts} was incomplete; "
+                "retrying the canonical AHC overview..."
+            )
+    raise RuntimeError(
+        f"Could not load a verified AHC practice-room grid after {attempts} attempts: "
+        f"{last_error}"
+    ) from last_error
+
+
+def refresh_practice_room_overview(page, expected_date):
+    """Reload the current AHC overview and verify its full grid before use."""
+
+    safe_reload(page)
+    return wait_for_practice_room_grid(page, expected_date)
+
+
+def get_practice_room_names(page):
+    """Return visible room labels from either overview renderer."""
+
+    snapshot = get_practice_room_grid_snapshot(page)
+    if not isinstance(snapshot, dict) or snapshot.get("renderer") not in {"legacy", "svg"}:
+        raise RuntimeError("Practice-room overview returned an unknown grid renderer")
+    return {
+        item["room"].strip()
+        for item in snapshot.get("rooms", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("room"), str)
+        and item["room"].strip()
+    }
+
+
+def get_room_slot_coordinates(page, room, start_hour, end_hour):
+    """Return fresh screen coordinates for a room/time in either renderer."""
+
+    room = _normalize_practice_room_name(room)
+    if not room:
+        return None
+    center_hour = (float(start_hour) + float(end_hour)) / 2
+    return page.evaluate(r"""([roomName, centerHour]) => {
+        const roomToken = value => (value || '').trim().split(/[\s\u00a0]+/)[0];
+        const svgRoot = Array.from(document.querySelectorAll('app-overview-svg'))
+            .find(root => {
+                const rect = root.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            });
+        if (svgRoot) {
+            const labels = Array.from(svgRoot.querySelectorAll('a[data-location-id]'));
+            const label = labels.find(item => roomToken(item.textContent) === roomName);
+            const svg = label?.ownerSVGElement || svgRoot.querySelector('svg');
+            if (!label || !svg) return null;
+            label.scrollIntoView({ behavior: 'instant', block: 'center' });
+            void label.getBoundingClientRect();
+            const uniqueLabels = [];
+            const seen = new Set();
+            for (const item of labels) {
+                const id = item.getAttribute('data-location-id');
+                if (!id || seen.has(id)) continue;
+                seen.add(id);
+                uniqueLabels.push(item);
+            }
+            const rowIndex = uniqueLabels.indexOf(label);
+            const matrix = svg.getScreenCTM();
+            if (rowIndex < 0 || !matrix) return null;
+            const point = svg.createSVGPoint();
+            point.x = 60 * (centerHour - 7);
+            point.y = 30 * rowIndex + 15;
+            const screen = point.matrixTransform(matrix);
+            return { x: screen.x, y: screen.y, renderer: 'svg' };
+        }
+
+        const rows = Array.from(document.querySelectorAll(
+            "[data-cy='overview-location-row'], " +
+            ".location-name-container .location-row"
+        ));
+        const row = rows.find(item => roomToken(item.textContent) === roomName);
+        if (!row) return null;
+        row.scrollIntoView({ behavior: 'instant', block: 'center' });
+        void row.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        const rowMidY = (rowRect.top + rowRect.bottom) / 2;
+        const day = Array.from(document.querySelectorAll('.location-day')).find(item => {
+            const rect = item.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0
+                && Math.abs((rect.top + rect.bottom) / 2 - rowMidY) < 30;
+        });
+        if (!day) return null;
+        const dayRect = day.getBoundingClientRect();
+        return {
+            x: dayRect.left + ((centerHour - 7) / 16) * dayRect.width,
+            y: rowMidY,
+            renderer: 'legacy',
+        };
+    }""", [room, center_hour])
 
 
 def try_book_slot(
@@ -3180,60 +4087,14 @@ def try_book_slot(
     room_name = slot['room']
     # Note: end_hour was already calculated above with horizon limits applied
 
-    # Calculate click percentage for the target time
-    grid_start_hour = 7.0
-    pct_per_hour = 6.25
     target_center = (start_hour + end_hour) / 2
-    click_pct = (target_center - grid_start_hour) * pct_per_hour
-    print(f"  [DEBUG] Click calculation: slot={start_hour:.2f}-{end_hour:.2f}, center={target_center:.2f}, click_pct={click_pct:.2f}%")
+    print(
+        f"  [DEBUG] Click calculation: slot={start_hour:.2f}-{end_hour:.2f}, "
+        f"center={target_center:.2f}"
+    )
 
     # Find the room row and get fresh click coordinates
-    coords = page.evaluate(f"""() => {{
-        const rows = document.querySelectorAll('.location-name-container .location-row');
-        const locationDays = document.querySelectorAll('.location-day');
-
-        // Find the row for this room
-        let targetRow = null;
-        for (const row of rows) {{
-            if (row.textContent.trim() === '{room_name}') {{
-                targetRow = row;
-                break;
-            }}
-        }}
-        if (!targetRow) return null;
-
-        // Scroll row into view and wait for layout to settle
-        targetRow.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-
-        // Force a reflow to ensure scroll completes
-        void targetRow.offsetHeight;
-
-        // Find the matching location-day for this row
-        const rowRect = targetRow.getBoundingClientRect();
-        const rowMidY = (rowRect.top + rowRect.bottom) / 2;
-
-        let dayRect = null;
-        for (const day of locationDays) {{
-            const dRect = day.getBoundingClientRect();
-            const dayMidY = (dRect.top + dRect.bottom) / 2;
-            if (Math.abs(dayMidY - rowMidY) < 30) {{
-                dayRect = dRect;
-                break;
-            }}
-        }}
-        if (!dayRect) return null;
-
-        const clickX = dayRect.left + ({click_pct} / 100) * dayRect.width;
-        const clickY = (rowRect.top + rowRect.bottom) / 2;
-
-        return {{
-            x: clickX,
-            y: clickY,
-            dayLeft: dayRect.left,
-            dayWidth: dayRect.width,
-            dayRight: dayRect.right
-        }};
-    }}""")
+    coords = get_room_slot_coordinates(page, room_name, start_hour, end_hour)
 
     if not coords:
         print(f"  [DEBUG] Could not find room '{room_name}' in grid")
@@ -3245,8 +4106,10 @@ def try_book_slot(
     # Log viewport info
     viewport = page.evaluate("() => ({ width: window.innerWidth, height: window.innerHeight, scrollY: window.scrollY })")
     print(f"  [DEBUG] Viewport: {viewport['width']}x{viewport['height']}, scrollY={viewport['scrollY']:.0f}")
-    print(f"  [DEBUG] Day grid: left={coords.get('dayLeft', 0):.0f}, width={coords.get('dayWidth', 0):.0f}, right={coords.get('dayRight', 0):.0f}")
-    print(f"  [DEBUG] Click target: x={coords['x']:.0f}, y={coords['y']:.0f} (target time: {start_hour:.2f}-{end_hour:.2f})")
+    print(
+        f"  [DEBUG] Click target: x={coords['x']:.0f}, y={coords['y']:.0f} "
+        f"({coords.get('renderer', 'unknown')}, target time: {start_hour:.2f}-{end_hour:.2f})"
+    )
 
     # Check if click is within viewport
     if coords['y'] < 0 or coords['y'] > viewport['height']:
@@ -3267,7 +4130,7 @@ def try_book_slot(
         page.mouse.click(click_x, click_y)
 
         # Wait for popup or navigation with retry
-        for wait_attempt in range(2):
+        for wait_attempt in range(5):
             page.wait_for_timeout(1000)  # Wait 1s between checks
 
             # Check if clicking directly navigated to booking form (URL contains /event?eventId=0)
@@ -3381,17 +4244,24 @@ def try_book_slot(
                     page.wait_for_timeout(500)
                     return False
 
-    if not is_new_booking_form_url(page.url):
+    if not wait_for_new_booking_form(page, timeout_ms=10000):
         print(
-            f"  Refusing to save: expected a new eventId=0 form, got {page.url}"
+            "  Refusing to save: the exact new-booking form and its time "
+            f"controls did not become ready (URL: {page.url})"
         )
         go_back(page, days_ahead)
         return False
 
     # Step 3: Set times
     print(f"  [DEBUG] Setting times: {book_start} to {book_end}")
-    start_input = page.locator("#startDate")
-    end_input = page.locator("#endDate")
+    start_input = page.locator(
+        "#startDate, input[aria-label='Start time'], "
+        "input[data-cy='time-range-start-time']"
+    ).first
+    end_input = page.locator(
+        "#endDate, input[aria-label='End time'], "
+        "input[data-cy='time-range-end-time']"
+    ).first
 
     if start_input.count() > 0 and end_input.count() > 0:
         print(f"  [DEBUG] Found time inputs, filling start time...")
@@ -3640,6 +4510,7 @@ def try_book_slot(
                         start_hour,
                         end_hour,
                         max_possible_end,
+                        event_url=page.url,
                     )
                 except SettingsError as exc:
                     # The remote reservation and receipt are already verified. Agenda
@@ -3709,9 +4580,8 @@ def navigate_to_day(page, target_day, current_day):
                     raise RuntimeError(f"{arrow_text} navigation control is not visible")
                 button = icon.locator("xpath=ancestor::button[1]")
                 (button if button.count() else icon).click(force=True, timeout=5000)
-                page.wait_for_selector(".location-day", state="visible", timeout=5000)
                 next_position = position + direction
-                assert_calendar_date(
+                wait_for_practice_room_grid(
                     page,
                     datetime.now().date() + timedelta(days=next_position),
                 )
@@ -4049,49 +4919,11 @@ def try_horizon_snipe(
 
     # Step 1: Click on the slot to open booking form
     room_name = slot['room']
-    grid_start_hour = 7.0
-    pct_per_hour = 6.25
-    target_center = (start_hour + end_hour) / 2
-    click_pct = (target_center - grid_start_hour) * pct_per_hour
 
     print(f"\n  [SNIPE] Step 1: Opening booking form...")
 
     # Find the room row and get click coordinates
-    coords = page.evaluate(f"""() => {{
-        const rows = document.querySelectorAll('.location-name-container .location-row');
-        const locationDays = document.querySelectorAll('.location-day');
-
-        let targetRow = null;
-        for (const row of rows) {{
-            if (row.textContent.trim() === '{room_name}') {{
-                targetRow = row;
-                break;
-            }}
-        }}
-        if (!targetRow) return null;
-
-        targetRow.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-        void targetRow.offsetHeight;
-
-        const rowRect = targetRow.getBoundingClientRect();
-        const rowMidY = (rowRect.top + rowRect.bottom) / 2;
-
-        let dayRect = null;
-        for (const day of locationDays) {{
-            const dRect = day.getBoundingClientRect();
-            const dayMidY = (dRect.top + dRect.bottom) / 2;
-            if (Math.abs(dayMidY - rowMidY) < 30) {{
-                dayRect = dRect;
-                break;
-            }}
-        }}
-        if (!dayRect) return null;
-
-        const clickX = dayRect.left + ({click_pct} / 100) * dayRect.width;
-        const clickY = (rowRect.top + rowRect.bottom) / 2;
-
-        return {{ x: clickX, y: clickY }};
-    }}""")
+    coords = get_room_slot_coordinates(page, room_name, start_hour, end_hour)
 
     if not coords:
         print(f"  [SNIPE] Could not find room '{room_name}' - aborting snipe")
@@ -4102,35 +4934,41 @@ def try_horizon_snipe(
     # Click to open booking form
     print(f"  [SNIPE] Clicking at ({coords['x']:.0f}, {coords['y']:.0f})...")
     page.mouse.click(coords['x'], coords['y'])
-    page.wait_for_timeout(500)
 
-    # Look for "Student booking provisional" button
-    student_booking_btn = page.locator("mat-list-item").filter(has_text="Student booking provisional")
-    if student_booking_btn.count() > 0 and student_booking_btn.is_visible():
+    # The SVG overview can take 2-3.5s to reveal this menu.
+    student_booking_btn = wait_for_student_booking_option(page, timeout_ms=5000)
+    if student_booking_btn is not None:
         print(f"  [SNIPE] Found booking type button, clicking...")
         student_booking_btn.click()
-        page.wait_for_timeout(800)
     else:
         print(f"  [SNIPE] No booking type button found, checking if form opened...")
 
-    if not is_new_booking_form_url(page.url):
-        print(f"  [SNIPE] Expected a new eventId=0 form, got {page.url}; aborting")
+    if not wait_for_new_booking_form(page, timeout_ms=10000):
+        print(
+            "  [SNIPE] Exact new-booking form time controls did not become "
+            f"ready at {page.url}; aborting"
+        )
         go_back(page, days_ahead)
         return False
 
     # Step 2: Fill in the times
     print(f"  [SNIPE] Step 2: Pre-filling times ({book_start} to {book_end})...")
 
-    time_inputs = page.locator("input[type='time'], input[formcontrolname*='time'], input[data-cy*='time']")
-    if time_inputs.count() >= 2:
+    start_input = page.locator(
+        "#startDate, input[aria-label='Start time'], "
+        "input[data-cy='time-range-start-time'], input[formcontrolname='startTime']"
+    ).first
+    end_input = page.locator(
+        "#endDate, input[aria-label='End time'], "
+        "input[data-cy='time-range-end-time'], input[formcontrolname='endTime']"
+    ).first
+    if start_input.count() > 0 and end_input.count() > 0:
         # Fill start time
-        start_input = time_inputs.nth(0)
         start_input.click()
         start_input.fill(book_start)
         page.wait_for_timeout(200)
 
         # Fill end time
-        end_input = time_inputs.nth(1)
         end_input.click()
         end_input.fill(book_end)
         page.wait_for_timeout(200)
@@ -4154,7 +4992,7 @@ def try_horizon_snipe(
             go_back(page, days_ahead)
             return False
     else:
-        print(f"  [SNIPE] Could not find time inputs (found {time_inputs.count()}) - aborting")
+        print("  [SNIPE] Could not find labelled start/end time inputs - aborting")
         go_back(page, days_ahead)
         return False
 
@@ -4267,7 +5105,14 @@ def try_horizon_snipe(
     )
     if target_end_hour is not None:
         try:
-            save_extendable_booking(room, target_date, start_hour, end_hour, target_end_hour)
+            save_extendable_booking(
+                room,
+                target_date,
+                start_hour,
+                end_hour,
+                target_end_hour,
+                event_url=page.url,
+            )
             target_end_h = int(target_end_hour)
             target_end_m = int((target_end_hour % 1) * 60)
             print(f"  [EXTEND] Marked for extension: target {book_start}-{target_end_h:02d}:{target_end_m:02d}")
@@ -4280,12 +5125,152 @@ def try_horizon_snipe(
 def go_back(page, days_ahead=None):
     """Return through a canonical overview URL and prove the selected day."""
     print(f"  [DEBUG] go_back() called")
-    safe_goto(page, ASIMUT_OVERVIEW_URL)
-    page.wait_for_selector(".location-day", state="visible", timeout=10000)
-    assert_calendar_date(page, datetime.now().date())
+    open_practice_room_overview(page, datetime.now().date())
     if days_ahead:
         navigate_to_day(page, days_ahead, 0)
     print("  [DEBUG] Back on verified practice-room calendar")
+
+
+def _assert_complete_agenda_extraction(page, today, events_data):
+    """Require exact current-week day coverage and event-card extraction."""
+
+    structure = page.evaluate(r"""() => {
+        const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const isCancelled = (card) => {
+            let element = card;
+            while (element && !element.classList.contains('day-body')) {
+                const style = window.getComputedStyle(element);
+                if (
+                    style.textDecoration.includes('line-through')
+                    || style.textDecorationLine.includes('line-through')
+                ) return true;
+                const className = String(element.className || '').toLowerCase();
+                if (
+                    className.includes('cancelled')
+                    || className.includes('canceled')
+                    || className.includes('deleted')
+                    || className.includes('removed')
+                ) return true;
+                const color = style.backgroundColor || '';
+                const red = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+                if (
+                    red
+                    && Number(red[1]) > 180
+                    && Number(red[1]) > Number(red[2]) * 1.5
+                    && Number(red[1]) > Number(red[3]) * 1.5
+                ) return true;
+                element = element.parentElement;
+            }
+            return false;
+        };
+        const agendaDayStructure = [];
+        for (const dayBody of document.querySelectorAll('.day-body')) {
+            const container = dayBody.parentElement;
+            const header = container
+                ? Array.from(container.children).find(
+                    (child) => child.classList.contains('day-header')
+                )
+                : null;
+            const headerText = clean(header && header.textContent);
+            const entry = {
+                header: headerText.replace(/\s*·\s*no events$/i, ''),
+                eventIds: [],
+                invalidCards: [],
+            };
+            for (const card of dayBody.querySelectorAll('[data-cy^="event_"]')) {
+                if (isCancelled(card)) continue;
+                const dataCy = card.getAttribute('data-cy') || '';
+                const idMatch = dataCy.match(/^event_([1-9][0-9]*)$/);
+                const timeControls = card.querySelectorAll(
+                    '[data-cy="event-datetime"], .event-datetime'
+                );
+                const displayNames = card.querySelectorAll(
+                    '[data-cy="event-display-name"]'
+                );
+                const timeText = timeControls.length === 1
+                    ? clean(timeControls[0].textContent)
+                    : '';
+                const timeValid = /^([01][0-9]|2[0-3]):[0-5][0-9]\s*[-–]\s*([01][0-9]|2[0-3]):[0-5][0-9]$/.test(
+                    timeText
+                );
+                const titleValid = displayNames.length === 1
+                    && clean(displayNames[0].textContent).length > 0;
+                if (!idMatch || !timeValid || !titleValid) {
+                    entry.invalidCards.push({
+                        dataCy,
+                        timeControls: timeControls.length,
+                        displayNames: displayNames.length,
+                        timeValid,
+                        titleValid,
+                    });
+                    continue;
+                }
+                entry.eventIds.push(Number(idMatch[1]));
+            }
+            agendaDayStructure.push(entry);
+        }
+        return {agendaDayStructure};
+    }""")
+
+    expected_headers = [
+        (today + timedelta(days=offset)).strftime("%A %d %B %Y").replace(" 0", " ")
+        for offset in range(8)
+    ]
+    if (
+        not isinstance(structure, dict)
+        or not isinstance(structure.get("agendaDayStructure"), list)
+    ):
+        raise RuntimeError(
+            "Agenda structure could not be verified; booking stopped before mutation"
+        )
+    relevant_days = [
+        entry
+        for entry in structure["agendaDayStructure"]
+        if isinstance(entry, dict) and entry.get("header") in expected_headers
+    ]
+    headers = [entry.get("header") for entry in relevant_days]
+    if sorted(headers) != sorted(expected_headers):
+        missing_or_duplicate = [
+            header for header in expected_headers if headers.count(header) != 1
+        ]
+        raise RuntimeError(
+            "Agenda extraction did not cover each of the eight required dates "
+            f"exactly once (missing or duplicated: {missing_or_duplicate})"
+        )
+    invalid_cards = [
+        invalid
+        for entry in relevant_days
+        for invalid in entry.get("invalidCards", [])
+    ]
+    if invalid_cards:
+        raise RuntimeError(
+            f"Agenda contained {len(invalid_cards)} event card(s) with ambiguous "
+            "identity, title, or time fields"
+        )
+    header_dates = {
+        header: (today + timedelta(days=offset)).isoformat()
+        for offset, header in enumerate(expected_headers)
+    }
+    dom_event_associations = sorted(
+        (event_id, header_dates[entry["header"]])
+        for entry in relevant_days
+        for event_id in entry.get("eventIds", [])
+        if isinstance(event_id, int)
+        and not isinstance(event_id, bool)
+        and event_id > 0
+    )
+    extracted_event_associations = sorted(
+        (event.get("eventId"), event.get("date"))
+        for event in events_data
+        if isinstance(event.get("eventId"), int)
+        and not isinstance(event.get("eventId"), bool)
+        and event.get("eventId") > 0
+    )
+    if extracted_event_associations != dom_event_associations:
+        raise RuntimeError(
+            "Agenda event-card ID/date associations did not match the extracted "
+            "events; booking stopped before mutation"
+        )
 
 
 def scan_agenda(page, tracker, today, ignored_events=None):
@@ -4416,7 +5401,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                 // Check for red background/color that might indicate cancellation
                 const bgColor = style.backgroundColor;
                 // Parse RGB values - look for predominantly red colors
-                const redBgMatch = bgColor.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
+                const redBgMatch = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
                 if (redBgMatch) {
                     const r = parseInt(redBgMatch[1]);
                     const g = parseInt(redBgMatch[2]);
@@ -4516,6 +5501,13 @@ def scan_agenda(page, tracker, today, ignored_events=None):
             return null;
         }
 
+        function getEventId(element) {
+            const card = element.closest('[data-cy^="event_"]');
+            if (!card) return null;
+            const match = (card.getAttribute('data-cy') || '').match(/^event_([1-9][0-9]*)$/);
+            return match ? Number(match[1]) : null;
+        }
+
         // Find all elements that contain time patterns
         const allElements = document.querySelectorAll('*');
         let currentDate = null;
@@ -4532,7 +5524,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
             const text = element.textContent.trim();
 
             // Check for date headers
-            const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
+            const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})$/i);
             if (dateMatch) {
                 const day = parseInt(dateMatch[2]);
                 const month = monthNames.indexOf(dateMatch[3]);
@@ -4542,7 +5534,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
             }
 
             // Check for time ranges like "09:30 - 11:00"
-            const timeMatch = text.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
+            const timeMatch = text.match(/^(\d{2}:\d{2})\s*[-–]\s*(\d{2}:\d{2})$/);
             if (timeMatch && currentDate) {
                 // Check if this event is cancelled
                 if (isCancelled(element)) {
@@ -4554,6 +5546,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                 const endTime = timeMatch[2];
                 const eventTitle = getEventTitle(element);
                 const eventRoom = getEventRoom(element);
+                const eventId = getEventId(element);
 
                 const currentOrdinal = Date.UTC(
                     currentDate.getFullYear(),
@@ -4579,7 +5572,8 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                         endTime: endTime,
                         title: eventTitle,
                         isReservation: eventTitle === 'Reservation',
-                        room: eventRoom
+                        room: eventRoom,
+                        eventId: eventId
                     });
                 }
             }
@@ -4588,6 +5582,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
         return events;
     }""", PRIORITY_ROOMS)
 
+    _assert_complete_agenda_extraction(page, today, events_data)
     print(f"  [DEBUG] Raw events extracted: {len(events_data)}")
 
     # Remove only exact logical duplicates. Events sharing a time remain
@@ -4651,6 +5646,7 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                     'endTime': end_time,
                     'room': room,
                     'daysDiff': days_diff,
+                    'eventId': event.get('eventId'),
                 })
             ignored_count += 1
             day_name = (today + timedelta(days=days_diff)).strftime("%A")
@@ -4678,7 +5674,8 @@ def scan_agenda(page, tracker, today, ignored_events=None):
                 'startTime': start_time,
                 'endTime': end_time,
                 'room': room,
-                'daysDiff': days_diff
+                'daysDiff': days_diff,
+                'eventId': event.get('eventId'),
             })
 
         day_name = target_date.strftime("%A")
@@ -4846,10 +5843,7 @@ def run_booking(args, settings, practice_plan):
 
         if args.check_only:
             print("\nChecking all eight practice-room calendar days (read only)...")
-            safe_goto(page, ASIMUT_OVERVIEW_URL)
-            page.wait_for_timeout(1500)
-            assert_calendar_date(page, today)
-            page.wait_for_selector(".location-day", state="visible", timeout=10000)
+            open_practice_room_overview(page, today)
             current_calendar_day = 0
             seen_configured_rooms = set()
             total_slot_count = 0
@@ -4862,16 +5856,9 @@ def run_booking(args, settings, practice_plan):
                         days_ahead,
                         current_calendar_day,
                     )
-                assert_calendar_date(page, target_date)
-                page.wait_for_selector(".location-day", state="visible", timeout=10000)
+                wait_for_practice_room_grid(page, target_date)
 
-                row_names = {
-                    text.strip()
-                    for text in page.locator(
-                        ".location-name-container .location-row"
-                    ).all_text_contents()
-                    if text.strip()
-                }
+                row_names = get_practice_room_names(page)
                 if not row_names:
                     raise RuntimeError(
                         f"Practice-room grid for {target_date.isoformat()} "
@@ -4946,9 +5933,7 @@ def run_booking(args, settings, practice_plan):
 
         # Navigate directly to AHC practice rooms
         print("\nNavigating to practice rooms (AHC)...")
-        safe_goto(page, ASIMUT_OVERVIEW_URL)
-        page.wait_for_timeout(3000)
-        assert_calendar_date(page, today)
+        open_practice_room_overview(page, today)
 
         # Log what date is currently showing
         current_header = page.locator("h1, h2, .title").first.text_content() if page.locator("h1, h2, .title").first.count() > 0 else "Unknown"
@@ -5175,10 +6160,10 @@ def run_booking(args, settings, practice_plan):
             pre_refresh_calendar_day = current_calendar_day
             print(f"  [DEBUG] Calendar position before refresh: day {pre_refresh_calendar_day}")
 
-            # Refresh the current page to get fresh slot data
-            safe_reload(page)
-            page.wait_for_timeout(1500)
-            assert_calendar_date(
+            # Refresh the current page and wait for its complete renderer. The
+            # SVG view exposes labels before event overlays, so a fixed delay is
+            # not sufficient evidence that availability is safe to scan.
+            refresh_practice_room_overview(
                 page,
                 today + timedelta(days=current_calendar_day),
             )
@@ -5263,6 +6248,7 @@ def run_booking(args, settings, practice_plan):
                     remaining_daily_hours=daily_remaining,
                     time_prefs=time_prefs,
                     max_action_minutes=args.max_action_minutes,
+                    agenda_reservations=all_reservations,
                 )
                 if success:
                     extensions_made += 1
@@ -5281,9 +6267,7 @@ def run_booking(args, settings, practice_plan):
 
             # Navigate back to booking overview after extensions
             print("\nNavigating back to practice rooms...")
-            safe_goto(page, ASIMUT_OVERVIEW_URL)
-            page.wait_for_timeout(2000)
-            assert_calendar_date(page, today)
+            open_practice_room_overview(page, today)
 
             # Reset calendar position - overview page shows today (day 0)
             current_calendar_day = 0

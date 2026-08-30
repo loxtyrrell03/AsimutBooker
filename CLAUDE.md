@@ -60,6 +60,7 @@ AsimutBooker/
 ├── data/
 │   ├── browser_state/    # Persistent login state (gitignored)
 │   │   └── state.json
+│   ├── auth_recovery_state.json  # No-secret auth retry breaker (gitignored)
 │   ├── booking_history.json  # Run history
 │   ├── settings.json     # GUI settings, day targets, and extension state
 │   └── mutation_receipts.json  # Runtime reconciliation journal (gitignored)
@@ -167,10 +168,12 @@ Rooms become bookable exactly X days before the slot time (where X is the room's
 
 The booker automatically handles this in two phases:
 
-1. **Initial Booking**: At the first possible moment (30 min after horizon), books the minimum 30-minute slot and saves it to `extendable_bookings` in settings.json
+1. **Initial Booking**: At the first possible moment (30 min after horizon), books the minimum 30-minute slot and saves the exact verified positive event ID/URL with its `extendable_bookings` record in settings.json
 
 2. **Extension Runs**: Every 15 minutes, the scheduled task runs again and:
    - Loads pending extendable bookings
+   - Binds legacy records only from one exact complete-agenda reservation with a positive event ID, persisting that migration before editing
+   - Selects the one current/legacy event card bound to that exact ID; a missing, duplicate, cancelled, or tuple-mismatched card stops without Save
    - Calculates how much more time is now available (based on time since horizon, not time since booking)
    - Extends each booking by the available amount (in 15-minute increments)
    - Continues until reaching 2 hours or the target duration
@@ -283,6 +286,7 @@ python -m unittest discover -s tests
 | `config/config.example.yaml` | Exact supported advanced configuration schema |
 | `config/config.yaml` | Optional local room/rule override |
 | `data/browser_state/state.json` | Saved browser session (cookies, localStorage) |
+| `data/auth_recovery_state.json` | Gitignored no-secret credential latch / transient retry cooldown |
 | `data/booking_history.json` | JSON log of all booking runs |
 | `data/settings.json` | GUI settings, practice plan, ignored events, and extendable bookings |
 | `data/mutation_receipts.json` | Gitignored crash-recovery journal for remote mutations |
@@ -302,6 +306,10 @@ python -m unittest discover -s tests
   partial agenda scans, and ambiguous date navigation never count as success.
   Any unexpected error after Save is reconciliation-required, never a retryable
   slot failure in the same run.
+- Current agenda cards are matched by positive event ID as well as exact
+  room/date/time. Each required day and every non-cancelled event card must be
+  represented by the extractor; missing, duplicate, malformed, or mismatched
+  identities stop the run before any mutation.
 - Authentication always tries saved browser state first. Only an actual sign-in
   redirect reads the Windows credential; recovery makes one password attempt,
   consumes at most one SMS code, and persists state only after Asimut's
@@ -335,9 +343,12 @@ python -m unittest discover -s tests
   and invalid input restores the last persisted control state.
 - Post-Save uncertainty stops all further mutations until exact reconciliation;
   bounded live checks can cap both the action count and each action's duration.
-- The combined offline suite passes 148 tests across authentication, booking
+- The combined offline suite passes 215 tests across authentication, booking
   policy, Save verification, receipt recovery, GUI concurrency, event identity,
-  launchers, and scheduler shape. Live evidence must be recorded separately.
+  current DOM fixtures, launchers, and scheduler shape.
+- Compact practice-plan controls merge only locally edited fields into the
+  latest locked settings, then resynchronize from the confirmed saved plan so a
+  concurrent default/enable change cannot be silently overwritten or shown stale.
 
 ## 2026-08-30 Autonomous Authentication Milestone
 
@@ -348,10 +359,24 @@ python -m unittest discover -s tests
 - Passwords are user-scoped Windows Credential Manager secrets. SMS uses the
   existing `RWCMD SMS Bridge` task and in-memory localhost endpoint; passwords,
   OTPs, and bridge tokens are never persisted or logged by the booker.
+- Secret-bearing Playwright fills suppress their original exception context,
+  and a closing Microsoft popup is followed only after one trusted context page
+  proves the continuation. The flow leaves Microsoft's remember-device choice
+  unchanged and never signs out to exercise recovery.
+- `data/auth_recovery_state.json` stores only a version, normalized failure
+  category, and optional retry timestamp. Explicit password rejection blocks
+  scheduled retries until secure-login update or a successful explicit repair;
+  verification, bridge, and automation failures cool down for 30 minutes.
+  **Check / Repair Login** may make one deliberate bypass attempt and success
+  clears either block.
 - Offline verification covers the session-first boundary, missing-credential
   failure, exact six-digit OTP acceptance, bridge health, and secret redaction.
   Do not log out solely to exercise the fallback; validate it naturally when
   Microsoft next expires the saved session.
+- Scheduler setup is transactional: the replacement is registered disabled,
+  fully read back, enabled, and read back again. Any failed verification removes
+  the replacement and restores a prior definition disabled, re-enabling it only
+  when its saved contract had already been proven valid.
 
 ## 2026-08-30 Ignored-Event Identity Milestone
 
@@ -361,6 +386,35 @@ python -m unittest discover -s tests
 - Saving event preferences always writes v2 keys. Existing time-only keys remain
   compatible when unique; ambiguous keys leave every matching event enabled and
   prompt the user to review and save the selection.
+
+## 2026-08-30 Live Renderer, Booking, and Scheduler Validation
+
+- The current saved session is proven after one deterministic Microsoft
+  credential/SMS recovery. Later login-only, manual, and scheduled checks reused
+  it without password access, another code, logout, or a user-controlled browser.
+- The current `app-overview-svg` renderer is supported alongside the legacy
+  grid. Readiness waits for asynchronous overlays; room labels, coordinates,
+  exact prefilled URLs, delayed menus, and delayed time controls are verified
+  before form mutation.
+- Two bounded 30-minute live bookings in different AHC rooms and dates were
+  created and reload-verified. Exact agenda event IDs and room/date/time matched,
+  and a final read-only pass covered all eight dates, 29 rows per date, the two
+  reservations, the unrelated class conflict, and 154 visible gaps.
+- A live verifier mismatch left its crash receipt pending and prevented a
+  duplicate. Current arrangement-card and two-digit-date parsing plus URL-first,
+  same-event agenda reconciliation resolved it safely before another booking.
+- The combined offline suite passes 215 tests. A temporary Task Scheduler
+  `--check-only` run also completed with exit code zero and was removed.
+- `AsimutBooker_Recurring` is installed as the only root Asimut task. Exact
+  action, trigger, limited current-user principal, wake/catch-up/network/battery,
+  overlap, restart, and execution settings were read back. AC/DC wake timers are
+  enabled and plugged-in lid close is Do nothing; physical wake remains hardware
+  and firmware dependent.
+- Provisional reconfirmation remains deliberately unautomated: RWCMD's exact
+  due-state, action, eligibility window, and presence/network policy have not
+  been observed. Do not add a broad-text or coordinate click; first establish a
+  read-only RWCMD-specific contract, then journal and reload-verify one semantic
+  action with no retry on uncertainty.
 
 ## Maintenance Notes
 

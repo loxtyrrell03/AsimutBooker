@@ -22,6 +22,8 @@ logs/*.log
 data/mutation_receipts.json
 data/mutation_receipts.json.bak
 data/mutation_receipts.json.lock
+data/auth_recovery_state.json
+data/auth_recovery_state.json.lock
 data/booker-runtime.lock
 data/settings.json.lock
 data/settings.json.bak

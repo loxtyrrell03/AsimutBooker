@@ -53,6 +53,17 @@ class EventIdentityTests(unittest.TestCase):
         )
         self.assertEqual(unique, [self.event, same_time_reservation])
 
+    def test_remote_event_ids_preserve_distinct_same_identity_events(self):
+        first = {**self.event, "eventId": 3580086}
+        repeated_dom_copy = dict(first)
+        separate_remote_event = {**self.event, "eventId": 3580087}
+
+        unique = deduplicate_events(
+            [first, repeated_dom_copy, separate_remote_event]
+        )
+
+        self.assertEqual(unique, [first, separate_remote_event])
+
     def test_legacy_key_resolves_only_for_one_distinct_v2_identity(self):
         legacy_key = legacy_event_identity(self.event)
         unique_resolution = resolve_ignored_event_keys(
