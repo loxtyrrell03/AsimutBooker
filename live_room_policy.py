@@ -7,6 +7,7 @@ current authenticated browser session.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from types import MappingProxyType
@@ -57,6 +58,7 @@ class LiveRoomPolicy:
     minimum_block_minutes: int
     allow_fragmented_sessions: bool
     all_room_names: tuple[str, ...] = ()
+    site_clock_offset_bounds: tuple[float, float] | None = None
 
     def horizon_minutes_for(self, room: str) -> int:
         """Return one proven room horizon; unknown/excluded rooms fail closed."""
@@ -175,6 +177,27 @@ def build_live_room_policy(catalog: Any, preferences: RoomPreferences) -> LiveRo
         horizons[room_name] = horizon
         selected_metadata[room_name] = MappingProxyType(dict(metadata[room_name]))
 
+    raw_clock_bounds = getattr(catalog, "site_clock_offset_bounds", None)
+    clock_bounds: tuple[float, float] | None = None
+    if raw_clock_bounds is not None:
+        if (
+            not isinstance(raw_clock_bounds, tuple)
+            or len(raw_clock_bounds) != 2
+            or any(
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                for value in raw_clock_bounds
+            )
+        ):
+            raise LiveRoomPolicyError("Live site clock bounds are invalid")
+        lower, upper = (float(value) for value in raw_clock_bounds)
+        if (
+            not (math.isfinite(lower) and math.isfinite(upper))
+            or lower > upper
+            or upper - lower > 2
+        ):
+            raise LiveRoomPolicyError("Live site clock bounds are too uncertain")
+        clock_bounds = (lower, upper)
+
     return LiveRoomPolicy(
         observed_at=observed_at,
         booking_horizon=booking_horizon,
@@ -188,6 +211,7 @@ def build_live_room_policy(catalog: Any, preferences: RoomPreferences) -> LiveRo
         minimum_block_minutes=preferences.minimum_block_minutes,
         allow_fragmented_sessions=preferences.allow_fragmented_sessions,
         all_room_names=tuple(by_name),
+        site_clock_offset_bounds=clock_bounds,
     )
 
 

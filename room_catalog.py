@@ -14,6 +14,7 @@ included in the cache schema.
 from __future__ import annotations
 
 import copy
+from email.utils import parsedate_to_datetime
 import json
 import math
 import re
@@ -278,6 +279,15 @@ class RoomCatalog:
     minimum_booking_gap_minutes: int
     booking_category_id: int
     rooms: tuple[RoomCatalogRoom, ...]
+    # Ephemeral bounds for ``site clock - local clock`` in seconds.  They are
+    # intersected from the trusted HTTPS Date headers already returned by live
+    # discovery requests.  Cached catalogs deliberately omit this run-only
+    # timing evidence.
+    site_clock_offset_bounds: tuple[float, float] | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
     fresh: bool = field(default=False, compare=False, repr=False)
 
     @property
@@ -912,6 +922,7 @@ def build_catalog(
     observed_at: datetime,
     booking_category_id: int,
     check_observed_ats: Mapping[int, datetime] | None = None,
+    site_clock_offset_bounds: tuple[float, float] | None = None,
 ) -> RoomCatalog:
     """Build one all-or-nothing fresh catalog from pure response values."""
 
@@ -999,6 +1010,7 @@ def build_catalog(
         minimum_booking_gap_minutes=session.minimum_booking_gap_minutes,
         booking_category_id=category_id,
         rooms=tuple(rooms),
+        site_clock_offset_bounds=site_clock_offset_bounds,
         fresh=True,
     )
     return catalog.require_fresh()
@@ -1277,22 +1289,61 @@ def _api_json(response: Any, expected_path: str, label: str) -> Any:
         raise RoomCatalogError(f"{label} response was not valid JSON") from exc
 
 
-def _get_json(page: Any, path: str, label: str) -> Any:
+def _response_server_time(response: Any, label: str) -> datetime | None:
+    """Return the HTTPS response's authoritative server clock when present."""
+
+    headers = getattr(response, "headers", None)
+    if not isinstance(headers, Mapping):
+        return None
+    raw_date = headers.get("date") or headers.get("Date")
+    if raw_date is None:
+        return None
+    if not isinstance(raw_date, str) or not raw_date.strip():
+        raise RoomCatalogError(f"{label} response Date header is invalid")
+    try:
+        observed = parsedate_to_datetime(raw_date)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RoomCatalogError(f"{label} response Date header is unreadable") from exc
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise RoomCatalogError(f"{label} response Date header has no timezone")
+    return observed.astimezone(SITE_TIMEZONE)
+
+
+def _get_json(
+    page: Any,
+    path: str,
+    label: str,
+    *,
+    include_server_time: bool = False,
+) -> Any:
     try:
         response = page.request.get(ASIMUT_ORIGIN + path)
     except Exception as exc:
         raise RoomCatalogError(f"{label} request failed") from exc
-    return _api_json(response, path, label)
+    payload = _api_json(response, path, label)
+    if include_server_time:
+        return payload, _response_server_time(response, label)
+    return payload
 
 
-def _post_json(page: Any, path: str, body: Mapping[str, Any], label: str) -> Any:
+def _post_json(
+    page: Any,
+    path: str,
+    body: Mapping[str, Any],
+    label: str,
+    *,
+    include_server_time: bool = False,
+) -> Any:
     if path == "/services/v2/event/type=save" or path.endswith("/type=save"):
         raise RoomCatalogError("Room-catalog discovery must never call event/type=save")
     try:
         response = page.request.post(ASIMUT_ORIGIN + path, data=body)
     except Exception as exc:
         raise RoomCatalogError(f"{label} request failed") from exc
-    return _api_json(response, path, label)
+    payload = _api_json(response, path, label)
+    if include_server_time:
+        return payload, _response_server_time(response, label)
+    return payload
 
 
 def _ceil_quarter_hour(value: datetime) -> datetime:
@@ -1474,6 +1525,65 @@ def _request_minute_candidates(
     )
 
 
+def _request_observation_candidates(
+    started_at: datetime,
+    finished_at: datetime,
+    server_time: datetime | None,
+) -> tuple[datetime, ...]:
+    """Prefer the response server minute; otherwise use the local envelope."""
+
+    if server_time is not None:
+        return (_normalize_observed_at(server_time),)
+    return _request_minute_candidates(started_at, finished_at)
+
+
+def _server_clock_offset_bounds(
+    started_at: datetime,
+    finished_at: datetime,
+    server_time: datetime | None,
+) -> tuple[float, float] | None:
+    """Bound ``server clock - local clock`` from one HTTP Date header.
+
+    HTTP dates have one-second precision.  The server generated the response
+    after the local request began and before it completed, so the real offset
+    lies between these conservative endpoints.  The bound is timing evidence
+    only; it is never written to the display cache.
+    """
+
+    if server_time is None:
+        return None
+    started = started_at.astimezone(SITE_TIMEZONE)
+    finished = finished_at.astimezone(SITE_TIMEZONE)
+    if finished < started:
+        raise RoomCatalogError("A live clock sample finished before it started")
+    server = server_time.astimezone(SITE_TIMEZONE)
+    # RFC 9110 describes Date as a one-second-resolution approximation, not a
+    # guaranteed floor.  Allow a full second either side of its represented
+    # value so this evidence can never advance a Save based on rounding alone.
+    lower = (server - timedelta(seconds=1) - finished).total_seconds()
+    upper = (server + timedelta(seconds=1) - started).total_seconds()
+    if not (math.isfinite(lower) and math.isfinite(upper) and lower <= upper):
+        raise RoomCatalogError("A live clock sample produced invalid bounds")
+    return lower, upper
+
+
+def _intersect_clock_offset_bounds(
+    samples: Sequence[tuple[float, float]],
+) -> tuple[float, float] | None:
+    """Intersect bounded live clock samples, or omit inconsistent evidence."""
+
+    if not samples:
+        return None
+    lower = max(sample[0] for sample in samples)
+    upper = min(sample[1] for sample in samples)
+    # Different reverse-proxy workers can disagree slightly.  Such evidence is
+    # unsuitable for an edge click but must not prevent ordinary read-only or
+    # non-edge booking work.
+    if lower > upper:
+        return None
+    return lower, upper
+
+
 def refresh_from_site(
     page: Any,
     *,
@@ -1488,13 +1598,27 @@ def refresh_from_site(
     returned or persisted.
     """
 
+    clock_samples: list[tuple[float, float]] = []
     if observed_at is None:
         session_started_at = datetime.now(tz=SITE_TIMEZONE)
-        session_payload = _get_json(page, SESSION_CONTEXT_PATH, "session context")
+        session_payload, session_server_time = _get_json(
+            page,
+            SESSION_CONTEXT_PATH,
+            "session context",
+            include_server_time=True,
+        )
         session_finished_at = datetime.now(tz=SITE_TIMEZONE)
-        session_candidates = _request_minute_candidates(
+        session_clock_bounds = _server_clock_offset_bounds(
             session_started_at,
             session_finished_at,
+            session_server_time,
+        )
+        if session_clock_bounds is not None:
+            clock_samples.append(session_clock_bounds)
+        session_candidates = _request_observation_candidates(
+            session_started_at,
+            session_finished_at,
+            session_server_time,
         )
         parsed_sessions: list[SessionPolicy] = []
         session_errors: list[RoomCatalogError] = []
@@ -1557,19 +1681,29 @@ def refresh_from_site(
                 end=probe_end,
             )
             check_started_at = observed_at or datetime.now(tz=SITE_TIMEZONE)
-            check_payload = _post_json(
+            check_payload, check_server_time = _post_json(
                 page,
                 EVENT_CHECK_PATH,
                 body,
                 f"event check for {location.name}",
+                include_server_time=True,
             )
             check_finished_at = observed_at or datetime.now(tz=SITE_TIMEZONE)
+            if observed_at is None:
+                check_clock_bounds = _server_clock_offset_bounds(
+                    check_started_at,
+                    check_finished_at,
+                    check_server_time,
+                )
+                if check_clock_bounds is not None:
+                    clock_samples.append(check_clock_bounds)
             checks[location.location_id] = check_payload
             matching_observations: list[datetime] = []
             check_errors: list[RoomCatalogError] = []
-            for candidate in _request_minute_candidates(
+            for candidate in _request_observation_candidates(
                 check_started_at,
                 check_finished_at,
+                check_server_time if observed_at is None else None,
             ):
                 try:
                     parse_horizon_issues(
@@ -1609,6 +1743,7 @@ def refresh_from_site(
         observed_at=session.observed_at,
         booking_category_id=category_id,
         check_observed_ats=check_observed_ats,
+        site_clock_offset_bounds=_intersect_clock_offset_bounds(clock_samples),
     )
     if save:
         save_catalog(catalog, path)

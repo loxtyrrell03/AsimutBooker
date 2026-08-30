@@ -183,6 +183,40 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
             ]
         )
         self.assertTrue(horizon.horizon_only)
+        self.assert_rejected(
+            [
+                "--horizon-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "2",
+                "--target-time",
+                "10:00",
+            ]
+        )
+
+    def test_delayed_scheduled_horizon_only_run_exits_without_fallthrough(self):
+        with (
+            mock.patch.object(book_week, "_scheduled_target_time", return_value=None),
+            mock.patch.object(book_week, "_load_and_validate_runtime_settings") as load,
+            mock.patch.object(book_week, "run_booking") as run,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            result = book_week.main(
+                [
+                    "--headless",
+                    "--scheduled",
+                    "--horizon-only",
+                    "--only-room",
+                    "B0.29",
+                    "--max-actions",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        load.assert_not_called()
+        run.assert_not_called()
 
 
 class LiveActionDurationBoundaryTests(unittest.TestCase):

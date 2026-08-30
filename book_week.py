@@ -268,8 +268,10 @@ ROOM_HORIZON_MINUTES: dict[str, int] = {}
 BOOKING_WINDOW_DATES: tuple = ()
 MINIMUM_BLOCK_MINUTES = MIN_BOOKING_MINUTES
 ALLOW_FRAGMENTED_SESSIONS = True
+SITE_CLOCK_OFFSET_BOUNDS: tuple[float, float] | None = None
 EXTENSION_PREP_WINDOW_SECONDS = 180
 HORIZON_SAVE_SETTLE_SECONDS = 0.25
+HORIZON_CLOCK_SAFETY_SECONDS = 0.05
 HORIZON_SNIPE_GRACE_SECONDS = 180
 
 ASIMUT_BASE_URL = "https://rwcmd.asimut.net"
@@ -303,6 +305,7 @@ def install_live_room_policy(policy, *, today=None):
     global BOOKING_WINDOW_DATES
     global MINIMUM_BLOCK_MINUTES
     global ALLOW_FRAGMENTED_SESSIONS
+    global SITE_CLOCK_OFFSET_BOUNDS
     global SAME_ROOM_GAP_MINUTES
     ACTIVE_ROOM_POLICY = policy
     PRIORITY_ROOMS = list(policy.room_order)
@@ -311,6 +314,7 @@ def install_live_room_policy(policy, *, today=None):
     BOOKING_WINDOW_DATES = policy_dates
     MINIMUM_BLOCK_MINUTES = policy.minimum_block_minutes
     ALLOW_FRAGMENTED_SESSIONS = policy.allow_fragmented_sessions
+    SITE_CLOCK_OFFSET_BOUNDS = policy.site_clock_offset_bounds
     SAME_ROOM_GAP_MINUTES = max(
         CONFIGURED_SAME_ROOM_GAP_MINUTES,
         policy.site_minimum_booking_gap_minutes,
@@ -374,6 +378,12 @@ def refresh_live_room_policy(page, preferences, *, today=None):
         f"{len(policy.room_order)} eligible rooms; horizons {horizon_text}; "
         f"window ends {policy.booking_horizon.astimezone():%Y-%m-%d %H:%M %Z}"
     )
+    if policy.site_clock_offset_bounds is not None:
+        lower, upper = policy.site_clock_offset_bounds
+        print(
+            "  Site clock evidence: Asimut is between "
+            f"{lower:+.3f}s and {upper:+.3f}s relative to this PC"
+        )
     return policy
 
 
@@ -803,6 +813,47 @@ def _visible_save_rejection(page):
         except Exception:
             continue
     return None
+
+
+def refresh_new_booking_validation(page, expected_end_time):
+    """Force and prove one fresh no-Save validation at the horizon boundary."""
+
+    end_input = page.locator(
+        "#endDate, input[aria-label='End time'], "
+        "input[data-cy='time-range-end-time'], input[formcontrolname='endTime']"
+    ).first
+    if end_input.count() == 0 or not end_input.is_visible():
+        return False, "end-time control is unavailable"
+
+    def is_exact_event_check(response):
+        try:
+            parsed = urlsplit(response.url)
+            return (
+                parsed.scheme == "https"
+                and parsed.hostname == "rwcmd.asimut.net"
+                and parsed.port is None
+                and parsed.path == "/services/v2/event/type=check"
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except Exception:
+            return False
+
+    try:
+        with page.expect_response(is_exact_event_check, timeout=5000) as pending:
+            # Playwright fill dispatches a fresh input event even when the text
+            # is unchanged; Tab commits the Angular control and its debounced
+            # server-side horizon check.
+            end_input.fill(expected_end_time)
+            end_input.press("Tab")
+        response = pending.value
+        if not is_exact_event_check(response) or not response.ok:
+            return False, "event validation response was not trusted HTTP success"
+        page.wait_for_timeout(300)
+    except Exception as exc:
+        return False, f"fresh event validation did not complete: {exc}"
+
+    return True, "fresh event validation completed"
 
 
 def wait_for_student_booking_option(page, *, timeout_ms=5000):
@@ -1239,7 +1290,13 @@ def wait_until_target_time(target_time_str, page=None):
     print(f"{'='*60}\n")
 
 
-def wait_until_datetime(target, page=None, *, label="HORIZON"):
+def wait_until_datetime(
+    target,
+    page=None,
+    *,
+    label="HORIZON",
+    settle_seconds=HORIZON_SAVE_SETTLE_SECONDS,
+):
     """Wait for one exact local datetime while keeping the page responsive."""
 
     now = datetime.now()
@@ -1247,7 +1304,8 @@ def wait_until_datetime(target, page=None, *, label="HORIZON"):
         # Form preparation can legitimately consume the last fraction of the
         # lead window. Preserve the same small server-clock allowance even
         # when the local boundary was reached before this helper was entered.
-        time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
+        if settle_seconds > 0:
+            time.sleep(settle_seconds)
         return 0.0
 
     initial_wait = (target - now).total_seconds()
@@ -1288,8 +1346,74 @@ def wait_until_datetime(target, page=None, *, label="HORIZON"):
     # A very small server-clock allowance avoids firing on the wrong side of
     # the boundary without giving away the slot for the previous one-second
     # buffer used by the legacy path.
-    time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
+    if settle_seconds > 0:
+        time.sleep(settle_seconds)
     return initial_wait
+
+
+def wait_for_horizon_discovery_window(target_boundary, page=None):
+    """Delay an early manual run until edge discovery is useful.
+
+    No booking form is open during this wait.  Scheduled runs already start
+    inside the three-minute window, while an explicitly launched test can be
+    started earlier without exiting before its intended boundary exists.
+    """
+
+    discovery_at = target_boundary - timedelta(
+        seconds=EXTENSION_PREP_WINDOW_SECONDS
+    )
+    now = datetime.now()
+    if now >= discovery_at:
+        return 0.0
+    initial_wait = (discovery_at - now).total_seconds()
+    print(
+        f"\n  Horizon discovery opens at {discovery_at:%H:%M:%S}; "
+        f"waiting {initial_wait:.0f}s before scanning"
+    )
+    last_keepalive = None
+    while True:
+        remaining = (discovery_at - datetime.now()).total_seconds()
+        if remaining <= 0:
+            break
+        remaining_int = int(remaining)
+        if (
+            page is not None
+            and remaining_int % 30 == 0
+            and remaining_int != last_keepalive
+        ):
+            try:
+                page.evaluate("1")
+            except Exception:
+                pass
+            last_keepalive = remaining_int
+        time.sleep(min(0.5, remaining))
+    return initial_wait
+
+
+def site_aligned_save_deadline(bookable_from):
+    """Return a conservative local deadline for one Asimut wall-clock edge."""
+
+    if SITE_CLOCK_OFFSET_BOUNDS is None:
+        return bookable_from, None
+    lower, upper = SITE_CLOCK_OFFSET_BOUNDS
+    # ``lower`` is the smallest proven site-minus-local offset.  Waiting until
+    # this deadline guarantees even the slowest clock allowed by the evidence
+    # has crossed the site boundary.  A tiny additional margin covers scheduler
+    # and float rounding without restoring the old multi-second lateness.
+    deadline = bookable_from - timedelta(seconds=lower) + timedelta(
+        seconds=HORIZON_CLOCK_SAFETY_SECONDS
+    )
+    return deadline, (lower, upper)
+
+
+def estimated_site_latency_bounds(local_timestamp, site_boundary):
+    """Estimate site-relative click latency from the run's clock evidence."""
+
+    local_delta = (local_timestamp - site_boundary).total_seconds()
+    if SITE_CLOCK_OFFSET_BOUNDS is None:
+        return local_delta, local_delta
+    lower, upper = SITE_CLOCK_OFFSET_BOUNDS
+    return local_delta + lower, local_delta + upper
 
 
 def is_room_available_to_book(room, target_date, slot_start_hour):
@@ -5009,7 +5133,123 @@ def try_book_slot(
         return False
 
 
-def navigate_to_day(page, target_day, current_day):
+def _calendar_navigation_button(page, direction):
+    """Resolve one visible, enabled date control by semantic identity.
+
+    The current Asimut shell also contains hidden drawer icons whose text is
+    ``chevron_left``.  Selecting the first generic icon therefore targets the
+    wrong control.  Prefer the date bar's stable data-cy hook, retain exact
+    accessible/date-bar fallbacks, and reject ambiguous visible controls.
+    """
+
+    if direction not in {-1, 1}:
+        raise ValueError("Calendar navigation direction must be -1 or 1")
+    if direction > 0:
+        selectors = (
+            "button[data-cy='increment-date-chevron']",
+            "button[aria-label='Change date forward']",
+            ".date-bar button:has(mat-icon:text-is('chevron_right'))",
+        )
+        direction_name = "forward"
+    else:
+        selectors = (
+            "button[data-cy='decrement-date-chevron']",
+            "button[aria-label='Change date backward']",
+            ".date-bar button:has(mat-icon:text-is('chevron_left'))",
+        )
+        direction_name = "backward"
+
+    for selector in selectors:
+        locator = page.locator(selector)
+        visible = []
+        for index in range(locator.count()):
+            candidate = locator.nth(index)
+            if candidate.is_visible():
+                visible.append(candidate)
+        if len(visible) > 1:
+            raise RuntimeError(
+                f"Calendar {direction_name} navigation is ambiguous "
+                f"({len(visible)} visible controls matched {selector})"
+            )
+        if len(visible) == 1:
+            button = visible[0]
+            if not button.is_enabled():
+                raise RuntimeError(
+                    f"Calendar {direction_name} navigation control is disabled"
+                )
+            return button
+
+    raise RuntimeError(
+        f"Calendar {direction_name} navigation control is not visible"
+    )
+
+
+def _walk_calendar_days(page, target_day, current_day, *, today):
+    """Walk between two verified calendar offsets without double-clicking."""
+
+    if target_day == current_day:
+        assert_calendar_date(page, today + timedelta(days=target_day))
+        return current_day
+
+    direction = 1 if target_day > current_day else -1
+    clicks_needed = abs(target_day - current_day)
+    direction_name = "forward" if direction > 0 else "backward"
+    print(f"    Navigating {direction_name} {clicks_needed} day(s) to Day {target_day}...")
+
+    position = current_day
+    assert_calendar_date(page, today + timedelta(days=position))
+    for step in range(clicks_needed):
+        next_position = position + direction
+        current_date = today + timedelta(days=position)
+        next_date = today + timedelta(days=next_position)
+        completed = False
+        last_error = None
+        for _attempt in range(1, 4):
+            try:
+                if not page_is_authenticated(page):
+                    raise RuntimeError("Asimut session is no longer authenticated")
+
+                visible_dates = get_visible_calendar_dates(
+                    page,
+                    reference_date=next_date,
+                )
+                current_visible = current_date in visible_dates
+                next_visible = next_date in visible_dates
+                if current_visible == next_visible:
+                    seen = ", ".join(
+                        sorted(value.isoformat() for value in visible_dates)
+                    ) or "none"
+                    raise RuntimeError(
+                        "Calendar position became ambiguous before navigation "
+                        f"(expected {current_date} or {next_date}; saw {seen})"
+                    )
+
+                if current_visible:
+                    page.keyboard.press("Escape")
+                    page.evaluate("window.scrollTo(0, 0)")
+                    button = _calendar_navigation_button(page, direction)
+                    button.click(timeout=5000)
+
+                # If a prior click changed the date but grid verification
+                # timed out, the next retry reaches this wait without clicking
+                # again.  That prevents an accidental two-day jump.
+                wait_for_practice_room_grid(page, next_date)
+                position = next_position
+                completed = True
+                break
+            except Exception as exc:
+                last_error = exc
+                page.wait_for_timeout(300)
+        if not completed:
+            raise RuntimeError(
+                f"Calendar navigation stopped at Day {position}; "
+                f"could not complete step {step + 1}/{clicks_needed}: {last_error}"
+            )
+
+    return position
+
+
+def navigate_to_day(page, target_day, current_day, *, base_date=None):
     """
     Navigate from current_day to target_day using chevron clicks.
 
@@ -5021,144 +5261,209 @@ def navigate_to_day(page, target_day, current_day):
     Returns:
         The new current_day position
     """
-    if target_day == current_day:
-        assert_calendar_date(page, datetime.now().date() + timedelta(days=target_day))
-        return current_day
-
-    direction = 1 if target_day > current_day else -1
-    arrow_text = "chevron_right" if direction > 0 else "chevron_left"
-    clicks_needed = abs(target_day - current_day)
-    direction_name = "forward" if direction > 0 else "backward"
-    print(f"    Navigating {direction_name} {clicks_needed} day(s) to Day {target_day}...")
-
-    position = current_day
-    assert_calendar_date(page, datetime.now().date() + timedelta(days=position))
-    for step in range(clicks_needed):
-        clicked = False
-        last_error = None
-        for attempt in range(1, 4):
-            try:
-                if not page_is_authenticated(page):
-                    raise RuntimeError("Asimut session is no longer authenticated")
-                page.keyboard.press("Escape")
-                page.evaluate("window.scrollTo(0, 0)")
-                icon = page.locator("mat-icon").filter(has_text=arrow_text).first
-                if icon.count() == 0 or not icon.is_visible():
-                    raise RuntimeError(f"{arrow_text} navigation control is not visible")
-                button = icon.locator("xpath=ancestor::button[1]")
-                (button if button.count() else icon).click(force=True, timeout=5000)
-                next_position = position + direction
-                wait_for_practice_room_grid(
-                    page,
-                    datetime.now().date() + timedelta(days=next_position),
-                )
-                clicked = True
-                position = next_position
-                break
-            except Exception as exc:
-                last_error = exc
-                page.wait_for_timeout(300)
-        if not clicked:
+    today = as_date(base_date) if base_date is not None else datetime.now().date()
+    try:
+        return _walk_calendar_days(
+            page,
+            target_day,
+            current_day,
+            today=today,
+        )
+    except Exception as primary_error:
+        # A stale SPA date bar should not permanently strand a scheduled run.
+        # Reset through the canonical today route once, then walk forward to
+        # the exact target.  Every step still proves the visible date and full
+        # grid, so this recovery cannot silently land on the wrong day.
+        print(
+            "    Calendar traversal became stale; reopening today's verified "
+            "AHC grid and retrying once..."
+        )
+        try:
+            open_practice_room_overview(page, today)
+            return _walk_calendar_days(page, target_day, 0, today=today)
+        except Exception as recovery_error:
             raise RuntimeError(
-                f"Calendar navigation stopped at Day {position}; "
-                f"could not complete step {step + 1}/{clicks_needed}: {last_error}"
-            )
+                f"Calendar navigation to Day {target_day} failed before and "
+                f"after canonical reset (initial: {primary_error}; "
+                f"reset: {recovery_error})"
+            ) from recovery_error
 
-    return position
+
+def _nearest_quarter_boundary(now):
+    """Return the nearest quarter-hour boundary to one local datetime."""
+
+    floor_minute = (now.minute // 15) * 15
+    floor_boundary = now.replace(minute=floor_minute, second=0, microsecond=0)
+    ceil_boundary = floor_boundary + timedelta(minutes=15)
+    return min(
+        (floor_boundary, ceil_boundary),
+        key=lambda value: abs((value - now).total_seconds()),
+    )
+
+
+def target_boundary_datetime(target_time, *, base_date=None):
+    """Build the exact same-day local boundary represented by ``HH:MM``."""
+
+    parsed = datetime.strptime(target_time, "%H:%M")
+    boundary_date = as_date(base_date) if base_date is not None else datetime.now().date()
+    return datetime.combine(boundary_date, parsed.time())
+
+
+def wait_before_runtime_target_window(target_time):
+    """Wait outside the runtime lock before collecting live edge evidence."""
+
+    target_boundary = target_boundary_datetime(target_time)
+    ready_at = target_boundary - timedelta(seconds=EXTENSION_PREP_WINDOW_SECONDS)
+    now = datetime.now()
+    if now >= ready_at:
+        return 0.0
+    initial_wait = (ready_at - now).total_seconds()
+    print(
+        f"Target {target_time} is not yet in the live discovery window; "
+        f"waiting {initial_wait:.0f}s before authentication"
+    )
+    while True:
+        remaining = (ready_at - datetime.now()).total_seconds()
+        if remaining <= 0:
+            break
+        time.sleep(min(1.0, remaining))
+    return initial_wait
+
+
+def plan_horizon_edge_slots(
+    target_boundary,
+    *,
+    today=None,
+    only_date=None,
+    only_room=None,
+    allowed_dates=None,
+    room_names=None,
+):
+    """Derive the one exact newly bookable slot for every eligible live room.
+
+    For a boundary ``T``, live room horizon ``H`` and selected minimum block
+    ``M``, only the slot starting at ``T + H - M`` becomes newly bookable.  This
+    avoids scanning every quarter-hour in every free gap and remains valid for
+    arbitrary site-reported 15-minute horizons.
+    """
+
+    if not isinstance(target_boundary, date) or not hasattr(target_boundary, "hour"):
+        raise TypeError("target_boundary must be a datetime")
+    today = as_date(today) if today is not None else target_boundary.date()
+    if allowed_dates is None:
+        live_dates = set(booking_window_dates(today))
+    else:
+        live_dates = {as_date(value) for value in allowed_dates}
+    if isinstance(only_date, str):
+        selected_date = datetime.strptime(only_date, "%Y-%m-%d").date()
+    else:
+        selected_date = as_date(only_date) if only_date is not None else None
+    if selected_date is not None:
+        live_dates &= {selected_date}
+
+    selected_rooms = set(room_names) if room_names is not None else None
+    plans = []
+    for room_priority, room_name in enumerate(PRIORITY_ROOMS):
+        if selected_rooms is not None and room_name not in selected_rooms:
+            continue
+        if only_room is not None and room_name != only_room:
+            continue
+        horizon_minutes = room_horizon_minutes(room_name)
+        slot_start = target_boundary + timedelta(
+            minutes=horizon_minutes - MINIMUM_BLOCK_MINUTES
+        )
+        target_date = slot_start.date()
+        if target_date not in live_dates:
+            continue
+        if slot_start.second or slot_start.microsecond or slot_start.minute % 15:
+            raise LiveRoomPolicyError(
+                f"The derived horizon edge for {room_name} is not quarter-hour aligned"
+            )
+        start_hour = slot_start.hour + slot_start.minute / 60
+        plans.append(
+            {
+                "room": room_name,
+                "room_priority": room_priority,
+                "horizon_minutes": horizon_minutes,
+                "booking_minutes": MINIMUM_BLOCK_MINUTES,
+                "bookable_from": target_boundary,
+                "target_date": target_date,
+                "days_ahead": (target_date - today).days,
+                "start_hour": start_hour,
+                "end_hour": start_hour + MINIMUM_BLOCK_MINUTES / 60,
+            }
+        )
+    return plans
+
+
+def _candidate_for_planned_edge(room_data, plan):
+    """Return a candidate when the exact edge block fits inside a free gap."""
+
+    start_hour = plan["start_hour"]
+    minimum_end = plan["end_hour"]
+    for gap in room_data.get("slots", ()):
+        gap_start = float(gap["startHour"])
+        gap_end = float(gap["endHour"])
+        if gap_start <= start_hour + 1e-9 and minimum_end <= gap_end + 1e-9:
+            candidate = dict(plan)
+            candidate.update(
+                {
+                    "end_hour": gap_end,
+                    "duration": int(round((gap_end - start_hour) * 60)),
+                    "click_x": gap.get("clickX"),
+                    "click_y": gap.get("clickY"),
+                }
+            )
+            return candidate
+    return None
 
 
 def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
-    """
-    Find a slot whose complete selected minimum block is about to become bookable.
+    """Compatibility helper for one loaded date using boundary-driven edges."""
 
-    Returns: (slot_info, seconds_until_bookable) or (None, None) if no candidate found.
-    """
     now = datetime.now()
-
-    if hasattr(target_date, 'date'):
-        target_date_obj = target_date.date()
-    else:
-        target_date_obj = target_date
-
-    fragmentation_ok, _ = fragmentation_allows_new_booking(
-        tracker,
-        target_date_obj,
-    )
+    boundary = _nearest_quarter_boundary(now)
+    target_date_obj = as_date(target_date)
+    if not is_horizon_snipe_timing_candidate((boundary - now).total_seconds()):
+        return None, None
+    fragmentation_ok, _ = fragmentation_allows_new_booking(tracker, target_date_obj)
     if not fragmentation_ok:
         return None, None
 
-    best_candidate = None
-    best_wait_seconds = float('inf')
-
-    for room_data in available_data:
-        room_name = room_data["room"]
-        if room_name not in PRIORITY_ROOMS:
+    plans = plan_horizon_edge_slots(
+        boundary,
+        today=now.date(),
+        allowed_dates=(target_date_obj,),
+        only_date=target_date_obj,
+        room_names={item.get("room") for item in available_data},
+    )
+    rooms = {item["room"]: item for item in available_data}
+    candidates = []
+    for plan in plans:
+        room_data = rooms.get(plan["room"])
+        if room_data is None:
             continue
-
-        horizon_minutes = room_horizon_minutes(room_name)
-        room_priority = PRIORITY_ROOMS.index(room_name)
-
-        for slot in room_data["slots"]:
-            start_hour = slot['startHour']
-            slot_duration = (slot['endHour'] - slot['startHour']) * 60
-
-            if slot_duration < MINIMUM_BLOCK_MINUTES:
+        candidate = _candidate_for_planned_edge(room_data, plan)
+        if candidate is None:
+            continue
+        start_hour = candidate["start_hour"]
+        end_hour = start_hour + MINIMUM_BLOCK_MINUTES / 60
+        if time_prefs["enabled"] and time_prefs["strict_mode"]:
+            if not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
                 continue
-
-            # Check time preferences if strict mode is on
-            if time_prefs["enabled"] and time_prefs["strict_mode"]:
-                if not interval_is_strictly_preferred(
-                    start_hour,
-                    start_hour + MINIMUM_BLOCK_MINUTES / 60,
-                    time_prefs,
-                ):
-                    continue
-
-            # Calculate when the user's complete minimum block becomes bookable.
-            slot_datetime = datetime.combine(target_date_obj, datetime.min.time())
-            slot_datetime = slot_datetime.replace(
-                hour=int(start_hour),
-                minute=int((start_hour % 1) * 60)
-            )
-            available_from = slot_datetime - timedelta(minutes=horizon_minutes)
-            bookable_from = available_from + timedelta(minutes=MINIMUM_BLOCK_MINUTES)
-
-            # How long until this slot is bookable?
-            seconds_until_bookable = (bookable_from - now).total_seconds()
-
-            # Prepare imminent slots, while retaining a bounded catch-up grace
-            # when a priority extension consumed the exact boundary first.
-            if is_horizon_snipe_timing_candidate(seconds_until_bookable):
-                # Check if we can actually book this (quota, conflicts, etc.)
-                can_book, reason = tracker.can_book(
-                    room_name,
-                    target_date,
-                    start_hour,
-                    MINIMUM_BLOCK_MINUTES,
-                )
-                if not can_book:
-                    continue
-
-                # Prefer slots that become available soonest, then by room priority
-                if seconds_until_bookable < best_wait_seconds or \
-                   (seconds_until_bookable == best_wait_seconds and room_priority < (best_candidate['room_priority'] if best_candidate else 999)):
-                    best_candidate = {
-                        "room": room_name,
-                        "start_hour": start_hour,
-                        "end_hour": slot['endHour'],
-                        "duration": slot_duration,
-                        "room_priority": room_priority,
-                        "click_x": slot["clickX"],
-                        "click_y": slot["clickY"],
-                        "bookable_from": bookable_from,
-                        "horizon_minutes": horizon_minutes,
-                        "booking_minutes": MINIMUM_BLOCK_MINUTES,
-                    }
-                    best_wait_seconds = seconds_until_bookable
-
-    if best_candidate:
-        return best_candidate, best_wait_seconds
-    return None, None
+        can_book, _ = tracker.can_book(
+            candidate["room"],
+            target_date_obj,
+            start_hour,
+            MINIMUM_BLOCK_MINUTES,
+        )
+        if can_book:
+            candidates.append(candidate)
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda item: item["room_priority"])
+    wait_seconds = (boundary - now).total_seconds()
+    return candidates[0], wait_seconds
 
 
 def find_all_snipe_candidates_multi_day(
@@ -5168,62 +5473,80 @@ def find_all_snipe_candidates_multi_day(
     current_calendar_day,
     disabled_dates=None,
     practice_plan=None,
+    *,
+    target_boundary=None,
+    only_date=None,
+    only_room=None,
+    candidate_limit=None,
 ):
-    """
-    Scan every date in the freshly observed global window for snipe candidates.
+    """Scan only exact live-derived horizon edges relevant to one boundary."""
 
-    This navigates to each horizon day, collects available slots, and identifies
-    candidates that become bookable within three minutes either side of now.
-
-    Prioritizes extensions: Skips snipe candidates that would conflict with
-    pending extensions (same room/date/time that's waiting to be extended).
-
-    Args:
-        page: Playwright page object
-        tracker: BookingTracker instance
-        time_prefs: Time preferences dict
-        current_calendar_day: Current calendar position (0 = today)
-
-    Returns:
-        Tuple of (candidates_list, new_calendar_day) where:
-        - candidates_list: List of candidate dicts sorted by (day desc, room priority)
-        - new_calendar_day: Updated calendar position after scanning
-    """
     now = datetime.now()
     today = now.date()
-    candidates = []
+    target_boundary = target_boundary or _nearest_quarter_boundary(now)
+    seconds_until_boundary = (target_boundary - now).total_seconds()
+    if not is_horizon_snipe_timing_candidate(seconds_until_boundary):
+        print(
+            "\n  Horizon boundary is outside the bounded three-minute "
+            "discovery window; no room grid was scanned"
+        )
+        return [], current_calendar_day
+
     disabled_dates = disabled_dates or set()
     practice_plan = practice_plan or PracticePlan()
-
-    # Load pending extensions to avoid conflicts (prioritize extensions over new snipes)
-    extendable_bookings = load_extendable_bookings()
-    extension_keys = set()
-    if extendable_bookings:
-        for booking in extendable_bookings:
-            # Create a key for each pending extension: "date|room|start_hour"
-            ext_date = booking.get("date", "")
-            ext_room = booking.get("room", "")
-            ext_start = booking.get("startTime", "")
-            if ext_date and ext_room and ext_start:
-                # Convert start time "HH:MM" to hour float
-                try:
-                    h, m = map(int, ext_start.split(":"))
-                    ext_start_hour = h + m / 60.0
-                    extension_keys.add((ext_date, ext_room, ext_start_hour))
-                except:
-                    pass
-        if extension_keys:
-            print(f"\n  Found {len(extension_keys)} pending extension(s) - will skip conflicting snipe candidates")
-
-    day_offsets = tuple(reversed(booking_window_day_offsets(today)))
-    print(
-        f"\n  Scanning {len(day_offsets)} live-window dates for "
-        f"snipe candidates: {list(day_offsets)}"
+    plans = plan_horizon_edge_slots(
+        target_boundary,
+        today=today,
+        only_date=only_date,
+        only_room=only_room,
     )
 
-    for days_ahead in day_offsets:
-        target_date = today + timedelta(days=days_ahead)
+    extension_keys = set()
+    for booking in load_extendable_bookings() or ():
+        ext_date = booking.get("date", "")
+        ext_room = booking.get("room", "")
+        ext_start = booking.get("startTime", "")
+        if not (ext_date and ext_room and ext_start):
+            continue
+        try:
+            hour, minute = map(int, ext_start.split(":"))
+        except (TypeError, ValueError):
+            continue
+        extension_keys.add((ext_date, ext_room, hour + minute / 60))
+    if extension_keys:
+        print(
+            f"\n  Found {len(extension_keys)} pending extension(s) - "
+            "conflicting horizon creates remain excluded"
+        )
 
+    plans_by_day = {}
+    for plan in plans:
+        plans_by_day.setdefault(plan["days_ahead"], []).append(plan)
+    if candidate_limit is not None:
+        if isinstance(candidate_limit, bool) or candidate_limit != 1:
+            raise ValueError("candidate_limit currently supports only one edge")
+        # Visit the date containing the best-ranked remaining room first.  If
+        # it is free, preparation begins immediately rather than traversing all
+        # distinct horizon dates before returning to it.
+        day_offsets = tuple(
+            sorted(
+                plans_by_day,
+                key=lambda day: min(
+                    plan["room_priority"] for plan in plans_by_day[day]
+                ),
+            )
+        )
+    else:
+        day_offsets = tuple(sorted(plans_by_day))
+    print(
+        f"\n  Target-aware horizon scan: {len(plans)} room edge(s) across "
+        f"{len(day_offsets)} exact live-derived date(s): {list(day_offsets)}"
+    )
+
+    candidates = []
+    for day_index, days_ahead in enumerate(day_offsets):
+        day_plans = plans_by_day[days_ahead]
+        target_date = day_plans[0]["target_date"]
         if is_date_disabled(target_date, disabled_dates):
             print(f"\n    Skipping Day {days_ahead} ({target_date}): disabled by user")
             continue
@@ -5246,125 +5569,98 @@ def find_all_snipe_candidates_multi_day(
             )
             continue
 
+        expected_rooms = {plan["room"] for plan in day_plans}
         print(
-            f"\n    Scanning Day {days_ahead} "
-            f"({target_date.strftime('%Y-%m-%d')}) with live room cutoffs..."
+            f"\n    Scanning Day {days_ahead} ({target_date}) for "
+            f"{len(expected_rooms)} exact room edge(s)..."
         )
+        current_calendar_day = navigate_to_day(
+            page,
+            days_ahead,
+            current_calendar_day,
+            base_date=today,
+        )
+        available_by_room = {
+            item["room"]: item
+            for item in get_available_slots(page)
+            if item.get("room") in expected_rooms
+        }
 
-        # Navigate to this day
-        current_calendar_day = navigate_to_day(page, days_ahead, current_calendar_day)
-        page.wait_for_timeout(500)  # Wait for calendar to update
-
-        # Get available slots for this day
-        available_data = get_available_slots(page)
-
-        # Find snipe candidates on this day
         day_candidates = 0
-        for room_data in available_data:
-            room_name = room_data["room"]
-            if room_name not in PRIORITY_ROOMS:
+        for plan in day_plans:
+            room_name = plan["room"]
+            room_data = available_by_room.get(room_name)
+            if room_data is None:
                 continue
-
-            horizon_minutes = room_horizon_minutes(room_name)
-
-            room_priority = PRIORITY_ROOMS.index(room_name)
-
-            for slot in room_data["slots"]:
-                start_hour = slot['startHour']
-                slot_duration = (slot['endHour'] - slot['startHour']) * 60
-
-                if slot_duration < MINIMUM_BLOCK_MINUTES:
+            candidate = _candidate_for_planned_edge(room_data, plan)
+            if candidate is None:
+                continue
+            start_hour = candidate["start_hour"]
+            end_hour = start_hour + MINIMUM_BLOCK_MINUTES / 60
+            target_date_str = target_date.isoformat()
+            if (target_date_str, room_name, start_hour) in extension_keys:
+                print(
+                    f"      Skipping {room_name} at {start_hour:.2f}: "
+                    "pending extension takes priority"
+                )
+                continue
+            if time_prefs["enabled"] and time_prefs["strict_mode"]:
+                if not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
                     continue
-
-                # Check time preferences if strict mode is on
-                if time_prefs["enabled"] and time_prefs["strict_mode"]:
-                    if not interval_is_strictly_preferred(
-                        start_hour,
-                        start_hour + MINIMUM_BLOCK_MINUTES / 60,
-                        time_prefs,
-                    ):
-                        continue
-
-                # Calculate when the complete preferred block becomes bookable.
-                slot_datetime = datetime.combine(target_date, datetime.min.time())
-                slot_datetime = slot_datetime.replace(
-                    hour=int(start_hour),
-                    minute=int((start_hour % 1) * 60)
-                )
-                available_from = slot_datetime - timedelta(
-                    minutes=horizon_minutes
-                )
-                bookable_from = available_from + timedelta(
-                    minutes=MINIMUM_BLOCK_MINUTES
-                )
-
-                # How long until this slot is bookable?
-                seconds_until_bookable = (bookable_from - datetime.now()).total_seconds()
-
-                # An extension gets the boundary first. Keep just-opened slots
-                # for three minutes so they can be attempted immediately after
-                # that verified extension instead of disappearing from snipe.
-                if is_horizon_snipe_timing_candidate(seconds_until_bookable):
-                    # Check if this conflicts with a pending extension (prioritize extensions)
-                    target_date_str = target_date.strftime('%Y-%m-%d')
-                    if (target_date_str, room_name, start_hour) in extension_keys:
-                        print(f"      Skipping {room_name} at {start_hour:.2f}: pending extension takes priority")
-                        continue
-
-                    # Check if we can actually book this (quota, conflicts, etc.)
-                    can_book, reason = tracker.can_book(
-                        room_name,
-                        target_date,
-                        start_hour,
-                        MINIMUM_BLOCK_MINUTES,
-                    )
-                    if not can_book:
-                        print(f"      Skipping {room_name} at {start_hour:.2f}: {reason}")
-                        continue
-
-                    candidates.append({
-                        "room": room_name,
-                        "start_hour": start_hour,
-                        "end_hour": slot['endHour'],
-                        "duration": slot_duration,
-                        "room_priority": room_priority,
-                        "click_x": slot["clickX"],
-                        "click_y": slot["clickY"],
-                        "bookable_from": bookable_from,
-                        "horizon_minutes": horizon_minutes,
-                        "booking_minutes": MINIMUM_BLOCK_MINUTES,
-                        "days_ahead": days_ahead,
-                        "target_date": target_date,
-                        "seconds_until": seconds_until_bookable
-                    })
-                    day_candidates += 1
-                    timing = (
-                        f"bookable in {seconds_until_bookable:.0f}s"
-                        if seconds_until_bookable > 0
-                        else f"opened {-seconds_until_bookable:.0f}s ago"
-                    )
-                    print(f"      Found: {room_name} at {start_hour:.2f}, {timing}")
-
-        if day_candidates == 0:
-            print(f"      No snipe candidates found for Day {days_ahead}")
-
-    # Sort by: days_ahead (furthest first), then room_priority (best room)
-    candidates.sort(key=lambda c: (-c['days_ahead'], c['room_priority']))
-
-    print(f"\n  Total snipe candidates found: {len(candidates)}")
-    if candidates:
-        print(f"  Snipe order (furthest day first, then by room priority):")
-        for i, c in enumerate(candidates, 1):
-            timing = (
-                f"bookable in {c['seconds_until']:.0f}s"
-                if c["seconds_until"] > 0
-                else f"opened {-c['seconds_until']:.0f}s ago"
+            can_book, reason = tracker.can_book(
+                room_name,
+                target_date,
+                start_hour,
+                MINIMUM_BLOCK_MINUTES,
             )
+            if not can_book:
+                print(f"      Skipping {room_name} at {start_hour:.2f}: {reason}")
+                continue
+            candidate["seconds_until"] = (
+                target_boundary - datetime.now()
+            ).total_seconds()
+            candidates.append(candidate)
+            day_candidates += 1
             print(
-                f"    {i}. Day {c['days_ahead']} - {c['room']} at "
-                f"{c['start_hour']:.2f} ({timing})"
+                f"      Found exact edge: {room_name} "
+                f"{start_hour:05.2f}-{end_hour:05.2f}"
             )
+        if day_candidates == 0:
+            print(f"      No exact edge block is free on Day {days_ahead}")
+        if candidate_limit == 1 and candidates:
+            best_priority = min(item["room_priority"] for item in candidates)
+            remaining_priorities = [
+                plan["room_priority"]
+                for remaining_day in day_offsets[day_index + 1 :]
+                for plan in plans_by_day[remaining_day]
+            ]
+            if not remaining_priorities or best_priority < min(remaining_priorities):
+                print(
+                    "      Highest-priority free edge found; preparing it "
+                    "without scanning lower-ranked horizon dates"
+                )
+                break
 
+    # A common boundary is attempted in the user's GUI room order.  Date
+    # distance is only a deterministic tiebreaker, never a reason to demote a
+    # preferred room.
+    candidates.sort(
+        key=lambda item: (
+            item["bookable_from"],
+            item["room_priority"],
+            item["days_ahead"],
+        )
+    )
+    if candidate_limit is not None:
+        candidates = candidates[:candidate_limit]
+    print(f"\n  Total exact horizon candidates found: {len(candidates)}")
+    if candidates:
+        print("  Snipe order (boundary, then GUI room preference):")
+        for index, candidate in enumerate(candidates, 1):
+            print(
+                f"    {index}. Day {candidate['days_ahead']} - "
+                f"{candidate['room']} at {candidate['start_hour']:.2f}"
+            )
     return candidates, current_calendar_day
 
 
@@ -5399,6 +5695,12 @@ def try_horizon_snipe(
         return False
     if booking_minutes > _action_maximum_minutes(max_action_minutes):
         print("  [SNIPE] Controlled action ceiling is below the chosen minimum block")
+        return False
+    if SITE_CLOCK_OFFSET_BOUNDS is None:
+        print(
+            "  [SNIPE] Fresh Asimut clock evidence is unavailable or "
+            "ambiguous; refusing an edge Save"
+        )
         return False
     fragmentation_ok, fragmentation_reason = fragmentation_allows_new_booking(
         tracker,
@@ -5435,11 +5737,16 @@ def try_horizon_snipe(
     book_start = f"{start_h:02d}:{start_m:02d}"
     book_end = f"{end_h:02d}:{end_m:02d}"
 
+    save_deadline, clock_bounds = site_aligned_save_deadline(bookable_from)
     now = datetime.now()
-    seconds_to_wait = (bookable_from - now).total_seconds()
-    if seconds_to_wait < -HORIZON_SNIPE_GRACE_SECONDS:
+    site_late_low, site_late_high = estimated_site_latency_bounds(
+        now,
+        bookable_from,
+    )
+    seconds_to_wait = (save_deadline - now).total_seconds()
+    if site_late_low > HORIZON_SNIPE_GRACE_SECONDS:
         print(
-            f"  [SNIPE] Candidate opened {-seconds_to_wait:.0f}s ago and "
+            f"  [SNIPE] Candidate opened at least {site_late_low:.0f}s ago and "
             "is outside the bounded horizon-edge grace"
         )
         return False
@@ -5449,8 +5756,14 @@ def try_horizon_snipe(
     print(f"{'='*60}")
     print(f"  Slot becomes bookable at: {bookable_from.strftime('%H:%M:%S')}")
     print(f"  Current time: {now.strftime('%H:%M:%S')}")
-    print(f"  Seconds until bookable: {seconds_to_wait:.1f}")
-    print(f"  Strategy: Open form now, wait, click Save at exact moment")
+    print(f"  Local safe-Save deadline: {save_deadline.strftime('%H:%M:%S.%f')[:-3]}")
+    if clock_bounds is not None:
+        print(
+            "  Asimut clock bounds used: "
+            f"site-local {clock_bounds[0]:+.3f}s to {clock_bounds[1]:+.3f}s"
+        )
+    print(f"  Seconds until safe Save: {seconds_to_wait:.1f}")
+    print("  Strategy: Open form now, wait, re-prove identity, then Save")
 
     # Step 1: Click on the slot to open booking form
     room_name = slot['room']
@@ -5553,30 +5866,42 @@ def try_horizon_snipe(
     # Step 4: Wait until the exact moment, then click Save
     print(f"\n  [SNIPE] Step 4: Waiting for bookable moment...")
 
-    # Update timing
+    # Update timing against the conservative local deadline derived from the
+    # already-collected Asimut HTTPS clock evidence.
     now = datetime.now()
-    seconds_to_wait = (bookable_from - now).total_seconds()
+    seconds_to_wait = (save_deadline - now).total_seconds()
 
     if seconds_to_wait > 0:
         print(f"  [SNIPE] Waiting {seconds_to_wait:.1f} seconds...")
-        wait_until_datetime(bookable_from, page, label="SNIPE")
-    else:
-        # Exact or just-opened candidates still receive the same very small
-        # server-clock allowance as a prepared future edge.
-        print(
-            f"  [SNIPE] Adding {HORIZON_SAVE_SETTLE_SECONDS:.2f}s "
-            "server-clock allowance..."
+        wait_until_datetime(
+            save_deadline,
+            page,
+            label="SNIPE",
+            settle_seconds=(
+                HORIZON_SAVE_SETTLE_SECONDS if clock_bounds is None else 0
+            ),
         )
-        time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
+    else:
+        if clock_bounds is None:
+            print(
+                f"  [SNIPE] Adding {HORIZON_SAVE_SETTLE_SECONDS:.2f}s "
+                "fallback clock allowance"
+            )
+            time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
+        else:
+            print("  [SNIPE] Safe site-aligned Save deadline already reached")
 
     # Everything above was preparation. Re-prove the exact new-event form and
     # obtain fresh controls immediately before the receipt and Save so a
     # rerender, navigation, authentication change, or delayed earlier action
     # cannot mutate a different booking.
-    late_seconds = (datetime.now() - bookable_from).total_seconds()
-    if late_seconds > HORIZON_SNIPE_GRACE_SECONDS:
+    site_late_low, site_late_high = estimated_site_latency_bounds(
+        datetime.now(),
+        bookable_from,
+    )
+    if site_late_low > HORIZON_SNIPE_GRACE_SECONDS:
         print(
-            f"  [SNIPE] Prepared form is now {late_seconds:.0f}s past its "
+            f"  [SNIPE] Prepared form is now at least {site_late_low:.0f}s past its "
             "bounded horizon-edge grace; aborting"
         )
         go_back(page, days_ahead)
@@ -5588,6 +5913,19 @@ def try_horizon_snipe(
         )
         go_back(page, days_ahead)
         return False
+
+    validation_ok, validation_detail = refresh_new_booking_validation(
+        page,
+        book_end,
+    )
+    if not validation_ok:
+        print(
+            "  [SNIPE] Could not prove a fresh boundary-time validation: "
+            f"{validation_detail}; aborting"
+        )
+        go_back(page, days_ahead)
+        return False
+    print("  [SNIPE] Fresh boundary-time validation completed")
 
     start_input = page.locator(
         "#startDate, input[aria-label='Start time'], "
@@ -5647,10 +5985,6 @@ def try_horizon_snipe(
     save_x = save_box["x"] + save_box["width"] / 2
     save_y = save_box["y"] + save_box["height"] / 2
 
-    # Click Save!
-    click_time = datetime.now()
-    print(f"\n  >>> CLICKING SAVE NOW: {click_time.strftime('%H:%M:%S.%f')[:-3]} <<<")
-
     try:
         receipt = record_pending_create(
             room=room,
@@ -5662,6 +5996,19 @@ def try_horizon_snipe(
         raise BookingVerificationError(
             f"Could not create a crash-recovery receipt before snipe Save: {exc}"
         ) from exc
+
+    # Click Save only after the durable receipt exists.  Record the actual
+    # click time separately from the later reload/persistence confirmation.
+    click_time = datetime.now()
+    click_latency_low, click_latency_high = estimated_site_latency_bounds(
+        click_time,
+        bookable_from,
+    )
+    print(f"\n  >>> CLICKING SAVE NOW: {click_time.strftime('%H:%M:%S.%f')[:-3]} <<<")
+    print(
+        "  [SNIPE] Estimated Save-click latency vs Asimut edge: "
+        f"{click_latency_low * 1000:.0f}ms to {click_latency_high * 1000:.0f}ms"
+    )
 
     try:
         page.mouse.click(save_x, save_y)
@@ -5682,8 +6029,14 @@ def try_horizon_snipe(
         return False
 
     result_time = datetime.now()
-    print(f"  [SNIPE] SUCCESS! Booked at {result_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"  [SNIPE] Latency from bookable time: {(result_time - bookable_from).total_seconds()*1000:.0f}ms")
+    print(
+        "  [SNIPE] SUCCESS! Exact booking persisted at "
+        f"{result_time.strftime('%H:%M:%S.%f')[:-3]}"
+    )
+    print(
+        "  [SNIPE] Persistence confirmation after click: "
+        f"{(result_time - click_time).total_seconds() * 1000:.0f}ms"
+    )
 
     tracker.add_booking(room, target_date, start_hour, end_hour)
     print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
@@ -6683,6 +7036,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         page,
                         days_ahead,
                         current_calendar_day,
+                        base_date=today,
                     )
                 wait_for_practice_room_grid(page, target_date)
 
@@ -6890,11 +7244,16 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         if reverse_date_order:
             # Process from furthest enabled day down to nearest (furthest first)
             day_order = sorted(enabled_day_order, reverse=True)
-            if day_order:
+            if day_order and not args.target_time:
                 first_day = day_order[0]
                 print(f"\n  Navigating to day {first_day} first (reverse order strategy)...")
-                current_calendar_day = navigate_to_day(page, first_day, 0)
-            else:
+                current_calendar_day = navigate_to_day(
+                    page,
+                    first_day,
+                    0,
+                    base_date=today,
+                )
+            elif not day_order:
                 print(f"\n  No bookable days available!")
                 current_calendar_day = 0
         else:
@@ -6902,18 +7261,25 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             day_order = sorted(enabled_day_order)
             current_calendar_day = 0  # Calendar starts on today
 
-        # Wait for target time if specified (prep is done, ready to book)
+        # A target-aware horizon scan starts from today's verified overview.
+        # Normal date ordering is applied only after the snipe phase, avoiding
+        # an expensive trip to the furthest date and back before discovery.
         if args.target_time and not extensions_only:
             # =================================================================
-            # HORIZON SNIPE: Check every live-window date for exact room edges.
+            # HORIZON SNIPE: Check only exact site-derived room edges.
             # =================================================================
-            # Pre-scan before target time so all candidates are known upfront.
+            target_boundary = target_boundary_datetime(
+                args.target_time,
+                base_date=today,
+            )
+            wait_for_horizon_discovery_window(target_boundary, page)
 
             print("\n" + "="*60)
             print("CHECKING FOR HORIZON SNIPE OPPORTUNITIES (MULTI-DAY)")
             print("="*60)
 
-            # Pre-scan the complete live window while we have time.
+            # Each room's live horizon determines its exact candidate date and
+            # start, so CLI scopes apply before any calendar navigation.
             all_snipe_candidates, current_calendar_day = find_all_snipe_candidates_multi_day(
                 page,
                 tracker,
@@ -6921,24 +7287,23 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 current_calendar_day,
                 disabled_dates=disabled_dates,
                 practice_plan=practice_plan,
+                target_boundary=target_boundary,
+                only_date=args.only_date,
+                only_room=args.only_room,
+                candidate_limit=1,
             )
-            if args.only_room:
-                all_snipe_candidates = [
-                    candidate for candidate in all_snipe_candidates
-                    if candidate["room"] == args.only_room
-                ]
-            if args.only_date:
-                all_snipe_candidates = [
-                    candidate for candidate in all_snipe_candidates
-                    if candidate["target_date"].isoformat() == args.only_date
-                ]
 
             if all_snipe_candidates:
                 # Navigate to the first candidate's day (highest priority)
                 first_candidate = all_snipe_candidates[0]
                 if current_calendar_day != first_candidate['days_ahead']:
                     print(f"\n  Positioning for first snipe...")
-                    current_calendar_day = navigate_to_day(page, first_candidate['days_ahead'], current_calendar_day)
+                    current_calendar_day = navigate_to_day(
+                        page,
+                        first_candidate['days_ahead'],
+                        current_calendar_day,
+                        base_date=today,
+                    )
                     page.wait_for_timeout(500)
 
                 print(f"\n  Ready to snipe {len(all_snipe_candidates)} candidate(s)")
@@ -6965,7 +7330,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     # Navigate to candidate's day if needed
                     if current_calendar_day != days_ahead:
                         print(f"    Navigating to Day {days_ahead}...")
-                        current_calendar_day = navigate_to_day(page, days_ahead, current_calendar_day)
+                        current_calendar_day = navigate_to_day(
+                            page,
+                            days_ahead,
+                            current_calendar_day,
+                            base_date=today,
+                        )
                         page.wait_for_timeout(500)
 
                     # Attempt the snipe
@@ -7026,7 +7396,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     and current_calendar_day != day_order[0]
                 ):
                     print(f"\n  Returning to Day {day_order[0]} for normal booking flow...")
-                    current_calendar_day = navigate_to_day(page, day_order[0], current_calendar_day)
+                    current_calendar_day = navigate_to_day(
+                        page,
+                        day_order[0],
+                        current_calendar_day,
+                        base_date=today,
+                    )
                     page.wait_for_timeout(500)
             else:
                 print(f"  No snipe candidates found (no slots becoming bookable within 3 minutes)")
@@ -7165,6 +7540,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     page,
                     days_ahead,
                     current_calendar_day,
+                    base_date=today,
                 )
                 print(f"  [DEBUG] Navigation complete, now on day {current_calendar_day}")
                 page.wait_for_timeout(700)
@@ -7889,6 +8265,11 @@ def _validate_cli_args(parser, args):
         parser.error("--extensions-only requires --max-action-minutes")
     if args.horizon_only and not (args.target_time or args.scheduled):
         parser.error("--horizon-only requires --target-time or --scheduled")
+    if args.horizon_only and args.max_actions != 1:
+        parser.error(
+            "--horizon-only requires --max-actions 1 so a verified Save can "
+            "return without risky post-mutation navigation"
+        )
 
 
 def _load_and_validate_runtime_settings():
@@ -7979,6 +8360,15 @@ def main(argv=None):
         args.headless = True
         if not args.target_time:
             args.target_time = _scheduled_target_time()
+
+    if args.horizon_only and not args.target_time:
+        print(
+            "Horizon-only scheduled run is outside the bounded edge window; "
+            "exiting without ordinary booking."
+        )
+        return 0
+    if args.target_time:
+        wait_before_runtime_target_window(args.target_time)
 
     try:
         settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()

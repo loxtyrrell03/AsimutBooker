@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import room_catalog
 from room_catalog import (
     CATALOG_VERSION,
     SITE_TIMEZONE,
@@ -27,6 +28,70 @@ from room_catalog import (
 LONDON = SITE_TIMEZONE
 OBSERVED = datetime(2026, 8, 30, 6, 25, tzinfo=LONDON)
 GLOBAL_CUTOFF = datetime(2026, 9, 6, 6, 25, tzinfo=LONDON)
+
+
+class RequestClockTests(unittest.TestCase):
+    def test_server_date_minute_overrides_local_boundary_envelope(self):
+        started = OBSERVED.replace(second=59)
+        finished = started + timedelta(seconds=2)
+        server_time = OBSERVED + timedelta(minutes=1, seconds=1)
+
+        candidates = room_catalog._request_observation_candidates(
+            started,
+            finished,
+            server_time,
+        )
+
+        self.assertEqual(candidates, (OBSERVED + timedelta(minutes=1),))
+
+    def test_missing_server_date_retains_bounded_local_minute_candidates(self):
+        started = OBSERVED.replace(second=59)
+        finished = started + timedelta(seconds=2)
+
+        candidates = room_catalog._request_observation_candidates(
+            started,
+            finished,
+            None,
+        )
+
+        self.assertEqual(
+            candidates,
+            (OBSERVED, OBSERVED + timedelta(minutes=1)),
+        )
+
+    def test_malformed_server_date_fails_closed(self):
+        response = type(
+            "Response",
+            (),
+            {"headers": {"date": "not an HTTP date"}},
+        )()
+
+        with self.assertRaisesRegex(RoomCatalogError, "Date header is unreadable"):
+            room_catalog._response_server_time(response, "session context")
+
+    def test_clock_bounds_intersect_across_existing_live_requests(self):
+        first = room_catalog._server_clock_offset_bounds(
+            OBSERVED + timedelta(seconds=10.10),
+            OBSERVED + timedelta(seconds=10.20),
+            OBSERVED + timedelta(seconds=11),
+        )
+        second = room_catalog._server_clock_offset_bounds(
+            OBSERVED + timedelta(seconds=10.95),
+            OBSERVED + timedelta(seconds=11.05),
+            OBSERVED + timedelta(seconds=12),
+        )
+
+        combined = room_catalog._intersect_clock_offset_bounds((first, second))
+
+        self.assertAlmostEqual(combined[0], -0.05, places=6)
+        self.assertAlmostEqual(combined[1], 1.90, places=6)
+
+    def test_inconsistent_proxy_clocks_are_not_used_for_edge_timing(self):
+        combined = room_catalog._intersect_clock_offset_bounds(
+            ((1.0, 1.1), (1.2, 1.3))
+        )
+
+        self.assertIsNone(combined)
 
 
 def session_payload(**me_updates):

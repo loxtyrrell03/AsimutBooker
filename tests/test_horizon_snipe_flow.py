@@ -18,9 +18,17 @@ class HorizonSnipeFlowTests(unittest.TestCase):
             ACTIVE_ROOM_POLICY=mock.Mock(observed_at=self.HORIZON_OBSERVED_AT),
             ROOM_HORIZON_MINUTES={"B0.29": self.HORIZON_MINUTES},
             MINIMUM_BLOCK_MINUTES=30,
+            SITE_CLOCK_OFFSET_BOUNDS=(0.05, 0.05),
         )
         self.live_policy.start()
         self.addCleanup(self.live_policy.stop)
+        self.fresh_validation = mock.patch.object(
+            book_week,
+            "refresh_new_booking_validation",
+            return_value=(True, "fresh"),
+        )
+        self.fresh_validation.start()
+        self.addCleanup(self.fresh_validation.stop)
 
     def build_page(self, *, changed_before_save=False):
         page = mock.MagicMock()
@@ -248,6 +256,272 @@ class HorizonSnipeFlowTests(unittest.TestCase):
         receipt.assert_not_called()
         outcome.assert_not_called()
         tracker.add_booking.assert_not_called()
+
+
+class BoundaryDrivenCandidateTests(unittest.TestCase):
+    TODAY = date(2026, 8, 30)
+    BOUNDARY = datetime(2026, 8, 30, 13, 45)
+
+    def policy_patch(self, *, minimum=30, horizons=None, rooms=None):
+        rooms = rooms or ["B0.29"]
+        horizons = horizons or {"B0.29": 5 * 24 * 60}
+        live_dates = tuple(
+            self.TODAY.replace() + book_week.timedelta(days=offset)
+            for offset in range(8)
+        )
+        return mock.patch.multiple(
+            book_week,
+            ACTIVE_ROOM_POLICY=mock.Mock(),
+            PRIORITY_ROOMS=list(rooms),
+            ROOM_HORIZON_MINUTES=dict(horizons),
+            BOOKING_WINDOW_DATES=live_dates,
+            MINIMUM_BLOCK_MINUTES=minimum,
+        )
+
+    @staticmethod
+    def room_gap(room, start, end):
+        return {
+            "room": room,
+            "slots": [
+                {
+                    "startHour": start,
+                    "endHour": end,
+                    "clickX": 20,
+                    "clickY": 30,
+                }
+            ],
+        }
+
+    def test_interior_edge_is_found_inside_a_full_day_gap(self):
+        with self.policy_patch():
+            plan = book_week.plan_horizon_edge_slots(
+                self.BOUNDARY,
+                today=self.TODAY,
+                only_room="B0.29",
+            )[0]
+            candidate = book_week._candidate_for_planned_edge(
+                self.room_gap("B0.29", 7.25, 22.25),
+                plan,
+            )
+
+        self.assertEqual(plan["target_date"], date(2026, 9, 4))
+        self.assertEqual(plan["start_hour"], 13.25)
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["booking_minutes"], 30)
+        self.assertEqual(candidate["duration"], 540)
+
+    def test_edge_requires_the_complete_minimum_block_inside_the_gap(self):
+        with self.policy_patch():
+            plan = book_week.plan_horizon_edge_slots(
+                self.BOUNDARY,
+                today=self.TODAY,
+                only_room="B0.29",
+            )[0]
+            starts_too_late = book_week._candidate_for_planned_edge(
+                self.room_gap("B0.29", 13.5, 22.25),
+                plan,
+            )
+            ends_too_early = book_week._candidate_for_planned_edge(
+                self.room_gap("B0.29", 7.25, 13.5),
+                plan,
+            )
+
+        self.assertIsNone(starts_too_late)
+        self.assertIsNone(ends_too_early)
+
+    def test_selected_minimum_and_arbitrary_horizon_shift_the_exact_edge(self):
+        with self.policy_patch(
+            minimum=60,
+            horizons={"B0.29": 3 * 24 * 60 + 15},
+        ):
+            plan = book_week.plan_horizon_edge_slots(
+                self.BOUNDARY,
+                today=self.TODAY,
+                only_room="B0.29",
+            )[0]
+
+        self.assertEqual(plan["target_date"], date(2026, 9, 2))
+        self.assertEqual(plan["start_hour"], 13.0)
+        self.assertEqual(plan["end_hour"], 14.0)
+
+    def test_room_and_date_scopes_are_applied_before_navigation_planning(self):
+        with self.policy_patch(
+            rooms=["B0.29", "B1.09"],
+            horizons={"B0.29": 5 * 24 * 60, "B1.09": 3 * 24 * 60},
+        ):
+            room_scoped = book_week.plan_horizon_edge_slots(
+                self.BOUNDARY,
+                today=self.TODAY,
+                only_room="B1.09",
+            )
+            mismatched_date = book_week.plan_horizon_edge_slots(
+                self.BOUNDARY,
+                today=self.TODAY,
+                only_room="B1.09",
+                only_date=date(2026, 9, 4),
+            )
+
+        self.assertEqual([item["room"] for item in room_scoped], ["B1.09"])
+        self.assertEqual(room_scoped[0]["days_ahead"], 3)
+        self.assertEqual(mismatched_date, [])
+
+    def test_candidate_order_uses_gui_room_priority_before_date_distance(self):
+        tracker = mock.MagicMock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.can_book.return_value = (True, "")
+        page = mock.MagicMock()
+        navigated = []
+
+        def navigate(_page, target, _current, **_kwargs):
+            navigated.append(target)
+            return target
+
+        def available(_page):
+            return [
+                self.room_gap("Preferred", 7.25, 22.25),
+                self.room_gap("Fallback", 7.25, 22.25),
+            ]
+
+        frozen_now = self.BOUNDARY - book_week.timedelta(minutes=2)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        with (
+            self.policy_patch(
+                rooms=["Preferred", "Fallback"],
+                horizons={
+                    "Preferred": 3 * 24 * 60,
+                    "Fallback": 5 * 24 * 60,
+                },
+            ),
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(book_week, "navigate_to_day", side_effect=navigate),
+            mock.patch.object(book_week, "get_available_slots", side_effect=available),
+            mock.patch.object(book_week, "load_extendable_bookings", return_value=[]),
+        ):
+            candidates, _ = book_week.find_all_snipe_candidates_multi_day(
+                page,
+                tracker,
+                {"enabled": False, "strict_mode": False},
+                0,
+                target_boundary=self.BOUNDARY,
+            )
+
+        self.assertEqual(navigated, [3, 5])
+        self.assertEqual(
+            [candidate["room"] for candidate in candidates],
+            ["Preferred", "Fallback"],
+        )
+
+    def test_site_clock_lower_bound_drives_a_safe_early_local_deadline(self):
+        with mock.patch.object(
+            book_week,
+            "SITE_CLOCK_OFFSET_BOUNDS",
+            (1.20, 1.32),
+        ):
+            deadline, bounds = book_week.site_aligned_save_deadline(self.BOUNDARY)
+            latency = book_week.estimated_site_latency_bounds(
+                deadline,
+                self.BOUNDARY,
+            )
+
+        self.assertEqual(bounds, (1.20, 1.32))
+        self.assertAlmostEqual(
+            (deadline - self.BOUNDARY).total_seconds(),
+            -1.15,
+            places=6,
+        )
+        self.assertAlmostEqual(latency[0], 0.05, places=6)
+        self.assertAlmostEqual(latency[1], 0.17, places=6)
+
+    def test_single_candidate_mode_stops_after_top_room_date_is_free(self):
+        tracker = mock.MagicMock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.can_book.return_value = (True, "")
+        page = mock.MagicMock()
+        navigated = []
+        frozen_now = self.BOUNDARY - book_week.timedelta(minutes=2)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        def navigate(_page, target, _current, **_kwargs):
+            navigated.append(target)
+            return target
+
+        with (
+            self.policy_patch(
+                rooms=["Preferred", "Fallback"],
+                horizons={
+                    "Preferred": 3 * 24 * 60,
+                    "Fallback": 5 * 24 * 60,
+                },
+            ),
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(book_week, "navigate_to_day", side_effect=navigate),
+            mock.patch.object(
+                book_week,
+                "get_available_slots",
+                return_value=[self.room_gap("Preferred", 7.25, 22.25)],
+            ),
+            mock.patch.object(book_week, "load_extendable_bookings", return_value=[]),
+        ):
+            candidates, _ = book_week.find_all_snipe_candidates_multi_day(
+                page,
+                tracker,
+                {"enabled": False, "strict_mode": False},
+                0,
+                target_boundary=self.BOUNDARY,
+                candidate_limit=1,
+            )
+
+        self.assertEqual(navigated, [3])
+        self.assertEqual([item["room"] for item in candidates], ["Preferred"])
+
+
+class FreshBoundaryValidationTests(unittest.TestCase):
+    def test_exact_event_check_is_required_after_refilling_end_time(self):
+        page = mock.MagicMock()
+        end_input = mock.MagicMock()
+        end_input.first = end_input
+        end_input.count.return_value = 1
+        end_input.is_visible.return_value = True
+        page.locator.return_value = end_input
+
+        response = mock.MagicMock()
+        response.url = "https://rwcmd.asimut.net/services/v2/event/type=check"
+        response.ok = True
+        pending = mock.MagicMock()
+        pending.value = response
+        response_context = mock.MagicMock()
+        response_context.__enter__.return_value = pending
+        page.expect_response.return_value = response_context
+
+        success, detail = book_week.refresh_new_booking_validation(page, "14:00")
+
+        self.assertTrue(success, detail)
+        end_input.fill.assert_called_once_with("14:00")
+        end_input.press.assert_called_once_with("Tab")
+        page.wait_for_timeout.assert_called_once_with(300)
+
+    def test_missing_fresh_event_check_aborts_validation(self):
+        page = mock.MagicMock()
+        end_input = mock.MagicMock()
+        end_input.first = end_input
+        end_input.count.return_value = 1
+        end_input.is_visible.return_value = True
+        page.locator.return_value = end_input
+        page.expect_response.side_effect = TimeoutError("no response")
+
+        success, detail = book_week.refresh_new_booking_validation(page, "14:00")
+
+        self.assertFalse(success)
+        self.assertIn("did not complete", detail)
 
 
 if __name__ == "__main__":

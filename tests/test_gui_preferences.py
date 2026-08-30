@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from app_settings import SettingsError
 from gui import (
@@ -963,6 +963,23 @@ class GuiPracticePlanPersistenceTests(unittest.TestCase):
 
 
 class GuiAuthenticatedScanTests(unittest.TestCase):
+    def _room_scan_gui(self, generation=4):
+        gui = object.__new__(AsimutBookerGUI)
+        gui._room_scan_generation = generation
+        gui.room_preferences = RoomPreferences(minimum_block_minutes=45)
+        gui.root = MagicMock()
+        gui.root.after.side_effect = (
+            lambda _delay, callback, *args: callback(*args)
+        )
+        gui.scan_rooms_progress_var = MagicMock()
+        gui.scan_rooms_btn = MagicMock()
+        gui.log = MagicMock()
+        gui._show_scan_results = MagicMock()
+        setup_dialog = MagicMock()
+        setup_dialog.winfo_exists.return_value = True
+        gui.scan_rooms_dialog = setup_dialog
+        return gui, setup_dialog
+
     def test_exact_scan_url_rejects_redirects_hosts_ports_and_decorations(self):
         self.assertTrue(
             is_exact_asimut_scan_url(
@@ -1057,6 +1074,181 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
         gui.calendar_dialog.winfo_exists.assert_not_called()
         gui.calendar_scan_var.set.assert_not_called()
         gui._refresh_calendar.assert_not_called()
+
+    def test_room_scan_uses_live_policy_and_shared_verified_renderer_helpers(self):
+        gui, setup_dialog = self._room_scan_gui()
+        today = datetime.now().date()
+        selected_dates = [
+            (today + timedelta(days=1)).isoformat(),
+            (today + timedelta(days=2)).isoformat(),
+        ]
+
+        manager = MagicMock()
+        playwright = manager.__enter__.return_value
+        browser = playwright.chromium.launch.return_value
+        context = browser.new_context.return_value
+        page = context.new_page.return_value
+        page.url = "https://rwcmd.asimut.net/overview?locationGroupId=10"
+
+        policy = MagicMock()
+        policy.minimum_block_minutes = 45
+        policy.booking_dates.return_value = tuple(
+            today + timedelta(days=offset) for offset in range(3)
+        )
+        slot_snapshots = [
+            [
+                {
+                    "room": "B0.29",
+                    "slots": [
+                        {"startHour": 9.0, "endHour": 9.5},
+                        {"startHour": 10.0, "endHour": 10.75},
+                    ],
+                }
+            ],
+            [
+                {
+                    "room": "The Hopkins Studio",
+                    "slots": [{"startHour": 12.0, "endHour": 13.0}],
+                }
+            ],
+        ]
+
+        def navigate(_page, target, _current, *, base_date=None):
+            self.assertEqual(base_date, today)
+            return target
+
+        with (
+            patch("playwright.sync_api.sync_playwright", return_value=manager),
+            patch(
+                "book_week.authenticated_runtime_context_options",
+                return_value={},
+            ) as options,
+            patch("book_week.restore_page_authentication") as restore,
+            patch(
+                "book_week.refresh_live_room_policy",
+                return_value=policy,
+            ) as refresh_policy,
+            patch("book_week.open_practice_room_overview") as open_overview,
+            patch("book_week.navigate_to_day", side_effect=navigate) as navigate_day,
+            patch("book_week.wait_for_practice_room_grid") as wait_grid,
+            patch(
+                "book_week.get_available_slots",
+                side_effect=slot_snapshots,
+            ) as get_slots,
+            patch("book_week.page_is_authenticated", return_value=True),
+            patch("book_week.persist_storage_state") as persist,
+        ):
+            gui._scan_rooms_thread(
+                setup_dialog,
+                selected_dates,
+                gui._room_scan_generation,
+            )
+
+        options.assert_called_once_with()
+        restore.assert_called_once_with(page)
+        refresh_policy.assert_called_once_with(
+            page,
+            gui.room_preferences,
+            today=today,
+        )
+        policy.booking_dates.assert_called_once_with(today)
+        open_overview.assert_called_once_with(page, today)
+        self.assertEqual(
+            navigate_day.call_args_list,
+            [
+                call(page, 1, 0, base_date=today),
+                call(page, 2, 1, base_date=today),
+            ],
+        )
+        self.assertEqual(
+            wait_grid.call_args_list,
+            [
+                call(page, today + timedelta(days=1)),
+                call(page, today + timedelta(days=2)),
+            ],
+        )
+        self.assertEqual(get_slots.call_count, 2)
+        persist.assert_called_once_with(context)
+        browser.close.assert_called_once_with()
+
+        gui._show_scan_results.assert_called_once()
+        shown_dialog, shown_slots, shown_dates = gui._show_scan_results.call_args.args
+        self.assertIs(shown_dialog, setup_dialog)
+        self.assertEqual(shown_dates, selected_dates)
+        self.assertEqual(
+            [
+                (slot["date"], slot["room"], slot["start_time"], slot["duration_mins"])
+                for slot in shown_slots
+            ],
+            [
+                (selected_dates[0], "B0.29", "10:00", 45.0),
+                (selected_dates[1], "The Hopkins Studio", "12:00", 60.0),
+            ],
+        )
+
+    def test_room_scan_navigation_failure_is_reported_without_results_or_session_write(self):
+        gui, setup_dialog = self._room_scan_gui()
+        today = datetime.now().date()
+        selected_dates = [(today + timedelta(days=1)).isoformat()]
+
+        manager = MagicMock()
+        playwright = manager.__enter__.return_value
+        browser = playwright.chromium.launch.return_value
+        context = browser.new_context.return_value
+        page = context.new_page.return_value
+        page.url = "https://rwcmd.asimut.net/overview?locationGroupId=10"
+        policy = MagicMock()
+        policy.minimum_block_minutes = 45
+        policy.booking_dates.return_value = (
+            today,
+            today + timedelta(days=1),
+        )
+
+        with (
+            patch("playwright.sync_api.sync_playwright", return_value=manager),
+            patch("book_week.authenticated_runtime_context_options", return_value={}),
+            patch("book_week.restore_page_authentication"),
+            patch("book_week.refresh_live_room_policy", return_value=policy),
+            patch("book_week.open_practice_room_overview"),
+            patch(
+                "book_week.navigate_to_day",
+                side_effect=RuntimeError("verified navigation failed"),
+            ),
+            patch("book_week.wait_for_practice_room_grid") as wait_grid,
+            patch("book_week.get_available_slots") as get_slots,
+            patch("book_week.page_is_authenticated", return_value=True),
+            patch("book_week.persist_storage_state") as persist,
+            patch("gui.messagebox.showerror") as show_error,
+        ):
+            gui._scan_rooms_thread(
+                setup_dialog,
+                selected_dates,
+                gui._room_scan_generation,
+            )
+
+        wait_grid.assert_not_called()
+        get_slots.assert_not_called()
+        persist.assert_not_called()
+        gui._show_scan_results.assert_not_called()
+        browser.close.assert_called_once_with()
+        gui.scan_rooms_btn.config.assert_called_once_with(state="normal")
+        self.assertIn(
+            "verified navigation failed",
+            gui.scan_rooms_progress_var.set.call_args.args[0],
+        )
+        show_error.assert_called_once()
+
+    def test_stale_room_scan_callbacks_never_publish_or_report(self):
+        gui, setup_dialog = self._room_scan_gui(generation=8)
+
+        with patch("gui.messagebox.showerror") as show_error:
+            gui._on_scan_rooms_complete(7, setup_dialog, [{"room": "stale"}], [])
+            gui._on_scan_rooms_error(7, setup_dialog, "stale failure")
+
+        gui._show_scan_results.assert_not_called()
+        gui.scan_rooms_btn.config.assert_not_called()
+        gui.scan_rooms_progress_var.set.assert_not_called()
+        show_error.assert_not_called()
 
 
 class GuiEventPreferenceHelpersTests(unittest.TestCase):

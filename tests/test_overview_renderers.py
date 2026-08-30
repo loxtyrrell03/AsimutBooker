@@ -104,6 +104,101 @@ class _DelayedFormPage:
         self.wait_count += 1
 
 
+class CalendarNavigationTests(unittest.TestCase):
+    def test_semantic_date_button_ignores_hidden_generic_chevron(self):
+        page = mock.MagicMock()
+        button = mock.MagicMock()
+        button.is_visible.return_value = True
+        button.is_enabled.return_value = True
+        primary = mock.MagicMock()
+        primary.count.return_value = 1
+        primary.nth.return_value = button
+        absent = mock.MagicMock()
+        absent.count.return_value = 0
+
+        def locator(selector):
+            if selector == "button[data-cy='decrement-date-chevron']":
+                return primary
+            return absent
+
+        page.locator.side_effect = locator
+
+        result = book_week._calendar_navigation_button(page, -1)
+
+        self.assertIs(result, button)
+        page.locator.assert_called_once_with(
+            "button[data-cy='decrement-date-chevron']"
+        )
+
+    def test_ambiguous_visible_date_buttons_fail_closed(self):
+        page = mock.MagicMock()
+        first = mock.MagicMock()
+        second = mock.MagicMock()
+        first.is_visible.return_value = True
+        second.is_visible.return_value = True
+        locator = mock.MagicMock()
+        locator.count.return_value = 2
+        locator.nth.side_effect = [first, second]
+        page.locator.return_value = locator
+
+        with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+            book_week._calendar_navigation_button(page, 1)
+
+    def test_transient_grid_timeout_does_not_double_click_date_control(self):
+        today = datetime.now().date()
+        next_date = today + timedelta(days=1)
+        page = mock.MagicMock()
+        button = mock.MagicMock()
+
+        with (
+            mock.patch.object(book_week, "assert_calendar_date"),
+            mock.patch.object(book_week, "page_is_authenticated", return_value=True),
+            mock.patch.object(
+                book_week,
+                "get_visible_calendar_dates",
+                side_effect=[{today}, {next_date}],
+            ),
+            mock.patch.object(
+                book_week,
+                "_calendar_navigation_button",
+                return_value=button,
+            ),
+            mock.patch.object(
+                book_week,
+                "wait_for_practice_room_grid",
+                side_effect=[RuntimeError("transient grid"), None],
+            ) as wait_grid,
+        ):
+            result = book_week._walk_calendar_days(
+                page,
+                1,
+                0,
+                today=today,
+            )
+
+        self.assertEqual(result, 1)
+        button.click.assert_called_once_with(timeout=5000)
+        self.assertEqual(wait_grid.call_count, 2)
+
+    def test_navigation_retries_once_from_canonical_today_grid(self):
+        page = mock.MagicMock()
+        with (
+            mock.patch.object(
+                book_week,
+                "_walk_calendar_days",
+                side_effect=[RuntimeError("stale date bar"), 6],
+            ) as walk,
+            mock.patch.object(book_week, "open_practice_room_overview") as reopen,
+        ):
+            result = book_week.navigate_to_day(page, 6, 7)
+
+        self.assertEqual(result, 6)
+        today = datetime.now().date()
+        self.assertEqual(walk.call_args_list[0].args[:3], (page, 6, 7))
+        self.assertEqual(walk.call_args_list[1].args[:3], (page, 6, 0))
+        reopen.assert_called_once_with(page, today)
+
+
 class OverviewRendererTests(unittest.TestCase):
     def svg_snapshot(self):
         return {
@@ -480,7 +575,7 @@ class CheckOnlyRendererIntegrationTests(unittest.TestCase):
             mock.patch.object(
                 book_week,
                 "navigate_to_day",
-                side_effect=lambda _page, target, _current: target,
+                side_effect=lambda _page, target, _current, **_kwargs: target,
             ) as navigate,
             mock.patch.object(book_week, "wait_for_practice_room_grid") as wait_grid,
             mock.patch.object(

@@ -228,22 +228,28 @@ The booker automatically handles this in two phases:
 
 ## Live-Window Horizon Snipe
 
-The booker scans every date in the freshly observed global booking window, not a fixed list of day offsets. Each room's fresh horizon then filters candidates on that date. This catches site changes without requiring a code or config edit.
+For an exact boundary `T`, the booker derives each room's one newly bookable
+start as `T + fresh room horizon - selected minimum block`. It then checks
+whether that exact minimum block is contained inside a free grid gap. This
+catches quarter-hour edges inside a full-day gap and supports arbitrary live
+15-minute horizons without encoding 3-, 5-, or 7-day room groups.
 
 ### How Multi-Day Snipe Works
 
-1. **Pre-scan phase** (before target time):
+1. **Fresh planning phase** (inside the three-minute edge window):
    - Refresh the current category, group, booking limits, rooms, and warnings from Asimut
    - Derive the exact calendar dates and room horizons from that observation
-   - Scan every live-window date and collect room candidates within the three-minute snipe window
+   - Apply `--only-date` and `--only-room` before any calendar traversal
+   - Wait outside the runtime lock when an explicit target is early, so policy and agenda evidence are not collected until the live window
 
-2. **Sort candidates**: Furthest live date first, then by GUI room priority within each date
+2. **Priority-progressive discovery**: Visit the date containing the highest-ranked untested room. As soon as the highest-priority free exact edge is proven, prepare it without scanning lower-ranked horizon dates.
 
-3. **Sequential snipe**: Attempt each candidate in order
+3. **Verified snipe**:
    - Navigate to candidate's day
-   - Pre-fill form, wait for exact moment, click Save
-   - On success: record booking, continue to next
-   - On failure: skip, try next candidate
+   - Pre-fill the selected minimum block and wait using conservative fresh Asimut clock bounds
+   - At the boundary, force and await a new trusted `event/type=check` response so a warning captured during early preparation cannot remain stale
+   - Re-prove the unsaved-event URL, room/date/times, live inputs, cleared warnings, and a fresh visible/enabled Save control before writing the receipt and clicking Save
+   - A missing/ambiguous site clock, missing validation response, changed form, or rejection stops without Save
 
 4. **Resume normal booking**: Navigate to the first date in the selected chronological or furthest-first strategy
 
@@ -253,8 +259,9 @@ Pending extensions take priority over new snipes. If a slot has a pending extens
 
 ### Key Functions
 
-- `navigate_to_day()`: Helper to navigate calendar forward/backward
-- `find_all_snipe_candidates_multi_day()`: Scans the complete live-window date set for candidates
+- `navigate_to_day()`: Uses unique semantic date buttons, exact date/grid proof, and one canonical-reset retry
+- `plan_horizon_edge_slots()`: Derives exact room/date/start plans from the fresh site horizons
+- `find_all_snipe_candidates_multi_day()`: Tests exact edge containment and stops after the best free GUI-ranked room
 - `find_horizon_snipe_candidate()`: Retained tested helper for one already-loaded date
 
 ## Configuration
@@ -369,6 +376,46 @@ python -m unittest discover -s tests
   scan, then traverses every date currently exposed by Asimut. `--only-date`, `--only-room`, `--max-actions`, and
   `--max-action-minutes` provide bounded live verification without weakening the
   confirmation rules.
+
+## 2026-08-30 Boundary-Driven Horizon Reliability Milestone
+
+- Horizon discovery now derives one exact start per eligible room from the
+  current boundary, fresh per-room horizon, and GUI-selected minimum block. It
+  tests that block inside maximal free gaps, so a full-day `07:15-22:15` gap no
+  longer hides every edge after its first start. Only exact site-derived dates
+  are visited; controlled room/date scopes apply before navigation.
+- Discovery is priority-progressive. The date containing the best-ranked
+  untested GUI room is scanned first, and a proven free preferred edge is
+  prepared immediately instead of traversing every horizon date first. A
+  scheduled pass attempts one best edge; ordinary booking may continue later.
+- Calendar traversal uses the unique semantic date controls, proves the exact
+  displayed date and stable 29-row grid after every ordinary click, never uses
+  `force`, and retries once through the canonical today route without risking a
+  double click. The GUI room scanner now uses this same navigation, fresh live
+  policy, and renderer-independent slot parser instead of a swallowed legacy
+  chevron loop.
+- Live discovery intersects the existing trusted HTTPS Date responses into
+  conservative run-only Asimut clock bounds, including one full second of Date
+  approximation uncertainty. Edge Save is disabled when this evidence is
+  missing, inconsistent, or too broad. Early explicit targets wait outside the
+  runtime lock; a delayed `--horizon-only --scheduled` run exits instead of
+  falling through to ordinary booking.
+- A prepared form now forces and awaits a fresh exact
+  `/services/v2/event/type=check` response at the boundary. It then re-proves
+  URL, room, date, times, warnings, and enabled Save before writing a receipt.
+  The first 14:00 live test exposed and safely rejected a stale 13:57 warning;
+  no receipt or booking was created.
+- The corrected one-action 14:15 live test reload-verified B0.29 on 4 September
+  2026 from 13:45-14:15 as event 3580112. Estimated Save-click latency was
+  0.917-2.150 seconds after Asimut's edge and persistence confirmation took
+  2.286 seconds. A separate `--headless --check-only` process then found the
+  exact reservation in the complete four-event agenda and traversed all eight
+  live dates, 29 rows per date, with 157 visible gaps. Pending mutation receipts
+  remained zero. The complete offline suite passes 350 tests.
+- Windows Time is running with Automatic startup on the host and was explicitly
+  resynchronized before the successful proof. Site-derived timing remains the
+  booking authority, so machine synchronization is an additional safeguard,
+  not a replacement for live evidence.
 
 ## 2026-08-30 Live Room Policy and Health Dashboard Milestone
 
@@ -505,7 +552,8 @@ python -m unittest discover -s tests
 
 - Horizon creates derive their exact unlock as slot time minus the freshly
   observed room horizon plus the selected minimum block, prepare inside a
-  three-minute window, and Save exactly that block. Pending extensions run after
+  three-minute window, and Save exactly that block using fresh site-clock bounds
+  and a boundary-time validation response. Pending extensions run after
   agenda/receipt reconciliation, before overview navigation and all new snipes.
 - Extension timing is a pure 15-minute-boundary plan. Due work runs first,
   imminent work opens the exact editor for at most three minutes and fills at

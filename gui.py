@@ -1034,6 +1034,7 @@ class AsimutBookerGUI:
         self._health_generation = 0
         self._health_refresh_after_id = None
         self._calendar_scan_generation = 0
+        self._room_scan_generation = 0
 
         # Create UI
         self.create_menu()
@@ -5164,6 +5165,7 @@ class AsimutBookerGUI:
                 "check or refresh status after the next successful scheduled run.",
             )
             return
+        self._room_scan_generation += 1
         dialog = tk.Toplevel(self.root)
         dialog.title("Scan Available Rooms")
         dialog.geometry("900x700")
@@ -5304,6 +5306,9 @@ class AsimutBookerGUI:
 
         # Cleanup mousewheel binding on close
         def on_close():
+            self._room_scan_generation += 1
+            if getattr(self, "scan_rooms_dialog", None) is dialog:
+                self.scan_rooms_dialog = None
             canvas.unbind_all("<MouseWheel>")
             dialog.destroy()
         dialog.protocol("WM_DELETE_WINDOW", on_close)
@@ -5338,28 +5343,41 @@ class AsimutBookerGUI:
         # Disable scan button
         self.scan_rooms_btn.config(state=tk.DISABLED)
         self.scan_rooms_progress_var.set("Starting scan...")
+        self._room_scan_generation += 1
+        generation = self._room_scan_generation
 
         # Run scan in background thread
-        thread = threading.Thread(target=self._scan_rooms_thread, args=(setup_dialog, sorted(selected_dates)))
+        thread = threading.Thread(
+            target=self._scan_rooms_thread,
+            args=(setup_dialog, sorted(selected_dates), generation),
+        )
         thread.daemon = True
         thread.start()
 
-    def _scan_rooms_thread(self, setup_dialog, selected_dates):
+    def _scan_rooms_thread(self, setup_dialog, selected_dates, generation):
         """Background thread to scan available rooms."""
+        if generation != getattr(self, "_room_scan_generation", None):
+            return
+        browser = None
         try:
             from playwright.sync_api import sync_playwright
             from book_week import (
                 authenticated_runtime_context_options,
+                get_available_slots,
+                navigate_to_day,
+                open_practice_room_overview,
                 page_is_authenticated,
                 persist_storage_state,
+                refresh_live_room_policy,
                 restore_page_authentication,
-                safe_goto,
+                wait_for_practice_room_grid,
             )
-            from room_catalog import refresh_from_site as refresh_room_catalog
 
             all_slots = []  # List of {date, room, start_time, end_time, duration}
-            today = datetime.now().date()
-            current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
+            scan_started_at = datetime.now()
+            today = scan_started_at.date()
+            current_time_hour = scan_started_at.hour + scan_started_at.minute / 60.0
+            room_preferences = self.room_preferences
             context_options = authenticated_runtime_context_options()
 
             with sync_playwright() as p:
@@ -5367,8 +5385,8 @@ class AsimutBookerGUI:
                 context = browser.new_context(**context_options)
                 page = context.new_page()
 
-                # Revalidate the date choices against a fresh complete site
-                # catalog before traversing the room grid.
+                # Revalidate the date choices and install the same immutable,
+                # fresh site policy used by mutation-capable booking runs.
                 self.root.after(
                     0,
                     lambda: self.scan_rooms_progress_var.set(
@@ -5376,10 +5394,14 @@ class AsimutBookerGUI:
                     ),
                 )
                 restore_page_authentication(page)
-                catalog = refresh_room_catalog(page)
+                policy = refresh_live_room_policy(
+                    page,
+                    room_preferences,
+                    today=today,
+                )
                 live_date_strings = {
                     value.isoformat()
-                    for value in catalog_booking_dates(catalog, today=today)
+                    for value in policy.booking_dates(today)
                 }
                 if not live_date_strings:
                     raise RuntimeError("Asimut returned no current booking-window dates")
@@ -5389,44 +5411,24 @@ class AsimutBookerGUI:
                         "The booking window changed while this dialog was open. "
                         "Close it, refresh status, and choose dates again."
                     )
-                self.root.after(0, lambda: self.scan_rooms_progress_var.set("Loading booking page..."))
-                safe_goto(page, ASIMUT_OVERVIEW_URL)
+                self.root.after(
+                    0,
+                    lambda: self.scan_rooms_progress_var.set("Loading booking page..."),
+                )
+                open_practice_room_overview(page, today)
                 require_authenticated_scan_page(
                     page,
                     page_is_authenticated,
                     "/overview",
                     expected_query="locationGroupId=10",
                 )
-                page.wait_for_timeout(1000)
-
-                # Check current URL
                 current_url = page.url
-                page_title = page.title()
-                self.root.after(0, lambda u=current_url, t=page_title:
-                    self.log(f"[Scan Debug] Initial load: {u[:80]}", "info"))
-
-                # Wait for the location grid to appear
-                page.wait_for_selector(".location-name-container", timeout=15000)
-                self.root.after(0, lambda: self.log("[Scan Debug] Found location container", "info"))
-
-                # Scroll down to ensure all rooms are loaded, then back to top
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(1000)
-                page.evaluate("window.scrollTo(0, 0)")
-                page.wait_for_timeout(500)
-
-                # Debug: Log what elements exist on the page
-                page_debug = page.evaluate("""() => {
-                    return {
-                        url: window.location.href,
-                        hasLocationContainer: !!document.querySelector('.location-name-container'),
-                        hasLocationRow: !!document.querySelector('.location-row'),
-                        hasLocationDay: !!document.querySelector('.location-day'),
-                        bodySnippet: document.body.innerText.substring(0, 200)
-                    };
-                }""")
-                self.root.after(0, lambda pd=page_debug:
-                    self.log(f"[Scan Debug] Final: {pd.get('url', '?')[:60]} | container={pd.get('hasLocationContainer')}, row={pd.get('hasLocationRow')}, day={pd.get('hasLocationDay')}", "info"))
+                self.root.after(
+                    0,
+                    lambda u=current_url: self.log(
+                        f"[Scan Debug] Verified overview: {u[:80]}", "info"
+                    ),
+                )
 
                 current_calendar_day = 0  # Start at today
 
@@ -5435,30 +5437,25 @@ class AsimutBookerGUI:
                     days_ahead = (target_date - today).days
 
                     if days_ahead < 0:
-                        continue  # Skip past dates
+                        raise RuntimeError(
+                            f"Selected scan date {date_str} is before this run's base date"
+                        )
 
                     self.root.after(0, lambda d=date_str, idx=date_idx, total=len(selected_dates):
                         self.scan_rooms_progress_var.set(f"Scanning {d} ({idx + 1}/{total})..."))
 
-                    # Navigate to the correct day
-                    steps_needed = days_ahead - current_calendar_day
-                    if steps_needed != 0:
-                        direction_arrow = "chevron_right" if steps_needed > 0 else "chevron_left"
-                        for _ in range(abs(steps_needed)):
-                            try:
-                                page.keyboard.press("Escape")
-                                page.wait_for_timeout(200)
-                                page.evaluate("window.scrollTo(0, 0)")
-                                page.wait_for_timeout(200)
-                                arrow = page.locator("mat-icon").filter(has_text=direction_arrow).first
-                                if arrow.count() > 0 and arrow.is_visible():
-                                    arrow.click(force=True)
-                                    page.wait_for_timeout(1000)
-                            except:
-                                pass
-                        current_calendar_day = days_ahead
-
-                    page.wait_for_timeout(500)
+                    if days_ahead != current_calendar_day:
+                        current_calendar_day = navigate_to_day(
+                            page,
+                            days_ahead,
+                            current_calendar_day,
+                            base_date=today,
+                        )
+                    if current_calendar_day != days_ahead:
+                        raise RuntimeError(
+                            f"Calendar navigation did not reach {target_date.isoformat()}"
+                        )
+                    wait_for_practice_room_grid(page, target_date)
                     require_authenticated_scan_page(
                         page,
                         page_is_authenticated,
@@ -5466,129 +5463,9 @@ class AsimutBookerGUI:
                         expected_query="locationGroupId=10",
                     )
 
-                    # First check if page loaded correctly by looking for room elements
-                    page_check = page.evaluate("""() => {
-                        const rows = document.querySelectorAll('.location-name-container .location-row');
-                        const locationDays = document.querySelectorAll('.location-day');
-                        return {
-                            rowCount: rows.length,
-                            dayCount: locationDays.length,
-                            url: window.location.href,
-                            title: document.title
-                        };
-                    }""")
-
-                    # Log debug info
-                    self.root.after(0, lambda pc=page_check, d=date_str:
-                        self.log(f"[Scan Debug] {d}: {pc.get('rowCount', 0)} rooms, {pc.get('dayCount', 0)} day containers", "info"))
-
-                    # If no rooms found, the page might not have loaded correctly
-                    if page_check.get('rowCount', 0) == 0:
-                        self.root.after(0, lambda d=date_str:
-                            self.log(f"[Scan Warning] No room rows found for {d} - page may not have loaded", "warning"))
-                        continue
-
-                    # Extract available slots using JavaScript (same as book_week.py)
-                    slots_data = page.evaluate("""() => {
-                        const rows = document.querySelectorAll('.location-name-container .location-row');
-                        const locationDays = document.querySelectorAll('.location-day');
-
-                        function parseStylePct(style, prop) {
-                            const match = style.match(new RegExp(prop + ':\\\\s*calc\\\\(([\\\\d.]+)%'));
-                            return match ? parseFloat(match[1]) : null;
-                        }
-
-                        const pctPerHour = 6.25;
-                        let gridStartHour = 7.0;
-
-                        function pctToHour(pct) {
-                            return gridStartHour + (pct / pctPerHour);
-                        }
-
-                        const roomData = Array.from(rows).map((row, rowIdx) => {
-                            const rect = row.getBoundingClientRect();
-                            const roomName = row.textContent.trim();
-                            const midY = (rect.top + rect.bottom) / 2;
-
-                            let dayContainer = null;
-                            locationDays.forEach(day => {
-                                const dRect = day.getBoundingClientRect();
-                                if (Math.abs((dRect.top + dRect.bottom) / 2 - midY) < 30) {
-                                    dayContainer = day;
-                                }
-                            });
-
-                            if (!dayContainer) return { room: roomName, slots: [], debug: 'no dayContainer' };
-
-                            const events = dayContainer.querySelectorAll('.location-event');
-                            const blockedRanges = Array.from(events).map(ev => {
-                                const style = ev.getAttribute('style') || '';
-                                const leftPct = parseStylePct(style, 'left') || 0;
-                                const widthPct = parseStylePct(style, 'width') || 0;
-                                return {
-                                    startHour: pctToHour(leftPct),
-                                    endHour: pctToHour(leftPct + widthPct)
-                                };
-                            });
-
-                            const closedAreas = dayContainer.querySelectorAll('.location-closed');
-                            const closedRanges = Array.from(closedAreas).map(cl => {
-                                const style = cl.getAttribute('style') || '';
-                                const leftPct = parseStylePct(style, 'left') || 0;
-                                const widthPct = parseStylePct(style, 'width') || 0;
-                                return {
-                                    startHour: pctToHour(leftPct),
-                                    endHour: pctToHour(leftPct + widthPct)
-                                };
-                            });
-
-                            const allBlocked = [...blockedRanges, ...closedRanges]
-                                .sort((a, b) => a.startHour - b.startHour);
-
-                            const gaps = [];
-                            let lastEndHour = 7.25;  // Start at 7:15 to give a small buffer
-
-                            let dayEndHour = 22.0;  // Default end at 10pm
-                            closedRanges.forEach(r => {
-                                if (r.startHour > 20) {
-                                    dayEndHour = Math.min(dayEndHour, r.startHour);
-                                }
-                            });
-
-                            allBlocked.forEach(range => {
-                                if (range.startHour > lastEndHour + 0.25) {
-                                    const startHour = Math.round(lastEndHour * 4) / 4;
-                                    const endHour = Math.round(range.startHour * 4) / 4;
-                                    if (endHour > startHour) {
-                                        gaps.push({ startHour, endHour, roomName });
-                                    }
-                                }
-                                lastEndHour = Math.max(lastEndHour, range.endHour);
-                            });
-
-                            // Add final gap from last blocked to end of day
-                            if (lastEndHour < dayEndHour - 0.25) {
-                                const startHour = Math.round(lastEndHour * 4) / 4;
-                                const endHour = Math.round(dayEndHour * 4) / 4;
-                                if (endHour > startHour) {
-                                    gaps.push({ startHour, endHour, roomName });
-                                }
-                            }
-
-                            // If no blocks at all, the whole day is available
-                            if (allBlocked.length === 0) {
-                                gaps.push({ startHour: 7.5, endHour: dayEndHour, roomName });
-                            }
-
-                            return {
-                                room: roomName,
-                                slots: gaps,
-                                debug: { blockedCount: allBlocked.length, closedCount: closedRanges.length }
-                            };
-                        });
-
-                        return roomData.filter(r => r.slots.length > 0);
-                    }""")
+                    # Use the production renderer abstraction so current SVG
+                    # and legacy overview layouts share one verified parser.
+                    slots_data = get_available_slots(page)
 
                     # Log how many rooms with slots were found
                     self.root.after(0, lambda sd=slots_data, d=date_str:
@@ -5603,8 +5480,9 @@ class AsimutBookerGUI:
                             end_hour = slot['endHour']
                             duration_mins = (end_hour - start_hour) * 60
 
-                            # Skip slots shorter than 30 minutes
-                            if duration_mins < 30:
+                            # Report only blocks that satisfy the same selected
+                            # live-policy minimum used by the booking runtime.
+                            if duration_mins < policy.minimum_block_minutes:
                                 continue
 
                             # For today, skip slots that have already started
@@ -5636,16 +5514,19 @@ class AsimutBookerGUI:
                     "/overview",
                     expected_query="locationGroupId=10",
                 )
+                if generation != self._room_scan_generation:
+                    return
                 persist_storage_state(context)
-                browser.close()
 
             # Sort slots by date, then time, then room
             all_slots.sort(key=lambda s: (s['date'], s['start_hour'], s['room']))
 
-            # Close setup dialog and show results
+            if generation != self._room_scan_generation:
+                return
             self.root.after(
                 0,
-                self._show_scan_results,
+                self._on_scan_rooms_complete,
+                generation,
                 setup_dialog,
                 all_slots,
                 selected_dates,
@@ -5653,18 +5534,54 @@ class AsimutBookerGUI:
 
         except Exception as exc:
             error_message = str(exc)
+            if generation != getattr(self, "_room_scan_generation", None):
+                return
             try:
                 self.root.after(
                     0,
                     self._on_scan_rooms_error,
+                    generation,
                     setup_dialog,
                     error_message,
                 )
             except (RuntimeError, tk.TclError):
                 pass
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
-    def _on_scan_rooms_error(self, setup_dialog, error_msg):
+    def _room_scan_dialog_is_current(self, generation, setup_dialog):
+        """Return whether a room-scan callback still belongs to its live dialog."""
+
+        if generation != getattr(self, "_room_scan_generation", None):
+            return False
+        if getattr(self, "scan_rooms_dialog", None) is not setup_dialog:
+            return False
+        try:
+            return bool(setup_dialog.winfo_exists())
+        except (RuntimeError, tk.TclError):
+            return False
+
+    def _on_scan_rooms_complete(
+        self,
+        generation,
+        setup_dialog,
+        all_slots,
+        scanned_dates,
+    ):
+        """Publish room-scan results only while the originating dialog is current."""
+
+        if not self._room_scan_dialog_is_current(generation, setup_dialog):
+            return
+        self._show_scan_results(setup_dialog, all_slots, scanned_dates)
+
+    def _on_scan_rooms_error(self, generation, setup_dialog, error_msg):
         """Handle scan error."""
+        if not self._room_scan_dialog_is_current(generation, setup_dialog):
+            return
         self.scan_rooms_btn.config(state=tk.NORMAL)
         self.scan_rooms_progress_var.set(f"Error: {error_msg[:40]}")
         self.log(f"Room scan error: {error_msg}", "error")
@@ -5677,6 +5594,8 @@ class AsimutBookerGUI:
             setup_dialog.destroy()
         except:
             pass
+        if getattr(self, "scan_rooms_dialog", None) is setup_dialog:
+            self.scan_rooms_dialog = None
 
         # Create results window
         results = tk.Toplevel(self.root)
