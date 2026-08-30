@@ -4,7 +4,7 @@
 
 - The canonical Windows checkout is `C:\Users\Lox\Desktop\repo\AsimutBooker`.
 - `C:\Users\Lox\Desktop\Development\repo\AsimutBooker` is a compatibility junction to the canonical checkout so existing launchers and path-based integrations continue to work.
-- The shared `Development\repo\.dev-tools\Start-DevApp.ps1` launcher resolves the canonical checkout first; its existing Asimut Booker desktop shortcut does not need to be rewritten.
+- The shared launcher is `C:\Users\Lox\Desktop\repo\.dev-tools\Start-DevApp.ps1`; the regenerated Asimut Booker shortcut lives under `C:\Users\Lox\Desktop\Dev Apps` and uses the canonical checkout directly.
 
 ## Milestone documentation
 
