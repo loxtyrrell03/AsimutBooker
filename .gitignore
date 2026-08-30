@@ -18,6 +18,16 @@ data/browser_state/
 # Logs
 logs/*.log
 
+# Crash-recovery journal (runtime state)
+data/mutation_receipts.json
+data/mutation_receipts.json.bak
+data/mutation_receipts.json.lock
+data/booker-runtime.lock
+data/settings.json.lock
+data/settings.json.bak
+data/booking_history.json.lock
+data/booking_history.json.bak
+
 # IDE
 .vscode/
 .idea/

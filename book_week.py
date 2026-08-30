@@ -1,7 +1,7 @@
 """Book practice rooms for the entire week (up to 7 days ahead).
 
 This script applies all RWCMD booking rules:
-- Rolling quota of 28 bookings
+- Rolling quota of 28 reservation hours
 - Maximum 2hr peak allowance (Mon-Fri 9am-4pm)
 - Minimum 30 min, maximum 2hr per booking
 - 60-minute gap between same room bookings
@@ -17,11 +17,60 @@ import sys
 import json
 import time
 import argparse
+import os
+import copy
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 from pathlib import Path
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
+
+from asimut_auth import (
+    AutonomousLoginError,
+    configure_windows_credential_interactive,
+    ensure_asimut_session,
+    windows_credential_is_configured,
+)
+from app_settings import (
+    InterProcessFileLock,
+    SettingsError,
+    atomic_write_json,
+    load_settings as load_settings_document,
+    update_settings,
+)
+from event_identity import (
+    deduplicate_events,
+    event_identity_v2,
+    resolve_ignored_event_keys,
+)
+from practice_plan import (
+    PracticePlan,
+    PracticePlanError,
+    as_date,
+    cap_duration_minutes,
+    load_practice_plan,
+    max_bookings_for_budget,
+    remaining_target_hours,
+)
+from mutation_receipts import (
+    MutationReceiptError,
+    attach_event_url,
+    list_pending as list_pending_mutation_receipts,
+    mark_resolved as resolve_mutation_receipt,
+    mark_verified as verify_mutation_receipt,
+    record_pending_create,
+    record_pending_extension,
+)
+from runtime_guard import (
+    SingleInstanceLock,
+    booking_identity_matches,
+    booking_summary_matches,
+    booking_times_match,
+    configure_utf8_stdio,
+    is_confirmed_post_save_url,
+    is_new_booking_form_url,
+)
 
 try:
     import yaml
@@ -29,16 +78,18 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
-state_file = Path("data/browser_state/state.json")
-history_file = Path("data/booking_history.json")
-settings_file = Path("data/settings.json")
+APP_DIR = Path(__file__).resolve().parent
+state_file = APP_DIR / "data" / "browser_state" / "state.json"
+history_file = APP_DIR / "data" / "booking_history.json"
+settings_file = APP_DIR / "data" / "settings.json"
 
 # ntfy.sh notification settings
 # Change this to your own unique topic name (like "asimut-yourname-secret123")
 NTFY_TOPIC = "asimut-loxty"
 NTFY_ENABLED = True  # Set to False to disable notifications
 
-# Default values (used as fallback if config.yaml is missing or invalid)
+# Default values used only when no user config.yaml exists. Existing invalid
+# configuration fails closed rather than silently changing booking policy.
 _DEFAULT_CONFIG = {
     'rolling_quota': 28,
     'peak_start': 9,
@@ -63,57 +114,166 @@ _DEFAULT_CONFIG = {
 }
 
 
+class ConfigError(RuntimeError):
+    """Raised when an existing configuration cannot be followed exactly."""
+
+
+def _config_number(value, label, *, minimum=None, maximum=None):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{label} must be a number")
+    number = float(value)
+    if minimum is not None and number < minimum:
+        raise ConfigError(f"{label} must be at least {minimum}")
+    if maximum is not None and number > maximum:
+        raise ConfigError(f"{label} must be at most {maximum}")
+    return number
+
+
 def load_config():
-    """Load configuration from config.yaml with fallback to hardcoded defaults."""
-    config_file = Path("config/config.yaml")
+    """Load the supported YAML schema; an existing bad file never falls back."""
+    config_file = APP_DIR / "config" / "config.yaml"
 
     if not config_file.exists():
-        return _DEFAULT_CONFIG.copy()
+        return copy.deepcopy(_DEFAULT_CONFIG)
 
     if not YAML_AVAILABLE:
-        print("Warning: PyYAML not installed, using default configuration")
-        return _DEFAULT_CONFIG.copy()
+        raise ConfigError("config.yaml exists but PyYAML is not installed")
 
     try:
-        with open(config_file, 'r') as f:
+        with open(config_file, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ConfigError(f"Could not read config.yaml: {exc}") from exc
 
-        result = _DEFAULT_CONFIG.copy()
+    if not isinstance(cfg, dict):
+        raise ConfigError("config.yaml must contain a YAML mapping")
+    unknown_top = set(cfg) - {"rules", "rooms"}
+    if unknown_top:
+        raise ConfigError(f"Unsupported config section(s): {', '.join(sorted(unknown_top))}")
 
-        # Load rules
-        if cfg and 'rules' in cfg:
-            rules = cfg['rules']
-            result['rolling_quota'] = rules.get('rolling_quota', _DEFAULT_CONFIG['rolling_quota'])
-            result['same_room_gap_minutes'] = rules.get('same_room_gap_minutes', _DEFAULT_CONFIG['same_room_gap_minutes'])
-            if 'peak_hours' in rules:
-                peak = rules['peak_hours']
-                result['max_peak_hours'] = peak.get('max_hours', _DEFAULT_CONFIG['max_peak_hours'])
-                if 'start' in peak:
-                    result['peak_start'] = int(peak['start'].split(':')[0])
-                if 'end' in peak:
-                    result['peak_end'] = int(peak['end'].split(':')[0])
+    result = copy.deepcopy(_DEFAULT_CONFIG)
+    rules = cfg.get("rules", {})
+    if not isinstance(rules, dict):
+        raise ConfigError("rules must be a mapping")
+    unknown_rules = set(rules) - {"rolling_quota", "same_room_gap_minutes", "peak_hours"}
+    if unknown_rules:
+        raise ConfigError(f"Unsupported rules setting(s): {', '.join(sorted(unknown_rules))}")
 
-        # Load rooms from config
-        if cfg and 'rooms' in cfg and 'priority' in cfg['rooms']:
-            rooms = cfg['rooms']['priority']
-            result['priority_rooms'] = [r['room'] for r in rooms]
-            # Start with default horizons, then apply config overrides
-            result['room_horizons'] = _DEFAULT_CONFIG['room_horizons'].copy()
-            for r in rooms:
-                if 'horizon' in r:
-                    result['room_horizons'][r['room']] = r['horizon']
+    if "rolling_quota" in rules:
+        result["rolling_quota"] = _config_number(
+            rules["rolling_quota"], "rules.rolling_quota", minimum=0.5, maximum=168
+        )
+    if "same_room_gap_minutes" in rules:
+        gap = _config_number(
+            rules["same_room_gap_minutes"],
+            "rules.same_room_gap_minutes",
+            minimum=0,
+            maximum=240,
+        )
+        if gap % 15:
+            raise ConfigError("rules.same_room_gap_minutes must use 15-minute steps")
+        result["same_room_gap_minutes"] = int(gap)
 
-        return result
-    except Exception as e:
-        print(f"Warning: Could not load config.yaml ({e}), using defaults")
-        return _DEFAULT_CONFIG.copy()
+    peak = rules.get("peak_hours", {})
+    if not isinstance(peak, dict):
+        raise ConfigError("rules.peak_hours must be a mapping")
+    unknown_peak = set(peak) - {"start", "end", "max_hours"}
+    if unknown_peak:
+        raise ConfigError(f"Unsupported peak_hours setting(s): {', '.join(sorted(unknown_peak))}")
+    for key, result_key in (("start", "peak_start"), ("end", "peak_end")):
+        if key in peak:
+            value = peak[key]
+            if not isinstance(value, str) or re.fullmatch(r"(?:[01][0-9]|2[0-3]):00", value) is None:
+                raise ConfigError(f"rules.peak_hours.{key} must use whole-hour HH:00")
+            result[result_key] = int(value[:2])
+    if result["peak_end"] <= result["peak_start"]:
+        raise ConfigError("rules.peak_hours.end must be later than start")
+    if "max_hours" in peak:
+        result["max_peak_hours"] = _config_number(
+            peak["max_hours"], "rules.peak_hours.max_hours", minimum=0, maximum=24
+        )
+
+    rooms_section = cfg.get("rooms", {})
+    if not isinstance(rooms_section, dict):
+        raise ConfigError("rooms must be a mapping")
+    unknown_rooms = set(rooms_section) - {"priority"}
+    if unknown_rooms:
+        raise ConfigError(f"Unsupported rooms setting(s): {', '.join(sorted(unknown_rooms))}")
+    if "priority" in rooms_section:
+        rooms = rooms_section["priority"]
+        if not isinstance(rooms, list) or not rooms:
+            raise ConfigError("rooms.priority must be a non-empty list")
+        priority = []
+        horizons = {}
+        for index, entry in enumerate(rooms):
+            if not isinstance(entry, dict) or set(entry) - {"room", "horizon"}:
+                raise ConfigError(f"rooms.priority[{index}] must contain only room and horizon")
+            room = entry.get("room")
+            horizon = entry.get("horizon", result["default_horizon"])
+            if not isinstance(room, str) or re.fullmatch(r"[A-Z][0-9]+\.[0-9]{2}", room) is None:
+                raise ConfigError(f"Invalid room id at rooms.priority[{index}]")
+            if room in priority:
+                raise ConfigError(f"Duplicate room in priority list: {room}")
+            if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon not in {3, 5, 7}:
+                raise ConfigError(f"Room horizon for {room} must be 3, 5, or 7 days")
+            priority.append(room)
+            horizons[room] = horizon
+        result["priority_rooms"] = priority
+        result["room_horizons"] = horizons
+
+    return result
 
 
-# Load config and set module-level constants
-_CONFIG = load_config()
+# Load config and set module-level constants. Keep imports testable while main
+# still fails closed before Playwright if an existing configuration is invalid.
+try:
+    _CONFIG = load_config()
+    _CONFIG_ERROR = None
+except ConfigError as exc:
+    _CONFIG = copy.deepcopy(_DEFAULT_CONFIG)
+    _CONFIG_ERROR = exc
 MAX_ROLLING_QUOTA_HOURS = _CONFIG['rolling_quota']
 MAX_BOOKING_HOURS = 2
 MIN_BOOKING_MINUTES = 30
+LIVE_ACTION_MINUTES = tuple(range(MIN_BOOKING_MINUTES, MAX_BOOKING_HOURS * 60 + 1, 15))
+
+
+def _action_maximum_minutes(max_action_minutes):
+    """Return the per-mutation duration ceiling for a parsed live-test scope."""
+
+    if max_action_minutes is None:
+        return MAX_BOOKING_HOURS * 60
+    if (
+        isinstance(max_action_minutes, bool)
+        or not isinstance(max_action_minutes, int)
+        or max_action_minutes not in LIVE_ACTION_MINUTES
+    ):
+        raise ValueError("max_action_minutes must be 30-120 in 15-minute steps")
+    return max_action_minutes
+
+
+def _bounded_create_duration_minutes(
+    requested_minutes,
+    remaining_daily_hours,
+    remaining_weekly_hours,
+    max_action_minutes,
+):
+    """Apply every create budget, including the optional live-test ceiling."""
+
+    return cap_duration_minutes(
+        requested_minutes,
+        remaining_daily_hours,
+        remaining_weekly_hours,
+        minimum_minutes=MIN_BOOKING_MINUTES,
+        maximum_minutes=_action_maximum_minutes(max_action_minutes),
+    )
+
+
+def _extension_target_end_hour(start_hour, current_end_hour, max_possible_duration):
+    """Return a real extension target, or None when the current booking is final."""
+
+    proposed_end = start_hour + max_possible_duration / 60
+    return proposed_end if current_end_hour + 1e-9 < proposed_end else None
 PREFERRED_MIN_MINUTES = 60  # Prefer slots at least 1 hour
 PEAK_START = _CONFIG['peak_start']
 PEAK_END = _CONFIG['peak_end']
@@ -123,6 +283,641 @@ DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted base
 PRIORITY_ROOMS = _CONFIG['priority_rooms']
 ROOM_HORIZONS = _CONFIG['room_horizons']
 DEFAULT_HORIZON = _CONFIG['default_horizon']
+
+ASIMUT_BASE_URL = "https://rwcmd.asimut.net"
+ASIMUT_AGENDA_URL = f"{ASIMUT_BASE_URL}/agenda"
+ASIMUT_OVERVIEW_URL = f"{ASIMUT_BASE_URL}/overview?locationGroupId=10"
+
+
+def page_is_asimut_origin(page):
+    """Return whether the page is on the exact HTTPS RWCMD Asimut origin."""
+
+    try:
+        parsed = urlsplit(page.url)
+        return (
+            not page.is_closed()
+            and parsed.scheme == "https"
+            and parsed.hostname == "rwcmd.asimut.net"
+        )
+    except Exception:
+        return False
+
+
+def page_is_authenticated(page):
+    """Check for an authenticated Asimut shell, not merely an Asimut-domain URL."""
+
+    try:
+        if not page_is_asimut_origin(page):
+            return False
+        indicators = (
+            "[data-cy='menu-item-locations']",
+            "[data-cy='menu-item-agenda']",
+            "[data-cy^='menu-item-']",
+            "a[href='/agenda']",
+            "app-root router-outlet",
+            "app-wrapper",
+        )
+        return any(page.locator(selector).count() > 0 for selector in indicators)
+    except Exception:
+        return False
+
+
+def restore_page_authentication(page):
+    """Recover an expired Asimut session and persist the refreshed state."""
+
+    result = ensure_asimut_session(page)
+    persist_storage_state(page.context)
+    if result.recovered:
+        factors = "password and SMS" if result.used_sms else "stored password"
+        print(f"  Asimut session restored autonomously using {factors}.")
+    return result
+
+
+def safe_goto(page, url, *, attempts=3, timeout=60000, require_authenticated=True):
+    """Navigate with bounded retry and fail closed on an SSO redirect."""
+
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            if page.is_closed():
+                raise RuntimeError("Browser page is closed")
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            if require_authenticated and not page_is_authenticated(page):
+                restore_page_authentication(page)
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                if not page_is_authenticated(page):
+                    raise AutonomousLoginError(
+                        "Asimut did not remain authenticated after recovery"
+                    )
+            return
+        except AutonomousLoginError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if "not authenticated" in str(exc).lower() or attempt >= attempts:
+                break
+            print(f"  Navigation attempt {attempt}/{attempts} failed: {exc}")
+            time.sleep(min(2 ** (attempt - 1), 4))
+    raise RuntimeError(f"Could not load {url} after {attempts} attempts: {last_error}") from last_error
+
+
+def safe_reload(page, *, attempts=3):
+    """Reload the current authenticated page with bounded retry."""
+
+    last_error = None
+    target_url = page.url
+    for attempt in range(1, attempts + 1):
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            if not page_is_authenticated(page):
+                restore_page_authentication(page)
+                page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                if not page_is_authenticated(page):
+                    raise AutonomousLoginError(
+                        "Asimut did not remain authenticated after recovery"
+                    )
+            return
+        except AutonomousLoginError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if "not authenticated" in str(exc).lower() or attempt >= attempts:
+                break
+            time.sleep(min(2 ** (attempt - 1), 4))
+    raise RuntimeError(f"Could not reload {page.url}: {last_error}") from last_error
+
+
+class BookingVerificationError(RuntimeError):
+    """A Save may have mutated Asimut, but the exact result was not provable."""
+
+
+def page_booking_snapshot(page):
+    """Extract one structured booking record from the active event component.
+
+    This intentionally never reads ``document.body``.  Only controls, selected
+    values, and labelled content inside the form/event component containing the
+    booking time controls may contribute to confirmation.  Missing or ambiguous
+    fields stay null so verification fails closed.
+    """
+
+    return page.evaluate(r"""() => {
+        const startSelectors = [
+            '#startDate',
+            "input[data-cy='time-range-start-time']",
+            "input[formcontrolname='startTime']",
+            "input[data-cy*='start-time']",
+            "input[name*='startTime' i]"
+        ];
+        const endSelectors = [
+            '#endDate',
+            "input[data-cy='time-range-end-time']",
+            "input[formcontrolname='endTime']",
+            "input[data-cy*='end-time']",
+            "input[name*='endTime' i]"
+        ];
+        const componentSelector = [
+            'app-event-form', 'app-event-editor', 'app-event-detail',
+            'app-event', 'app-arrangement', 'mat-dialog-container',
+            "[data-cy*='event-form']", "[data-cy*='event-detail']",
+            "[data-cy*='arrangement']"
+        ].join(',');
+
+        const firstMatch = (root, selectors) => {
+            for (const selector of selectors) {
+                const match = root.querySelector(selector);
+                if (match) return match;
+            }
+            return null;
+        };
+        const startControl = firstMatch(document, startSelectors);
+        const endControl = firstMatch(document, endSelectors);
+        const roots = [];
+        const addRoot = (root) => {
+            if (root && !roots.includes(root)) roots.push(root);
+        };
+        for (const control of [startControl, endControl]) {
+            if (!control) continue;
+            addRoot(control.closest('form'));
+            addRoot(control.closest(componentSelector));
+        }
+        for (const selector of [
+            'form', 'app-event-form', 'app-event-editor', 'app-event-detail',
+            'app-event', 'app-arrangement', "[data-cy*='event-form']",
+            "[data-cy*='event-detail']", "[data-cy*='arrangement']"
+        ]) {
+            for (const root of document.querySelectorAll(selector)) {
+                const hasStart = firstMatch(root, startSelectors);
+                const hasEnd = firstMatch(root, endSelectors);
+                const isDetails = /detail|arrangement/i.test(
+                    `${root.tagName || ''} ${root.id || ''} ${root.className || ''} ${root.getAttribute('data-cy') || ''}`
+                );
+                if ((hasStart && hasEnd) || isDetails) addRoot(root);
+            }
+        }
+
+        const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const semanticName = (element) => clean([
+            element.id,
+            element.getAttribute && element.getAttribute('name'),
+            element.getAttribute && element.getAttribute('formcontrolname'),
+            element.getAttribute && element.getAttribute('data-cy'),
+            element.getAttribute && element.getAttribute('aria-label'),
+            element.getAttribute && element.getAttribute('placeholder'),
+            typeof element.className === 'string' ? element.className : ''
+        ].filter(Boolean).join(' ')).toLowerCase();
+        const unique = (values) => [...new Set(values.filter(Boolean))];
+        const roomTokens = (value) => unique(
+            clean(value).match(/(?<![A-Za-z0-9.])[A-Z][0-9]+\.[0-9]{2}(?![A-Za-z0-9.])/gi) || []
+        ).map((value) => value.toUpperCase());
+        const only = (values) => {
+            const candidates = unique(values);
+            return candidates.length === 1 ? candidates[0] : null;
+        };
+        const canonicalTime = (value) => {
+            const match = clean(value).match(/^((?:[01][0-9]|2[0-3]):[0-5][0-9])(?::00)?$/);
+            return match ? match[1] : null;
+        };
+        const canonicalDateParts = (year, month, day) => {
+            const y = Number(year), m = Number(month), d = Number(day);
+            const candidate = new Date(Date.UTC(y, m - 1, d));
+            if (
+                candidate.getUTCFullYear() !== y ||
+                candidate.getUTCMonth() !== m - 1 ||
+                candidate.getUTCDate() !== d
+            ) return null;
+            return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        };
+        const monthNumbers = {
+            january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+            july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+            jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8,
+            sep: 9, sept: 9, oct: 10, nov: 11, dec: 12
+        };
+        const dateTokens = (value) => {
+            const text = clean(value);
+            const results = [];
+            let match;
+            const iso = /(?<![0-9])([0-9]{4})-([0-9]{2})-([0-9]{2})(?![0-9])/g;
+            while ((match = iso.exec(text)) !== null) {
+                results.push(canonicalDateParts(match[1], match[2], match[3]));
+            }
+            const numeric = /(?<![0-9])([0-9]{1,2})[\/-]([0-9]{1,2})[\/-]([0-9]{4})(?![0-9])/g;
+            while ((match = numeric.exec(text)) !== null) {
+                results.push(canonicalDateParts(match[3], match[2], match[1]));
+            }
+            const dayMonth = /(?<![A-Za-z0-9])([0-9]{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+([0-9]{4})(?![0-9])/gi;
+            while ((match = dayMonth.exec(text)) !== null) {
+                results.push(canonicalDateParts(match[3], monthNumbers[match[2].toLowerCase()], match[1]));
+            }
+            const monthDay = /(?<![A-Za-z0-9])(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+([0-9]{1,2}),?\s+([0-9]{4})(?![0-9])/gi;
+            while ((match = monthDay.exec(text)) !== null) {
+                results.push(canonicalDateParts(match[3], monthNumbers[match[1].toLowerCase()], match[2]));
+            }
+            return unique(results);
+        };
+        const controlValue = (control) => {
+            if (!control) return '';
+            if (control.tagName === 'SELECT' && control.selectedOptions.length === 1) {
+                return clean(control.selectedOptions[0].value || control.selectedOptions[0].textContent);
+            }
+            return clean(control.value);
+        };
+
+        const snapshotFrom = (root) => {
+            const rootStart = firstMatch(root, startSelectors);
+            const rootEnd = firstMatch(root, endSelectors);
+            let start = canonicalTime(controlValue(rootStart));
+            let end = canonicalTime(controlValue(rootEnd));
+
+            const selectedRooms = [];
+            for (const element of root.querySelectorAll(
+                "select option:checked, [aria-selected='true'], [data-selected='true'], mat-chip, .mat-chip, .mat-mdc-chip"
+            )) {
+                selectedRooms.push(...roomTokens(element.textContent));
+                selectedRooms.push(...roomTokens(element.value));
+            }
+            let room = only(selectedRooms);
+            if (!room) {
+                const semanticRooms = [];
+                for (const element of root.querySelectorAll('input, select, textarea, [data-cy], [aria-label], [id], [class]')) {
+                    if (!/(?:^|[-_\s])(room|location)(?:$|[-_\s])/.test(semanticName(element))) continue;
+                    semanticRooms.push(...roomTokens(element.value));
+                    if (!element.matches('option, [role="option"], mat-option')) {
+                        semanticRooms.push(...roomTokens(element.textContent));
+                    }
+                }
+                room = only(semanticRooms);
+            }
+            if (!room) room = only(roomTokens(root.innerText));
+
+            const directDates = [];
+            for (const element of root.querySelectorAll('input, select, textarea, time, [datetime], [data-date]')) {
+                if (!/(date|day|calendar)/.test(semanticName(element)) &&
+                    !element.hasAttribute('datetime') && !element.hasAttribute('data-date')) continue;
+                directDates.push(...dateTokens(element.value));
+                directDates.push(...dateTokens(element.getAttribute('datetime')));
+                directDates.push(...dateTokens(element.getAttribute('data-date')));
+                directDates.push(...dateTokens(element.textContent));
+            }
+            let bookingDate = only(directDates);
+            if (!bookingDate) bookingDate = only(dateTokens(root.innerText));
+
+            if (!start || !end) {
+                const ranges = [];
+                const rangePattern = /(?<![0-9])((?:[01][0-9]|2[0-3]):[0-5][0-9])\s*(?:-|–|—|to)\s*((?:[01][0-9]|2[0-3]):[0-5][0-9])(?![0-9])/gi;
+                let match;
+                while ((match = rangePattern.exec(clean(root.innerText))) !== null) {
+                    ranges.push(`${match[1]}|${match[2]}`);
+                }
+                const range = only(ranges);
+                if (range) [start, end] = range.split('|');
+            }
+            return {room, date: bookingDate, start, end};
+        };
+
+        let partial = {room: null, date: null, start: null, end: null};
+        for (const root of roots) {
+            const snapshot = snapshotFrom(root);
+            if (snapshot.room && snapshot.date && snapshot.start && snapshot.end) return snapshot;
+            partial = snapshot;
+        }
+        return partial;
+    }""")
+
+
+def verify_persisted_booking_page(page, room, target_date, start_time, end_time):
+    """Reload and reconcile the complete saved reservation before counting it."""
+
+    event_url = page.url
+    if not is_confirmed_post_save_url(event_url):
+        raise BookingVerificationError(
+            "Persisted booking verification requires an exact positive arrangement event URL; "
+            f"got {event_url!r}"
+        )
+
+    safe_reload(page)
+    if page.url != event_url or not is_confirmed_post_save_url(page.url):
+        raise BookingVerificationError(
+            "Asimut assigned an event id, but the persisted event URL changed during verification"
+        )
+
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        snapshot = page_booking_snapshot(page)
+        if booking_summary_matches(snapshot, room, target_date, start_time, end_time):
+            return True
+        page.wait_for_timeout(250)
+
+    raise BookingVerificationError(
+        "Asimut assigned an event id, but its persisted room/date/time did not match "
+        f"{room} {as_date(target_date).isoformat()} {start_time}-{end_time}. "
+        "The run stopped to avoid making duplicate bookings."
+    )
+
+
+def _visible_save_rejection(page):
+    """Return a concrete post-Save rejection message, if one is visible."""
+
+    selectors = (
+        "text=conflicting events",
+        "text=resolve the conflicts",
+        "text=booking clashes",
+        "text=You are not allowed",
+        "text=not allowed to book",
+        ".mat-error",
+    )
+    for selector in selectors:
+        try:
+            element = page.locator(selector).first
+            if element.count() > 0 and element.is_visible():
+                return (element.text_content() or selector).strip()[:200]
+        except Exception:
+            continue
+    return None
+
+
+def wait_for_created_booking_outcome(
+    page,
+    receipt,
+    room,
+    target_date,
+    start_time,
+    end_time,
+    *,
+    timeout_seconds=30,
+):
+    """Classify Save as confirmed, rejected, or uncertain without duplicating."""
+
+    receipt_id = receipt["id"]
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            current_url = page.url
+            if is_confirmed_post_save_url(current_url):
+                try:
+                    attach_event_url(receipt_id, current_url)
+                except MutationReceiptError as exc:
+                    raise BookingVerificationError(
+                        f"Event {current_url} exists, but its crash-recovery receipt "
+                        f"{receipt_id} could not be updated: {exc}"
+                    ) from exc
+                verify_persisted_booking_page(
+                    page,
+                    room,
+                    target_date,
+                    start_time,
+                    end_time,
+                )
+                try:
+                    verify_mutation_receipt(receipt_id, event_url=current_url)
+                except MutationReceiptError as exc:
+                    raise BookingVerificationError(
+                        f"Booking {current_url} was verified, but receipt {receipt_id} "
+                        f"could not be finalized: {exc}"
+                    ) from exc
+                return True
+
+            rejection = _visible_save_rejection(page)
+            if rejection:
+                try:
+                    resolve_mutation_receipt(
+                        receipt_id,
+                        resolution=f"Asimut rejected Save: {rejection}",
+                    )
+                except MutationReceiptError as exc:
+                    raise BookingVerificationError(
+                        f"Asimut rejected Save, but receipt {receipt_id} could not be closed: {exc}"
+                    ) from exc
+                print(f"  Save rejected: {rejection}")
+                return False
+            page.wait_for_timeout(250)
+
+        raise BookingVerificationError(
+            f"Save outcome is uncertain after {timeout_seconds}s (receipt {receipt_id}). "
+            "No further mutations will be attempted until the agenda is reconciled."
+        )
+    except BookingVerificationError:
+        raise
+    except Exception as exc:
+        raise BookingVerificationError(
+            f"Save outcome is uncertain during verification (receipt {receipt_id}): {exc}. "
+            "No further mutations will be attempted until the receipt is reconciled."
+        ) from exc
+
+
+def reconcile_pending_mutation_receipts(page, reservations):
+    """Resolve crash leftovers against a complete agenda before new mutations."""
+
+    pending = list_pending_mutation_receipts()
+    if not pending:
+        return
+
+    exact_reservations = {
+        (
+            reservation.get("room"),
+            reservation.get("date"),
+            normalize_time_string(reservation.get("startTime", "")),
+            normalize_time_string(reservation.get("endTime", "")),
+        )
+        for reservation in reservations
+        if reservation.get("room")
+    }
+
+    print(f"\nReconciling {len(pending)} interrupted booking mutation(s)...")
+    for receipt in pending:
+        receipt_end = datetime.strptime(
+            f"{receipt['date']} {receipt['end']}",
+            "%Y-%m-%d %H:%M",
+        )
+        if receipt_end <= datetime.now():
+            # Once the intended slot has ended, retrying it is impossible and
+            # the receipt can no longer protect against a duplicate future
+            # booking. Close it so a crash months ago cannot permanently jam
+            # every autonomous run.
+            resolve_mutation_receipt(
+                receipt["id"],
+                resolution="Interrupted mutation expired after its booking slot ended",
+                event_url=receipt.get("event_url"),
+            )
+            print(f"  Closed expired receipt {receipt['id']}: booking slot has ended")
+            continue
+        intended = (
+            receipt["room"],
+            receipt["date"],
+            receipt["start"],
+            receipt["end"],
+        )
+        event_url = receipt.get("event_url")
+        if intended in exact_reservations:
+            verify_mutation_receipt(receipt["id"], event_url=event_url)
+            print(f"  Reconciled receipt {receipt['id']}: exact agenda reservation found")
+            continue
+        if event_url and is_confirmed_post_save_url(event_url):
+            safe_goto(page, event_url)
+            verify_persisted_booking_page(
+                page,
+                receipt["room"],
+                receipt["date"],
+                receipt["start"],
+                receipt["end"],
+            )
+            verify_mutation_receipt(receipt["id"], event_url=event_url)
+            print(f"  Reconciled receipt {receipt['id']}: persisted event verified")
+            continue
+        raise BookingVerificationError(
+            f"Interrupted mutation receipt {receipt['id']} was not found exactly in the agenda. "
+            "Autonomous mutations remain stopped to prevent a duplicate or wrong booking."
+        )
+
+
+def validate_state_file():
+    """Validate the local storage-state document before launching Chromium."""
+
+    if not state_file.exists():
+        raise RuntimeError(f"Browser session file not found: {state_file}")
+    try:
+        with open(state_file, "r", encoding="utf-8") as handle:
+            state_data = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Browser session file is unreadable: {exc}") from exc
+    if not isinstance(state_data, dict) or not isinstance(state_data.get("cookies"), list):
+        raise RuntimeError("Browser session file is invalid (missing cookies list)")
+    if not isinstance(state_data.get("origins"), list):
+        raise RuntimeError("Browser session file is invalid (missing origins list)")
+
+
+def persist_storage_state(context):
+    """Persist session state through a validated atomic replacement."""
+
+    state_data = context.storage_state()
+    if not isinstance(state_data, dict) or not isinstance(state_data.get("cookies"), list):
+        raise RuntimeError("Playwright returned an invalid browser storage state")
+    if not isinstance(state_data.get("origins"), list):
+        raise RuntimeError("Playwright returned an invalid browser storage state")
+    atomic_write_json(state_file, state_data, backup=True)
+
+
+def runtime_context_options(*, width=1920, height=1080):
+    """Build context options while preserving any existing saved state."""
+
+    options = {"viewport": {"width": width, "height": height}}
+    if state_file.exists():
+        validate_state_file()
+        options["storage_state"] = str(state_file)
+    return options
+
+
+def authenticated_runtime_context_options(*, width=1920, height=1080):
+    """Require a reusable state or an explicitly configured secure fallback.
+
+    This check runs before Playwright starts.  A malformed existing state is
+    never ignored or overwritten, and Credential Manager is not inspected when
+    a structurally valid saved state is available.
+    """
+
+    try:
+        options = runtime_context_options(width=width, height=height)
+    except RuntimeError as exc:
+        raise AutonomousLoginError(
+            f"The saved Asimut browser session is unusable and was preserved: {exc}"
+        ) from exc
+    if "storage_state" in options:
+        return options
+    if windows_credential_is_configured():
+        return options
+    raise AutonomousLoginError(
+        "No saved Asimut browser session or explicitly configured autonomous "
+        "login is available. Use Login Setup once, or explicitly run "
+        "--configure-autonomous-login."
+    )
+
+
+def login_only(*, headless=True):
+    """Restore or verify the Asimut session without scanning or booking."""
+
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    context_options = authenticated_runtime_context_options()
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=headless)
+        context = browser.new_context(**context_options)
+        page = context.new_page()
+        result = ensure_asimut_session(page)
+        persist_storage_state(context)
+        context.close()
+        browser.close()
+    if result.recovered:
+        factors = "password and SMS" if result.used_sms else "stored password"
+        print(f"Asimut login restored autonomously using {factors}.")
+    else:
+        print("Asimut login is already valid; refreshed the saved session state.")
+    return 0
+
+
+def setup_login(timeout_seconds=600):
+    """Open one visible Playwright window and save a completed SSO session."""
+
+    print("Opening Asimut login. Complete the Microsoft 365 sign-in in the browser window.")
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False)
+        context_options = {"viewport": {"width": 1280, "height": 900}}
+        if state_file.exists():
+            try:
+                validate_state_file()
+                context_options["storage_state"] = str(state_file)
+            except RuntimeError:
+                pass
+        context = browser.new_context(**context_options)
+        page = context.new_page()
+        page.goto(ASIMUT_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+
+        deadline = time.monotonic() + timeout_seconds
+        returned_to_asimut_at = {}
+        while time.monotonic() < deadline:
+            live_pages = [candidate for candidate in context.pages if not candidate.is_closed()]
+            if not live_pages:
+                break
+            now_monotonic = time.monotonic()
+            for candidate in live_pages:
+                candidate_key = id(candidate)
+                if page_is_authenticated(candidate):
+                    persist_storage_state(context)
+                    print(f"Login saved successfully: {state_file}")
+                    context.close()
+                    browser.close()
+                    return 0
+                if not page_is_asimut_origin(candidate):
+                    returned_to_asimut_at.pop(candidate_key, None)
+                    continue
+                first_seen = returned_to_asimut_at.setdefault(
+                    candidate_key,
+                    now_monotonic,
+                )
+                if now_monotonic - first_seen >= 3:
+                    # Asimut's custom element names can change independently of
+                    # this client. A stable exact RWCMD Asimut HTTPS origin is
+                    # sufficient to persist a candidate session; --check-only
+                    # then proves the authenticated agenda and room grids before
+                    # any mutation.
+                    persist_storage_state(context)
+                    print(f"Login returned to Asimut and was saved: {state_file}")
+                    context.close()
+                    browser.close()
+                    return 0
+            time.sleep(1)
+
+        context.close()
+        browser.close()
+    print("ERROR: Login was not completed before the setup window closed or timed out.")
+    return 2
 
 
 def wait_until_target_time(target_time_str, page=None):
@@ -407,35 +1202,31 @@ def adjust_slot_for_weekly_quota(slot_start, slot_end, remaining_quota_hours):
     return None, None, True, f"Cannot fit in remaining weekly quota ({remaining_quota_hours:.1f}h)"
 
 
-def load_disabled_dates():
+def load_disabled_dates(settings=None):
     """Load list of disabled dates from settings file."""
-    if settings_file.exists():
-        try:
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                return set(settings.get("disabled_dates", []))
-        except:
-            pass
-    return set()
+    if settings is None:
+        settings = load_settings_document(settings_file)
+    disabled = settings.get("disabled_dates", [])
+    if not isinstance(disabled, list) or not all(isinstance(value, str) for value in disabled):
+        raise SettingsError("disabled_dates must be a JSON list of YYYY-MM-DD strings")
+    return set(disabled)
 
 
-def load_ignored_events():
+def load_ignored_events(settings=None):
     """Load list of ignored event keys from settings file.
 
     Ignored events are events the user wants to allow booking over
     (they won't be treated as conflicts).
 
     Returns:
-        Set of event keys in format "YYYY-MM-DD_HH:MM_HH:MM"
+        Set of deterministic ``v2:`` event keys or legacy time-only keys.
     """
-    if settings_file.exists():
-        try:
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                return set(settings.get("ignored_events", []))
-        except:
-            pass
-    return set()
+    if settings is None:
+        settings = load_settings_document(settings_file)
+    ignored = settings.get("ignored_events", [])
+    if not isinstance(ignored, list) or not all(isinstance(value, str) for value in ignored):
+        raise SettingsError("ignored_events must be a JSON list of event keys")
+    return set(ignored)
 
 
 def is_date_disabled(target_date, disabled_dates):
@@ -453,7 +1244,7 @@ TIME_PREFERENCE_PRESETS = {
 }
 
 
-def load_time_preferences():
+def load_time_preferences(settings=None):
     """Load time preferences from settings file.
 
     Returns:
@@ -462,41 +1253,60 @@ def load_time_preferences():
     """
     default = {"enabled": False, "start_hour": 14.0, "end_hour": 22.0, "strict_mode": False}
 
-    if settings_file.exists():
-        try:
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                prefs = settings.get("time_preferences", {})
+    if settings is None:
+        settings = load_settings_document(settings_file)
+    prefs = settings.get("time_preferences", {})
+    if not isinstance(prefs, dict):
+        raise SettingsError("time_preferences must be a JSON object")
+    enabled = prefs.get("enabled", False)
+    strict_mode = prefs.get("strict_mode", False)
+    if not isinstance(enabled, bool):
+        raise SettingsError("time_preferences.enabled must be true or false")
+    if not isinstance(strict_mode, bool):
+        raise SettingsError("time_preferences.strict_mode must be true or false")
 
-                if not prefs.get("enabled", False):
-                    return default
+    preset = prefs.get("preset", "afternoon_evening")
+    supported_presets = {*TIME_PREFERENCE_PRESETS, "custom"}
+    if not isinstance(preset, str) or preset not in supported_presets:
+        raise SettingsError("time_preferences.preset is not a supported preset")
 
-                # Get preset or custom hours
-                preset = prefs.get("preset", "afternoon_evening")
-                if preset in TIME_PREFERENCE_PRESETS:
-                    start_hour, end_hour = TIME_PREFERENCE_PRESETS[preset]
-                else:
-                    # Custom preset - use saved hour:minute values, convert to decimal
-                    start_h = prefs.get("custom_start_hour", prefs.get("custom_start", 14))
-                    start_m = prefs.get("custom_start_min", 0)
-                    end_h = prefs.get("custom_end_hour", prefs.get("custom_end", 22))
-                    end_m = prefs.get("custom_end_min", 0)
-                    start_hour = start_h + start_m / 60.0
-                    end_hour = end_h + end_m / 60.0
+    def require_clock_part(field, default_value, maximum):
+        value = prefs.get(field, default_value)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise SettingsError(f"time_preferences.{field} must be a whole number")
+        if not 0 <= value <= maximum:
+            raise SettingsError(
+                f"time_preferences.{field} must be between 0 and {maximum}"
+            )
+        return value
 
-                return {
-                    "enabled": True,
-                    "start_hour": start_hour,
-                    "end_hour": end_hour,
-                    "strict_mode": prefs.get("strict_mode", False)
-                }
-        except:
-            pass
+    # Validate the complete saved section even when preferences are disabled or
+    # a preset is selected.  That keeps the headless runtime aligned with the
+    # GUI and prevents malformed dormant values from becoming active later.
+    start_h = require_clock_part("custom_start_hour", 14, 23)
+    start_m = require_clock_part("custom_start_min", 0, 59)
+    end_h = require_clock_part("custom_end_hour", 22, 23)
+    end_m = require_clock_part("custom_end_min", 0, 59)
+    if preset == "custom" and (end_h, end_m) <= (start_h, start_m):
+        raise SettingsError("Custom preferred end time must be later than start time")
 
-    return default
+    if not enabled:
+        return default
+
+    if preset in TIME_PREFERENCE_PRESETS:
+        start_hour, end_hour = TIME_PREFERENCE_PRESETS[preset]
+    else:
+        start_hour = start_h + start_m / 60.0
+        end_hour = end_h + end_m / 60.0
+    return {
+        "enabled": True,
+        "start_hour": start_hour,
+        "end_hour": end_hour,
+        "strict_mode": strict_mode,
+    }
 
 
-def load_booking_strategy():
+def load_booking_strategy(settings=None):
     """Load booking strategy settings from settings file.
 
     Returns:
@@ -504,18 +1314,15 @@ def load_booking_strategy():
     """
     default = {"reverse_date_order": False}
 
-    if settings_file.exists():
-        try:
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                strategy = settings.get("booking_strategy", {})
-                return {
-                    "reverse_date_order": strategy.get("reverse_date_order", False)
-                }
-        except:
-            pass
-
-    return default
+    if settings is None:
+        settings = load_settings_document(settings_file)
+    strategy = settings.get("booking_strategy", {})
+    if not isinstance(strategy, dict):
+        raise SettingsError("booking_strategy must be a JSON object")
+    reverse_date_order = strategy.get("reverse_date_order", False)
+    if not isinstance(reverse_date_order, bool):
+        raise SettingsError("booking_strategy.reverse_date_order must be true or false")
+    return {"reverse_date_order": reverse_date_order}
 
 
 # =============================================================================
@@ -541,44 +1348,68 @@ def normalize_time_string(time_str):
     return f"{hour:02d}:{minute:02d}"
 
 
-def load_extendable_bookings():
+def load_extendable_bookings(settings=None):
     """Load bookings that may be extendable from settings.
 
     Returns:
         List of dicts with: date, startTime, endTime, room, created_at, target_end, horizon_days
     """
-    if not settings_file.exists():
-        return []
-    try:
-        with open(settings_file, 'r') as f:
-            settings = json.load(f)
-        bookings = settings.get("extendable_bookings", [])
+    if settings is None:
+        settings = load_settings_document(settings_file)
+    bookings = settings.get("extendable_bookings", [])
+    if not isinstance(bookings, list):
+        raise SettingsError("extendable_bookings must be a JSON list")
 
-        # Clean up expired entries (older than 7 days or past dates)
-        now = datetime.now()
-        today = now.date()
-        valid_bookings = []
-        required_fields = ["date", "startTime", "endTime", "room", "created_at", "target_end"]
-        for b in bookings:
-            try:
-                # Validate all required fields exist
-                missing_fields = [f for f in required_fields if f not in b]
-                if missing_fields:
-                    print(f"  [WARN] Skipping extendable booking with missing fields: {missing_fields}")
-                    continue
+    now = datetime.now()
+    today = now.date()
+    valid_bookings = []
+    required_fields = ["date", "startTime", "endTime", "room", "created_at", "target_end"]
+    for booking in bookings:
+        if not isinstance(booking, dict):
+            raise SettingsError("Every extendable booking must be a JSON object")
+        missing_fields = [field for field in required_fields if field not in booking]
+        if missing_fields:
+            raise SettingsError(f"Extendable booking is missing fields: {', '.join(missing_fields)}")
+        try:
+            booking_date = datetime.strptime(booking["date"], '%Y-%m-%d').date()
+            created_at = datetime.fromisoformat(booking["created_at"])
+        except (TypeError, ValueError) as exc:
+            raise SettingsError(f"Invalid extendable booking: {exc}") from exc
+        room = booking["room"]
+        if not isinstance(room, str) or room not in PRIORITY_ROOMS:
+            raise SettingsError(f"Extendable booking uses an unconfigured room: {room!r}")
 
-                booking_date = datetime.strptime(b["date"], '%Y-%m-%d').date()
-                created_at = datetime.fromisoformat(b["created_at"])
-                # Keep if: date is today or future, and created within last 7 days
-                if booking_date >= today and (now - created_at).total_seconds() / 86400 < 7:
-                    valid_bookings.append(b)
-            except Exception as e:
-                print(f"  [WARN] Skipping invalid extendable booking: {e}")
-                continue
-        return valid_bookings
-    except Exception as e:
-        print(f"  [ERROR] Failed to load extendable bookings: {e}")
-        return []
+        parsed_minutes = {}
+        for field in ("startTime", "endTime", "target_end"):
+            value = booking[field]
+            if not isinstance(value, str) or re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is None:
+                raise SettingsError(f"Extendable booking {field} must use canonical HH:MM")
+            hour, minute = map(int, value.split(":"))
+            if minute % 15:
+                raise SettingsError(f"Extendable booking {field} must use 15-minute steps")
+            parsed_minutes[field] = hour * 60 + minute
+        if not (
+            parsed_minutes["startTime"] < parsed_minutes["endTime"]
+            <= parsed_minutes["target_end"]
+            <= parsed_minutes["startTime"] + MAX_BOOKING_HOURS * 60
+        ):
+            raise SettingsError("Extendable booking times are out of order or exceed 2 hours")
+
+        horizon_days = booking.get("horizon_days", ROOM_HORIZONS.get(room, DEFAULT_HORIZON))
+        if (
+            isinstance(horizon_days, bool)
+            or not isinstance(horizon_days, int)
+            or horizon_days != ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+        ):
+            raise SettingsError(f"Extendable booking horizon is invalid for {room}")
+
+        comparable_now = datetime.now(created_at.tzinfo) if created_at.tzinfo else now
+        age_seconds = (comparable_now - created_at).total_seconds()
+        if age_seconds < -300:
+            raise SettingsError("Extendable booking creation timestamp is in the future")
+        if booking_date >= today and age_seconds / 86400 < 7:
+            valid_bookings.append(booking)
+    return valid_bookings
 
 
 def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_hour):
@@ -614,46 +1445,37 @@ def save_extendable_booking(room, target_date, start_hour, end_hour, target_end_
         "horizon_days": ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
     }
 
-    # Load existing settings
-    settings = {}
-    if settings_file.exists():
-        try:
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-        except:
-            pass
+    def mutate(settings):
+        entries = settings.setdefault("extendable_bookings", [])
+        if not isinstance(entries, list):
+            raise SettingsError("extendable_bookings must be a JSON list")
 
-    if "extendable_bookings" not in settings:
-        settings["extendable_bookings"] = []
+        match = next(
+            (
+                entry for entry in entries
+                if isinstance(entry, dict)
+                and entry.get("date") == booking["date"]
+                and entry.get("room") == booking["room"]
+                and entry.get("startTime") == booking["startTime"]
+            ),
+            None,
+        )
+        if match is None:
+            entries.append(booking)
+        else:
+            match["endTime"] = booking["endTime"]
+            match["target_end"] = booking["target_end"]
 
-    # Check if this booking already exists (same room, date, start time)
-    existing = [b for b in settings["extendable_bookings"]
-                if b["date"] == booking["date"]
-                and b["room"] == booking["room"]
-                and b["startTime"] == booking["startTime"]]
-    if existing:
-        # Update the existing entry
-        for b in settings["extendable_bookings"]:
-            if (b["date"] == booking["date"] and b["room"] == booking["room"]
-                and b["startTime"] == booking["startTime"]):
-                b["endTime"] = booking["endTime"]
-                b["target_end"] = booking["target_end"]
-                break
-    else:
-        # Add new booking
-        settings["extendable_bookings"].append(booking)
+        now = datetime.now()
+        today = now.date()
+        settings["extendable_bookings"] = [
+            entry for entry in entries
+            if isinstance(entry, dict)
+            and datetime.strptime(entry["date"], '%Y-%m-%d').date() >= today
+            and (now - datetime.fromisoformat(entry["created_at"])).days < 7
+        ]
 
-    # Clean up old entries (older than 7 days or past dates)
-    now = datetime.now()
-    today = now.date()
-    settings["extendable_bookings"] = [
-        b for b in settings["extendable_bookings"]
-        if datetime.strptime(b["date"], '%Y-%m-%d').date() >= today
-        and (now - datetime.fromisoformat(b["created_at"])).days < 7
-    ]
-
-    with open(settings_file, 'w') as f:
-        json.dump(settings, f, indent=2)
+    update_settings(mutate, settings_file)
 
     print(f"  [EXTEND] Saved for extension: {room} {date_str} {booking['startTime']}->{booking['target_end']}")
 
@@ -669,25 +1491,21 @@ def remove_extendable_booking(room, date_str, start_time):
     if not settings_file.exists():
         return
 
-    try:
-        with open(settings_file, 'r') as f:
-            settings = json.load(f)
-    except:
-        return
+    def mutate(settings):
+        entries = settings.get("extendable_bookings", [])
+        if not isinstance(entries, list):
+            raise SettingsError("extendable_bookings must be a JSON list")
+        settings["extendable_bookings"] = [
+            entry for entry in entries
+            if not (
+                isinstance(entry, dict)
+                and entry.get("date") == date_str
+                and entry.get("room") == room
+                and entry.get("startTime") == start_time
+            )
+        ]
 
-    if "extendable_bookings" not in settings:
-        return
-
-    # Filter out the matching booking
-    original_count = len(settings["extendable_bookings"])
-    settings["extendable_bookings"] = [
-        b for b in settings["extendable_bookings"]
-        if not (b["date"] == date_str and b["room"] == room and b["startTime"] == start_time)
-    ]
-
-    if len(settings["extendable_bookings"]) < original_count:
-        with open(settings_file, 'w') as f:
-            json.dump(settings, f, indent=2)
+    update_settings(mutate, settings_file)
 
 
 def update_extendable_booking_end_time(room, date_str, start_time, new_end_time):
@@ -702,49 +1520,36 @@ def update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
     Returns:
         bool: True if booking was found and updated, False otherwise
     """
-    if not settings_file.exists():
-        print(f"  [WARN] Settings file not found, cannot update extendable booking")
-        return False
-
-    try:
-        with open(settings_file, 'r') as f:
-            settings = json.load(f)
-    except Exception as e:
-        print(f"  [WARN] Failed to load settings: {e}")
-        return False
-
-    if "extendable_bookings" not in settings:
-        print(f"  [WARN] No extendable_bookings in settings")
-        return False
-
     # Normalize time strings for comparison (ensure HH:MM format)
     start_time_normalized = normalize_time_string(start_time)
     new_end_normalized = normalize_time_string(new_end_time)
 
-    # Find and update the matching booking
-    found = False
-    for b in settings["extendable_bookings"]:
-        b_start_normalized = normalize_time_string(b["startTime"])
-        if b["date"] == date_str and b["room"] == room and b_start_normalized == start_time_normalized:
-            b["endTime"] = new_end_normalized
-            found = True
-            # If we've reached the target, remove from list
-            target_normalized = normalize_time_string(b["target_end"])
-            if new_end_normalized == target_normalized:
-                settings["extendable_bookings"] = [
-                    x for x in settings["extendable_bookings"]
-                    if not (x["date"] == date_str and x["room"] == room
-                            and normalize_time_string(x["startTime"]) == start_time_normalized)
-                ]
-            break
+    def mutate(settings):
+        entries = settings.get("extendable_bookings", [])
+        if not isinstance(entries, list):
+            raise SettingsError("extendable_bookings must be a JSON list")
+        found_entry = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if (
+                entry.get("date") == date_str
+                and entry.get("room") == room
+                and normalize_time_string(entry.get("startTime", "")) == start_time_normalized
+            ):
+                found_entry = entry
+                break
+        if found_entry is None:
+            return False
+        found_entry["endTime"] = new_end_normalized
+        if new_end_normalized == normalize_time_string(found_entry["target_end"]):
+            entries.remove(found_entry)
+        return True
 
+    found = update_settings(mutate, settings_file)
     if not found:
         print(f"  [WARN] Could not find extendable booking to update: {room} {date_str} {start_time}")
-        return False
-
-    with open(settings_file, 'w') as f:
-        json.dump(settings, f, indent=2)
-    return True
+    return found
 
 
 def calculate_max_extension(room, date_str, start_hour, current_end_hour, booking_timestamp, target_end_hour):
@@ -841,6 +1646,29 @@ def is_preferred_time(start_hour, time_prefs):
         return True  # All times preferred if disabled
 
     return time_prefs["start_hour"] <= start_hour < time_prefs["end_hour"]
+
+
+def trim_to_strict_time_window(start_hour, end_hour, time_prefs):
+    """Trim a slot to the full preferred interval when strict mode is enabled."""
+
+    if not time_prefs["enabled"] or not time_prefs["strict_mode"]:
+        return start_hour, end_hour
+    trimmed_start = max(start_hour, time_prefs["start_hour"])
+    trimmed_end = min(end_hour, time_prefs["end_hour"])
+    if (trimmed_end - trimmed_start) * 60 < MIN_BOOKING_MINUTES:
+        return None, None
+    return trimmed_start, trimmed_end
+
+
+def interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
+    """Return True only when the complete interval fits a strict preference."""
+
+    if not time_prefs["enabled"] or not time_prefs["strict_mode"]:
+        return True
+    return (
+        start_hour >= time_prefs["start_hour"]
+        and end_hour <= time_prefs["end_hour"]
+    )
 
 
 # =============================================================================
@@ -998,6 +1826,8 @@ def edit_reservation_end_time(page, booking, new_end_time):
     start_time = normalize_time_string(booking['startTime'])
     current_end = booking['endTime']
     room = booking.get('room', 'Unknown')
+    save_clicked = False
+    save_receipt_id = None
 
     print(f"  Editing reservation: {room} on {date_str}")
     print(f"    Current: {start_time}-{current_end}")
@@ -1005,7 +1835,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
 
     try:
         # 1. Navigate to agenda page
-        page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+        safe_goto(page, ASIMUT_AGENDA_URL)
         page.wait_for_timeout(2000)
 
         # 2. Find the matching event card using JavaScript for efficiency
@@ -1138,7 +1968,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
         else:
             print(f"    Could not find more options button")
             # Navigate back to clean state
-            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+            safe_goto(page, ASIMUT_AGENDA_URL)
             return False
 
         # 4. Click "Edit event" from the menu
@@ -1154,7 +1984,7 @@ def edit_reservation_end_time(page, booking, new_end_time):
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
             # Navigate back to clean state
-            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+            safe_goto(page, ASIMUT_AGENDA_URL)
             return False
 
         # 5. Find the end time input and update it
@@ -1167,6 +1997,24 @@ def edit_reservation_end_time(page, booking, new_end_time):
             end_input.click()
             end_input.fill(new_end_time)
             page.wait_for_timeout(300)
+            actual_end = end_input.input_value()
+            if not booking_times_match(start_time, new_end_time, start_time, actual_end):
+                print(
+                    f"    Asimut did not retain requested end time "
+                    f"({actual_end} != {new_end_time}); cancelling"
+                )
+                safe_goto(page, ASIMUT_AGENDA_URL)
+                return False
+            if not booking_summary_matches(
+                page_booking_snapshot(page),
+                room,
+                date_str,
+                start_time,
+                new_end_time,
+            ):
+                print("    Edit form room/date/time does not match the selected reservation")
+                safe_goto(page, ASIMUT_AGENDA_URL)
+                return False
 
             # Click on the right side of the page to dismiss any dropdown
             viewport = page.viewport_size
@@ -1202,17 +2050,83 @@ def edit_reservation_end_time(page, booking, new_end_time):
                 print(f"    Extension blocked by warning, cancelling...")
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(300)
-                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+                safe_goto(page, ASIMUT_AGENDA_URL)
                 return False
 
             # 7. Click Save button
             if save_btn.count() > 0 and save_btn.is_visible():
-                save_btn.click()
-                page.wait_for_timeout(2000)
+                event_url = page.url
+                if not is_confirmed_post_save_url(event_url):
+                    print(f"    Cannot verify the reservation event id; refusing to edit")
+                    safe_goto(page, ASIMUT_AGENDA_URL)
+                    return False
+                try:
+                    receipt = record_pending_extension(
+                        room=room,
+                        booking_date=date_str,
+                        start=start_time,
+                        end=new_end_time,
+                        event_url=event_url,
+                    )
+                    save_receipt_id = receipt["id"]
+                except MutationReceiptError as exc:
+                    raise BookingVerificationError(
+                        f"Could not create an extension receipt before Save: {exc}"
+                    ) from exc
 
-                # 8. Navigate back to agenda
-                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+                try:
+                    save_btn.click(no_wait_after=True, timeout=5000)
+                    save_clicked = True
+                except Exception as exc:
+                    raise BookingVerificationError(
+                        f"Extension Save outcome is uncertain (receipt {receipt['id']}): {exc}"
+                    ) from exc
 
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    rejection = _visible_save_rejection(page)
+                    if rejection:
+                        try:
+                            resolve_mutation_receipt(
+                                receipt["id"],
+                                resolution=f"Asimut rejected extension Save: {rejection}",
+                            )
+                        except MutationReceiptError as exc:
+                            raise BookingVerificationError(
+                                f"Extension was rejected, but receipt {receipt['id']} "
+                                f"could not be closed: {exc}"
+                            ) from exc
+                        print(f"    Extension rejected: {rejection}")
+                        safe_goto(page, ASIMUT_AGENDA_URL)
+                        return False
+                    editing = page.locator("#endDate").first
+                    if editing.count() == 0 or not editing.is_visible():
+                        break
+                    page.wait_for_timeout(250)
+
+                if page.url != event_url:
+                    safe_goto(page, event_url)
+                try:
+                    verify_persisted_booking_page(
+                        page,
+                        room,
+                        date_str,
+                        start_time,
+                        new_end_time,
+                    )
+                    verify_mutation_receipt(
+                        receipt["id"],
+                        event_url=event_url,
+                    )
+                except (MutationReceiptError, BookingVerificationError) as exc:
+                    raise BookingVerificationError(
+                        f"Extension outcome requires reconciliation (receipt {receipt['id']}): {exc}"
+                    ) from exc
+
+                # Return the verified remote success before cleanup navigation.
+                # The caller records the action, and the next phase performs its
+                # own verified navigation. A navigation failure here must never
+                # turn a confirmed mutation into an uncounted retry.
                 print(f"    SUCCESS: Extended to {new_end_time}")
                 return True
             else:
@@ -1220,23 +2134,31 @@ def edit_reservation_end_time(page, booking, new_end_time):
                 # Press Escape and navigate back to clean state
                 page.keyboard.press("Escape")
                 page.wait_for_timeout(300)
-                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+                safe_goto(page, ASIMUT_AGENDA_URL)
                 return False
         else:
             print(f"    Could not find end time input")
             # Press Escape and navigate back to clean state
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
-            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+            safe_goto(page, ASIMUT_AGENDA_URL)
             return False
 
+    except BookingVerificationError:
+        raise
     except Exception as e:
+        if save_clicked:
+            raise BookingVerificationError(
+                "Extension Save outcome is uncertain after the click "
+                f"(receipt {save_receipt_id or 'unknown'}): {e}. "
+                "No further mutations will be attempted until reconciliation."
+            ) from e
         print(f"    Error editing reservation: {e}")
         # Try to recover to a clean state
         try:
             page.keyboard.press("Escape")
             page.wait_for_timeout(300)
-            page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+            safe_goto(page, ASIMUT_AGENDA_URL)
         except:
             pass
         return False
@@ -1244,7 +2166,14 @@ def edit_reservation_end_time(page, booking, new_end_time):
     return False
 
 
-def try_extend_booking(page, booking, tracker=None):
+def try_extend_booking(
+    page,
+    booking,
+    tracker=None,
+    remaining_daily_hours=None,
+    time_prefs=None,
+    max_action_minutes=None,
+):
     """Attempt to extend an existing booking using Asimut's edit feature.
 
     Args:
@@ -1273,6 +2202,58 @@ def try_extend_booking(page, booking, tracker=None):
     target_parts = target_end.split(':')
     target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
 
+    # A practice-plan target is authoritative.  If existing reservations have
+    # already filled it (including after the user lowers a date override), this
+    # local extension intent is obsolete and must not be retried every run.
+    if remaining_daily_hours is not None and remaining_daily_hours <= 1e-9:
+        try:
+            remove_extendable_booking(room, date_str, start_time)
+        except SettingsError as exc:
+            return (
+                False,
+                None,
+                f"Daily practice target is met, but extension state could not be cleared: {exc}",
+            )
+        return False, None, "Daily practice target is met; extension state cleared"
+
+    # Reconcile stale local extension state against the authoritative agenda.
+    if tracker is not None:
+        matching_ranges = [
+            (range_start, range_end)
+            for range_start, range_end, range_room
+            in tracker.reservation_ranges.get(date_str, [])
+            if range_room == room and abs(range_start - start_hour) < 0.01
+        ]
+        if matching_ranges:
+            actual_end_hour = max(range_end for _, range_end in matching_ranges)
+            if abs(actual_end_hour - current_end_hour) >= 0.01:
+                actual_h = int(actual_end_hour)
+                actual_m = int((actual_end_hour % 1) * 60)
+                actual_end = f"{actual_h:02d}:{actual_m:02d}"
+                print(
+                    f"  [RECONCILE] Agenda ends at {actual_end}; "
+                    f"local extension state said {current_end}"
+                )
+                if actual_end_hour >= target_end_hour - 0.01:
+                    try:
+                        remove_extendable_booking(room, date_str, start_time)
+                    except SettingsError as exc:
+                        return False, None, f"Target reached, but stale local state could not be cleared: {exc}"
+                    return False, None, "Extension target is already reached in the agenda"
+                try:
+                    update_extendable_booking_end_time(
+                        room,
+                        date_str,
+                        start_time,
+                        actual_end,
+                    )
+                except SettingsError as exc:
+                    return False, None, f"Could not reconcile stale extension state: {exc}"
+                booking = dict(booking)
+                booking["endTime"] = actual_end
+                current_end = actual_end
+                current_end_hour = actual_end_hour
+
     # Calculate if extension is possible based on time elapsed
     can_extend, max_end_hour, reason = calculate_max_extension(
         room, date_str, start_hour, current_end_hour, created_at, target_end_hour
@@ -1280,6 +2261,24 @@ def try_extend_booking(page, booking, tracker=None):
 
     if not can_extend:
         return False, None, reason
+
+    if remaining_daily_hours is not None:
+        max_end_hour = min(max_end_hour, current_end_hour + max(0.0, remaining_daily_hours))
+    max_end_hour = min(
+        max_end_hour,
+        current_end_hour + _action_maximum_minutes(max_action_minutes) / 60,
+    )
+    if time_prefs and time_prefs.get("enabled") and time_prefs.get("strict_mode"):
+        if not interval_is_strictly_preferred(
+            start_hour,
+            current_end_hour,
+            time_prefs,
+        ):
+            return False, None, "Existing booking falls outside the strict time window"
+        max_end_hour = min(max_end_hour, time_prefs["end_hour"])
+    max_end_hour = int(max_end_hour * 4 + 1e-9) / 4
+    if (max_end_hour - current_end_hour) * 60 < 15:
+        return False, None, "Daily target or strict time window leaves less than 15min to extend"
 
     # Parse the booking date for tracker validation
     booking_date = datetime.strptime(date_str, '%Y-%m-%d')
@@ -1343,7 +2342,7 @@ def try_extend_booking(page, booking, tracker=None):
                         continue
                     # Check if extension would violate gap before another booking
                     gap_before = (r_start - max_end_hour) * 60
-                    if 0 < gap_before < SAME_ROOM_GAP_MINUTES:
+                    if 0 <= gap_before < SAME_ROOM_GAP_MINUTES:
                         # Limit extension to maintain gap
                         safe_end = r_start - SAME_ROOM_GAP_MINUTES / 60
                         if safe_end <= current_end_hour:
@@ -1355,6 +2354,20 @@ def try_extend_booking(page, booking, tracker=None):
                         max_end_hour = int(max_end_hour) + max_end_mins / 60
                         if (max_end_hour - current_end_hour) * 60 < 15:
                             return False, None, f"Same-room gap limits extension to <15min"
+
+        # Rule: extending must not cross any class or reservation conflict.
+        for conflict_start, conflict_end in tracker.conflict_ranges.get(date_str, []):
+            is_own_booking = (
+                abs(conflict_start - start_hour) < 0.01
+                and conflict_end <= current_end_hour + 0.01
+            )
+            if is_own_booking:
+                continue
+            if current_end_hour < conflict_end and max_end_hour > conflict_start:
+                max_end_hour = min(max_end_hour, conflict_start)
+                max_end_hour = int(max_end_hour * 4 + 1e-9) / 4
+                if (max_end_hour - current_end_hour) * 60 < 15:
+                    return False, None, "Another agenda event blocks this extension"
 
     # Format new end time
     new_end_h = int(max_end_hour)
@@ -1379,7 +2392,22 @@ def try_extend_booking(page, booking, tracker=None):
             # Add extension hours to existing reservation hours (for weekly quota)
             extension_hours = max_end_hour - current_end_hour
             tracker.existing_reservation_hours += extension_hours
+            tracker.reservation_hours_by_day[date_str] = (
+                tracker.reservation_hours_by_day.get(date_str, 0.0) + extension_hours
+            )
+            tracker.conflict_ranges.setdefault(date_str, []).append(
+                (current_end_hour, max_end_hour)
+            )
             print(f"  [Tracker] Added {extension_hours:.2f}h extension to quota ({tracker.get_total_booking_hours():.1f}/{MAX_ROLLING_QUOTA_HOURS}h)")
+
+            for index, (b_room, b_date, b_start, b_end) in enumerate(tracker.bookings):
+                if (
+                    b_room == room
+                    and as_date(b_date).isoformat() == date_str
+                    and abs(b_start - start_hour) < 0.01
+                ):
+                    tracker.bookings[index] = (b_room, b_date, b_start, max_end_hour)
+                    break
 
             # Update peak hours if applicable
             if booking_date.weekday() < 5:
@@ -1392,27 +2420,30 @@ def try_extend_booking(page, booking, tracker=None):
                     tracker.peak_hours_by_day[date_str] += new_peak_mins
 
             # Update reservation_ranges with the new end time (for same-room gap calculations)
-            if date_str in tracker.reservation_ranges:
-                updated = False
-                for i, (r_start, r_end, r_room) in enumerate(tracker.reservation_ranges[date_str]):
-                    if r_room == room and abs(r_start - start_hour) < 0.01:
-                        # Found the matching reservation, update its end time
-                        tracker.reservation_ranges[date_str][i] = (r_start, max_end_hour, r_room)
-                        updated = True
-                        print(f"  [Tracker] Updated reservation_ranges: {room} now ends at {new_end_time}")
-                        break
-                if not updated:
-                    # Reservation not found in ranges (shouldn't happen), add it
-                    tracker.reservation_ranges[date_str].append((start_hour, max_end_hour, room))
-                    print(f"  [Tracker] Added to reservation_ranges: {room} {start_time}-{new_end_time}")
+            ranges = tracker.reservation_ranges.setdefault(date_str, [])
+            updated = False
+            for i, (r_start, r_end, r_room) in enumerate(ranges):
+                if r_room == room and abs(r_start - start_hour) < 0.01:
+                    ranges[i] = (r_start, max_end_hour, r_room)
+                    updated = True
+                    print(f"  [Tracker] Updated reservation_ranges: {room} now ends at {new_end_time}")
+                    break
+            if not updated:
+                ranges.append((start_hour, max_end_hour, room))
+                print(f"  [Tracker] Added to reservation_ranges: {room} {start_time}-{new_end_time}")
 
-        # Update or remove from extendable bookings
-        if new_end_time == target_end_normalized:
-            # Reached target, remove from tracking
-            remove_extendable_booking(room, date_str, start_time)
-        else:
-            # Partially extended, update the end time
-            update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
+        # The remote extension and receipt are already verified. A local state
+        # failure must not turn that confirmed mutation into an ordinary failure.
+        try:
+            if new_end_time == target_end_normalized:
+                remove_extendable_booking(room, date_str, start_time)
+            else:
+                update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
+        except SettingsError as exc:
+            print(
+                f"  WARNING: Extension is confirmed, but local extension state "
+                f"could not be updated: {exc}"
+            )
 
         return True, new_end_time, "Extended successfully"
 
@@ -1451,7 +2482,13 @@ def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
     return min(bookings_per_day, 6)
 
 
-def calculate_target_hours_for_day(target_date, enabled_dates, tracker, total_quota=MAX_ROLLING_QUOTA_HOURS):
+def calculate_target_hours_for_day(
+    target_date,
+    enabled_dates,
+    tracker,
+    total_quota=MAX_ROLLING_QUOTA_HOURS,
+    practice_plan=None,
+):
     """
     Calculate target hours for a specific day to achieve even distribution.
 
@@ -1469,6 +2506,16 @@ def calculate_target_hours_for_day(target_date, enabled_dates, tracker, total_qu
     """
     if not enabled_dates:
         return 0.0, 0
+
+    if practice_plan is not None and practice_plan.enabled:
+        current_hours = tracker.get_hours_for_day(target_date)
+        daily_remaining = remaining_target_hours(practice_plan, target_date, current_hours)
+        target_hours = min(
+            daily_remaining or 0.0,
+            tracker.get_remaining_quota_hours(),
+        )
+        max_bookings = max_bookings_for_budget(target_hours) or 0
+        return target_hours, min(max_bookings, 24)
 
     # Calculate ideal hours per day for even distribution
     ideal_per_day = total_quota / len(enabled_dates)
@@ -1519,14 +2566,36 @@ def calculate_target_hours_for_day(target_date, enabled_dates, tracker, total_qu
     # Cap at remaining quota and ensure positive
     target_hours = max(0, min(target_hours, remaining_quota))
 
-    # Convert to number of bookings (each up to MAX_BOOKING_HOURS)
+    # Allow enough successes to fill the target even when availability is
+    # fragmented into the 30-minute minimum.  This is a ceiling, not a goal;
+    # the daily-hour budget still stops the loop at the requested total.
     if target_hours <= 0:
         max_bookings = 0
     else:
-        max_bookings = max(1, int((target_hours / MAX_BOOKING_HOURS) + 0.5))
-        max_bookings = min(max_bookings, 6)  # Cap at 6 bookings per day
+        max_bookings = max_bookings_for_budget(target_hours) or 0
+        max_bookings = min(max_bookings, 24)
 
     return target_hours, max_bookings
+
+
+def remaining_run_daily_budget(
+    practice_plan,
+    target_date,
+    tracker,
+    *,
+    planned_additional_hours=None,
+    starting_day_hours=None,
+):
+    """Return a budget that also works when availability is fragmented."""
+
+    current_hours = tracker.get_hours_for_day(target_date)
+    if practice_plan.enabled:
+        return remaining_target_hours(practice_plan, target_date, current_hours)
+    if planned_additional_hours is None or starting_day_hours is None:
+        return None
+    added_this_pass = max(0.0, current_hours - starting_day_hours)
+    remaining = max(0.0, planned_additional_hours - added_this_pass)
+    return int(remaining * 4 + 1e-9) / 4
 
 
 class BookingTracker:
@@ -1540,7 +2609,15 @@ class BookingTracker:
         self.reservation_hours_by_day = {}  # Per-day reservation hours: {date_key: hours}
         self.existing_reservation_hours = 0.0  # Total hours from existing reservations
 
-    def add_existing_event(self, date, start_hour, end_hour, is_reservation=False, room=None):
+    def add_existing_event(
+        self,
+        date,
+        start_hour,
+        end_hour,
+        is_reservation=False,
+        room=None,
+        blocks_conflict=True,
+    ):
         """Record an existing event from agenda scan.
 
         Args:
@@ -1550,17 +2627,20 @@ class BookingTracker:
             is_reservation: True if this is a practice room booking ("Reservation"),
                            False for classes/rehearsals/other events
             room: Room name (e.g., "B0.27") if available, for same-room gap enforcement
+            blocks_conflict: Whether the event blocks generic overlap. Ignored
+                             reservations set this false but still count toward
+                             reservation limits and same-room spacing.
 
         Only reservations (practice room bookings) count toward peak hours quota.
-        All events are added as conflicts to avoid double-booking.
+        Non-ignored events are added as conflicts to avoid double-booking.
         """
         date_key = date.strftime('%Y-%m-%d')
 
-        # ALL events block you from booking at the same time (you can't be in two places at once)
-        # This includes both classes AND reservations
-        if date_key not in self.conflict_ranges:
-            self.conflict_ranges[date_key] = []
-        self.conflict_ranges[date_key].append((start_hour, end_hour))
+        # Non-ignored classes and reservations block generic time overlap.
+        if blocks_conflict:
+            if date_key not in self.conflict_ranges:
+                self.conflict_ranges[date_key] = []
+            self.conflict_ranges[date_key].append((start_hour, end_hour))
 
         # Also track reservation ranges with room info for same-room gap enforcement
         if is_reservation:
@@ -1730,15 +2810,15 @@ class BookingTracker:
         # Rule: Same room gap (must have 60min gap before AND after existing bookings)
         # Check against bookings made during this session
         for b_room, b_date, b_start, b_end in self.bookings:
-            if b_room == room and b_date.date() == date.date():
+            if b_room == room and as_date(b_date) == as_date(date):
                 # Forward gap: new booking starts after existing ends
                 gap_after = (start_hour - b_end) * 60
                 # Backward gap: new booking ends before existing starts
                 gap_before = (b_start - end_hour) * 60
 
-                if 0 < gap_after < SAME_ROOM_GAP_MINUTES:
+                if 0 <= gap_after < SAME_ROOM_GAP_MINUTES:
                     return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap (only {gap_after:.0f}min after existing)"
-                if 0 < gap_before < SAME_ROOM_GAP_MINUTES:
+                if 0 <= gap_before < SAME_ROOM_GAP_MINUTES:
                     return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap (only {gap_before:.0f}min before existing)"
 
         # Also check against existing reservations from agenda (if room is known)
@@ -1750,9 +2830,9 @@ class BookingTracker:
                     gap_after = (start_hour - r_end) * 60
                     gap_before = (r_start - end_hour) * 60
 
-                    if 0 < gap_after < SAME_ROOM_GAP_MINUTES:
+                    if 0 <= gap_after < SAME_ROOM_GAP_MINUTES:
                         return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap from existing reservation (only {gap_after:.0f}min after)"
-                    if 0 < gap_before < SAME_ROOM_GAP_MINUTES:
+                    if 0 <= gap_before < SAME_ROOM_GAP_MINUTES:
                         return False, f"Need {SAME_ROOM_GAP_MINUTES}min gap from existing reservation (only {gap_before:.0f}min before)"
 
         return True, ""
@@ -1782,7 +2862,7 @@ class BookingTracker:
 
         # Check bookings made during this session
         for b_room, b_date, b_start, b_end in self.bookings:
-            if b_room == room and b_date.date() == date.date():
+            if b_room == room and as_date(b_date) == as_date(date):
                 # Block the booking time itself
                 blocked.append((b_start, b_end))
                 blocked.append((b_end, b_end + gap_hours))
@@ -1792,7 +2872,8 @@ class BookingTracker:
 
     def bookings_today(self, date):
         """Count bookings on a specific date."""
-        return sum(1 for _, d, _, _ in self.bookings if d.date() == date.date())
+        target = as_date(date)
+        return sum(1 for _, booking_date, _, _ in self.bookings if as_date(booking_date) == target)
 
 
 def get_available_slots(page):
@@ -1902,8 +2983,98 @@ def get_available_slots(page):
     }""")
 
 
-def try_book_slot(page, slot, target_date, tracker, days_ahead):
-    """Attempt to book a single slot. Returns True if successful."""
+_CALENDAR_DATE_RE = re.compile(
+    r"\b(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*,?\s*)?"
+    r"([0-9]{1,2})\s+"
+    r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"(?:\s+([0-9]{4}))?\b",
+    re.IGNORECASE,
+)
+
+
+def get_visible_calendar_dates(page, *, reference_date=None):
+    """Extract visible overview dates without trusting a generic page title."""
+
+    reference_date = reference_date or datetime.now().date()
+    visible_texts = page.evaluate("""() => {
+        const candidates = new Set();
+        const arrowIcons = Array.from(document.querySelectorAll('mat-icon')).filter(icon => {
+            const text = (icon.textContent || '').trim();
+            return text === 'chevron_left' || text === 'chevron_right';
+        });
+        for (const icon of arrowIcons) {
+            let element = icon.parentElement;
+            for (let depth = 0; element && depth < 5; depth++, element = element.parentElement) {
+                candidates.add(element);
+            }
+        }
+        for (const element of document.querySelectorAll(
+            '[data-cy*="date"], [class*="date-selector"], [class*="calendar-date"], [class*="overview-date"]'
+        )) {
+            candidates.add(element);
+        }
+
+        const values = [];
+        for (const element of candidates) {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            if (!rect.width || !rect.height || style.display === 'none' || style.visibility === 'hidden') {
+                continue;
+            }
+            const text = (element.innerText || element.textContent || '').trim();
+            if (text && text.length <= 400) values.push(text);
+        }
+        return values;
+    }""")
+
+    found = set()
+    for text_value in visible_texts:
+        for match in _CALENDAR_DATE_RE.finditer(text_value):
+            day_number = int(match.group(1))
+            month_number = datetime.strptime(match.group(2).title(), "%B").month
+            years = [int(match.group(3))] if match.group(3) else [
+                reference_date.year - 1,
+                reference_date.year,
+                reference_date.year + 1,
+            ]
+            for year in years:
+                try:
+                    candidate = datetime(year, month_number, day_number).date()
+                except ValueError:
+                    continue
+                if match.group(3) or abs((candidate - reference_date).days) <= 14:
+                    found.add(candidate)
+    return found
+
+
+def assert_calendar_date(page, expected_date, *, timeout_ms=6000):
+    """Wait until the overview visibly proves it is showing ``expected_date``."""
+
+    expected_date = as_date(expected_date)
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_seen = set()
+    while time.monotonic() < deadline:
+        last_seen = get_visible_calendar_dates(page, reference_date=expected_date)
+        if expected_date in last_seen:
+            return expected_date
+        page.wait_for_timeout(150)
+    seen_text = ", ".join(sorted(value.isoformat() for value in last_seen)) or "none"
+    raise RuntimeError(
+        f"Calendar date verification failed: expected {expected_date.isoformat()}, "
+        f"visible dates were {seen_text}"
+    )
+
+
+def try_book_slot(
+    page,
+    slot,
+    target_date,
+    tracker,
+    days_ahead,
+    remaining_daily_hours=None,
+    max_action_minutes=None,
+):
+    """Attempt one slot and return its exact verified receipt, or False."""
     room = slot['room']
     start_hour = slot['start_hour']
     slot_duration = (slot['end_hour'] - start_hour) * 60
@@ -1938,12 +3109,26 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
     # Round down to nearest 15-minute interval for cleaner bookings
     horizon_limited_duration = (int(horizon_limited_duration) // 15) * 15
 
-    # Take the minimum of all constraints
-    booking_duration = min(slot_duration, MAX_BOOKING_HOURS * 60, horizon_limited_duration)
+    max_possible_duration = _bounded_create_duration_minutes(
+        slot_duration,
+        remaining_daily_hours,
+        tracker.get_remaining_quota_hours(),
+        max_action_minutes,
+    )
+
+    # Evaluate the test ceiling inside the mutation path so a stale or overly
+    # long calendar segment cannot escape the bounded live-test scope.
+    requested_duration = min(max_possible_duration, horizon_limited_duration)
+    booking_duration = _bounded_create_duration_minutes(
+        requested_duration,
+        remaining_daily_hours,
+        tracker.get_remaining_quota_hours(),
+        max_action_minutes,
+    )
 
     # Check if we have at least 30 minutes to book
     if booking_duration < MIN_BOOKING_MINUTES:
-        mins_until_bookable = MIN_BOOKING_MINUTES - horizon_limited_duration
+        mins_until_bookable = max(0, MIN_BOOKING_MINUTES - horizon_limited_duration)
         start_h = int(start_hour)
         start_m = int((start_hour % 1) * 60)
         book_start = f"{start_h:02d}:{start_m:02d}"
@@ -1977,7 +3162,6 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         return False
 
     # Log if this is a horizon-limited booking
-    max_possible_duration = min(slot_duration, MAX_BOOKING_HOURS * 60)
     is_horizon_limited = booking_duration < max_possible_duration
     if is_horizon_limited:
         target_end_h = int(start_hour + max_possible_duration / 60)
@@ -2197,6 +3381,13 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
                     page.wait_for_timeout(500)
                     return False
 
+    if not is_new_booking_form_url(page.url):
+        print(
+            f"  Refusing to save: expected a new eventId=0 form, got {page.url}"
+        )
+        go_back(page, days_ahead)
+        return False
+
     # Step 3: Set times
     print(f"  [DEBUG] Setting times: {book_start} to {book_end}")
     start_input = page.locator("#startDate")
@@ -2217,6 +3408,23 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         actual_start = start_input.input_value()
         actual_end = end_input.input_value()
         print(f"  [DEBUG] Verified times: start={actual_start}, end={actual_end}")
+        if not booking_times_match(book_start, book_end, actual_start, actual_end):
+            print(
+                f"  Error: Asimut did not retain the requested times "
+                f"({actual_start}-{actual_end} != {book_start}-{book_end}); cancelling"
+            )
+            go_back(page, days_ahead)
+            return False
+        if not booking_summary_matches(
+            page_booking_snapshot(page),
+            room,
+            target_date,
+            book_start,
+            book_end,
+        ):
+            print("  Error: booking form room/date/time does not match the selected slot")
+            go_back(page, days_ahead)
+            return False
 
         # Dismiss dropdown
         save_btn = page.locator("button:has-text('Save')").first
@@ -2226,7 +3434,9 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
                 page.mouse.click(box['x'] + 10, box['y'] - 20)
         page.wait_for_timeout(500)
     else:
-        print(f"  [DEBUG] WARNING: Time inputs not found! start={start_input.count()}, end={end_input.count()}")
+        print(f"  Error: Time inputs not found; refusing to save an unverified booking")
+        go_back(page, days_ahead)
+        return False
 
     # Step 4: Check for errors - look for ANY conflict indicator
     # First, search for any reservation time patterns on the page (your existing bookings)
@@ -2382,92 +3592,78 @@ def try_book_slot(page, slot, target_date, tracker, days_ahead):
         btn_box = save_btn.bounding_box()
         print(f"  [DEBUG] Save button at: x={btn_box['x']:.0f}, y={btn_box['y']:.0f}" if btn_box else "  [DEBUG] Save button box: None")
 
-        print("  Clicking Save...")
-        save_btn.click()
-        page.wait_for_timeout(3000)
+        try:
+            receipt = record_pending_create(
+                room=room,
+                booking_date=as_date(target_date).isoformat(),
+                start=book_start,
+                end=book_end,
+            )
+        except MutationReceiptError as exc:
+            raise BookingVerificationError(
+                f"Could not create a crash-recovery receipt before Save: {exc}"
+            ) from exc
 
-        # Check for post-save errors first
-        post_conflict = page.locator("text=conflicting events").first
-        post_not_allowed = page.locator("text=not allowed").first
+        print(f"  Clicking Save (receipt {receipt['id']})...")
+        try:
+            save_btn.click(no_wait_after=True, timeout=5000)
+        except Exception as exc:
+            raise BookingVerificationError(
+                f"Save click outcome is uncertain (receipt {receipt['id']}): {exc}"
+            ) from exc
 
-        if post_conflict.count() > 0 and post_conflict.is_visible():
-            print("  Save failed - conflict after save")
-            print(f"  [DEBUG] Conflict text: {post_conflict.text_content()[:80] if post_conflict.text_content() else 'N/A'}...")
+        if not wait_for_created_booking_outcome(
+            page,
+            receipt,
+            room,
+            target_date,
+            book_start,
+            book_end,
+        ):
             go_back(page, days_ahead)
             return False
 
-        if post_not_allowed.count() > 0 and post_not_allowed.is_visible():
-            print("  Save failed - not allowed after save")
-            print(f"  [DEBUG] Not allowed text: {post_not_allowed.text_content()[:80] if post_not_allowed.text_content() else 'N/A'}...")
-            go_back(page, days_ahead)
-            return False
-
-        # Check success - booking form should be gone
-        booking_form = page.locator("#startDate")
-        current_url = page.url
-        print(f"  [DEBUG] After save - form visible: {booking_form.is_visible() if booking_form.count() > 0 else 'N/A'}, URL: {current_url[:50]}...")
-
-        if booking_form.count() == 0 or not booking_form.is_visible():
-            # Success!
+        try:
             tracker.add_booking(room, target_date, start_hour, end_hour)
             print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
 
-            # Check if we booked less than the full slot due to horizon constraints
-            # If so, mark for later extension
-            original_slot_end = slot['end_hour']
-            max_possible_end = min(original_slot_end, start_hour + MAX_BOOKING_HOURS)
-            if end_hour < max_possible_end:
-                # Check if this is because we're at the horizon edge
-                horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
-                slot_datetime = datetime.combine(target_date, datetime.min.time())
-                slot_datetime = slot_datetime.replace(
-                    hour=int(start_hour),
-                    minute=int((start_hour % 1) * 60)
-                )
-                available_from = slot_datetime - timedelta(days=horizon_days)
-                now = datetime.now()
-                time_since_available = (now - available_from).total_seconds() / 60
-
-                # If we just became available (within last 60 mins), mark for extension
-                if time_since_available < 60:
-                    save_extendable_booking(room, target_date, start_hour, end_hour, max_possible_end)
-
-            return True
-        else:
-            # Check if there's an actual error or just delay
-            print(f"  [DEBUG] Form still visible, waiting 1 more second...")
-            page.wait_for_timeout(1000)
-            booking_form = page.locator("#startDate")
-            if booking_form.count() == 0 or not booking_form.is_visible():
-                # Success after extra wait
-                tracker.add_booking(room, target_date, start_hour, end_hour)
-                print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
-
-                # Check if we booked less than the full slot due to horizon constraints
-                original_slot_end = slot['end_hour']
-                max_possible_end = min(original_slot_end, start_hour + MAX_BOOKING_HOURS)
-                if end_hour < max_possible_end:
-                    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
-                    slot_datetime = datetime.combine(target_date, datetime.min.time())
-                    slot_datetime = slot_datetime.replace(
-                        hour=int(start_hour),
-                        minute=int((start_hour % 1) * 60)
+            max_possible_end = _extension_target_end_hour(
+                start_hour,
+                end_hour,
+                max_possible_duration,
+            )
+            if max_possible_end is not None:
+                try:
+                    save_extendable_booking(
+                        room,
+                        target_date,
+                        start_hour,
+                        end_hour,
+                        max_possible_end,
                     )
-                    available_from = slot_datetime - timedelta(days=horizon_days)
-                    now = datetime.now()
-                    time_since_available = (now - available_from).total_seconds() / 60
-
-                    if time_since_available < 60:
-                        save_extendable_booking(room, target_date, start_hour, end_hour, max_possible_end)
-
-                return True
-
-            # Log what's visible on the page
-            page_text = page.evaluate("() => document.body.innerText.substring(0, 500)")
-            print(f"  [DEBUG] Page content preview: {page_text[:200]}...")
-            print("  Save may have failed - still on form")
-            go_back(page, days_ahead)
-            return False
+                except SettingsError as exc:
+                    # The remote reservation and receipt are already verified. Agenda
+                    # scanning on the next run remains authoritative.
+                    print(
+                        f"  WARNING: Booking is confirmed, but extension tracking "
+                        f"could not be saved: {exc}"
+                    )
+            return {
+                "receipt_id": receipt["id"],
+                "event_url": page.url,
+                "room": room,
+                "date": as_date(target_date).isoformat(),
+                "start": book_start,
+                "end": book_end,
+                "duration_minutes": booking_duration,
+            }
+        except BookingVerificationError:
+            raise
+        except Exception as exc:
+            raise BookingVerificationError(
+                f"Booking Save was verified (receipt {receipt['id']}), but local "
+                f"post-Save accounting failed: {exc}. No further mutations will be attempted."
+            ) from exc
     else:
         print(f"  [DEBUG] Save button not found: count={save_btn.count()}, visible={save_btn.is_visible() if save_btn.count() > 0 else 'N/A'}")
         print("  Save button not found")
@@ -2488,24 +3684,50 @@ def navigate_to_day(page, target_day, current_day):
         The new current_day position
     """
     if target_day == current_day:
+        assert_calendar_date(page, datetime.now().date() + timedelta(days=target_day))
         return current_day
 
-    if target_day > current_day:
-        # Click forward
-        clicks_needed = target_day - current_day
-        print(f"    Navigating forward {clicks_needed} day(s) to Day {target_day}...")
-        for _ in range(clicks_needed):
-            page.locator("mat-icon").filter(has_text="chevron_right").first.click()
-            page.wait_for_timeout(500)
-    else:
-        # Click backward
-        clicks_needed = current_day - target_day
-        print(f"    Navigating backward {clicks_needed} day(s) to Day {target_day}...")
-        for _ in range(clicks_needed):
-            page.locator("mat-icon").filter(has_text="chevron_left").first.click()
-            page.wait_for_timeout(500)
+    direction = 1 if target_day > current_day else -1
+    arrow_text = "chevron_right" if direction > 0 else "chevron_left"
+    clicks_needed = abs(target_day - current_day)
+    direction_name = "forward" if direction > 0 else "backward"
+    print(f"    Navigating {direction_name} {clicks_needed} day(s) to Day {target_day}...")
 
-    return target_day
+    position = current_day
+    assert_calendar_date(page, datetime.now().date() + timedelta(days=position))
+    for step in range(clicks_needed):
+        clicked = False
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                if not page_is_authenticated(page):
+                    raise RuntimeError("Asimut session is no longer authenticated")
+                page.keyboard.press("Escape")
+                page.evaluate("window.scrollTo(0, 0)")
+                icon = page.locator("mat-icon").filter(has_text=arrow_text).first
+                if icon.count() == 0 or not icon.is_visible():
+                    raise RuntimeError(f"{arrow_text} navigation control is not visible")
+                button = icon.locator("xpath=ancestor::button[1]")
+                (button if button.count() else icon).click(force=True, timeout=5000)
+                page.wait_for_selector(".location-day", state="visible", timeout=5000)
+                next_position = position + direction
+                assert_calendar_date(
+                    page,
+                    datetime.now().date() + timedelta(days=next_position),
+                )
+                clicked = True
+                position = next_position
+                break
+            except Exception as exc:
+                last_error = exc
+                page.wait_for_timeout(300)
+        if not clicked:
+            raise RuntimeError(
+                f"Calendar navigation stopped at Day {position}; "
+                f"could not complete step {step + 1}/{clicks_needed}: {last_error}"
+            )
+
+    return position
 
 
 def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
@@ -2585,7 +3807,14 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
     return None, None
 
 
-def find_all_snipe_candidates_multi_day(page, tracker, time_prefs, current_calendar_day):
+def find_all_snipe_candidates_multi_day(
+    page,
+    tracker,
+    time_prefs,
+    current_calendar_day,
+    disabled_dates=None,
+    practice_plan=None,
+):
     """
     Scan all horizon days (7, 5, 3) for snipe candidates.
 
@@ -2609,6 +3838,8 @@ def find_all_snipe_candidates_multi_day(page, tracker, time_prefs, current_calen
     now = datetime.now()
     today = now.date()
     candidates = []
+    disabled_dates = disabled_dates or set()
+    practice_plan = practice_plan or PracticePlan()
 
     # Load pending extensions to avoid conflicts (prioritize extensions over new snipes)
     extendable_bookings = load_extendable_bookings()
@@ -2640,6 +3871,18 @@ def find_all_snipe_candidates_multi_day(page, tracker, time_prefs, current_calen
         # (e.g., 7-day horizon rooms become bookable on day 7)
         days_ahead = horizon_value
         target_date = today + timedelta(days=days_ahead)
+
+        if is_date_disabled(target_date, disabled_dates):
+            print(f"\n    Skipping Day {days_ahead} ({target_date}): disabled by user")
+            continue
+        daily_remaining = remaining_target_hours(
+            practice_plan,
+            target_date,
+            tracker.get_hours_for_day(target_date),
+        )
+        if daily_remaining is not None and daily_remaining < MIN_BOOKING_MINUTES / 60:
+            print(f"\n    Skipping Day {days_ahead} ({target_date}): daily practice target met")
+            continue
 
         print(f"\n    Scanning Day {days_ahead} ({target_date.strftime('%Y-%m-%d')}) for {horizon_value}-day horizon rooms...")
 
@@ -2675,7 +3918,11 @@ def find_all_snipe_candidates_multi_day(page, tracker, time_prefs, current_calen
 
                 # Check time preferences if strict mode is on
                 if time_prefs["enabled"] and time_prefs["strict_mode"]:
-                    if not is_preferred_time(start_hour, time_prefs):
+                    if not interval_is_strictly_preferred(
+                        start_hour,
+                        start_hour + MIN_BOOKING_MINUTES / 60,
+                        time_prefs,
+                    ):
                         continue
 
                 # Calculate when this slot becomes bookable (30 min past horizon)
@@ -2737,7 +3984,16 @@ def find_all_snipe_candidates_multi_day(page, tracker, time_prefs, current_calen
     return candidates, current_calendar_day
 
 
-def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
+def try_horizon_snipe(
+    page,
+    slot,
+    target_date,
+    tracker,
+    days_ahead,
+    remaining_daily_hours=None,
+    time_prefs=None,
+    max_action_minutes=None,
+):
     """
     Prepare a booking form for a slot that's about to become bookable,
     then click Save at the exact moment it becomes available.
@@ -2750,9 +4006,27 @@ def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
     start_hour = slot['start_hour']
     bookable_from = slot['bookable_from']
     horizon_days = slot['horizon_days']
+    _action_maximum_minutes(max_action_minutes)
 
     # Calculate the 30-minute booking window
     end_hour = start_hour + MIN_BOOKING_MINUTES / 60
+
+    # Candidates can become stale while earlier snipes are attempted.
+    can_book, reason = tracker.can_book(
+        room,
+        target_date,
+        start_hour,
+        MIN_BOOKING_MINUTES,
+    )
+    if not can_book:
+        print(f"  [SNIPE] Candidate is no longer valid: {reason}")
+        return False
+    if remaining_daily_hours is not None and remaining_daily_hours < MIN_BOOKING_MINUTES / 60:
+        print("  [SNIPE] Daily practice target is already met")
+        return False
+    if time_prefs and not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
+        print("  [SNIPE] Candidate falls outside the complete strict time window")
+        return False
 
     # Format times
     start_h = int(start_hour)
@@ -2839,6 +4113,11 @@ def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
     else:
         print(f"  [SNIPE] No booking type button found, checking if form opened...")
 
+    if not is_new_booking_form_url(page.url):
+        print(f"  [SNIPE] Expected a new eventId=0 form, got {page.url}; aborting")
+        go_back(page, days_ahead)
+        return False
+
     # Step 2: Fill in the times
     print(f"  [SNIPE] Step 2: Pre-filling times ({book_start} to {book_end})...")
 
@@ -2860,6 +4139,20 @@ def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
         actual_start = start_input.input_value()
         actual_end = end_input.input_value()
         print(f"  [SNIPE] Times set: {actual_start} to {actual_end}")
+        if not booking_times_match(book_start, book_end, actual_start, actual_end):
+            print("  [SNIPE] Requested times were not retained; aborting")
+            go_back(page, days_ahead)
+            return False
+        if not booking_summary_matches(
+            page_booking_snapshot(page),
+            room,
+            target_date,
+            book_start,
+            book_end,
+        ):
+            print("  [SNIPE] Booking form room/date/time does not match the candidate; aborting")
+            go_back(page, days_ahead)
+            return False
     else:
         print(f"  [SNIPE] Could not find time inputs (found {time_inputs.count()}) - aborting")
         go_back(page, days_ahead)
@@ -2918,97 +4211,84 @@ def try_horizon_snipe(page, slot, target_date, tracker, days_ahead):
     click_time = datetime.now()
     print(f"\n  >>> CLICKING SAVE NOW: {click_time.strftime('%H:%M:%S.%f')[:-3]} <<<")
 
-    page.mouse.click(save_x, save_y)
+    try:
+        receipt = record_pending_create(
+            room=room,
+            booking_date=as_date(target_date).isoformat(),
+            start=book_start,
+            end=book_end,
+        )
+    except MutationReceiptError as exc:
+        raise BookingVerificationError(
+            f"Could not create a crash-recovery receipt before snipe Save: {exc}"
+        ) from exc
 
-    # Wait for result
-    page.wait_for_timeout(2000)
+    try:
+        page.mouse.click(save_x, save_y)
+    except Exception as exc:
+        raise BookingVerificationError(
+            f"Snipe Save outcome is uncertain (receipt {receipt['id']}): {exc}"
+        ) from exc
 
-    # Check if booking succeeded
-    current_url = page.url
-    booking_form = page.locator("app-arrangement-upsert, .booking-form, [class*='upsert']")
+    if not wait_for_created_booking_outcome(
+        page,
+        receipt,
+        room,
+        target_date,
+        book_start,
+        book_end,
+    ):
+        go_back(page, days_ahead)
+        return False
 
-    if "eventId" in current_url or (booking_form.count() == 0 or not booking_form.is_visible()):
-        # Success!
-        result_time = datetime.now()
-        print(f"  [SNIPE] SUCCESS! Booked at {result_time.strftime('%H:%M:%S.%f')[:-3]}")
-        print(f"  [SNIPE] Latency from bookable time: {(result_time - bookable_from).total_seconds()*1000:.0f}ms")
+    result_time = datetime.now()
+    print(f"  [SNIPE] SUCCESS! Booked at {result_time.strftime('%H:%M:%S.%f')[:-3]}")
+    print(f"  [SNIPE] Latency from bookable time: {(result_time - bookable_from).total_seconds()*1000:.0f}ms")
 
-        # Add to tracker
-        tracker.add_booking(room, target_date, start_hour, end_hour)
-        print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
+    tracker.add_booking(room, target_date, start_hour, end_hour)
+    print(f"  SUCCESS: Booked {room} {book_start}-{book_end}")
 
-        # Save as extendable (we booked minimum 30 min, can extend later)
-        max_possible_duration = min(slot['duration'], MAX_BOOKING_HOURS * 60)
-        if max_possible_duration > MIN_BOOKING_MINUTES:
-            target_end_hour = start_hour + max_possible_duration / 60
+    max_possible_duration = _bounded_create_duration_minutes(
+        min(slot['duration'], MAX_BOOKING_HOURS * 60),
+        remaining_daily_hours,
+        tracker.get_remaining_quota_hours() + MIN_BOOKING_MINUTES / 60,
+        max_action_minutes,
+    )
+    if time_prefs and time_prefs.get("enabled") and time_prefs.get("strict_mode"):
+        max_possible_duration = min(
+            max_possible_duration,
+            int(max(0.0, time_prefs["end_hour"] - start_hour) * 60),
+        )
+        max_possible_duration = (max_possible_duration // 15) * 15
+    target_end_hour = _extension_target_end_hour(
+        start_hour,
+        end_hour,
+        max_possible_duration,
+    )
+    if target_end_hour is not None:
+        try:
             save_extendable_booking(room, target_date, start_hour, end_hour, target_end_hour)
             target_end_h = int(target_end_hour)
             target_end_m = int((target_end_hour % 1) * 60)
             print(f"  [EXTEND] Marked for extension: target {book_start}-{target_end_h:02d}:{target_end_m:02d}")
+        except SettingsError as exc:
+            print(f"  WARNING: Snipe is confirmed, but extension tracking could not be saved: {exc}")
 
-        return True
-    else:
-        # Check for error messages
-        page_text = page.locator("body").inner_text()
-        if "conflict" in page_text.lower() or "error" in page_text.lower():
-            print(f"  [SNIPE] FAILED - Conflict or error detected")
-        else:
-            print(f"  [SNIPE] FAILED - Still on booking form")
-
-        go_back(page, days_ahead)
-        return False
+    return True
 
 
 def go_back(page, days_ahead=None):
-    """Navigate back to calendar by clicking the back button."""
+    """Return through a canonical overview URL and prove the selected day."""
     print(f"  [DEBUG] go_back() called")
-    try:
-        # First try Escape to close any dialogs/modals
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
-
-        # Check if we're still on booking form
-        booking_form = page.locator("#startDate")
-        form_visible = booking_form.count() > 0 and booking_form.is_visible()
-        print(f"  [DEBUG] Booking form visible: {form_visible}")
-
-        if form_visible:
-            # Try the back button with aria-label
-            back_btn = page.locator("button[aria-label='Back to previous page']").first
-            if back_btn.count() > 0 and back_btn.is_visible():
-                print(f"  [DEBUG] Clicking back button...")
-                back_btn.click()
-                page.wait_for_timeout(2000)
-            else:
-                # Try clicking any close/cancel button
-                close_btn = page.locator("button:has-text('Close'), button:has-text('Cancel')").first
-                if close_btn.count() > 0 and close_btn.is_visible():
-                    print(f"  [DEBUG] Clicking close/cancel button...")
-                    close_btn.click()
-                    page.wait_for_timeout(2000)
-                else:
-                    # Fallback: use browser back
-                    print(f"  [DEBUG] Using browser back navigation...")
-                    page.go_back()
-                    page.wait_for_timeout(2000)
-
-        # Verify we're back on calendar (wait for location-day elements)
-        page.wait_for_selector(".location-day", timeout=5000)
-        print(f"  [DEBUG] Back on calendar (location-day found)")
-
-    except Exception as e:
-        print(f"  [DEBUG] go_back exception: {e}")
-        print(f"  Warning: go_back issue ({e}), trying Escape + browser back...")
-        try:
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(500)
-            page.go_back()
-            page.wait_for_timeout(2000)
-        except:
-            pass
+    safe_goto(page, ASIMUT_OVERVIEW_URL)
+    page.wait_for_selector(".location-day", state="visible", timeout=10000)
+    assert_calendar_date(page, datetime.now().date())
+    if days_ahead:
+        navigate_to_day(page, days_ahead, 0)
+    print("  [DEBUG] Back on verified practice-room calendar")
 
 
-def scan_agenda(page, tracker, today):
+def scan_agenda(page, tracker, today, ignored_events=None):
     """Scan the My Agenda page to find all existing events and reservations for the next 7 days."""
     print("\n" + "="*60)
     print("SCANNING MY AGENDA FOR EXISTING EVENTS")
@@ -3016,7 +4296,7 @@ def scan_agenda(page, tracker, today):
 
     # Navigate directly to the agenda page
     print("  [DEBUG] Navigating to agenda page...")
-    page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
+    safe_goto(page, ASIMUT_AGENDA_URL)
     page.wait_for_timeout(3000)
     print(f"  [DEBUG] Agenda page loaded, URL: {page.url[:50]}...")
 
@@ -3031,18 +4311,21 @@ def scan_agenda(page, tracker, today):
     last_height = 0
     stalled_count = 0  # Track consecutive scrolls with no height change
     max_stalled = 3  # Allow a few stalled scrolls before giving up (lazy loading)
+    target_reached = False
 
     while scroll_count < max_scrolls:
         # Check if target date is visible on page
         page_text = page.evaluate("() => document.body.innerText")
         if target_date_str in page_text:
             print(f"  [DEBUG] Found target date '{target_date_str}' after {scroll_count} scrolls")
+            target_reached = True
             break
 
         # Also check alternative date format (e.g., "7 February 2026" vs "07 February 2026")
         alt_date_str = target_date.strftime("%d %B %Y")  # With leading zero
         if alt_date_str in page_text:
             print(f"  [DEBUG] Found target date '{alt_date_str}' after {scroll_count} scrolls")
+            target_reached = True
             break
 
         # Scroll down - use scrollTo for more reliable scrolling
@@ -3065,6 +4348,12 @@ def scan_agenda(page, tracker, today):
         if scroll_count % 5 == 0:
             print(f"  [DEBUG] Still scrolling... ({scroll_count} scrolls, height: {new_height})")
 
+    if not target_reached:
+        raise RuntimeError(
+            f"Agenda scan did not reach {target_date.isoformat()}; "
+            "booking stopped rather than trusting a partial conflict scan"
+        )
+
     # Scroll back to top to ensure we capture everything
     page.evaluate("window.scrollTo(0, 0)")
     page.wait_for_timeout(1000)
@@ -3084,13 +4373,29 @@ def scan_agenda(page, tracker, today):
 
     # Extract events using JavaScript to get structured data
     # This version checks for cancelled events and also captures event titles to identify reservations
-    events_data = page.evaluate("""() => {
+    events_data = page.evaluate(r"""(configuredRooms) => {
         const events = [];
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
         const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                           'July', 'August', 'September', 'October', 'November', 'December'];
+
+        function configuredRoomFromText(text) {
+            for (const room of configuredRooms) {
+                const escaped = room.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const pattern = new RegExp(`(^|[^A-Za-z0-9.])${escaped}(?=$|[^A-Za-z0-9.])`, 'i');
+                if (pattern.test(text || '')) return room;
+            }
+            return null;
+        }
+
+        function identityRoomFromText(text) {
+            const match = (text || '').match(
+                /(?:^|[^A-Za-z0-9.])([A-Z][0-9]+\.[0-9]{2})(?=$|[^A-Za-z0-9.])/i
+            );
+            return match ? match[1].toUpperCase() : null;
+        }
 
         // Helper function to check if an element or its parents indicate a cancelled event
         function isCancelled(element) {
@@ -3144,13 +4449,16 @@ def scan_agenda(page, tracker, today):
                         if (nameText === 'Reservation' || nameText.includes('Reservation')) {
                             return 'Reservation';
                         }
+                        if (nameText) {
+                            return nameText;
+                        }
                     }
 
-                    // Also check for location-link with room pattern (B0.xx or B1.xx)
+                    // Also check for any exact configured room, including A-wing rooms.
                     const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                     if (locationLink) {
                         const locText = locationLink.textContent || '';
-                        if (/B[01]\\.[0-9]{2}/.test(locText)) {
+                        if (configuredRoomFromText(locText)) {
                             // Has a practice room location - likely a reservation
                             // But only if the event name suggests it's a booking
                             const displayName = container.querySelector('[data-cy="event-display-name"]');
@@ -3165,7 +4473,7 @@ def scan_agenda(page, tracker, today):
                     }
 
                     // Found the container but no reservation indicators
-                    return 'Other';
+                    return 'Event';
                 }
                 container = container.parentElement;
             }
@@ -3183,7 +4491,7 @@ def scan_agenda(page, tracker, today):
                 }
             }
 
-            return 'Other';
+            return 'Event';
         }
 
         // Helper to get the room name from the event container
@@ -3195,15 +4503,11 @@ def scan_agenda(page, tracker, today):
                     container.classList.contains('as-event-panel') ||
                     container.classList.contains('event-details-expanded')) {
 
-                    // Look for location-link with room pattern
+                    // Look for an exact configured room.
                     const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                     if (locationLink) {
                         const locText = (locationLink.textContent || '').trim();
-                        // Match room patterns like B0.27, B1.09, etc.
-                        const roomMatch = locText.match(/B[01]\\.[0-9]{2}/);
-                        if (roomMatch) {
-                            return roomMatch[0];
-                        }
+                        return configuredRoomFromText(locText) || identityRoomFromText(locText);
                     }
                     return null;
                 }
@@ -3251,10 +4555,25 @@ def scan_agenda(page, tracker, today):
                 const eventTitle = getEventTitle(element);
                 const eventRoom = getEventRoom(element);
 
-                const daysDiff = Math.floor((currentDate - today) / (1000 * 60 * 60 * 24));
+                const currentOrdinal = Date.UTC(
+                    currentDate.getFullYear(),
+                    currentDate.getMonth(),
+                    currentDate.getDate()
+                );
+                const todayOrdinal = Date.UTC(
+                    today.getFullYear(),
+                    today.getMonth(),
+                    today.getDate()
+                );
+                const daysDiff = Math.round((currentOrdinal - todayOrdinal) / (1000 * 60 * 60 * 24));
                 if (daysDiff >= 0 && daysDiff <= 7) {
+                    const localDate = [
+                        currentDate.getFullYear().toString().padStart(4, '0'),
+                        (currentDate.getMonth() + 1).toString().padStart(2, '0'),
+                        currentDate.getDate().toString().padStart(2, '0')
+                    ].join('-');
                     events.push({
-                        date: currentDate.toISOString().split('T')[0],
+                        date: localDate,
                         daysDiff: daysDiff,
                         startTime: startTime,
                         endTime: endTime,
@@ -3267,25 +4586,31 @@ def scan_agenda(page, tracker, today):
         }
 
         return events;
-    }""")
+    }""", PRIORITY_ROOMS)
 
     print(f"  [DEBUG] Raw events extracted: {len(events_data)}")
 
-    # Deduplicate events (same date + time can appear multiple times in page text)
-    seen = set()
-    unique_events = []
-    for event in events_data:
-        key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
-        if key not in seen:
-            seen.add(key)
-            unique_events.append(event)
+    # Remove only exact logical duplicates. Events sharing a time remain
+    # distinct when title, room, or reservation type differs.
+    unique_events = deduplicate_events(events_data)
 
     print(f"\n  Found {len(unique_events)} unique events in agenda (deduplicated from {len(events_data)}):")
 
     # Load ignored events from settings
-    ignored_events = load_ignored_events()
+    if ignored_events is None:
+        ignored_events = load_ignored_events()
+    ignore_resolution = resolve_ignored_event_keys(ignored_events, unique_events)
+    effective_ignored_events = ignore_resolution.ignored_v2_keys
     if ignored_events:
-        print(f"  ({len(ignored_events)} events marked as ignored - will allow booking over them)")
+        print(
+            f"  ({len(effective_ignored_events)} event(s) safely resolved as ignored "
+            "- will allow booking over them)"
+        )
+    if ignore_resolution.ambiguous_legacy_keys:
+        print(
+            "  [SAFE] Older time-only ignore selection matched multiple events; "
+            "none of those events will be ignored until reviewed in the GUI"
+        )
 
     events_found = 0
     reservations_found = 0
@@ -3300,8 +4625,33 @@ def scan_agenda(page, tracker, today):
         room = event.get('room')  # Room name if available (e.g., "B0.27")
 
         # Check if this event is ignored
-        event_key = f"{date_str}_{start_time}_{end_time}"
-        if event_key in ignored_events:
+        event_key = event_identity_v2(event)
+        if event_key in effective_ignored_events:
+            if is_reservation:
+                # Ignoring a reservation permits overlap, but cannot erase it
+                # from quota, daily-target, peak, or same-room-gap accounting.
+                start_parts = start_time.split(':')
+                end_parts = end_time.split(':')
+                start_hour = int(start_parts[0]) + int(start_parts[1]) / 60
+                end_hour = int(end_parts[0]) + int(end_parts[1]) / 60
+                target_date = datetime.combine(
+                    today + timedelta(days=days_diff), datetime.min.time()
+                )
+                tracker.add_existing_event(
+                    target_date,
+                    start_hour,
+                    end_hour,
+                    is_reservation=True,
+                    room=room,
+                    blocks_conflict=False,
+                )
+                all_reservations.append({
+                    'date': date_str,
+                    'startTime': start_time,
+                    'endTime': end_time,
+                    'room': room,
+                    'daysDiff': days_diff,
+                })
             ignored_count += 1
             day_name = (today + timedelta(days=days_diff)).strftime("%A")
             room_info = f" in {room}" if room else ""
@@ -3382,14 +4732,9 @@ def send_notification(title, message, priority="default"):
         print(f"Notification error: {e}")
 
 
-def save_history(bookings_made, events_detected, booking_details):
+def save_history(bookings_made, events_detected, booking_details, *, notify=True):
     """Save run to booking history file."""
     try:
-        history = {"runs": []}
-        if history_file.exists():
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-
         entry = {
             "timestamp": datetime.now().isoformat(),
             "bookings_made": bookings_made,
@@ -3397,16 +4742,24 @@ def save_history(bookings_made, events_detected, booking_details):
             "details": "; ".join(booking_details[:5]) if booking_details else "No bookings made"
         }
 
-        history["runs"].insert(0, entry)
-        history["runs"] = history["runs"][:100]  # Keep last 100
+        history_lock = history_file.with_suffix(history_file.suffix + ".lock")
+        with InterProcessFileLock(history_lock):
+            history = {"runs": []}
+            if history_file.exists():
+                with open(history_file, "r", encoding="utf-8") as handle:
+                    history = json.load(handle)
+                if not isinstance(history, dict) or not isinstance(history.get("runs"), list):
+                    raise ValueError("booking history must contain a runs list")
 
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(history_file, 'w') as f:
-            json.dump(history, f, indent=2)
+            history["runs"].insert(0, entry)
+            history["runs"] = history["runs"][:100]  # Keep last 100
+            atomic_write_json(history_file, history, backup=True)
 
         print(f"History saved: {bookings_made} bookings, {events_detected} events")
 
         # Send push notification
+        if not notify:
+            return
         if bookings_made > 0:
             title = f"Booked {bookings_made} room{'s' if bookings_made > 1 else ''}"
             # Format: "2026-02-04 B1.09 13:00 15:00 120" -> "Wed 4 Feb: B1.09 13:00-15:00 (2 hours)"
@@ -3453,14 +4806,8 @@ def save_history(bookings_made, events_detected, booking_details):
         print(f"Warning: Could not save history: {e}")
 
 
-def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Book practice rooms for the week")
-    parser.add_argument("--headless", action="store_true", help="Run without browser window")
-    parser.add_argument("--target-time", type=str, metavar="HH:MM",
-        help="Wait until this time before starting bookings (e.g., 10:00)")
-    args = parser.parse_args()
-
+def run_booking(args, settings, practice_plan):
+    """Run one authenticated booking pass with already-validated inputs."""
     today = datetime.now().date()
 
     print("="*60)
@@ -3471,41 +4818,103 @@ def main():
     print(f"Mode: {'Headless' if args.headless else 'Visible browser'}")
     print("="*60)
 
-    # Validate state file before starting browser
-    if not state_file.exists():
-        print(f"\nERROR: Browser session file not found: {state_file}")
-        print("Please run 'python book_week.py' with a visible browser first to complete login.")
-        return
-
-    try:
-        with open(state_file, 'r') as f:
-            state_data = json.load(f)
-        if not isinstance(state_data, dict) or 'cookies' not in state_data:
-            raise ValueError("Invalid state file format - missing 'cookies' key")
-    except json.JSONDecodeError as e:
-        print(f"\nERROR: Browser session file is not valid JSON: {e}")
-        print(f"Please delete {state_file} and run login setup again.")
-        return
-    except ValueError as e:
-        print(f"\nERROR: Browser session file is invalid: {e}")
-        print(f"Please delete {state_file} and run login setup again.")
-        return
-
     tracker = BookingTracker()
     total_booked = 0
     events_detected = 0
     booking_details = []
 
+    # Fail before Chromium starts when neither the primary saved state nor the
+    # explicitly configured autonomous fallback is available.
+    context_options = authenticated_runtime_context_options()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=args.headless)
-        context = browser.new_context(
-            storage_state=str(state_file),
-            viewport={"width": 1920, "height": 1080}
-        )
+        context = browser.new_context(**context_options)
         page = context.new_page()
 
+        # Reuse the saved state in the common case. If Microsoft has expired it,
+        # recover before any agenda scan or booking mutation is attempted.
+        restore_page_authentication(page)
+
         # First, scan the agenda to learn about existing events
-        events_detected, all_reservations = scan_agenda(page, tracker, today)
+        events_detected, all_reservations = scan_agenda(
+            page,
+            tracker,
+            today,
+            ignored_events=load_ignored_events(settings),
+        )
+        reconcile_pending_mutation_receipts(page, all_reservations)
+
+        if args.check_only:
+            print("\nChecking all eight practice-room calendar days (read only)...")
+            safe_goto(page, ASIMUT_OVERVIEW_URL)
+            page.wait_for_timeout(1500)
+            assert_calendar_date(page, today)
+            page.wait_for_selector(".location-day", state="visible", timeout=10000)
+            current_calendar_day = 0
+            seen_configured_rooms = set()
+            total_slot_count = 0
+            daily_summaries = []
+            for days_ahead in range(8):
+                target_date = today + timedelta(days=days_ahead)
+                if days_ahead:
+                    current_calendar_day = navigate_to_day(
+                        page,
+                        days_ahead,
+                        current_calendar_day,
+                    )
+                assert_calendar_date(page, target_date)
+                page.wait_for_selector(".location-day", state="visible", timeout=10000)
+
+                row_names = {
+                    text.strip()
+                    for text in page.locator(
+                        ".location-name-container .location-row"
+                    ).all_text_contents()
+                    if text.strip()
+                }
+                if not row_names:
+                    raise RuntimeError(
+                        f"Practice-room grid for {target_date.isoformat()} "
+                        "loaded without any readable room rows"
+                    )
+                configured_on_day = row_names.intersection(PRIORITY_ROOMS)
+                if not configured_on_day:
+                    raise RuntimeError(
+                        f"Practice-room grid for {target_date.isoformat()} did not "
+                        "contain any configured room"
+                    )
+                seen_configured_rooms.update(configured_on_day)
+
+                available_data = get_available_slots(page)
+                slot_count = sum(
+                    len(room.get("slots", [])) for room in available_data
+                )
+                total_slot_count += slot_count
+                daily_summaries.append(
+                    f"{target_date.isoformat()}: {len(row_names)} rooms, "
+                    f"{slot_count} visible gaps"
+                )
+
+            for summary in daily_summaries:
+                print(f"  {summary}")
+            missing_rooms = [
+                room for room in PRIORITY_ROOMS if room not in seen_configured_rooms
+            ]
+            if missing_rooms:
+                print(
+                    "  WARNING: configured rooms not visible in the current AHC grid: "
+                    + ", ".join(missing_rooms)
+                )
+            persist_storage_state(context)
+            print(
+                "CHECK PASSED: authenticated session, complete agenda, date "
+                f"navigation, and eight room grids are usable "
+                f"({len(seen_configured_rooms)} configured rooms, "
+                f"{total_slot_count} visible gaps)."
+            )
+            context.close()
+            browser.close()
+            return 0
 
         # Check if we can make any bookings at all
         if tracker.is_quota_full():
@@ -3517,23 +4926,11 @@ def main():
             print("Cannot make new bookings until existing ones expire.")
             print("="*60)
 
-            # Save to history and exit early
-            history = {"runs": []}
-            if history_file.exists():
-                try:
-                    with open(history_file, 'r') as f:
-                        history = json.load(f)
-                except:
-                    pass
-            history["runs"].insert(0, {
-                "timestamp": datetime.now().isoformat(),
-                "bookings_made": 0,
-                "events_detected": events_detected,
-                "details": f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)"
-            })
-            history["runs"] = history["runs"][:100]
-            with open(history_file, 'w') as f:
-                json.dump(history, f, indent=2)
+            save_history(
+                0,
+                events_detected,
+                [f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)"],
+            )
 
             send_notification("AsimutBooker - Quota Full",
                             f"Cannot book: {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h used this week")
@@ -3542,33 +4939,35 @@ def main():
                 print("\nKeeping browser open for 10 seconds...")
                 page.wait_for_timeout(10000)
 
+            persist_storage_state(context)
             context.close()
             browser.close()
-            return
+            return 0
 
         # Navigate directly to AHC practice rooms
         print("\nNavigating to practice rooms (AHC)...")
-        page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+        safe_goto(page, ASIMUT_OVERVIEW_URL)
         page.wait_for_timeout(3000)
+        assert_calendar_date(page, today)
 
         # Log what date is currently showing
         current_header = page.locator("h1, h2, .title").first.text_content() if page.locator("h1, h2, .title").first.count() > 0 else "Unknown"
         print(f"  Currently showing: {current_header}")
 
         # Load disabled dates from settings
-        disabled_dates = load_disabled_dates()
+        disabled_dates = load_disabled_dates(settings)
         if disabled_dates:
             print(f"\n  Disabled dates (will skip): {sorted(disabled_dates)}")
 
         # Load time preferences
-        time_prefs = load_time_preferences()
+        time_prefs = load_time_preferences(settings)
         if time_prefs["enabled"]:
             print(f"\n  Time preferences: Prioritizing {int(time_prefs['start_hour']):02d}:00 - {int(time_prefs['end_hour']):02d}:00")
             if time_prefs["strict_mode"]:
                 print(f"  Strict mode: ON (only booking preferred times)")
 
         # Load booking strategy settings
-        booking_strategy = load_booking_strategy()
+        booking_strategy = load_booking_strategy(settings)
         reverse_date_order = booking_strategy["reverse_date_order"]
         if reverse_date_order:
             print(f"\n  Booking strategy: REVERSE ORDER (furthest dates first)")
@@ -3583,15 +4982,20 @@ def main():
         remaining_quota = tracker.get_remaining_quota_hours()
         ideal_per_day = MAX_ROLLING_QUOTA_HOURS / len(enabled_dates) if enabled_dates else 0
 
-        print(f"\n  Smart redistribution calculation:")
+        plan_label = "Practice plan" if practice_plan.enabled else "Smart redistribution"
+        print(f"\n  {plan_label} calculation:")
         print(f"    Enabled days: {len(enabled_dates)}/8")
         print(f"    Remaining quota: {remaining_quota:.1f}h")
-        print(f"    Ideal hours/day: {ideal_per_day:.1f}h")
+        if practice_plan.enabled:
+            print(f"    Default daily target: {practice_plan.default_hours:.1f}h")
+        else:
+            print(f"    Ideal hours/day: {ideal_per_day:.1f}h")
         print(f"    Current hours per day:")
         for d in enabled_dates:
             day_hours = tracker.get_hours_for_day(d)
-            deficit = ideal_per_day - day_hours
-            status = "✓" if day_hours >= ideal_per_day else f"needs +{deficit:.1f}h"
+            target = practice_plan.target_for(d) if practice_plan.enabled else ideal_per_day
+            deficit = max(0.0, target - day_hours)
+            status = "OK" if deficit < 0.25 else f"needs +{deficit:.1f}h"
             print(f"      {d.strftime('%Y-%m-%d')} ({d.strftime('%a')}): {day_hours:.1f}h [{status}]")
 
         # Get current time for filtering today's slots
@@ -3604,6 +5008,15 @@ def main():
         for d in range(0, 8):
             check_date = today + timedelta(days=d)
             if is_date_disabled(check_date, disabled_dates):
+                continue
+            if args.only_date and check_date.isoformat() != args.only_date:
+                continue
+            daily_remaining = remaining_target_hours(
+                practice_plan,
+                check_date,
+                tracker.get_hours_for_day(check_date),
+            )
+            if daily_remaining is not None and daily_remaining < MIN_BOOKING_MINUTES / 60:
                 continue
             # Check if any room is bookable on this day
             any_bookable, horizon_reason = is_any_room_bookable_on_day(check_date)
@@ -3623,25 +5036,7 @@ def main():
             if day_order:
                 first_day = day_order[0]
                 print(f"\n  Navigating to day {first_day} first (reverse order strategy)...")
-                for nav_step in range(first_day):
-                    clicked = False
-                    for attempt in range(3):
-                        try:
-                            page.keyboard.press("Escape")
-                            page.wait_for_timeout(200)
-                            page.evaluate("window.scrollTo(0, 0)")
-                            page.wait_for_timeout(200)
-                            arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                            if arrow.count() > 0 and arrow.is_visible():
-                                arrow.click(force=True)
-                                page.wait_for_timeout(1000)
-                                clicked = True
-                                break
-                        except Exception as e:
-                            pass
-                    if not clicked:
-                        print(f"  [DEBUG] Forward navigation step {nav_step + 1} failed")
-                current_calendar_day = first_day  # Calendar is now showing first enabled day
+                current_calendar_day = navigate_to_day(page, first_day, 0)
             else:
                 print(f"\n  No bookable days available!")
                 current_calendar_day = 0
@@ -3664,8 +5059,23 @@ def main():
 
             # Pre-scan ALL horizon days while we have time (before target time)
             all_snipe_candidates, current_calendar_day = find_all_snipe_candidates_multi_day(
-                page, tracker, time_prefs, current_calendar_day
+                page,
+                tracker,
+                time_prefs,
+                current_calendar_day,
+                disabled_dates=disabled_dates,
+                practice_plan=practice_plan,
             )
+            if args.only_room:
+                all_snipe_candidates = [
+                    candidate for candidate in all_snipe_candidates
+                    if candidate["room"] == args.only_room
+                ]
+            if args.only_date:
+                all_snipe_candidates = [
+                    candidate for candidate in all_snipe_candidates
+                    if candidate["target_date"].isoformat() == args.only_date
+                ]
 
             if all_snipe_candidates:
                 # Navigate to the first candidate's day (highest priority)
@@ -3686,6 +5096,9 @@ def main():
                 snipes_successful = 0
 
                 for idx, candidate in enumerate(all_snipe_candidates):
+                    if args.max_actions is not None and total_booked >= args.max_actions:
+                        print("  Controlled action limit reached; ending snipe phase")
+                        break
                     snipes_attempted += 1
                     snipe_target_date = candidate['target_date']
                     days_ahead = candidate['days_ahead']
@@ -3700,8 +5113,20 @@ def main():
                         page.wait_for_timeout(500)
 
                     # Attempt the snipe
+                    daily_remaining = remaining_target_hours(
+                        practice_plan,
+                        snipe_target_date,
+                        tracker.get_hours_for_day(snipe_target_date),
+                    )
                     snipe_success = try_horizon_snipe(
-                        page, candidate, snipe_target_date, tracker, days_ahead
+                        page,
+                        candidate,
+                        snipe_target_date,
+                        tracker,
+                        days_ahead,
+                        remaining_daily_hours=daily_remaining,
+                        time_prefs=time_prefs,
+                        max_action_minutes=args.max_action_minutes,
                     )
 
                     if snipe_success:
@@ -3751,8 +5176,12 @@ def main():
             print(f"  [DEBUG] Calendar position before refresh: day {pre_refresh_calendar_day}")
 
             # Refresh the current page to get fresh slot data
-            page.reload(wait_until="networkidle")
+            safe_reload(page)
             page.wait_for_timeout(1500)
+            assert_calendar_date(
+                page,
+                today + timedelta(days=current_calendar_day),
+            )
 
             post_refresh_time = datetime.now()
             refresh_duration = (post_refresh_time - pre_refresh_time).total_seconds()
@@ -3800,7 +5229,9 @@ def main():
         # =================================================================
         # Before making new bookings, try to extend any bookings that were
         # made at the horizon edge and can now be extended.
-        extendable_bookings = load_extendable_bookings()
+        extendable_bookings = load_extendable_bookings(
+            load_settings_document(settings_file)
+        )
         if extendable_bookings:
             print("\n" + "="*60)
             print("PROCESSING BOOKING EXTENSIONS")
@@ -3809,9 +5240,33 @@ def main():
 
             extensions_made = 0
             for booking in extendable_bookings:
-                success, new_end, message = try_extend_booking(page, booking, tracker)
+                if args.max_actions is not None and total_booked >= args.max_actions:
+                    print("  Controlled action limit reached; ending extension phase")
+                    break
+                booking_date = datetime.strptime(booking["date"], "%Y-%m-%d").date()
+                if is_date_disabled(booking_date, disabled_dates):
+                    print(f"  Skipped {booking['room']} {booking['date']}: date is disabled")
+                    continue
+                if args.only_date and booking["date"] != args.only_date:
+                    continue
+                if args.only_room and booking["room"] != args.only_room:
+                    continue
+                daily_remaining = remaining_target_hours(
+                    practice_plan,
+                    booking_date,
+                    tracker.get_hours_for_day(booking_date),
+                )
+                success, new_end, message = try_extend_booking(
+                    page,
+                    booking,
+                    tracker,
+                    remaining_daily_hours=daily_remaining,
+                    time_prefs=time_prefs,
+                    max_action_minutes=args.max_action_minutes,
+                )
                 if success:
                     extensions_made += 1
+                    total_booked += 1
                     booking_details.append(
                         f"EXTENDED: {booking['room']} {booking['date']} "
                         f"{booking['startTime']}-{new_end}"
@@ -3820,21 +5275,24 @@ def main():
                     print(f"  Skipped {booking['room']} {booking['date']} {booking['startTime']}: {message}")
 
             if extensions_made > 0:
-                total_booked += extensions_made
                 print(f"\nExtended {extensions_made} booking(s)")
 
             print("="*60)
 
             # Navigate back to booking overview after extensions
             print("\nNavigating back to practice rooms...")
-            page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
+            safe_goto(page, ASIMUT_OVERVIEW_URL)
             page.wait_for_timeout(2000)
+            assert_calendar_date(page, today)
 
             # Reset calendar position - overview page shows today (day 0)
             current_calendar_day = 0
 
         # Process each day in the determined order
         for day_index, days_ahead in enumerate(day_order):
+            if args.max_actions is not None and total_booked >= args.max_actions:
+                print("\nControlled action limit reached; no further booking changes will be attempted.")
+                break
             target_date = datetime.combine(today + timedelta(days=days_ahead), datetime.min.time())
             day_name = target_date.strftime("%A")
 
@@ -3844,123 +5302,32 @@ def main():
 
             # Calculate dynamic target for this specific day based on current distribution
             target_hours, max_bookings_per_day = calculate_target_hours_for_day(
-                target_date, enabled_dates, tracker
+                target_date,
+                enabled_dates,
+                tracker,
+                practice_plan=practice_plan,
             )
             current_day_hours = tracker.get_hours_for_day(target_date)
+            # A target may need many short bookings when availability is fragmented.
+            # The daily budget, not an optimistic two-hour booking count, is authoritative.
+            max_bookings_per_day = (
+                min(24, int(target_hours * 2 + 0.999999))
+                if target_hours >= MIN_BOOKING_MINUTES / 60
+                else 0
+            )
             print(f"  [Smart redistribution] Current: {current_day_hours:.1f}h, Target: +{target_hours:.1f}h, Max bookings: {max_bookings_per_day}")
 
             day_peak_used = tracker.get_peak_used_for_day(target_date)
             print(f"  [DEBUG] Session stats: {total_booked} bookings so far, peak for this day: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60}min")
 
-            # Navigate to the correct day based on current calendar position
-            # Calculate how many steps we need to navigate
-            steps_needed = days_ahead - current_calendar_day
-
-            if steps_needed != 0:
-                direction = "forward" if steps_needed > 0 else "backward"
-                arrow_icon = "chevron_right" if steps_needed > 0 else "chevron_left"
-                steps_abs = abs(steps_needed)
-
-                print(f"  Navigating {direction} {steps_abs} day(s)...")
-
-                for step in range(steps_abs):
-                    clicked = False
-                    for attempt in range(5):
-                        try:
-                            # Dismiss any dialogs/modals
-                            page.keyboard.press("Escape")
-                            page.wait_for_timeout(300)
-
-                            # Scroll to absolute top to ensure arrow is visible
-                            page.evaluate("window.scrollTo(0, 0)")
-                            page.wait_for_timeout(500)
-
-                            # Wait for page to stabilize
-                            try:
-                                page.wait_for_load_state("networkidle", timeout=3000)
-                            except:
-                                pass  # Continue even if timeout
-
-                            # Debug: Check current URL and page state
-                            current_url = page.url
-                            if attempt == 0 and step == 0:
-                                print(f"  [DEBUG] Current URL: {current_url[:60]}...")
-
-                            # Find and click the appropriate arrow
-                            arrow = None
-
-                            # Method 1: mat-icon with arrow text
-                            try:
-                                arrow = page.locator("mat-icon").filter(has_text=arrow_icon).first
-                                arrow_count = arrow.count()
-                                arrow_visible = arrow.is_visible() if arrow_count > 0 else False
-                                if arrow_count > 0 and arrow_visible:
-                                    arrow.click(force=True)
-                                    page.wait_for_timeout(1000)
-                                    clicked = True
-                                    break
-                            except Exception as e:
-                                if attempt == 0:
-                                    print(f"  [DEBUG] Method 1 failed: {e}")
-
-                            # Method 2: Button containing arrow
-                            try:
-                                arrow = page.locator(f"button:has(mat-icon:text('{arrow_icon}'))").first
-                                if arrow.count() > 0 and arrow.is_visible():
-                                    arrow.click(force=True)
-                                    page.wait_for_timeout(1000)
-                                    clicked = True
-                                    break
-                            except:
-                                pass
-
-                            # Method 3: Any element with arrow text
-                            try:
-                                arrow = page.locator(f"text={arrow_icon}").first
-                                if arrow.count() > 0 and arrow.is_visible():
-                                    arrow.click(force=True)
-                                    page.wait_for_timeout(1000)
-                                    clicked = True
-                                    break
-                            except:
-                                pass
-
-                            # After 2 failed attempts, try reloading the page and navigating from scratch
-                            if attempt == 2:
-                                print(f"  [DEBUG] Reloading calendar page after failed navigation...")
-                                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
-                                page.wait_for_timeout(1000)
-                                # Navigate to the target day from today
-                                print(f"  [DEBUG] Navigating to day {days_ahead} from today...")
-                                for click_num in range(days_ahead):
-                                    try:
-                                        page.evaluate("window.scrollTo(0, 0)")
-                                        page.wait_for_timeout(200)
-                                        nav_arrow = page.locator("mat-icon").filter(has_text="chevron_right").first
-                                        if nav_arrow.count() > 0:
-                                            nav_arrow.click(force=True)
-                                            page.wait_for_timeout(1000)
-                                    except Exception as e:
-                                        print(f"  [DEBUG] Forward click {click_num + 1} failed: {e}")
-                                current_calendar_day = days_ahead  # We jumped directly
-                                clicked = True
-                                break
-
-                            print(f"    Arrow not found (attempt {attempt + 1}), waiting...")
-                            page.wait_for_timeout(1000)
-                        except Exception as e:
-                            print(f"    Arrow click failed: {e}")
-                            page.wait_for_timeout(1000)
-
-                    if not clicked:
-                        print(f"  [DEBUG] Navigation step {step + 1} failed after all attempts")
-
-                # Update current calendar day after all navigation steps
-                current_calendar_day = days_ahead
-
-                if steps_needed != 0:
-                    print(f"  [DEBUG] Navigation complete, now on day {current_calendar_day}")
-                    page.wait_for_timeout(1000)
+            if days_ahead != current_calendar_day:
+                current_calendar_day = navigate_to_day(
+                    page,
+                    days_ahead,
+                    current_calendar_day,
+                )
+                print(f"  [DEBUG] Navigation complete, now on day {current_calendar_day}")
+                page.wait_for_timeout(700)
             else:
                 print(f"  Already on correct day (day {days_ahead}) - no navigation needed")
 
@@ -4006,6 +5373,8 @@ def main():
             for room_data in available_data:
                 room_name = room_data["room"]
                 if room_name not in PRIORITY_ROOMS:
+                    continue
+                if args.only_room and room_name != args.only_room:
                     continue
 
                 room_priority = PRIORITY_ROOMS.index(room_name)
@@ -4065,7 +5434,7 @@ def main():
             # Try to book slots
             day_booked = 0
             attempts = 0
-            max_attempts = 15  # Reduce to avoid too many failed attempts
+            max_attempts = max(15, max_bookings_per_day * 3)
 
             # Log peak quota status for this specific day
             remaining_peak = tracker.get_remaining_peak_minutes(target_date)
@@ -4152,6 +5521,15 @@ def main():
                 # Add ALL valid segments as separate slots (not just the longest one)
                 # This ensures we don't skip earlier bookable time
                 for seg_start, seg_end in final_segments:
+                    seg_start, seg_end = trim_to_strict_time_window(
+                        seg_start,
+                        seg_end,
+                        time_prefs,
+                    )
+                    if seg_start is None:
+                        slots_removed += 1
+                        continue
+
                     # Step 2: Adjust each segment for peak hours quota (only on weekdays)
                     adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
                         seg_start, seg_end, target_date, remaining_peak
@@ -4183,6 +5561,25 @@ def main():
                         seg_end = adj_end
                         weekly_adjusted += 1
 
+                    daily_remaining = remaining_run_daily_budget(
+                        practice_plan,
+                        target_date,
+                        tracker,
+                        planned_additional_hours=target_hours,
+                        starting_day_hours=current_day_hours,
+                    )
+                    allowed_minutes = cap_duration_minutes(
+                        (seg_end - seg_start) * 60,
+                        daily_remaining,
+                        tracker.get_remaining_quota_hours(),
+                        minimum_minutes=MIN_BOOKING_MINUTES,
+                        maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
+                    )
+                    if allowed_minutes == 0:
+                        slots_removed += 1
+                        continue
+                    seg_end = seg_start + allowed_minutes / 60
+
                     # Final validation and add as new slot
                     if seg_start < seg_end and (seg_end - seg_start) * 60 >= MIN_BOOKING_MINUTES:
                         new_slot = s.copy()
@@ -4203,7 +5600,14 @@ def main():
             # Filter out non-preferred slots if strict mode is enabled
             if time_prefs["enabled"] and time_prefs["strict_mode"]:
                 before_count = len(all_slots)
-                all_slots = [s for s in all_slots if is_preferred_time(s['start_hour'], time_prefs)]
+                all_slots = [
+                    s for s in all_slots
+                    if interval_is_strictly_preferred(
+                        s['start_hour'],
+                        s['end_hour'],
+                        time_prefs,
+                    )
+                ]
                 filtered_count = before_count - len(all_slots)
                 if filtered_count > 0:
                     print(f"  [DEBUG] Strict mode: Filtered out {filtered_count} non-preferred slots")
@@ -4218,6 +5622,9 @@ def main():
             print(f"  [DEBUG] Starting booking attempts. Max per day: {max_bookings_per_day}, slots available: {len(all_slots)}")
 
             while day_booked < max_bookings_per_day and attempts < max_attempts:
+                if args.max_actions is not None and total_booked >= args.max_actions:
+                    print("  Controlled action limit reached")
+                    break
                 # Check if we have valid slots to try
                 valid_slots = [s for s in all_slots if not tracker.overlaps_conflict(
                     target_date, s['start_hour'], s['start_hour'] + min(s['duration'], MAX_BOOKING_HOURS)
@@ -4232,11 +5639,54 @@ def main():
                 all_slots.remove(slot)  # Remove from list so we don't retry
                 attempts += 1
 
+                daily_remaining = remaining_run_daily_budget(
+                    practice_plan,
+                    target_date,
+                    tracker,
+                    planned_additional_hours=target_hours,
+                    starting_day_hours=current_day_hours,
+                )
+                allowed_minutes = cap_duration_minutes(
+                    slot['duration'] * 60,
+                    daily_remaining,
+                    tracker.get_remaining_quota_hours(),
+                    minimum_minutes=MIN_BOOKING_MINUTES,
+                    maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
+                )
+                if allowed_minutes == 0:
+                    print("  Daily practice target or weekly quota is already filled")
+                    break
+                slot = slot.copy()
+                slot['duration'] = allowed_minutes / 60
+                slot['end_hour'] = slot['start_hour'] + slot['duration']
+
                 print(f"  [DEBUG] Attempt {attempts}/{max_attempts}: {slot['room']} {slot['start_hour']:.2f}-{slot['end_hour']:.2f} (duration: {slot['duration']:.2f}h)")
 
                 try:
-                    booked = try_book_slot(page, slot, target_date, tracker, days_ahead)
+                    booked = try_book_slot(
+                        page,
+                        slot,
+                        target_date,
+                        tracker,
+                        days_ahead,
+                        remaining_daily_hours=daily_remaining,
+                        max_action_minutes=args.max_action_minutes,
+                    )
+                except BookingVerificationError:
+                    raise
                 except Exception as e:
+                    try:
+                        pending_receipts = list_pending_mutation_receipts()
+                    except Exception as receipt_error:
+                        raise BookingVerificationError(
+                            "A booking attempt failed and the mutation journal could not be "
+                            f"checked safely: {receipt_error}. No further mutations will be attempted."
+                        ) from e
+                    if pending_receipts:
+                        raise BookingVerificationError(
+                            "A booking attempt failed while a mutation receipt remains pending. "
+                            "No same-pass retry is allowed until the receipt is reconciled."
+                        ) from e
                     print(f"  Error booking slot: {e}")
                     # Check if browser is still open
                     try:
@@ -4251,17 +5701,10 @@ def main():
                     total_booked += 1
                     print(f"  [DEBUG] Booking successful! Day total: {day_booked}, session total: {total_booked}")
 
-                    # Record booking detail with start, end, and duration
-                    room_name = slot['room']
-                    start_h = int(slot['start_hour'])
-                    start_m = int((slot['start_hour'] % 1) * 60)
-                    # Calculate actual booked end time (capped at MAX_BOOKING_HOURS)
-                    booked_duration = min(slot['duration'], MAX_BOOKING_HOURS)
-                    booked_end_hour = slot['start_hour'] + booked_duration
-                    end_h = int(booked_end_hour)
-                    end_m = int((booked_end_hour % 1) * 60)
-                    duration_mins = int(booked_duration * 60)
-                    booking_details.append(f"{target_date.strftime('%Y-%m-%d')} {room_name} {start_h:02d}:{start_m:02d} {end_h:02d}:{end_m:02d} {duration_mins}")
+                    booking_details.append(
+                        f"{booked['date']} {booked['room']} {booked['start']} "
+                        f"{booked['end']} {booked['duration_minutes']}"
+                    )
 
                     # After successful booking, navigate back to calendar and refresh slots
                     page.wait_for_timeout(1000)
@@ -4290,81 +5733,102 @@ def main():
                         room_name = room_data["room"]
                         if room_name not in PRIORITY_ROOMS:
                             continue
+                        if args.only_room and room_name != args.only_room:
+                            continue
 
                         room_priority = PRIORITY_ROOMS.index(room_name)
 
                         for slot_data in room_data["slots"]:
-                            slot_start = slot_data['startHour']
-                            slot_end = slot_data['endHour']
-                            slot_duration = slot_end - slot_start
-
-                            if slot_duration * 60 < MIN_BOOKING_MINUTES:
+                            raw_start = slot_data['startHour']
+                            raw_end = slot_data['endHour']
+                            if (raw_end - raw_start) * 60 < MIN_BOOKING_MINUTES:
                                 continue
 
-                            # Check room horizon availability
-                            is_available, _ = is_room_available_to_book(room_name, target_date, slot_start)
+                            is_available, _ = is_room_available_to_book(
+                                room_name,
+                                target_date,
+                                raw_start,
+                            )
                             if not is_available:
                                 continue
 
-                            # Step 1: Check if slot overlaps with any conflict
-                            for c_start, c_end in conflicts:
-                                if slot_start < c_end and slot_end > c_start:
-                                    # Slot overlaps with conflict - try to use the part after the conflict
-                                    if c_end < slot_end:
-                                        slot_start = c_end
-                                    else:
-                                        slot_start = slot_end  # Will be filtered out below
-                                        break
-
-                            # Skip if slot was fully consumed by conflict
-                            if slot_start >= slot_end or (slot_end - slot_start) * 60 < MIN_BOOKING_MINUTES:
-                                continue
-
-                            slot_duration = slot_end - slot_start
-
-                            # Step 2: Apply peak adjustment
-                            adj_start, adj_end, was_adjusted, reason = adjust_slot_for_peak_quota(
-                                slot_start, slot_end, target_date, remaining_peak
+                            usable_segments = split_slot_around_blocks(
+                                raw_start,
+                                raw_end,
+                                conflicts,
                             )
-
-                            if adj_start is None:
-                                continue  # Skip slots fully in peak zone with no quota
-
-                            if was_adjusted:
-                                slot_start = adj_start
-                                slot_end = adj_end
-                                slot_duration = slot_end - slot_start
-
-                            # Step 3: Apply weekly quota adjustment
-                            remaining_weekly = tracker.get_remaining_quota_hours()
-                            adj_start, adj_end, was_weekly_adj, weekly_reason = adjust_slot_for_weekly_quota(
-                                slot_start, slot_end, remaining_weekly
+                            room_blocks = tracker.get_same_room_blocked_ranges(
+                                target_date,
+                                room_name,
                             )
+                            refreshed_segments = []
+                            for segment_start, segment_end in usable_segments:
+                                refreshed_segments.extend(
+                                    split_slot_around_blocks(
+                                        segment_start,
+                                        segment_end,
+                                        room_blocks,
+                                    )
+                                )
 
-                            if adj_start is None:
-                                continue  # Not enough weekly quota remaining
+                            for slot_start, slot_end in refreshed_segments:
+                                slot_start, slot_end = trim_to_strict_time_window(
+                                    slot_start,
+                                    slot_end,
+                                    time_prefs,
+                                )
+                                if slot_start is None:
+                                    continue
 
-                            if was_weekly_adj:
-                                slot_start = adj_start
-                                slot_end = adj_end
-                                slot_duration = slot_end - slot_start
+                                slot_start, slot_end, _, _ = adjust_slot_for_peak_quota(
+                                    slot_start,
+                                    slot_end,
+                                    target_date,
+                                    remaining_peak,
+                                )
+                                if slot_start is None:
+                                    continue
 
-                            is_good_slot = slot_duration >= 1.0
+                                daily_remaining = remaining_run_daily_budget(
+                                    practice_plan,
+                                    target_date,
+                                    tracker,
+                                    planned_additional_hours=target_hours,
+                                    starting_day_hours=current_day_hours,
+                                )
+                                allowed_minutes = cap_duration_minutes(
+                                    (slot_end - slot_start) * 60,
+                                    daily_remaining,
+                                    tracker.get_remaining_quota_hours(),
+                                    minimum_minutes=MIN_BOOKING_MINUTES,
+                                    maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
+                                )
+                                if allowed_minutes == 0:
+                                    continue
+                                slot_end = slot_start + allowed_minutes / 60
+                                slot_duration = allowed_minutes / 60
 
-                            all_slots.append({
-                                "room": room_name,
-                                "start_hour": slot_start,
-                                "end_hour": slot_end,
-                                "duration": slot_duration,
-                                "room_priority": room_priority,
-                                "is_good": is_good_slot,
-                                "click_x": slot_data["clickX"],
-                                "click_y": slot_data["clickY"]
-                            })
+                                all_slots.append({
+                                    "room": room_name,
+                                    "start_hour": slot_start,
+                                    "end_hour": slot_end,
+                                    "duration": slot_duration,
+                                    "room_priority": room_priority,
+                                    "is_good": slot_duration >= 1.0,
+                                    "click_x": slot_data["clickX"],
+                                    "click_y": slot_data["clickY"]
+                                })
 
                     # Apply strict mode filter if enabled
                     if time_prefs["enabled"] and time_prefs["strict_mode"]:
-                        all_slots = [s for s in all_slots if is_preferred_time(s['start_hour'], time_prefs)]
+                        all_slots = [
+                            s for s in all_slots
+                            if interval_is_strictly_preferred(
+                                s['start_hour'],
+                                s['end_hour'],
+                                time_prefs,
+                            )
+                        ]
 
                     all_slots.sort(key=lambda s: (
                         0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
@@ -4397,13 +5861,265 @@ def main():
         # Save run to history
         save_history(total_booked, events_detected, booking_details)
 
+        # Refresh cookies/local storage after every authenticated pass.
+        persist_storage_state(context)
+
         if not args.headless:
             print("\nKeeping browser open for 30 seconds to verify...")
             page.wait_for_timeout(30000)
 
         context.close()
         browser.close()
+        return 0
+
+
+def _scheduled_target_time(now=None):
+    """Return the imminent quarter-hour target for a :13/:28/:43/:58 task."""
+
+    now = now or datetime.now()
+    minutes_to_add = 15 - (now.minute % 15)
+    target = now.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_add)
+    seconds_until = (target - now).total_seconds()
+    if target.date() == now.date() and 0 < seconds_until <= 180:
+        return target.strftime("%H:%M")
+    return None
+
+
+def build_argument_parser():
+    parser = argparse.ArgumentParser(description="Book RWCMD practice rooms safely")
+    parser.add_argument("--headless", action="store_true", help="Run without a browser window")
+    parser.add_argument(
+        "--target-time",
+        metavar="HH:MM",
+        help="Pre-scan and wait until this local time before booking",
+    )
+    parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Scheduled-task mode: headless and snipe the imminent quarter hour",
+    )
+    parser.add_argument(
+        "--setup-login",
+        action="store_true",
+        help="Open one visible Playwright window and save Microsoft 365 login",
+    )
+    parser.add_argument(
+        "--configure-autonomous-login",
+        action="store_true",
+        help="Securely store the RWCMD login in Windows Credential Manager",
+    )
+    parser.add_argument(
+        "--login-only",
+        action="store_true",
+        help="Restore or verify Asimut login without scanning or booking",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Verify login, agenda, and room grid without changing bookings or history",
+    )
+    parser.add_argument(
+        "--only-date",
+        metavar="YYYY-MM-DD",
+        help="Controlled live-test scope: attempt changes only on this date",
+    )
+    parser.add_argument(
+        "--only-room",
+        metavar="ROOM",
+        help="Controlled live-test scope: attempt changes only in this configured room",
+    )
+    parser.add_argument(
+        "--max-actions",
+        type=int,
+        metavar="N",
+        help="Stop after N successful creates/extensions during this run",
+    )
+    parser.add_argument(
+        "--max-action-minutes",
+        type=int,
+        metavar="MINUTES",
+        help=(
+            "Controlled live-test scope: cap each create and each extension "
+            "increment to 30-120 minutes in 15-minute steps"
+        ),
+    )
+    return parser
+
+
+def _validate_cli_args(parser, args):
+    maintenance_modes = sum(
+        bool(value)
+        for value in (
+            args.setup_login,
+            args.configure_autonomous_login,
+            args.login_only,
+        )
+    )
+    if maintenance_modes > 1:
+        parser.error(
+            "--setup-login, --configure-autonomous-login, and --login-only "
+            "are mutually exclusive"
+        )
+
+    if args.target_time:
+        try:
+            parsed_time = datetime.strptime(args.target_time, "%H:%M")
+        except ValueError:
+            parser.error("--target-time must use a valid 24-hour HH:MM value")
+        if parsed_time.strftime("%H:%M") != args.target_time:
+            parser.error("--target-time must use zero-padded HH:MM")
+
+    if args.max_actions is not None and args.max_actions < 1:
+        parser.error("--max-actions must be at least 1")
+    if (
+        args.max_action_minutes is not None
+        and args.max_action_minutes not in LIVE_ACTION_MINUTES
+    ):
+        parser.error("--max-action-minutes must be 30-120 in 15-minute steps")
+    if args.only_room and args.only_room not in PRIORITY_ROOMS:
+        parser.error(f"--only-room is not configured: {args.only_room}")
+    if args.only_date:
+        try:
+            selected_date = datetime.strptime(args.only_date, "%Y-%m-%d").date()
+        except ValueError:
+            parser.error("--only-date must use a valid YYYY-MM-DD date")
+        if selected_date.isoformat() != args.only_date:
+            parser.error("--only-date must use zero-padded YYYY-MM-DD")
+        days_ahead = (selected_date - datetime.now().date()).days
+        if not 0 <= days_ahead <= 7:
+            parser.error("--only-date must be today or one of the next 7 days")
+
+    if args.check_only and (
+        args.only_date
+        or args.only_room
+        or args.max_actions
+        or args.max_action_minutes is not None
+    ):
+        parser.error("--check-only cannot be combined with booking mutation limits")
+    if args.max_action_minutes is not None and not (args.only_date or args.only_room):
+        parser.error("--max-action-minutes requires --only-date or --only-room")
+
+
+def _load_and_validate_runtime_settings():
+    """Load every safety-relevant block once and fail closed before Playwright."""
+
+    settings = load_settings_document(settings_file)
+    disabled_dates = load_disabled_dates(settings)
+    for value in disabled_dates:
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise SettingsError(f"Invalid disabled date: {value}") from exc
+        if parsed.isoformat() != value:
+            raise SettingsError(f"Disabled dates must use YYYY-MM-DD: {value}")
+    load_ignored_events(settings)
+    load_time_preferences(settings)
+    load_booking_strategy(settings)
+    load_extendable_bookings(settings)
+    list_pending_mutation_receipts()
+    try:
+        practice_plan = load_practice_plan(settings)
+    except PracticePlanError as exc:
+        raise SettingsError(str(exc)) from exc
+    return settings, practice_plan
+
+
+def main(argv=None):
+    configure_utf8_stdio()
+    parser = build_argument_parser()
+    args = parser.parse_args(argv)
+    _validate_cli_args(parser, args)
+
+    if args.configure_autonomous_login:
+        try:
+            configure_windows_credential_interactive()
+            print("Autonomous login saved securely in Windows Credential Manager.")
+            return 0
+        except (AutonomousLoginError, KeyboardInterrupt) as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                print("Credential setup cancelled; the saved login was not changed.")
+                return 130
+            print(f"ERROR: {exc}")
+            return 2
+
+    if args.setup_login:
+        login_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
+        try:
+            if not login_lock.acquire():
+                print("Another login or booking run is active; Login Setup did not start.")
+                return 6
+            try:
+                return setup_login()
+            except KeyboardInterrupt:
+                print("Login Setup cancelled; no session was replaced.")
+                return 130
+            except Exception as exc:
+                print(f"ERROR: Login Setup failed safely: {exc}")
+                return 1
+        finally:
+            login_lock.release()
+
+    if args.login_only:
+        login_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
+        try:
+            if not login_lock.acquire():
+                print("Another login or booking run is active; login check did not start.")
+                return 6
+            return login_only(headless=args.headless)
+        except KeyboardInterrupt:
+            print("Autonomous login check cancelled.")
+            return 130
+        except AutonomousLoginError as exc:
+            print(f"ERROR: Autonomous login could not complete: {exc}")
+            return 2
+        finally:
+            login_lock.release()
+
+    if _CONFIG_ERROR is not None:
+        print(f"ERROR: {_CONFIG_ERROR}")
+        print("Autonomous booking stopped because config.yaml cannot be followed safely.")
+        return 4
+
+    if args.scheduled:
+        args.headless = True
+        if not args.target_time:
+            args.target_time = _scheduled_target_time()
+
+    try:
+        settings, practice_plan = _load_and_validate_runtime_settings()
+    except SettingsError as exc:
+        print(f"ERROR: {exc}")
+        print("Autonomous booking stopped because the saved settings cannot be trusted.")
+        return 3
+
+    runtime_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
+    try:
+        if not runtime_lock.acquire():
+            print("Another AsimutBooker run is already active; this run will exit cleanly.")
+            return 0
+        return run_booking(args, settings, practice_plan) or 0
+    except KeyboardInterrupt:
+        print("Booking run cancelled.")
+        return 130
+    except AutonomousLoginError as exc:
+        print(f"ERROR: Autonomous login could not complete: {exc}")
+        return 2
+    except BookingVerificationError as exc:
+        message = f"RECONCILIATION REQUIRED: {exc}"
+        print(f"ERROR: {message}")
+        save_history(0, 0, [message], notify=False)
+        send_notification(
+            "AsimutBooker needs attention",
+            str(exc),
+            priority="high",
+        )
+        return 5
+    except Exception as exc:
+        print(f"ERROR: Booking run failed safely: {exc}")
+        return 1
+    finally:
+        runtime_lock.release()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -7,27 +7,574 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
 import csv
-import io
 import calendar as cal
+from typing import Any, Mapping
+from urllib.parse import urlsplit
+
+from app_settings import (
+    InterProcessFileLock,
+    SettingsError,
+    atomic_write_json,
+    load_settings as strict_load_settings,
+    update_settings as atomic_update_settings,
+)
+from event_identity import (
+    IgnoredEventResolution,
+    deduplicate_events,
+    event_identity_v2,
+    is_v2_event_identity_key,
+    resolve_ignored_event_keys,
+)
+from practice_plan import (
+    DEFAULT_TARGET_HOURS,
+    MAX_TARGET_HOURS,
+    MIN_TARGET_HOURS,
+    TARGET_STEP_HOURS,
+    PracticePlan,
+    PracticePlanError,
+    load_practice_plan,
+)
 
 # Constants
-APP_DIR = Path(__file__).parent
+APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "browser_state" / "state.json"
 LOGS_DIR = APP_DIR / "logs"
 CONFIG_FILE = APP_DIR / "config" / "config.yaml"
 HISTORY_FILE = APP_DIR / "data" / "booking_history.json"
 SETTINGS_FILE = APP_DIR / "data" / "settings.json"
+RECURRING_TASK_NAME = "AsimutBooker_Recurring"
+RECURRING_TASK_PATH = "\\"
+RECURRING_SCHEDULE_TEXT = "Every 15 minutes, 07:13-21:58"
+ASIMUT_AGENDA_URL = "https://rwcmd.asimut.net/agenda"
+ASIMUT_OVERVIEW_URL = "https://rwcmd.asimut.net/overview?locationGroupId=10"
+
+TIME_PREFERENCE_PRESET_KEYS = frozenset(
+    {"morning", "afternoon", "evening", "afternoon_evening", "custom"}
+)
+
+
+def is_exact_asimut_scan_url(
+    url: str,
+    expected_path: str,
+    *,
+    expected_query: str = "",
+) -> bool:
+    """Require the exact secure RWCMD Asimut page used by a GUI scan."""
+
+    try:
+        parsed = urlsplit(url)
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "rwcmd.asimut.net"
+        and parsed.path == expected_path
+        and parsed.query == expected_query
+        and not parsed.fragment
+    )
+
+
+def require_authenticated_scan_page(
+    page,
+    authenticated_checker,
+    expected_path: str,
+    *,
+    expected_query: str = "",
+) -> None:
+    """Fail closed unless a background scan is on its exact authenticated page."""
+
+    if not authenticated_checker(page) or not is_exact_asimut_scan_url(
+        page.url,
+        expected_path,
+        expected_query=expected_query,
+    ):
+        expected = expected_path + (f"?{expected_query}" if expected_query else "")
+        raise RuntimeError(
+            f"Authenticated Asimut scan page verification failed; expected {expected}"
+        )
+
+
+def build_login_check_command(app_dir: Path = APP_DIR) -> list[str]:
+    """Build the isolated, non-interactive login health/recovery command."""
+
+    root = Path(app_dir).resolve()
+    return [
+        str(root / ".venv" / "Scripts" / "python.exe"),
+        str(root / "book_week.py"),
+        "--headless",
+        "--login-only",
+    ]
+
+
+def build_secure_login_update_command(app_dir: Path = APP_DIR) -> list[str]:
+    """Build the interactive secure-credential prompt command without secrets."""
+
+    root = Path(app_dir).resolve()
+    return [
+        str(root / ".venv" / "Scripts" / "python.exe"),
+        str(root / "book_week.py"),
+        "--configure-autonomous-login",
+    ]
+
+
+def validate_login_command(command: list[str]) -> None:
+    """Fail before launch when the isolated runtime or entry point is unavailable."""
+
+    if len(command) < 2:
+        raise RuntimeError("Login command is incomplete")
+    python_path = Path(command[0])
+    script_path = Path(command[1])
+    if not python_path.is_file():
+        raise RuntimeError(f"AsimutBooker virtual-environment Python is missing: {python_path}")
+    if not script_path.is_file():
+        raise RuntimeError(f"AsimutBooker entry point is missing: {script_path}")
+
+
+def build_event_preference_rows(
+    cached_events: list[Mapping[str, object]],
+    ignored_keys: list[str] | set[str],
+) -> tuple[
+    list[tuple[Mapping[str, object], str, bool]],
+    IgnoredEventResolution,
+]:
+    """Build collision-safe GUI rows and resolve legacy ignore selections."""
+
+    unique_events = deduplicate_events(cached_events)
+    resolution = resolve_ignored_event_keys(ignored_keys, unique_events)
+    rows = []
+    for event in unique_events:
+        key = event_identity_v2(event)
+        rows.append((event, key, key not in resolution.ignored_v2_keys))
+    return rows, resolution
+
+
+def ignored_v2_keys_from_selection(selection: Mapping[str, bool]) -> list[str]:
+    """Return only deterministic v2 keys for unchecked GUI event rows."""
+
+    ignored = []
+    for event_key, enabled in selection.items():
+        if not isinstance(enabled, bool):
+            raise SettingsError("Event selection values must be true or false")
+        if not is_v2_event_identity_key(event_key):
+            raise SettingsError("Event selection contains a non-v2 identity key")
+        if not enabled:
+            ignored.append(event_key)
+    return sorted(ignored)
+
+
+def build_scheduler_setup_command(
+    script_path: Path,
+    *,
+    local_app_data: str | Path | None = None,
+) -> list[str]:
+    """Build the required headless Agent UAC command for scheduler setup."""
+    local_data = local_app_data or os.environ.get("LOCALAPPDATA")
+    if not local_data:
+        raise RuntimeError("LOCALAPPDATA is not available, so Agent UAC cannot be located")
+
+    agent_uac = Path(local_data) / "AgentUAC" / "agent-uac.exe"
+    return [
+        str(agent_uac),
+        "run",
+        "--reason",
+        "Install or repair the AsimutBooker recurring scheduled task",
+        "--",
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(Path(script_path).resolve()),
+    ]
+
+
+def build_scheduler_remove_command(
+    *,
+    local_app_data: str | Path | None = None,
+) -> list[str]:
+    """Build an elevated, idempotent removal command for the recurring task."""
+    local_data = local_app_data or os.environ.get("LOCALAPPDATA")
+    if not local_data:
+        raise RuntimeError("LOCALAPPDATA is not available, so Agent UAC cannot be located")
+
+    agent_uac = Path(local_data) / "AgentUAC" / "agent-uac.exe"
+    removal_script = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$taskName = 'AsimutBooker_Recurring'; $taskPath = '\\'; "
+        "$task = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath "
+        "-ErrorAction SilentlyContinue; "
+        "if ($null -ne $task) { Unregister-ScheduledTask -TaskName $taskName "
+        "-TaskPath $taskPath -Confirm:$false }; "
+        "$remaining = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath "
+        "-ErrorAction SilentlyContinue; "
+        "if ($null -ne $remaining) { throw 'The recurring task still exists after removal.' }"
+    )
+    return [
+        str(agent_uac),
+        "run",
+        "--reason",
+        "Remove and verify the AsimutBooker recurring scheduled task",
+        "--",
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        removal_script,
+    ]
+
+
+def parse_recurring_task_status(payload: str) -> dict[str, Any]:
+    """Validate the recurring task's complete safety-relevant shape."""
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Task Scheduler returned unreadable status data") from exc
+
+    if not isinstance(value, dict) or value.get("TaskName") != RECURRING_TASK_NAME:
+        raise RuntimeError("Task Scheduler returned status for an unexpected task")
+
+    text_fields = (
+        "State",
+        "NextRunTime",
+        "Execute",
+        "Arguments",
+        "Interval",
+        "Duration",
+        "MultipleInstances",
+    )
+    bool_fields = ("WakeToRun", "StartWhenAvailable")
+    if any(not isinstance(value.get(field), str) for field in text_fields) or any(
+        not isinstance(value.get(field), bool) for field in bool_fields
+    ):
+        raise RuntimeError("Task Scheduler returned incomplete status data")
+
+    reasons = []
+    state = value["State"]
+    next_run = value["NextRunTime"]
+    execute = value["Execute"]
+    arguments = value["Arguments"]
+    if state.casefold() not in {"ready", "running"}:
+        reasons.append(f"state is {state}")
+    if next_run == "Not scheduled":
+        reasons.append("no next run")
+    if not execute.casefold().endswith("\\cmd.exe"):
+        reasons.append("wrong executable")
+    if "run_booker.bat" not in arguments.casefold() or "--scheduled" not in arguments:
+        reasons.append("wrong launcher arguments")
+    if value["Interval"] != "PT15M" or value["Duration"] != "PT14H46M":
+        reasons.append("wrong repetition window")
+    if not value["WakeToRun"] or not value["StartWhenAvailable"]:
+        reasons.append("wake/recovery disabled")
+    if value["MultipleInstances"] != "IgnoreNew":
+        reasons.append("overlap protection disabled")
+
+    return {
+        "task_name": RECURRING_TASK_NAME,
+        "state": state,
+        "next_run": next_run,
+        "healthy": not reasons,
+        "problem": "; ".join(reasons),
+    }
+
+
+def query_recurring_task_status(timeout: int = 30) -> dict[str, Any] | None:
+    """Return the one supported recurring task, or None when it is absent."""
+    command = (
+        "$task = Get-ScheduledTask -TaskName 'AsimutBooker_Recurring' "
+        "-TaskPath '\\' -ErrorAction SilentlyContinue; "
+        "if ($null -eq $task) { exit 3 }; "
+        "$info = Get-ScheduledTaskInfo -TaskName $task.TaskName "
+        "-TaskPath $task.TaskPath -ErrorAction Stop; "
+        "$nextRun = if ($info.NextRunTime -and $info.NextRunTime.Year -gt 1900) "
+        "{ $info.NextRunTime.ToString('yyyy-MM-dd HH:mm') } else { 'Not scheduled' }; "
+        "$trigger = @($task.Triggers)[0]; $action = @($task.Actions)[0]; "
+        "[pscustomobject]@{ TaskName = $task.TaskName; State = [string]$task.State; "
+        "NextRunTime = $nextRun; Execute = [string]$action.Execute; "
+        "Arguments = [string]$action.Arguments; "
+        "Interval = [string]$trigger.Repetition.Interval; "
+        "Duration = [string]$trigger.Repetition.Duration; "
+        "WakeToRun = [bool]$task.Settings.WakeToRun; "
+        "StartWhenAvailable = [bool]$task.Settings.StartWhenAvailable; "
+        "MultipleInstances = [string]$task.Settings.MultipleInstances } | "
+        "ConvertTo-Json -Compress"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        cwd=str(APP_DIR),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode == 3:
+        return None
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or f"Task Scheduler query failed ({result.returncode})")
+    return parse_recurring_task_status(result.stdout.strip())
+
+
+def _require_bool(value: Any, label: str) -> bool:
+    """Return a real JSON boolean without accepting truthy strings/numbers."""
+    if not isinstance(value, bool):
+        raise SettingsError(f"{label} must be true or false")
+    return value
+
+
+def _require_clock_part(value: Any, label: str, maximum: int) -> int:
+    """Validate one integer component of a 24-hour time."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SettingsError(f"{label} must be a whole number")
+    if not 0 <= value <= maximum:
+        raise SettingsError(f"{label} must be between 0 and {maximum}")
+    return value
+
+
+def validate_time_preferences_section(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and canonicalize the GUI's time-preference settings section."""
+    prefs = settings.get("time_preferences", {})
+    if not isinstance(prefs, dict):
+        raise SettingsError("time_preferences must be a JSON object")
+
+    enabled = _require_bool(prefs.get("enabled", False), "time_preferences.enabled")
+    strict_mode = _require_bool(
+        prefs.get("strict_mode", False), "time_preferences.strict_mode"
+    )
+    preset = prefs.get("preset", "afternoon_evening")
+    if not isinstance(preset, str) or preset not in TIME_PREFERENCE_PRESET_KEYS:
+        raise SettingsError("time_preferences.preset is not a supported preset")
+
+    start_hour = _require_clock_part(
+        prefs.get("custom_start_hour", 14),
+        "time_preferences.custom_start_hour",
+        23,
+    )
+    start_min = _require_clock_part(
+        prefs.get("custom_start_min", 0),
+        "time_preferences.custom_start_min",
+        59,
+    )
+    end_hour = _require_clock_part(
+        prefs.get("custom_end_hour", 22),
+        "time_preferences.custom_end_hour",
+        23,
+    )
+    end_min = _require_clock_part(
+        prefs.get("custom_end_min", 0),
+        "time_preferences.custom_end_min",
+        59,
+    )
+    if preset == "custom" and (end_hour, end_min) <= (start_hour, start_min):
+        raise SettingsError("Custom preferred end time must be later than start time")
+
+    return {
+        "enabled": enabled,
+        "preset": preset,
+        "custom_start_hour": start_hour,
+        "custom_start_min": start_min,
+        "custom_end_hour": end_hour,
+        "custom_end_min": end_min,
+        "strict_mode": strict_mode,
+    }
+
+
+def validate_booking_strategy_section(settings: Mapping[str, Any]) -> dict[str, bool]:
+    """Validate and canonicalize the GUI's booking-strategy settings section."""
+    strategy = settings.get("booking_strategy", {})
+    if not isinstance(strategy, dict):
+        raise SettingsError("booking_strategy must be a JSON object")
+    return {
+        "reverse_date_order": _require_bool(
+            strategy.get("reverse_date_order", False),
+            "booking_strategy.reverse_date_order",
+        )
+    }
+
+
+def validate_history_document(value: Any) -> dict[str, Any]:
+    """Reject malformed history instead of silently replacing it with an empty file."""
+    if not isinstance(value, dict) or not isinstance(value.get("runs"), list):
+        raise SettingsError("Booking history must contain a runs list")
+    return value
+
+
+def load_history_document(path: Path = HISTORY_FILE) -> dict[str, Any]:
+    """Load and validate the booking history document."""
+    path = Path(path)
+    if not path.exists():
+        return {"runs": []}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return validate_history_document(json.load(handle))
+    except SettingsError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SettingsError(f"Booking history is unreadable: {exc}") from exc
+
+
+def replace_history_document(value: Any, path: Path = HISTORY_FILE) -> None:
+    """Atomically replace history while sharing the autonomous booker's lock."""
+    path = Path(path)
+    validated = validate_history_document(value)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with InterProcessFileLock(lock_path):
+        atomic_write_json(path, validated, backup=True)
+
+
+def append_history_entry(entry: Mapping[str, Any], path: Path = HISTORY_FILE) -> None:
+    """Append one GUI history record without losing a concurrent booker record."""
+    path = Path(path)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with InterProcessFileLock(lock_path):
+        history = load_history_document(path)
+        history["runs"].insert(0, dict(entry))
+        history["runs"] = history["runs"][:100]
+        atomic_write_json(path, history, backup=True)
+
+
+def format_practice_hours(hours: float) -> str:
+    """Format a practice target compactly for controls and summaries."""
+    value = float(hours)
+    return str(int(value)) if value.is_integer() else f"{value:g}"
+
+
+PRACTICE_TARGET_CHOICES = tuple(
+    f"{format_practice_hours(step * TARGET_STEP_HOURS)}h"
+    for step in range(
+        int(MIN_TARGET_HOURS / TARGET_STEP_HOURS),
+        int(MAX_TARGET_HOURS / TARGET_STEP_HOURS) + 1,
+    )
+)
+
+
+def parse_practice_target_choice(value: str) -> float:
+    """Parse an explicit per-date target such as ``1.5h``."""
+    text = value.strip()
+    if not text.endswith("h"):
+        raise PracticePlanError("Daily target must be an hour value")
+    try:
+        hours = float(text[:-1])
+    except ValueError as exc:
+        raise PracticePlanError("Daily target must be a number") from exc
+
+    # Reuse the shared schema validator so UI and autonomous runs agree.
+    validated = load_practice_plan(
+        {"practice_plan": {"enabled": True, "default_hours": hours}}
+    )
+    return validated.default_hours
+
+
+def validate_iso_date_key(value: str, label: str) -> str:
+    """Validate a canonical date key before it can enter user preferences."""
+    if not isinstance(value, str):
+        raise PracticePlanError(f"{label} must be a YYYY-MM-DD string")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise PracticePlanError(f"{label} must use YYYY-MM-DD: {value}") from exc
+    if parsed.isoformat() != value:
+        raise PracticePlanError(f"{label} must use YYYY-MM-DD: {value}")
+    return value
+
+
+def apply_booking_day_updates(
+    settings: dict[str, Any],
+    day_states: Mapping[str, bool],
+) -> set[str]:
+    """Merge only explicitly edited booking dates into the latest settings."""
+
+    disabled_raw = settings.get("disabled_dates", [])
+    if not isinstance(disabled_raw, list) or not all(
+        isinstance(item, str) for item in disabled_raw
+    ):
+        raise SettingsError("disabled_dates must be a list of YYYY-MM-DD strings")
+    try:
+        disabled_dates = {
+            validate_iso_date_key(item, "Disabled date") for item in disabled_raw
+        }
+        validated_states = {
+            validate_iso_date_key(date_key, "Booking date"): enabled
+            for date_key, enabled in day_states.items()
+        }
+    except PracticePlanError as exc:
+        raise SettingsError(str(exc)) from exc
+
+    for date_key, enabled in validated_states.items():
+        if not isinstance(enabled, bool):
+            raise SettingsError(f"Enabled state for {date_key} must be true or false")
+        if enabled:
+            disabled_dates.discard(date_key)
+        else:
+            disabled_dates.add(date_key)
+    settings["disabled_dates"] = sorted(disabled_dates)
+    return disabled_dates
+
+
+def apply_practice_plan_update(
+    settings: dict[str, Any],
+    *,
+    plan_enabled: bool,
+    default_hours: float,
+    day_states: Mapping[str, bool],
+    date_overrides: Mapping[str, float | None],
+) -> PracticePlan:
+    """Apply one scoped UI save while preserving unrelated and out-of-window data."""
+    if not isinstance(plan_enabled, bool):
+        raise PracticePlanError("Practice plan enabled state must be true or false")
+
+    current_plan = load_practice_plan(settings)
+    editable_dates = set()
+    for date_key, enabled in day_states.items():
+        editable_dates.add(validate_iso_date_key(date_key, "Practice-plan date"))
+        if not isinstance(enabled, bool):
+            raise PracticePlanError(f"Enabled state for {date_key} must be true or false")
+
+    disabled_raw = settings.get("disabled_dates", [])
+    if not isinstance(disabled_raw, list) or not all(isinstance(item, str) for item in disabled_raw):
+        raise PracticePlanError("disabled_dates must be a list of YYYY-MM-DD strings")
+    disabled_dates = {
+        validate_iso_date_key(item, "Disabled date") for item in disabled_raw
+    } - editable_dates
+    disabled_dates.update(date_key for date_key, enabled in day_states.items() if not enabled)
+
+    merged_overrides = {
+        key: value
+        for key, value in (current_plan.date_overrides or {}).items()
+        if key not in editable_dates
+    }
+    for date_key, value in date_overrides.items():
+        if date_key not in editable_dates:
+            raise PracticePlanError(f"Unexpected practice-plan date: {date_key}")
+        if value is not None:
+            merged_overrides[date_key] = value
+
+    candidate = {
+        "enabled": plan_enabled,
+        "default_hours": default_hours,
+        "date_overrides": merged_overrides,
+    }
+    validated = load_practice_plan({"practice_plan": candidate})
+    settings["disabled_dates"] = sorted(disabled_dates)
+    settings["practice_plan"] = {
+        "enabled": validated.enabled,
+        "default_hours": validated.default_hours,
+        "date_overrides": validated.date_overrides or {},
+    }
+    return validated
 
 
 class AsimutBookerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("AsimutBooker Control Panel")
-        self.root.geometry("1400x1150")
-        self.root.minsize(1100, 1050)
+        self.root.geometry("1280x920")
+        self.root.minsize(1000, 720)
 
         # Configure default font sizes - larger for better readability
         default_font = ("Segoe UI", 13)
@@ -54,10 +601,20 @@ class AsimutBookerGUI:
         # Variables
         self.running_process = None
         self.is_running = False
+        self.settings_available = True
+        self.settings_error = ""
+        self._settings_error_reported = False
+        self._settings_controls = []
+        self.schedule_setup_in_progress = False
+        self.schedule_remove_in_progress = False
+        self.login_operation_in_progress = False
+        self._schedule_status_generation = 0
+        self._calendar_scan_generation = 0
 
         # Create UI
         self.create_menu()
         self.create_main_layout()
+        self._apply_settings_availability_state()
         self.refresh_status()
 
     def create_menu(self):
@@ -76,9 +633,9 @@ class AsimutBookerGUI:
         tools_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Tools", menu=tools_menu)
         tools_menu.add_command(label="Clean Up Old Files", command=self.show_cleanup_dialog)
-        tools_menu.add_command(label="View Scheduled Tasks", command=self.view_scheduled_tasks)
+        tools_menu.add_command(label="View Automatic Schedule", command=self.view_scheduled_tasks)
         tools_menu.add_separator()
-        tools_menu.add_command(label="Re-run Setup Script (Admin)", command=self.run_setup_script)
+        tools_menu.add_command(label="Install / Repair Automatic Schedule", command=self.run_setup_script)
 
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -104,8 +661,8 @@ class AsimutBookerGUI:
         self.login_status_label = ttk.Label(status_grid, textvariable=self.login_status_var, font=("Segoe UI", 12, "bold"))
         self.login_status_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=3)
 
-        # Scheduled tasks
-        ttk.Label(status_grid, text="Scheduled Tasks:", font=("Segoe UI", 12)).grid(row=0, column=2, sticky=tk.W, padx=(30, 5), pady=3)
+        # Automatic recurring schedule
+        ttk.Label(status_grid, text="Automatic Schedule:", font=("Segoe UI", 12)).grid(row=0, column=2, sticky=tk.W, padx=(30, 5), pady=3)
         self.tasks_status_var = tk.StringVar(value="Checking...")
         ttk.Label(status_grid, textvariable=self.tasks_status_var, font=("Segoe UI", 12, "bold")).grid(row=0, column=3, sticky=tk.W, padx=5, pady=3)
 
@@ -171,21 +728,28 @@ class AsimutBookerGUI:
             width=14
         ).pack(side=tk.LEFT, padx=5, pady=3)
 
-        # Scheduled Tasks button
+        # Automatic schedule button
         ttk.Button(
             controls_row2,
-            text="⏰ Scheduled Tasks",
+            text="⏰ Automatic Schedule",
             command=self.view_scheduled_tasks,
-            width=16
+            width=20
         ).pack(side=tk.LEFT, padx=5, pady=3)
 
-        # Setup button
-        ttk.Button(
+        self.login_check_btn = ttk.Button(
             controls_row2,
-            text="🔐 Login Setup",
-            command=self.run_login_setup,
-            width=14
-        ).pack(side=tk.LEFT, padx=5, pady=3)
+            text="🔐 Check / Repair Login",
+            command=self.check_repair_login,
+            width=22,
+        )
+        self.login_check_btn.pack(side=tk.LEFT, padx=5, pady=3)
+        self.login_update_btn = ttk.Button(
+            controls_row2,
+            text="Update Secure Login",
+            command=self.update_secure_login,
+            width=21,
+        )
+        self.login_update_btn.pack(side=tk.LEFT, padx=5, pady=3)
 
         # Progress indicator
         self.progress_var = tk.StringVar(value="")
@@ -203,12 +767,14 @@ class AsimutBookerGUI:
         ttk.Label(days_inner, textvariable=self.days_summary_var, font=("Segoe UI", 12)).pack(side=tk.LEFT, padx=(0, 20))
 
         # Open calendar button
-        ttk.Button(
+        self.calendar_btn = ttk.Button(
             days_inner,
             text="📅 Open Calendar",
             command=self.show_calendar_dialog,
             width=18
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        self.calendar_btn.pack(side=tk.LEFT, padx=5)
+        self._settings_controls.append(self.calendar_btn)
 
         # Initialize day vars (will be populated by load_booking_days)
         self.day_vars = {}  # {date_str: BooleanVar}
@@ -216,6 +782,71 @@ class AsimutBookerGUI:
         # Load saved settings and update summary
         self.load_booking_days()
         self._update_days_summary()
+
+        # Practice Plan section - a default target with optional per-date overrides.
+        practice_frame = ttk.LabelFrame(main_frame, text="Practice Plan", padding="12")
+        practice_frame.pack(fill=tk.X, pady=(0, 12))
+
+        practice_inner = ttk.Frame(practice_frame)
+        practice_inner.pack(fill=tk.X)
+
+        self.practice_plan_enabled = tk.BooleanVar(value=False)
+        self.practice_plan_enable_cb = ttk.Checkbutton(
+            practice_inner,
+            text="Aim for roughly",
+            variable=self.practice_plan_enabled,
+            command=self.on_practice_plan_changed,
+        )
+        self.practice_plan_enable_cb.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.practice_default_hours = tk.StringVar(value=format_practice_hours(DEFAULT_TARGET_HOURS))
+        self.practice_default_spin = ttk.Spinbox(
+            practice_inner,
+            from_=MIN_TARGET_HOURS,
+            to=MAX_TARGET_HOURS,
+            increment=TARGET_STEP_HOURS,
+            textvariable=self.practice_default_hours,
+            width=5,
+            justify="center",
+            command=self.on_practice_plan_changed,
+        )
+        self.practice_default_spin.pack(side=tk.LEFT)
+        self.practice_default_spin.bind("<FocusOut>", lambda _event: self.on_practice_plan_changed())
+        self.practice_default_spin.bind("<Return>", lambda _event: self.on_practice_plan_changed())
+
+        ttk.Label(practice_inner, text="hours on each enabled day").pack(side=tk.LEFT, padx=(8, 18))
+
+        self.practice_plan_customize_btn = ttk.Button(
+            practice_inner,
+            text="Customize Next 8 Days…",
+            command=self.show_practice_plan_dialog,
+            width=24,
+        )
+        self.practice_plan_customize_btn.pack(side=tk.LEFT, padx=(0, 18))
+
+        self.practice_plan_summary_var = tk.StringVar(value="Loading…")
+        ttk.Label(
+            practice_inner,
+            textvariable=self.practice_plan_summary_var,
+            foreground="#555555",
+            font=("Segoe UI", 11),
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.settings_status_var = tk.StringVar(value="")
+        self.settings_status_label = ttk.Label(
+            practice_frame,
+            textvariable=self.settings_status_var,
+            foreground="#b00020",
+            font=("Segoe UI", 10),
+            wraplength=1150,
+        )
+        self.settings_status_label.pack(fill=tk.X, pady=(6, 0))
+
+        self._settings_controls.extend(
+            [self.practice_plan_enable_cb, self.practice_default_spin, self.practice_plan_customize_btn]
+        )
+        self.practice_plan_overrides = {}
+        self.load_practice_plan_settings()
 
         # Time Preferences section
         time_prefs_frame = ttk.LabelFrame(main_frame, text="Time Preferences", padding="15")
@@ -335,6 +966,17 @@ class AsimutBookerGUI:
 
         # Load saved time preferences
         self.load_time_preferences()
+        self._settings_controls.extend(
+            [
+                self.time_prefs_enable_cb,
+                self.time_prefs_dropdown,
+                self.time_prefs_strict_cb,
+                self.custom_start_hour_entry,
+                self.custom_start_min_entry,
+                self.custom_end_hour_entry,
+                self.custom_end_min_entry,
+            ]
+        )
 
         # Booking Strategy section
         strategy_frame = ttk.LabelFrame(main_frame, text="Booking Strategy", padding="15")
@@ -355,6 +997,7 @@ class AsimutBookerGUI:
             command=self.on_strategy_changed
         )
         self.reverse_date_order_cb.pack(side=tk.LEFT, padx=(0, 20))
+        self._settings_controls.append(self.reverse_date_order_cb)
 
         # Explanation label
         ttk.Label(
@@ -412,7 +1055,12 @@ class AsimutBookerGUI:
         ttk.Button(log_controls, text="Clear Log", command=self.clear_log).pack(side=tk.LEFT, padx=5)
         ttk.Button(log_controls, text="Open Today's Log File", command=self.open_todays_log).pack(side=tk.LEFT, padx=5)
         ttk.Button(log_controls, text="View Booking History", command=self.show_history_dialog).pack(side=tk.LEFT, padx=5)
-        ttk.Button(log_controls, text="Manage Events", command=self.show_events_dialog).pack(side=tk.LEFT, padx=5)
+        self.manage_events_btn = ttk.Button(log_controls, text="Manage Events", command=self.show_events_dialog)
+        self.manage_events_btn.pack(side=tk.LEFT, padx=5)
+        self._settings_controls.append(self.manage_events_btn)
+
+        if self.settings_error:
+            self.log(self.settings_error, "error")
 
     def log(self, message, tag=None):
         """Add message to log with optional tag for coloring."""
@@ -446,21 +1094,98 @@ class AsimutBookerGUI:
         self.check_last_run()
 
     def check_scheduled_tasks(self):
-        """Check how many AsimutBooker tasks are scheduled."""
-        try:
-            result = subprocess.run(
-                ["schtasks", "/query", "/fo", "CSV"],
-                capture_output=True,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
+        """Start a non-blocking check of the supported recurring task."""
+        self._start_scheduler_status_refresh()
+
+    def _start_scheduler_status_refresh(self):
+        """Query Task Scheduler off the Tk thread and apply only the newest result."""
+        self._schedule_status_generation += 1
+        generation = self._schedule_status_generation
+        self.tasks_status_var.set("⏳ Checking schedule...")
+
+        tree = getattr(self, "tasks_tree", None)
+        if tree is not None:
+            try:
+                if tree.winfo_exists():
+                    for item in tree.get_children():
+                        tree.delete(item)
+                    if hasattr(self, "task_count_var"):
+                        self.task_count_var.set("Checking...")
+            except tk.TclError:
+                pass
+
+        def worker():
+            task = None
+            error = None
+            try:
+                task = query_recurring_task_status()
+            except Exception as exc:
+                error = exc
+            try:
+                self.root.after(
+                    0,
+                    self._apply_scheduler_status_result,
+                    generation,
+                    task,
+                    error,
+                )
+            except (RuntimeError, tk.TclError):
+                # The app may have closed while the background query was running.
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_scheduler_status_result(self, generation, task, error):
+        """Apply one background status result on the Tk thread."""
+        if generation != self._schedule_status_generation:
+            return
+
+        if error is not None:
+            self.tasks_status_var.set("⚠️ Could not check schedule")
+            self.log(f"Could not read automatic schedule status: {error}", "error")
+        elif task is None:
+            self.tasks_status_var.set("❌ Not installed")
+        elif not task["healthy"]:
+            self.tasks_status_var.set("⚠️ Installed but needs repair")
+            self.log(
+                f"Automatic schedule needs repair: {task['problem']}",
+                "warning",
             )
-            count = result.stdout.count("AsimutBooker_")
-            if count > 0:
-                self.tasks_status_var.set(f"✅ {count} tasks active")
+        elif task["state"].casefold() == "running":
+            self.tasks_status_var.set("✅ Running (15-minute schedule)")
+        else:
+            self.tasks_status_var.set("✅ Active (every 15 min)")
+
+        tree = getattr(self, "tasks_tree", None)
+        if tree is None:
+            return
+        try:
+            if not tree.winfo_exists():
+                return
+            for item in tree.get_children():
+                tree.delete(item)
+            if error is not None:
+                self.task_count_var.set(f"Error: {str(error)[:30]}")
+            elif task is None:
+                self.task_count_var.set("Not installed")
             else:
-                self.tasks_status_var.set("❌ No tasks scheduled")
-        except Exception as e:
-            self.tasks_status_var.set("⚠️ Could not check")
+                tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        task["task_name"],
+                        RECURRING_SCHEDULE_TEXT,
+                        task["state"] if task["healthy"] else "Needs repair",
+                        task["next_run"],
+                    ),
+                )
+                self.task_count_var.set(
+                    "1 verified recurring task"
+                    if task["healthy"]
+                    else f"Needs repair: {task['problem'][:80]}"
+                )
+        except tk.TclError:
+            pass
 
     def check_last_run(self):
         """Check when the booker last ran from history."""
@@ -515,10 +1240,6 @@ class AsimutBookerGUI:
 
     def _run_booker_thread(self, headless):
         """Thread function to run booker."""
-        bookings_made = 0
-        events_detected = 0
-        booking_details = []
-
         try:
             cmd = [sys.executable, str(APP_DIR / "book_week.py")]
             if headless:
@@ -540,23 +1261,10 @@ class AsimutBookerGUI:
 
                     # Track statistics
                     if "SUCCESS:" in line or "Booked" in line:
-                        bookings_made += 1
-                        # Extract booking details
-                        booking_details.append(line)
                         self.root.after(0, lambda l=line: self.log(l, "success"))
                     elif "Found" in line and "unique events" in line:
-                        # Parse "Found X unique events in agenda:"
-                        try:
-                            events_detected = int(line.split("Found")[1].split("unique")[0].strip())
-                        except:
-                            pass
                         self.root.after(0, lambda l=line: self.log(l, "info"))
                     elif "Total bookings made:" in line:
-                        # Parse final count
-                        try:
-                            bookings_made = int(line.split(":")[1].strip())
-                        except:
-                            pass
                         self.root.after(0, lambda l=line: self.log(l, "success"))
                     elif "ERROR" in line or "Error" in line or "failed" in line.lower():
                         self.root.after(0, lambda l=line: self.log(l, "error"))
@@ -573,15 +1281,8 @@ class AsimutBookerGUI:
             else:
                 self.root.after(0, lambda: self.log(f"Booker finished with exit code {exit_code}", "warning"))
 
-            # Save to history
-            details = "; ".join(booking_details[:5])  # First 5 booking details
-            if bookings_made == 0:
-                details = "No bookings made"
-            self.root.after(0, lambda: self.add_history_entry(bookings_made, events_detected, details))
-
         except Exception as e:
             self.root.after(0, lambda: self.log(f"Error running booker: {e}", "error"))
-            self.root.after(0, lambda: self.add_history_entry(0, 0, f"Error: {str(e)[:50]}"))
         finally:
             self.root.after(0, self._on_booker_finished)
 
@@ -602,33 +1303,139 @@ class AsimutBookerGUI:
             self.log("Booker stopped by user.", "warning")
 
     def run_login_setup(self):
-        """Run the login setup (opens browser for SSO)."""
-        self.log("Starting login setup - browser will open for SSO login...", "info")
+        """Backward-compatible alias for the safe login health/recovery action."""
+        self.check_repair_login()
 
-        # Run in visible mode for login
-        thread = threading.Thread(target=self._run_setup_thread)
-        thread.daemon = True
-        thread.start()
+    def _begin_login_operation(self, status_text):
+        """Reserve the GUI's one login-operation slot and disable both actions."""
+        if self.login_operation_in_progress:
+            messagebox.showwarning(
+                "Login Operation Running",
+                "A login check or secure-login update is already running.",
+            )
+            return False
+        self.login_operation_in_progress = True
+        self.login_check_btn.configure(state=tk.DISABLED)
+        self.login_update_btn.configure(state=tk.DISABLED)
+        self.progress_var.set(status_text)
+        return True
 
-    def _run_setup_thread(self):
-        """Thread function to run login setup."""
+    def check_repair_login(self):
+        """Verify or autonomously repair login without opening a website window."""
+        if not self._begin_login_operation("Checking and repairing saved login..."):
+            return
+        self.log("Checking saved Asimut login and repairing it if needed...", "info")
+        threading.Thread(target=self._run_login_check_thread, daemon=True).start()
+
+    def update_secure_login(self):
+        """Open the masked Credential Manager setup prompt in an interactive console."""
+        if not self._begin_login_operation("Secure login prompt is open..."):
+            return
+        self.log(
+            "Opening the private secure-login prompt. Credentials stay in Windows Credential Manager.",
+            "info",
+        )
+        threading.Thread(target=self._run_secure_login_update_thread, daemon=True).start()
+
+    def _run_login_check_thread(self):
+        """Run deterministic login verification/recovery off the Tk thread."""
         try:
+            command = build_login_check_command()
+            validate_login_command(command)
             result = subprocess.run(
-                [sys.executable, "-m", "src.main", "--setup", "--headed"],
+                command,
                 cwd=str(APP_DIR),
                 capture_output=True,
-                text=True
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.root.after(
+                0,
+                self._finish_login_operation,
+                "check",
+                result.returncode,
+                result.stdout or "",
+                result.stderr or "",
+                None,
+            )
+        except Exception as exc:
+            self.root.after(
+                0,
+                self._finish_login_operation,
+                "check",
+                None,
+                "",
+                "",
+                str(exc),
             )
 
-            if result.returncode == 0:
-                self.root.after(0, lambda: self.log("Login setup completed successfully!", "success"))
-            else:
-                self.root.after(0, lambda: self.log(f"Setup output: {result.stdout}\n{result.stderr}", "error"))
+    def _run_secure_login_update_thread(self):
+        """Run the masked interactive credential prompt in a new console."""
+        try:
+            command = build_secure_login_update_command()
+            validate_login_command(command)
+            process = subprocess.Popen(
+                command,
+                cwd=str(APP_DIR),
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+            return_code = process.wait()
+            self.root.after(
+                0,
+                self._finish_login_operation,
+                "update",
+                return_code,
+                "",
+                "",
+                None,
+            )
+        except Exception as exc:
+            self.root.after(
+                0,
+                self._finish_login_operation,
+                "update",
+                None,
+                "",
+                "",
+                str(exc),
+            )
 
-        except Exception as e:
-            self.root.after(0, lambda: self.log(f"Error during setup: {e}", "error"))
-        finally:
-            self.root.after(0, self.refresh_status)
+    def _finish_login_operation(
+        self,
+        operation,
+        return_code,
+        stdout,
+        stderr,
+        error_message,
+    ):
+        """Report one login operation and re-enable controls on the Tk thread."""
+        self.login_operation_in_progress = False
+        self.login_check_btn.configure(state=tk.NORMAL)
+        self.login_update_btn.configure(state=tk.NORMAL)
+
+        if error_message:
+            summary = f"Login operation failed to start: {error_message}"
+            self.log(summary, "error")
+            self.progress_var.set("Login operation failed")
+        elif return_code == 0 and operation == "check":
+            output = "\n".join(part.strip() for part in (stdout, stderr) if part.strip())
+            if output:
+                self.log(output, "info")
+            self.log("Saved Asimut login is ready.", "success")
+            self.progress_var.set("Login ready")
+        elif return_code == 0:
+            self.log("Secure autonomous-login details were updated.", "success")
+            self.progress_var.set("Secure login updated")
+        else:
+            output = "\n".join(part.strip() for part in (stdout, stderr) if part.strip())
+            detail = f": {output}" if output else ""
+            label = "Login check" if operation == "check" else "Secure login update"
+            self.log(f"{label} exited with code {return_code}{detail}", "error")
+            self.progress_var.set(f"{label} failed")
+
+        self.refresh_status()
 
     def show_cleanup_dialog(self):
         """Show dialog to clean up old/unused files."""
@@ -713,10 +1520,10 @@ class AsimutBookerGUI:
         self._show_scheduled_tasks_dialog()
 
     def _show_scheduled_tasks_dialog(self):
-        """Show dialog for managing scheduled tasks."""
+        """Show the single automatic recurring schedule."""
         dialog = tk.Toplevel(self.root)
-        dialog.title("Scheduled Tasks Manager")
-        dialog.geometry("900x600")
+        dialog.title("Automatic Schedule")
+        dialog.geometry("820x440")
         dialog.transient(self.root)
 
         # Main container
@@ -727,13 +1534,29 @@ class AsimutBookerGUI:
         header_frame = ttk.Frame(main_frame)
         header_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(header_frame, text="AsimutBooker Scheduled Tasks", font=("Segoe UI", 14, "bold")).pack(side=tk.LEFT)
+        ttk.Label(
+            header_frame,
+            text="AsimutBooker Automatic Schedule",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(side=tk.LEFT)
 
         # Task count label
         self.task_count_var = tk.StringVar(value="Loading...")
         ttk.Label(header_frame, textvariable=self.task_count_var, foreground="gray").pack(side=tk.RIGHT)
 
-        # Treeview for tasks
+        ttk.Label(
+            main_frame,
+            text=(
+                "A single non-overlapping task checks for bookings every 15 minutes "
+                "from 07:13 through 21:58. Use Install / Repair to create the correct "
+                "schedule and replace obsolete per-time tasks."
+            ),
+            foreground="gray",
+            justify=tk.LEFT,
+            wraplength=780,
+        ).pack(fill=tk.X, pady=(0, 12))
+
+        # Treeview for the one supported task
         tree_frame = ttk.Frame(main_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
@@ -745,7 +1568,7 @@ class AsimutBookerGUI:
         tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Treeview with columns
-        columns = ("task_name", "trigger_time", "target_time", "status", "next_run")
+        columns = ("task_name", "schedule", "status", "next_run")
         self.tasks_tree = ttk.Treeview(
             tree_frame,
             columns=columns,
@@ -756,15 +1579,13 @@ class AsimutBookerGUI:
 
         # Configure columns
         self.tasks_tree.heading("task_name", text="Task Name")
-        self.tasks_tree.heading("trigger_time", text="Trigger Time")
-        self.tasks_tree.heading("target_time", text="Booking Time")
+        self.tasks_tree.heading("schedule", text="Schedule")
         self.tasks_tree.heading("status", text="Status")
         self.tasks_tree.heading("next_run", text="Next Run")
 
-        self.tasks_tree.column("task_name", width=180, minwidth=120)
-        self.tasks_tree.column("trigger_time", width=100, minwidth=80)
-        self.tasks_tree.column("target_time", width=100, minwidth=80)
-        self.tasks_tree.column("status", width=80, minwidth=60)
+        self.tasks_tree.column("task_name", width=190, minwidth=160)
+        self.tasks_tree.column("schedule", width=220, minwidth=180)
+        self.tasks_tree.column("status", width=100, minwidth=80)
         self.tasks_tree.column("next_run", width=180, minwidth=120)
 
         self.tasks_tree.pack(fill=tk.BOTH, expand=True)
@@ -780,16 +1601,29 @@ class AsimutBookerGUI:
         left_btns = ttk.Frame(btn_frame)
         left_btns.pack(side=tk.LEFT)
 
-        ttk.Button(left_btns, text="➕ Add Task", command=lambda: self._add_scheduled_task(dialog)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(left_btns, text="✏️ Edit Selected", command=lambda: self._edit_scheduled_task(dialog)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(left_btns, text="🗑️ Delete Selected", command=lambda: self._delete_scheduled_task(dialog)).pack(side=tk.LEFT, padx=5)
+        self.schedule_setup_btn = ttk.Button(
+            left_btns,
+            text="Install / Repair Schedule",
+            command=self.run_setup_script,
+        )
+        self.schedule_setup_btn.pack(side=tk.LEFT, padx=5)
+        self.schedule_remove_btn = ttk.Button(
+            left_btns,
+            text="Remove Schedule",
+            command=lambda: self._delete_scheduled_task(dialog),
+        )
+        self.schedule_remove_btn.pack(side=tk.LEFT, padx=5)
 
         # Right side buttons
         right_btns = ttk.Frame(btn_frame)
         right_btns.pack(side=tk.RIGHT)
 
         ttk.Button(right_btns, text="🔄 Refresh", command=self._refresh_tasks_list).pack(side=tk.LEFT, padx=5)
-        ttk.Button(right_btns, text="Open Task Scheduler", command=lambda: subprocess.Popen(["taskschd.msc"], shell=True)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            right_btns,
+            text="Open Task Scheduler",
+            command=lambda: subprocess.Popen(["taskschd.msc"], shell=False),
+        ).pack(side=tk.LEFT, padx=5)
         ttk.Button(right_btns, text="Close", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
 
         # Store dialog reference
@@ -799,338 +1633,239 @@ class AsimutBookerGUI:
         self._refresh_tasks_list()
 
     def _refresh_tasks_list(self):
-        """Refresh the scheduled tasks list."""
-        # Clear existing items
-        for item in self.tasks_tree.get_children():
-            self.tasks_tree.delete(item)
-
-        try:
-            # Use schtasks command which is more reliable
-            result = subprocess.run(
-                ["schtasks", "/query", "/fo", "CSV", "/v"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-
-            tasks = []
-            lines = result.stdout.strip().split('\n')
-
-            # Parse CSV output - find AsimutBooker tasks
-            # CSV columns: HostName, TaskName, Next Run Time, Status, ... (many more)
-            for line in lines[1:]:  # Skip header
-                if 'AsimutBooker' not in line:
-                    continue
-
-                # Parse CSV (handle quoted fields)
-                reader = csv.reader(io.StringIO(line))
-                try:
-                    fields = next(reader)
-                    if len(fields) < 4:
-                        continue
-
-                    task_name = fields[1].replace('\\', '')  # Remove leading backslash
-                    next_run = fields[2]
-                    status = fields[3]
-
-                    # Extract trigger time from task name (e.g., AsimutBooker_1000 -> calculate 09:58)
-                    trigger_time = ""
-                    target_time = ""
-                    if '_' in task_name:
-                        time_part = task_name.split('_')[-1]
-                        if len(time_part) == 4 and time_part.isdigit():
-                            target_hour = int(time_part[:2])
-                            target_min = int(time_part[2:])
-                            target_time = f"{target_hour:02d}:{target_min:02d}"
-
-                            # Calculate trigger time (2 min before)
-                            trigger_min = target_min - 2
-                            trigger_hour = target_hour
-                            if trigger_min < 0:
-                                trigger_min += 60
-                                trigger_hour -= 1
-                            trigger_time = f"{trigger_hour:02d}:{trigger_min:02d}"
-
-                    tasks.append((task_name, trigger_time, target_time, status, next_run))
-                except:
-                    continue
-
-            # Sort by task name
-            tasks.sort(key=lambda x: x[0])
-
-            for task in tasks:
-                self.tasks_tree.insert("", tk.END, values=task)
-
-            self.task_count_var.set(f"{len(tasks)} task(s)")
-
-        except subprocess.TimeoutExpired:
-            self.task_count_var.set("Error: Timeout")
-        except Exception as e:
-            self.task_count_var.set(f"Error: {str(e)[:30]}")
-
-    def _add_scheduled_task(self, parent_dialog):
-        """Show dialog to add a new scheduled task."""
-        dialog = tk.Toplevel(parent_dialog)
-        dialog.title("Add Scheduled Task")
-        dialog.geometry("400x250")
-        dialog.transient(parent_dialog)
-        dialog.grab_set()
-
-        frame = ttk.Frame(dialog, padding="20")
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(frame, text="Add New Scheduled Task", font=("Segoe UI", 12, "bold")).pack(pady=(0, 20))
-
-        # Booking time input
-        time_frame = ttk.Frame(frame)
-        time_frame.pack(fill=tk.X, pady=10)
-
-        ttk.Label(time_frame, text="Booking Time (HH:MM):").pack(side=tk.LEFT)
-
-        # Hour dropdown
-        hour_var = tk.StringVar(value="10")
-        hour_combo = ttk.Combobox(time_frame, textvariable=hour_var,
-                                   values=[f"{h:02d}" for h in range(7, 23)],
-                                   width=4, state="readonly")
-        hour_combo.pack(side=tk.LEFT, padx=(10, 2))
-
-        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
-
-        # Minute dropdown (00 or 30)
-        minute_var = tk.StringVar(value="00")
-        minute_combo = ttk.Combobox(time_frame, textvariable=minute_var,
-                                     values=["00", "30"],
-                                     width=4, state="readonly")
-        minute_combo.pack(side=tk.LEFT, padx=2)
-
-        # Info label
-        info_label = ttk.Label(frame, text="Task will trigger 2 minutes before this time\nto prepare for booking.",
-                               foreground="gray", justify=tk.CENTER)
-        info_label.pack(pady=20)
-
-        # Buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=tk.X, pady=(20, 0))
-
-        def create_task():
-            booking_time = f"{hour_var.get()}:{minute_var.get()}"
-            task_name = f"AsimutBooker_{hour_var.get()}{minute_var.get()}"
-
-            # Check if task already exists
-            result = subprocess.run(
-                ["powershell", "-Command", f"Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue"],
-                capture_output=True, text=True
-            )
-            if task_name in result.stdout:
-                messagebox.showerror("Error", f"Task '{task_name}' already exists!", parent=dialog)
-                return
-
-            # Calculate trigger time (2 minutes before)
-            trigger_hour = int(hour_var.get())
-            trigger_minute = int(minute_var.get()) - 2
-            if trigger_minute < 0:
-                trigger_minute += 60
-                trigger_hour -= 1
-            trigger_time = f"{trigger_hour:02d}:{trigger_minute:02d}"
-
-            # Create the task
-            script_path = APP_DIR / "run_booker.bat"
-            ps_command = f'''
-                $Action = New-ScheduledTaskAction -Execute '{script_path}' -Argument '--target-time {booking_time}' -WorkingDirectory '{APP_DIR}'
-                $Trigger = New-ScheduledTaskTrigger -Daily -At '{trigger_time}'
-                $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
-                $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-                Register-ScheduledTask -TaskName '{task_name}' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description 'AsimutBooker automatic room booking at {booking_time} (starts at {trigger_time})'
-            '''
-
-            try:
-                result = subprocess.run(
-                    ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
-                    capture_output=True, text=True, timeout=30
-                )
-                if result.returncode == 0:
-                    messagebox.showinfo("Success", f"Task '{task_name}' created successfully!\n\nTriggers at {trigger_time}, books at {booking_time}", parent=dialog)
-                    dialog.destroy()
-                    self._refresh_tasks_list()
-                else:
-                    messagebox.showerror("Error", f"Failed to create task:\n{result.stderr}", parent=dialog)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to create task: {e}", parent=dialog)
-
-        ttk.Button(btn_frame, text="Create Task", command=create_task).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
-
-    def _edit_scheduled_task(self, parent_dialog):
-        """Edit the selected scheduled task."""
-        selection = self.tasks_tree.selection()
-        if not selection:
-            messagebox.showwarning("No Selection", "Please select a task to edit.", parent=parent_dialog)
-            return
-
-        item = selection[0]
-        values = self.tasks_tree.item(item, "values")
-        task_name = values[0]
-        current_trigger = values[1]
-        current_target = values[2]
-
-        dialog = tk.Toplevel(parent_dialog)
-        dialog.title(f"Edit Task: {task_name}")
-        dialog.geometry("400x250")
-        dialog.transient(parent_dialog)
-        dialog.grab_set()
-
-        frame = ttk.Frame(dialog, padding="20")
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(frame, text=f"Edit: {task_name}", font=("Segoe UI", 12, "bold")).pack(pady=(0, 20))
-
-        # Booking time input
-        time_frame = ttk.Frame(frame)
-        time_frame.pack(fill=tk.X, pady=10)
-
-        ttk.Label(time_frame, text="Booking Time (HH:MM):").pack(side=tk.LEFT)
-
-        # Parse current target time
-        current_hour = current_target.split(':')[0] if current_target else "10"
-        current_minute = current_target.split(':')[1] if current_target and ':' in current_target else "00"
-
-        # Hour dropdown
-        hour_var = tk.StringVar(value=current_hour)
-        hour_combo = ttk.Combobox(time_frame, textvariable=hour_var,
-                                   values=[f"{h:02d}" for h in range(7, 23)],
-                                   width=4, state="readonly")
-        hour_combo.pack(side=tk.LEFT, padx=(10, 2))
-
-        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
-
-        # Minute dropdown
-        minute_var = tk.StringVar(value=current_minute)
-        minute_combo = ttk.Combobox(time_frame, textvariable=minute_var,
-                                     values=["00", "30"],
-                                     width=4, state="readonly")
-        minute_combo.pack(side=tk.LEFT, padx=2)
-
-        # Info label
-        info_label = ttk.Label(frame, text=f"Current: triggers at {current_trigger}, books at {current_target}",
-                               foreground="gray")
-        info_label.pack(pady=20)
-
-        # Buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=tk.X, pady=(20, 0))
-
-        def update_task():
-            new_booking_time = f"{hour_var.get()}:{minute_var.get()}"
-            new_task_name = f"AsimutBooker_{hour_var.get()}{minute_var.get()}"
-
-            # Calculate new trigger time
-            trigger_hour = int(hour_var.get())
-            trigger_minute = int(minute_var.get()) - 2
-            if trigger_minute < 0:
-                trigger_minute += 60
-                trigger_hour -= 1
-            new_trigger_time = f"{trigger_hour:02d}:{trigger_minute:02d}"
-
-            script_path = APP_DIR / "run_booker.bat"
-
-            # Delete old task and create new one
-            ps_command = f'''
-                Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false -ErrorAction SilentlyContinue
-                $Action = New-ScheduledTaskAction -Execute '{script_path}' -Argument '--target-time {new_booking_time}' -WorkingDirectory '{APP_DIR}'
-                $Trigger = New-ScheduledTaskTrigger -Daily -At '{new_trigger_time}'
-                $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
-                $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-                Register-ScheduledTask -TaskName '{new_task_name}' -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description 'AsimutBooker automatic room booking at {new_booking_time} (starts at {new_trigger_time})'
-            '''
-
-            try:
-                result = subprocess.run(
-                    ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
-                    capture_output=True, text=True, timeout=30
-                )
-                if result.returncode == 0:
-                    messagebox.showinfo("Success", f"Task updated!\n\nNew schedule: triggers at {new_trigger_time}, books at {new_booking_time}", parent=dialog)
-                    dialog.destroy()
-                    self._refresh_tasks_list()
-                else:
-                    messagebox.showerror("Error", f"Failed to update task:\n{result.stderr}", parent=dialog)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to update task: {e}", parent=dialog)
-
-        ttk.Button(btn_frame, text="Update Task", command=update_task).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        """Refresh the recurring task row without blocking the Tk event loop."""
+        self._start_scheduler_status_refresh()
 
     def _delete_scheduled_task(self, parent_dialog):
-        """Delete the selected scheduled task(s)."""
-        selection = self.tasks_tree.selection()
-        if not selection:
-            messagebox.showwarning("No Selection", "Please select task(s) to delete.", parent=parent_dialog)
+        """Remove and verify the recurring task through headless Agent UAC."""
+        if self.schedule_remove_in_progress:
+            messagebox.showinfo(
+                "Remove Automatic Schedule",
+                "Schedule removal is already running. Please wait for it to finish.",
+                parent=parent_dialog,
+            )
+            return
+        if self.schedule_setup_in_progress:
+            messagebox.showinfo(
+                "Remove Automatic Schedule",
+                "Schedule setup is still running. Please wait for it to finish.",
+                parent=parent_dialog,
+            )
             return
 
-        # Get task names
-        task_names = [self.tasks_tree.item(item, "values")[0] for item in selection]
-
-        if len(task_names) == 1:
-            msg = f"Are you sure you want to delete '{task_names[0]}'?"
-        else:
-            msg = f"Are you sure you want to delete {len(task_names)} tasks?\n\n" + "\n".join(task_names[:5])
-            if len(task_names) > 5:
-                msg += f"\n... and {len(task_names) - 5} more"
-
-        if not messagebox.askyesno("Confirm Delete", msg, parent=parent_dialog):
+        if not messagebox.askyesno(
+            "Remove Automatic Schedule",
+            "Remove the AsimutBooker automatic 15-minute schedule?\n\n"
+            "Manual runs from the control panel will still work.",
+            parent=parent_dialog,
+        ):
             return
 
-        # Delete tasks
-        deleted = 0
-        errors = []
-        for task_name in task_names:
+        try:
+            command = build_scheduler_remove_command()
+        except Exception as exc:
+            messagebox.showerror(
+                "Could Not Remove Schedule",
+                str(exc),
+                parent=parent_dialog,
+            )
+            return
+
+        if not Path(command[0]).is_file():
+            messagebox.showerror(
+                "Could Not Remove Schedule",
+                "Agent UAC is not installed, so the automatic schedule cannot be "
+                f"removed safely. Expected:\n{command[0]}",
+                parent=parent_dialog,
+            )
+            return
+
+        self.schedule_remove_in_progress = True
+        if hasattr(self, "schedule_remove_btn"):
+            self.schedule_remove_btn.config(state=tk.DISABLED)
+        if hasattr(self, "schedule_setup_btn"):
+            self.schedule_setup_btn.config(state=tk.DISABLED)
+        self.log("Removing and verifying the automatic schedule...", "info")
+
+        def worker():
+            error = None
             try:
                 result = subprocess.run(
-                    ["powershell", "-Command", f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false"],
-                    capture_output=True, text=True, timeout=15
+                    command,
+                    cwd=str(APP_DIR),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=90,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                if result.returncode == 0:
-                    deleted += 1
-                else:
-                    errors.append(f"{task_name}: {result.stderr}")
-            except Exception as e:
-                errors.append(f"{task_name}: {e}")
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout).strip()
+                    raise RuntimeError(
+                        detail or f"Agent UAC exited with code {result.returncode}."
+                    )
+                if query_recurring_task_status() is not None:
+                    raise RuntimeError(
+                        "The automatic schedule still exists after the removal command."
+                    )
+            except Exception as exc:
+                error = str(exc)
 
-        if errors:
-            messagebox.showwarning("Partial Success",
-                                   f"Deleted {deleted} task(s).\n\nErrors:\n" + "\n".join(errors[:3]),
-                                   parent=parent_dialog)
-        else:
-            messagebox.showinfo("Success", f"Deleted {deleted} task(s).", parent=parent_dialog)
+            try:
+                self.root.after(0, self._finish_schedule_removal, error, parent_dialog)
+            except (RuntimeError, tk.TclError):
+                pass
 
-        self._refresh_tasks_list()
+        threading.Thread(target=worker, daemon=True).start()
 
-    def run_setup_script(self):
-        """Run the PowerShell setup script (requires admin)."""
-        script_path = APP_DIR / "setup_scheduled_tasks.ps1"
-        if not script_path.exists():
-            messagebox.showerror("Error", "setup_scheduled_tasks.ps1 not found!")
+    def _finish_schedule_removal(self, error, parent_dialog):
+        """Report a completed elevated removal and refresh status asynchronously."""
+        self.schedule_remove_in_progress = False
+        for button_name in ("schedule_remove_btn", "schedule_setup_btn"):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                try:
+                    button.config(state=tk.NORMAL)
+                except tk.TclError:
+                    pass
+
+        self._start_scheduler_status_refresh()
+        if error:
+            self.log(f"Automatic schedule removal failed: {error}", "error")
+            messagebox.showerror(
+                "Could Not Remove Schedule",
+                error,
+                parent=parent_dialog,
+            )
             return
 
-        msg = "This will run the setup script as Administrator.\n\nIt will:\n"
-        msg += "• Remove existing scheduled tasks\n"
-        msg += "• Create new scheduled tasks (every 30 min)\n"
-        msg += "• Enable wake timers\n"
-        msg += "• Configure lid close action\n\n"
-        msg += "Continue?"
+        self.log("Automatic schedule is absent and verified.", "success")
+        messagebox.showinfo(
+            "Schedule Removed",
+            "The automatic schedule is absent and its removal was verified.",
+            parent=parent_dialog,
+        )
 
-        if messagebox.askyesno("Run Setup Script", msg):
+    def run_setup_script(self):
+        """Install or repair the recurring schedule through headless Agent UAC."""
+        if self.schedule_remove_in_progress:
+            messagebox.showinfo(
+                "Schedule Setup",
+                "Schedule removal is still running. Please wait for it to finish.",
+            )
+            return
+        if self.schedule_setup_in_progress:
+            messagebox.showinfo(
+                "Schedule Setup",
+                "Schedule setup is already running. Please wait for it to finish.",
+            )
+            return
+
+        script_path = APP_DIR / "setup_scheduled_tasks.ps1"
+        if not script_path.exists():
+            messagebox.showerror(
+                "Schedule Setup Error",
+                f"The setup script was not found:\n{script_path}",
+            )
+            return
+
+        try:
+            command = build_scheduler_setup_command(script_path)
+        except Exception as exc:
+            messagebox.showerror("Schedule Setup Error", str(exc))
+            return
+
+        if not Path(command[0]).is_file():
+            messagebox.showerror(
+                "Schedule Setup Error",
+                "Agent UAC is not installed, so the automatic schedule cannot be "
+                f"configured safely. Expected:\n{command[0]}",
+            )
+            return
+
+        msg = (
+            "Install or repair the automatic booking schedule?\n\n"
+            "This will:\n"
+            "• Replace obsolete AsimutBooker tasks with one recurring task\n"
+            "• Run every 15 minutes from 07:13 through 21:58\n"
+            "• Ignore overlapping starts and catch up after missed starts\n"
+            "• Enable AC/DC wake-timer requests and plugged-in lid-close operation\n\n"
+            "Wake-from-sleep still depends on Windows, firmware, and hardware support.\n\n"
+            "The setup runs in the background and reports its final result here."
+        )
+        if not messagebox.askyesno("Install / Repair Schedule", msg):
+            return
+
+        self.schedule_setup_in_progress = True
+        if hasattr(self, "schedule_setup_btn"):
+            self.schedule_setup_btn.config(state=tk.DISABLED)
+        if hasattr(self, "schedule_remove_btn"):
+            self.schedule_remove_btn.config(state=tk.DISABLED)
+        self.log("Installing or repairing the automatic schedule...", "info")
+
+        def worker():
             try:
-                # Run PowerShell as admin
-                subprocess.Popen(
-                    ["powershell", "-Command",
-                     f"Start-Process powershell -ArgumentList '-ExecutionPolicy Bypass -File \"{script_path}\"' -Verb RunAs"],
-                    shell=True
+                result = subprocess.run(
+                    command,
+                    cwd=str(APP_DIR),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=180,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                self.log("Setup script launched (check admin PowerShell window).", "info")
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not launch setup script: {e}")
+                self.root.after(0, self._finish_schedule_setup, result, None)
+            except Exception as exc:
+                self.root.after(0, self._finish_schedule_setup, None, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_schedule_setup(self, result, error):
+        """Refresh scheduler UI and report the completed Agent UAC result."""
+        self.schedule_setup_in_progress = False
+        if hasattr(self, "schedule_setup_btn"):
+            try:
+                self.schedule_setup_btn.config(state=tk.NORMAL)
+            except tk.TclError:
+                pass
+        if hasattr(self, "schedule_remove_btn"):
+            try:
+                self.schedule_remove_btn.config(state=tk.NORMAL)
+            except tk.TclError:
+                pass
+
+        self._start_scheduler_status_refresh()
+
+        if error:
+            self.log(f"Automatic schedule setup failed: {error}", "error")
+            messagebox.showerror("Schedule Setup Failed", error)
+            return
+
+        output = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        )
+        if result.returncode == 0:
+            self.log("Automatic schedule installed and verified.", "success")
+            messagebox.showinfo(
+                "Schedule Ready",
+                "The automatic schedule is installed and verified.\n\n"
+                "It will run every 15 minutes from 07:13 through 21:58. "
+                "AC/DC wake timers were requested; actual wake support depends on "
+                "Windows and the PC hardware.",
+            )
+            return
+
+        detail = output[-3000:] if output else f"Agent UAC exited with code {result.returncode}."
+        self.log(
+            f"Automatic schedule setup failed (exit {result.returncode}): {detail}",
+            "error",
+        )
+        messagebox.showerror(
+            "Schedule Setup Failed",
+            f"The schedule was not installed (exit {result.returncode}).\n\n{detail}",
+        )
 
     def open_config(self):
         """Open config file in default editor."""
@@ -1316,47 +2051,107 @@ class AsimutBookerGUI:
         msg += "Features:\n"
         msg += "• Auto-books rooms as they become available\n"
         msg += "• Respects all booking rules (quota, peak hours, etc.)\n"
-        msg += "• Runs on schedule with wake-from-sleep\n\n"
+        msg += "• Requests scheduled wake-from-sleep when Windows and hardware support it\n\n"
         msg += f"App Directory: {APP_DIR}"
 
         messagebox.showinfo("About AsimutBooker", msg)
 
     def load_history(self):
         """Load booking history from file."""
-        if HISTORY_FILE.exists():
-            try:
-                with open(HISTORY_FILE, 'r') as f:
-                    return json.load(f)
-            except:
-                pass
-        return {"runs": []}
+        try:
+            return load_history_document(HISTORY_FILE)
+        except SettingsError as exc:
+            if hasattr(self, "log_text"):
+                self.log(str(exc), "error")
+            return {"runs": []}
 
     def save_history(self, history):
-        """Save booking history to file."""
-        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(HISTORY_FILE, 'w') as f:
-            json.dump(history, f, indent=2)
+        """Atomically replace booking history under the booker's shared lock."""
+        try:
+            replace_history_document(history, HISTORY_FILE)
+            return True
+        except SettingsError as exc:
+            if hasattr(self, "log_text"):
+                self.log(str(exc), "error")
+            messagebox.showerror("Booking History Error", str(exc))
+            return False
 
     def load_settings(self):
-        """Load settings from file."""
-        if SETTINGS_FILE.exists():
-            try:
-                with open(SETTINGS_FILE, 'r') as f:
-                    return json.load(f)
-            except:
-                pass
-        return {}
+        """Load settings strictly; an unreadable existing file disables all saves."""
+        if not self.settings_available and self.settings_error:
+            return {}
+        try:
+            return strict_load_settings(SETTINGS_FILE)
+        except SettingsError as exc:
+            self._set_settings_error(str(exc))
+            return {}
 
-    def save_settings(self, settings):
-        """Save settings to file."""
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f, indent=2)
+    def _update_settings(self, mutator, *, interactive=True):
+        """Run one locked, atomic, scoped settings update."""
+        if not self.settings_available:
+            if interactive:
+                messagebox.showerror(
+                    "Settings Unavailable",
+                    self.settings_error or "Settings cannot be saved safely.",
+                )
+            return False
+        try:
+            atomic_update_settings(mutator, SETTINGS_FILE)
+            return True
+        except (SettingsError, PracticePlanError, TypeError, ValueError) as exc:
+            self._set_settings_error(str(exc))
+            if interactive:
+                messagebox.showerror("Settings Error", str(exc))
+            return False
+
+    def _set_settings_error(self, message):
+        """Fail closed and make the unsafe settings state visible in the GUI."""
+        self.settings_available = False
+        self.settings_error = f"Settings unavailable — saving disabled: {message}"
+
+        def apply_state():
+            self._apply_settings_availability_state()
+            if hasattr(self, "log_text") and not self._settings_error_reported:
+                self.log(self.settings_error, "error")
+                self._settings_error_reported = True
+
+        if threading.current_thread() is threading.main_thread():
+            apply_state()
+        else:
+            self.root.after(0, apply_state)
+
+    def _apply_settings_availability_state(self):
+        """Disable every preference-writing control after a strict-load failure."""
+        if hasattr(self, "settings_status_var"):
+            self.settings_status_var.set("" if self.settings_available else self.settings_error)
+
+        if not self.settings_available:
+            for widget in self._settings_controls:
+                try:
+                    widget.configure(state=tk.DISABLED)
+                except (tk.TclError, AttributeError):
+                    pass
+            return
+
+        if hasattr(self, "practice_plan_enabled"):
+            self._update_practice_plan_ui_state()
+        if hasattr(self, "time_prefs_enabled"):
+            self._update_time_prefs_ui_state()
 
     def load_booking_days(self):
         """Load enabled booking days from settings."""
         settings = self.load_settings()
-        disabled_dates = set(settings.get("disabled_dates", []))
+        disabled_raw = settings.get("disabled_dates", [])
+        if not isinstance(disabled_raw, list) or not all(isinstance(item, str) for item in disabled_raw):
+            self._set_settings_error("disabled_dates must be a list of YYYY-MM-DD strings")
+            disabled_raw = []
+        try:
+            disabled_dates = {
+                validate_iso_date_key(item, "Disabled date") for item in disabled_raw
+            }
+        except PracticePlanError as exc:
+            self._set_settings_error(str(exc))
+            disabled_dates = set()
 
         # Initialize day_vars for next 60 days (to cover month view)
         today = datetime.now().date()
@@ -1368,19 +2163,25 @@ class AsimutBookerGUI:
             var = tk.BooleanVar(value=(date_str not in disabled_dates))
             self.day_vars[date_str] = var
 
-    def save_booking_days(self):
-        """Save enabled booking days to settings."""
-        settings = self.load_settings()
+    def save_booking_days(self, day_states: Mapping[str, bool]):
+        """Save only dates edited in this dialog against the latest settings."""
 
-        # Get list of disabled dates
-        disabled_dates = []
-        for date_str, var in self.day_vars.items():
-            if not var.get():
-                disabled_dates.append(date_str)
+        if not day_states:
+            self.load_booking_days()
+            self._update_days_summary()
+            self._update_practice_plan_summary()
+            return True
 
-        settings["disabled_dates"] = disabled_dates
-        self.save_settings(settings)
-        self._update_days_summary()
+        if self._update_settings(
+            lambda settings: apply_booking_day_updates(settings, day_states)
+        ):
+            # Refresh every displayed date from the merged document so a
+            # concurrent out-of-scope edit is immediately visible in this GUI.
+            self.load_booking_days()
+            self._update_days_summary()
+            self._update_practice_plan_summary()
+            return True
+        return False
 
     def _update_days_summary(self):
         """Update the days summary label."""
@@ -1401,17 +2202,265 @@ class AsimutBookerGUI:
         else:
             self.days_summary_var.set(f"{enabled_count}/{total_count} days enabled for booking")
 
-    def load_time_preferences(self):
-        """Load time preferences from settings."""
+    def load_practice_plan_settings(self):
+        """Load and validate the optional per-day practice plan."""
         settings = self.load_settings()
-        prefs = settings.get("time_preferences", {})
+        try:
+            plan = load_practice_plan(settings)
+        except PracticePlanError as exc:
+            self._set_settings_error(str(exc))
+            plan = PracticePlan()
+
+        self.practice_plan = plan
+        self.practice_plan_overrides = dict(plan.date_overrides or {})
+        self.practice_plan_enabled.set(plan.enabled)
+        self.practice_default_hours.set(format_practice_hours(plan.default_hours))
+        self._update_practice_plan_ui_state()
+        self._update_practice_plan_summary()
+
+    def _validated_default_practice_hours(self):
+        """Return the main control's target using the shared schema validator."""
+        try:
+            raw_hours = float(self.practice_default_hours.get().strip())
+        except ValueError as exc:
+            raise PracticePlanError("Default daily target must be a number") from exc
+        plan = load_practice_plan(
+            {"practice_plan": {"enabled": True, "default_hours": raw_hours}}
+        )
+        return plan.default_hours
+
+    def on_practice_plan_changed(self):
+        """Validate and persist the compact practice-plan controls."""
+        if not self.settings_available:
+            return
+        try:
+            default_hours = self._validated_default_practice_hours()
+        except PracticePlanError as exc:
+            self.practice_default_hours.set(format_practice_hours(self.practice_plan.default_hours))
+            self.practice_plan_enabled.set(self.practice_plan.enabled)
+            self._update_practice_plan_ui_state()
+            self._update_practice_plan_summary()
+            messagebox.showerror("Invalid Practice Target", str(exc))
+            return
+
+        enabled = self.practice_plan_enabled.get()
+        saved_plan = []
+
+        def mutate(settings):
+            current_plan = load_practice_plan(settings)
+            candidate = {
+                "enabled": enabled,
+                "default_hours": default_hours,
+                "date_overrides": current_plan.date_overrides or {},
+            }
+            plan = load_practice_plan({"practice_plan": candidate})
+            settings["practice_plan"] = {
+                "enabled": plan.enabled,
+                "default_hours": plan.default_hours,
+                "date_overrides": plan.date_overrides or {},
+            }
+            saved_plan.append(plan)
+
+        if self._update_settings(mutate):
+            self.practice_plan = saved_plan[0]
+            self.practice_plan_overrides = dict(self.practice_plan.date_overrides or {})
+            self.practice_default_hours.set(format_practice_hours(default_hours))
+            self._update_practice_plan_ui_state()
+            self._update_practice_plan_summary()
+
+    def _update_practice_plan_ui_state(self):
+        """Reflect whether daily targets and settings persistence are available."""
+        if not hasattr(self, "practice_default_spin"):
+            return
+        if not self.settings_available:
+            self.practice_plan_enable_cb.configure(state=tk.DISABLED)
+            self.practice_default_spin.configure(state=tk.DISABLED)
+            self.practice_plan_customize_btn.configure(state=tk.DISABLED)
+            return
+
+        self.practice_plan_enable_cb.configure(state=tk.NORMAL)
+        self.practice_default_spin.configure(
+            state=tk.NORMAL if self.practice_plan_enabled.get() else tk.DISABLED
+        )
+        self.practice_plan_customize_btn.configure(state=tk.NORMAL)
+
+    def _update_practice_plan_summary(self):
+        """Show a concise eight-day plan summary."""
+        if not hasattr(self, "practice_plan_summary_var"):
+            return
+        if not self.practice_plan_enabled.get():
+            self.practice_plan_summary_var.set("Daily targets off — using legacy allocation")
+            return
+
+        today = datetime.now().date()
+        enabled_count = 0
+        override_parts = []
+        for offset in range(8):
+            target_date = today + timedelta(days=offset)
+            date_key = target_date.isoformat()
+            if date_key in self.day_vars and self.day_vars[date_key].get():
+                enabled_count += 1
+                if date_key in self.practice_plan_overrides:
+                    override_parts.append(
+                        f"{target_date.strftime('%a')} {format_practice_hours(self.practice_plan_overrides[date_key])}h"
+                    )
+
+        default_text = format_practice_hours(self.practice_plan.default_hours)
+        summary = f"{enabled_count}/8 days • {default_text}h default"
+        if override_parts:
+            shown = ", ".join(override_parts[:3])
+            if len(override_parts) > 3:
+                shown += f" +{len(override_parts) - 3} more"
+            summary += f" • {shown}"
+        self.practice_plan_summary_var.set(summary)
+
+    def show_practice_plan_dialog(self):
+        """Edit enabled days and per-date targets using isolated working copies."""
+        if not self.settings_available:
+            messagebox.showerror("Settings Unavailable", self.settings_error)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Customize Practice Plan")
+        dialog.geometry("720x570")
+        dialog.minsize(650, 520)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        content = ttk.Frame(dialog, padding="18")
+        content.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(content, text="Next 8 Days", font=("Segoe UI", 16, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky=tk.W, pady=(0, 4)
+        )
+        ttk.Label(
+            content,
+            text=(
+                "Turn days off or choose a target that replaces the default for that date. "
+                "Saving this screen turns daily targets on."
+            ),
+            foreground="#555555",
+        ).grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(0, 14))
+        ttk.Label(content, text="Book", font=("Segoe UI", 11, "bold")).grid(row=2, column=0, sticky=tk.W)
+        ttk.Label(content, text="Date", font=("Segoe UI", 11, "bold")).grid(row=2, column=1, sticky=tk.W)
+        ttk.Label(content, text="Desired practice", font=("Segoe UI", 11, "bold")).grid(row=2, column=2, sticky=tk.W)
+
+        try:
+            default_hours = self._validated_default_practice_hours()
+        except PracticePlanError as exc:
+            messagebox.showerror("Invalid Practice Target", str(exc))
+            dialog.destroy()
+            return
+        default_choice = f"Default ({format_practice_hours(default_hours)}h)"
+        choices = (default_choice,) + PRACTICE_TARGET_CHOICES
+        day_working = {}
+        target_working = {}
+        target_widgets = {}
+        today = datetime.now().date()
+
+        def update_row_state(date_key):
+            target_widgets[date_key].configure(
+                state="readonly" if day_working[date_key].get() else tk.DISABLED
+            )
+
+        for offset in range(8):
+            target_date = today + timedelta(days=offset)
+            date_key = target_date.isoformat()
+            row = offset + 3
+            enabled = self.day_vars.get(date_key).get() if date_key in self.day_vars else True
+            day_working[date_key] = tk.BooleanVar(value=enabled)
+            target_value = self.practice_plan_overrides.get(date_key)
+            selected = (
+                f"{format_practice_hours(target_value)}h"
+                if target_value is not None
+                else default_choice
+            )
+            target_working[date_key] = tk.StringVar(value=selected)
+
+            ttk.Checkbutton(
+                content,
+                variable=day_working[date_key],
+                command=lambda key=date_key: update_row_state(key),
+            ).grid(row=row, column=0, sticky=tk.W, padx=(4, 16), pady=5)
+            label = f"{target_date.strftime('%A')} {target_date.day} {target_date.strftime('%B')}"
+            if offset == 0:
+                label += " (Today)"
+            ttk.Label(content, text=label).grid(row=row, column=1, sticky=tk.W, padx=(0, 24), pady=5)
+            target_widgets[date_key] = ttk.Combobox(
+                content,
+                textvariable=target_working[date_key],
+                values=choices,
+                state="readonly" if enabled else tk.DISABLED,
+                width=19,
+            )
+            target_widgets[date_key].grid(row=row, column=2, sticky=tk.W, pady=5)
+
+        content.columnconfigure(1, weight=1)
+
+        buttons = ttk.Frame(dialog, padding=(18, 8, 18, 18))
+        buttons.pack(fill=tk.X)
+
+        def save_and_close():
+            states = {key: var.get() for key, var in day_working.items()}
+            overrides = {}
+            try:
+                for date_key, var in target_working.items():
+                    choice = var.get()
+                    overrides[date_key] = (
+                        None if choice == default_choice else parse_practice_target_choice(choice)
+                    )
+            except PracticePlanError as exc:
+                messagebox.showerror("Invalid Practice Target", str(exc), parent=dialog)
+                return
+
+            saved_plan = []
+
+            def mutate(settings):
+                saved_plan.append(
+                    apply_practice_plan_update(
+                        settings,
+                        # Saving a customized plan must never create silently
+                        # inactive targets.  The top-level checkbox remains the
+                        # explicit way to turn daily targets off again.
+                        plan_enabled=True,
+                        default_hours=default_hours,
+                        day_states=states,
+                        date_overrides=overrides,
+                    )
+                )
+
+            if not self._update_settings(mutate):
+                return
+
+            for date_key, enabled in states.items():
+                if date_key in self.day_vars:
+                    self.day_vars[date_key].set(enabled)
+            self.practice_plan_enabled.set(True)
+            self.practice_plan = saved_plan[0]
+            self.practice_plan_overrides = dict(self.practice_plan.date_overrides or {})
+            self._update_practice_plan_ui_state()
+            self._update_days_summary()
+            self._update_practice_plan_summary()
+            self.log("Practice plan saved", "info")
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Save Plan", command=save_and_close, width=14).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.RIGHT)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+    def load_time_preferences(self):
+        """Load time preferences strictly and fail closed on malformed values."""
+        settings = self.load_settings()
+        try:
+            prefs = validate_time_preferences_section(settings)
+        except SettingsError as exc:
+            self._set_settings_error(str(exc))
+            prefs = validate_time_preferences_section({})
 
         # Set enabled state
-        enabled = prefs.get("enabled", False)
-        self.time_prefs_enabled.set(enabled)
+        self.time_prefs_enabled.set(prefs["enabled"])
 
         # Set preset
-        preset = prefs.get("preset", "afternoon_evening")
+        preset = prefs["preset"]
         # Find the display name for this preset
         for display_name, preset_key in self.time_prefs_presets.items():
             if preset_key == preset:
@@ -1419,61 +2468,55 @@ class AsimutBookerGUI:
                 break
 
         # Set custom hours and minutes
-        self.custom_start_hour.set(str(prefs.get("custom_start_hour", 14)))
-        self.custom_start_min.set(str(prefs.get("custom_start_min", 0)).zfill(2))
-        self.custom_end_hour.set(str(prefs.get("custom_end_hour", 22)))
-        self.custom_end_min.set(str(prefs.get("custom_end_min", 0)).zfill(2))
+        self.custom_start_hour.set(str(prefs["custom_start_hour"]))
+        self.custom_start_min.set(str(prefs["custom_start_min"]).zfill(2))
+        self.custom_end_hour.set(str(prefs["custom_end_hour"]))
+        self.custom_end_min.set(str(prefs["custom_end_min"]).zfill(2))
 
         # Set strict mode
-        self.time_prefs_strict.set(prefs.get("strict_mode", False))
+        self.time_prefs_strict.set(prefs["strict_mode"])
 
         # Update UI state
         self._update_time_prefs_ui_state()
 
     def save_time_preferences(self):
-        """Save time preferences to settings."""
-        settings = self.load_settings()
-
+        """Validate and save time preferences without silently coercing input."""
         # Get the preset key from the display name
         display_name = self.time_prefs_dropdown.get()
-        preset_key = self.time_prefs_presets.get(display_name, "afternoon_evening")
+        preset_key = self.time_prefs_presets.get(display_name)
+        if preset_key is None:
+            messagebox.showerror(
+                "Invalid Time Preferences",
+                "Choose one of the listed time preference presets.",
+            )
+            return False
 
         # Get custom hours and minutes (validate)
         try:
-            start_hour = max(0, min(23, int(self.custom_start_hour.get())))
-            start_min = max(0, min(59, int(self.custom_start_min.get())))
-            end_hour = max(0, min(24, int(self.custom_end_hour.get())))
-            end_min = max(0, min(59, int(self.custom_end_min.get())))
+            candidate = {
+                "enabled": self.time_prefs_enabled.get(),
+                "preset": preset_key,
+                "custom_start_hour": int(self.custom_start_hour.get()),
+                "custom_start_min": int(self.custom_start_min.get()),
+                "custom_end_hour": int(self.custom_end_hour.get()),
+                "custom_end_min": int(self.custom_end_min.get()),
+                "strict_mode": self.time_prefs_strict.get(),
+            }
+            time_preferences = validate_time_preferences_section(
+                {"time_preferences": candidate}
+            )
+        except (SettingsError, TypeError, ValueError) as exc:
+            messagebox.showerror("Invalid Time Preferences", str(exc))
+            return False
 
-            # Ensure end > start
-            start_total = start_hour * 60 + start_min
-            end_total = end_hour * 60 + end_min
-            if end_total <= start_total:
-                end_hour = min(start_hour + 1, 24)
-                end_min = start_min
-                self.custom_end_hour.set(str(end_hour))
-                self.custom_end_min.set(str(end_min).zfill(2))
+        self.custom_start_hour.set(str(time_preferences["custom_start_hour"]))
+        self.custom_start_min.set(str(time_preferences["custom_start_min"]).zfill(2))
+        self.custom_end_hour.set(str(time_preferences["custom_end_hour"]))
+        self.custom_end_min.set(str(time_preferences["custom_end_min"]).zfill(2))
 
-            # Update display with validated values
-            self.custom_start_hour.set(str(start_hour))
-            self.custom_start_min.set(str(start_min).zfill(2))
-            self.custom_end_hour.set(str(end_hour))
-            self.custom_end_min.set(str(end_min).zfill(2))
-        except ValueError:
-            start_hour, start_min = 14, 0
-            end_hour, end_min = 22, 0
-
-        settings["time_preferences"] = {
-            "enabled": self.time_prefs_enabled.get(),
-            "preset": preset_key,
-            "custom_start_hour": start_hour,
-            "custom_start_min": start_min,
-            "custom_end_hour": end_hour,
-            "custom_end_min": end_min,
-            "strict_mode": self.time_prefs_strict.get()
-        }
-
-        self.save_settings(settings)
+        return self._update_settings(
+            lambda settings: settings.__setitem__("time_preferences", time_preferences)
+        )
 
     def on_time_prefs_changed(self):
         """Handle changes to time preferences."""
@@ -1482,6 +2525,10 @@ class AsimutBookerGUI:
 
     def _update_time_prefs_ui_state(self):
         """Update enabled/disabled state of time preference controls."""
+        if not self.settings_available:
+            self.time_prefs_dropdown.config(state=tk.DISABLED)
+            self.time_prefs_strict_cb.config(state=tk.DISABLED)
+            return
         enabled = self.time_prefs_enabled.get()
         is_custom = self.time_prefs_dropdown.get() == "Custom..."
 
@@ -1499,22 +2546,33 @@ class AsimutBookerGUI:
             self.custom_time_frame.pack_forget()
 
     def load_strategy_settings(self):
-        """Load booking strategy settings from settings file."""
+        """Load booking strategy strictly and fail closed on malformed values."""
         settings = self.load_settings()
-        strategy = settings.get("booking_strategy", {})
-        self.reverse_date_order.set(strategy.get("reverse_date_order", False))
+        try:
+            strategy = validate_booking_strategy_section(settings)
+        except SettingsError as exc:
+            self._set_settings_error(str(exc))
+            strategy = validate_booking_strategy_section({})
+        self.reverse_date_order.set(strategy["reverse_date_order"])
         # Smart swap disabled for now
         # self.smart_swap_enabled.set(strategy.get("smart_swap_enabled", False))
 
     def save_strategy_settings(self):
         """Save booking strategy settings to settings file."""
-        settings = self.load_settings()
-        settings["booking_strategy"] = {
-            "reverse_date_order": self.reverse_date_order.get()
-            # Smart swap disabled for now
-            # "smart_swap_enabled": self.smart_swap_enabled.get()
-        }
-        self.save_settings(settings)
+        try:
+            booking_strategy = validate_booking_strategy_section(
+                {
+                    "booking_strategy": {
+                        "reverse_date_order": self.reverse_date_order.get()
+                    }
+                }
+            )
+        except SettingsError as exc:
+            messagebox.showerror("Invalid Booking Strategy", str(exc))
+            return False
+        return self._update_settings(
+            lambda settings: settings.__setitem__("booking_strategy", booking_strategy)
+        )
 
     def on_strategy_changed(self):
         """Handle changes to booking strategy settings."""
@@ -1522,21 +2580,20 @@ class AsimutBookerGUI:
 
     def add_history_entry(self, bookings_made, events_detected, details=""):
         """Add a new entry to booking history."""
-        history = self.load_history()
-
         entry = {
             "timestamp": datetime.now().isoformat(),
             "bookings_made": bookings_made,
             "events_detected": events_detected,
             "details": details
         }
-
-        history["runs"].insert(0, entry)  # Add to beginning
-
-        # Keep only last 100 entries
-        history["runs"] = history["runs"][:100]
-
-        self.save_history(history)
+        try:
+            append_history_entry(entry, HISTORY_FILE)
+            return True
+        except SettingsError as exc:
+            if hasattr(self, "log_text"):
+                self.log(str(exc), "error")
+            messagebox.showerror("Booking History Error", str(exc))
+            return False
 
     def show_history_dialog(self):
         """Show dialog with booking history."""
@@ -1622,9 +2679,9 @@ class AsimutBookerGUI:
     def _clear_history(self, tree):
         """Clear all booking history."""
         if messagebox.askyesno("Clear History", "Are you sure you want to clear all booking history?"):
-            self.save_history({"runs": []})
-            self._refresh_history_list(tree)
-            self.log("Booking history cleared.", "info")
+            if self.save_history({"runs": []}):
+                self._refresh_history_list(tree)
+                self.log("Booking history cleared.", "info")
 
     def show_calendar_dialog(self):
         """Show calendar dialog for selecting booking days."""
@@ -1633,6 +2690,7 @@ class AsimutBookerGUI:
         dialog.geometry("1100x750")
         dialog.transient(self.root)
         dialog.grab_set()
+        day_snapshot = {date_key: var.get() for date_key, var in self.day_vars.items()}
 
         # Store dialog reference for updates
         self.calendar_dialog = dialog
@@ -1790,6 +2848,16 @@ class AsimutBookerGUI:
             self.calendar_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         self.calendar_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
+        def cancel_and_close():
+            # Calendar cells edit the live BooleanVars, so restore the opening snapshot.
+            for date_key, enabled in day_snapshot.items():
+                if date_key in self.day_vars:
+                    self.day_vars[date_key].set(enabled)
+            self._calendar_scan_generation += 1
+            self.calendar_canvas.unbind_all("<MouseWheel>")
+            self.calendar_dialog = None
+            dialog.destroy()
+
         # Bottom buttons
         bottom_frame = ttk.Frame(dialog, padding="10")
         bottom_frame.pack(fill=tk.X)
@@ -1797,22 +2865,18 @@ class AsimutBookerGUI:
         ttk.Button(
             bottom_frame,
             text="Save & Close",
-            command=lambda: self._save_calendar_and_close(dialog),
+            command=lambda: self._save_calendar_and_close(dialog, day_snapshot),
             width=15
         ).pack(side=tk.RIGHT, padx=5)
 
         ttk.Button(
             bottom_frame,
             text="Cancel",
-            command=dialog.destroy,
+            command=cancel_and_close,
             width=10
         ).pack(side=tk.RIGHT, padx=5)
 
-        # Cleanup on close
-        def on_close():
-            self.calendar_canvas.unbind_all("<MouseWheel>")
-            dialog.destroy()
-        dialog.protocol("WM_DELETE_WINDOW", on_close)
+        dialog.protocol("WM_DELETE_WINDOW", cancel_and_close)
 
         # Load cached events first (instant display)
         self._load_cached_events()
@@ -2152,38 +3216,61 @@ class AsimutBookerGUI:
     def _scan_calendar_events(self):
         """Scan events for calendar display in background."""
         self.calendar_scan_var.set("Scanning events...")
-
-        thread = threading.Thread(target=self._scan_calendar_events_thread)
+        self._calendar_scan_generation += 1
+        generation = self._calendar_scan_generation
+        thread = threading.Thread(
+            target=self._scan_calendar_events_thread,
+            args=(generation,),
+        )
         thread.daemon = True
         thread.start()
 
-    def _scan_calendar_events_thread(self):
+    def _scan_calendar_events_thread(self, generation):
         """Background thread to scan events for calendar."""
         try:
             from playwright.sync_api import sync_playwright
+            from book_week import (
+                authenticated_runtime_context_options,
+                page_is_authenticated,
+                persist_storage_state,
+                restore_page_authentication,
+                safe_goto,
+            )
 
             today = datetime.now().date()
+            context_options = authenticated_runtime_context_options()
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=str(STATE_FILE)) if STATE_FILE.exists() else browser.new_context()
+                context = browser.new_context(**context_options)
                 page = context.new_page()
-
-                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
-                page.wait_for_timeout(3000)
+                restore_page_authentication(page)
+                safe_goto(page, ASIMUT_AGENDA_URL)
+                require_authenticated_scan_page(
+                    page,
+                    page_is_authenticated,
+                    "/agenda",
+                )
+                page.wait_for_timeout(1000)
 
                 # Scroll to load events
                 target_date = today + timedelta(days=45)
                 target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
+                alternate_target_date_str = target_date.strftime("%d %B %Y")
 
                 max_scrolls = 60
                 scroll_count = 0
                 last_height = 0
                 stalled_count = 0
+                target_reached = False
 
                 while scroll_count < max_scrolls:
                     page_text = page.evaluate("() => document.body.innerText")
-                    if target_date_str in page_text:
+                    if (
+                        target_date_str in page_text
+                        or alternate_target_date_str in page_text
+                    ):
+                        target_reached = True
                         break
 
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -2198,6 +3285,12 @@ class AsimutBookerGUI:
                         stalled_count = 0
                     last_height = new_height
                     scroll_count += 1
+
+                if not target_reached:
+                    raise RuntimeError(
+                        f"Calendar agenda scan did not reach {target_date.isoformat()}; "
+                        "the existing event cache was preserved"
+                    )
 
                 # Final pass
                 page.evaluate("window.scrollTo(0, 0)")
@@ -2234,7 +3327,9 @@ class AsimutBookerGUI:
                                 const displayName = container.querySelector('[data-cy="event-display-name"]');
                                 if (displayName) {
                                     const nameText = (displayName.textContent || '').trim();
-                                    return nameText === 'Reservation' ? 'Reservation' : nameText;
+                                    return (nameText === 'Reservation' || nameText.includes('Reservation'))
+                                        ? 'Reservation'
+                                        : nameText;
                                 }
                                 return 'Event';
                             }
@@ -2250,8 +3345,10 @@ class AsimutBookerGUI:
                                 container.classList.contains('as-event-panel')) {
                                 const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                                 if (locationLink) {
-                                    const roomMatch = (locationLink.textContent || '').match(/B[01]\\.[0-9]{2}/);
-                                    if (roomMatch) return roomMatch[0];
+                                    const roomMatch = (locationLink.textContent || '').match(
+                                        /(?:^|[^A-Za-z0-9.])([A-Z][0-9]+\\.[0-9]{2})(?=$|[^A-Za-z0-9.])/i
+                                    );
+                                    if (roomMatch) return roomMatch[1].toUpperCase();
                                 }
                                 return null;
                             }
@@ -2300,7 +3397,12 @@ class AsimutBookerGUI:
                     }
                     return events;
                 }""")
-
+                require_authenticated_scan_page(
+                    page,
+                    page_is_authenticated,
+                    "/agenda",
+                )
+                persist_storage_state(context)
                 browser.close()
 
             # Group events by date
@@ -2311,41 +3413,75 @@ class AsimutBookerGUI:
                     events_by_date[date] = []
                 events_by_date[date].append(event)
 
-            self.calendar_events = events_by_date
-
             # Also update cached_events in settings
-            settings = self.load_settings()
-            seen = set()
-            unique_events = []
-            for event in events_data:
-                key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
-                if key not in seen:
-                    seen.add(key)
-                    unique_events.append(event)
-            settings["cached_events"] = unique_events
-            settings["cached_events_timestamp"] = datetime.now().isoformat()
-            self.save_settings(settings)
+            unique_events = deduplicate_events(events_data)
+            cache_timestamp = datetime.now().isoformat()
+            if generation != self._calendar_scan_generation:
+                return
 
-            self.root.after(0, self._on_calendar_scan_complete)
+            cache_applied = []
+            def update_cache(settings):
+                if generation != self._calendar_scan_generation:
+                    return
+                settings["cached_events"] = unique_events
+                settings["cached_events_timestamp"] = cache_timestamp
+                cache_applied.append(True)
 
-        except Exception as e:
-            self.root.after(0, lambda: self._on_calendar_scan_error(str(e)))
+            if not self._update_settings(update_cache, interactive=False) or not cache_applied:
+                return
 
-    def _on_calendar_scan_complete(self):
+            self.root.after(
+                0,
+                self._on_calendar_scan_complete,
+                generation,
+                events_by_date,
+            )
+
+        except Exception as exc:
+            error_message = str(exc)
+            try:
+                self.root.after(
+                    0,
+                    self._on_calendar_scan_error,
+                    generation,
+                    error_message,
+                )
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def _on_calendar_scan_complete(self, generation, events_by_date):
         """Called when calendar event scan completes."""
+        if generation != self._calendar_scan_generation:
+            return
+        dialog = getattr(self, "calendar_dialog", None)
+        if dialog is None or not dialog.winfo_exists():
+            return
+        self.calendar_events = events_by_date
         total_events = sum(len(events) for events in self.calendar_events.values())
         self.calendar_scan_var.set(f"✓ {total_events} events (updated just now)")
         self._refresh_calendar()
 
-    def _on_calendar_scan_error(self, error_msg):
+    def _on_calendar_scan_error(self, generation, error_msg):
         """Called when calendar event scan fails."""
-        self.calendar_scan_var.set(f"⚠ Scan failed: {error_msg[:30]}")
+        if generation != self._calendar_scan_generation:
+            return
+        dialog = getattr(self, "calendar_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            self.calendar_scan_var.set(f"⚠ Scan failed: {error_msg[:30]}")
         self.log(f"Calendar scan error: {error_msg}", "error")
 
-    def _save_calendar_and_close(self, dialog):
+    def _save_calendar_and_close(self, dialog, day_snapshot):
         """Save calendar selections and close."""
-        self.save_booking_days()
+        changed_states = {
+            date_key: var.get()
+            for date_key, var in self.day_vars.items()
+            if date_key in day_snapshot and var.get() != day_snapshot[date_key]
+        }
+        if not self.save_booking_days(changed_states):
+            return
+        self._calendar_scan_generation += 1
         self.calendar_canvas.unbind_all("<MouseWheel>")
+        self.calendar_dialog = None
         dialog.destroy()
         self.log("Calendar settings saved", "info")
 
@@ -2458,7 +3594,7 @@ class AsimutBookerGUI:
         """Load cached events and ignored events from settings, display in frame."""
         settings = self.load_settings()
         cached_events = settings.get("cached_events", [])
-        ignored_events = set(settings.get("ignored_events", []))
+        ignored_events = settings.get("ignored_events", [])
 
         # Clear existing widgets
         for widget in events_frame.winfo_children():
@@ -2474,13 +3610,32 @@ class AsimutBookerGUI:
             ).pack(pady=20)
             return
 
+        preference_rows, ignore_resolution = build_event_preference_rows(
+            cached_events,
+            ignored_events,
+        )
+        if ignore_resolution.ambiguous_legacy_keys:
+            ttk.Label(
+                events_frame,
+                text=(
+                    "An older ignore selection matches multiple events at the same "
+                    "time. Those events were safely left enabled; review and Save."
+                ),
+                foreground="#b26a00",
+                wraplength=680,
+            ).pack(fill=tk.X, padx=5, pady=(0, 8))
+            self.log(
+                "Ambiguous older event ignore selection left enabled for review",
+                "warning",
+            )
+
         # Group events by date
         events_by_date = {}
-        for event in cached_events:
+        for event, event_key, is_enabled in preference_rows:
             date = event.get("date", "Unknown")
             if date not in events_by_date:
                 events_by_date[date] = []
-            events_by_date[date].append(event)
+            events_by_date[date].append((event, event_key, is_enabled))
 
         # Display events grouped by date
         for date in sorted(events_by_date.keys()):
@@ -2495,14 +3650,13 @@ class AsimutBookerGUI:
             date_frame = ttk.LabelFrame(events_frame, text=date_display, padding="10")
             date_frame.pack(fill=tk.X, pady=5, padx=5)
 
-            for event in events_by_date[date]:
-                event_key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
+            for event, event_key, is_enabled in events_by_date[date]:
                 is_reservation = event.get("isReservation", False)
                 room = event.get("room", "")
                 title = event.get("title", "Event")
 
                 # Create checkbox - default checked unless in ignored list
-                var = tk.BooleanVar(value=(event_key not in ignored_events))
+                var = tk.BooleanVar(value=is_enabled)
                 self.event_vars[event_key] = var
 
                 # Format display text
@@ -2543,19 +3697,33 @@ class AsimutBookerGUI:
         try:
             # Import here to avoid startup delay
             from playwright.sync_api import sync_playwright
+            from book_week import (
+                authenticated_runtime_context_options,
+                page_is_authenticated,
+                persist_storage_state,
+                restore_page_authentication,
+                safe_goto,
+            )
 
             events = []
             today = datetime.now().date()
+            context_options = authenticated_runtime_context_options()
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(storage_state=str(STATE_FILE)) if STATE_FILE.exists() else browser.new_context()
+                context = browser.new_context(**context_options)
                 page = context.new_page()
 
                 # Navigate to agenda
                 self.root.after(0, lambda: self.events_progress_var.set("Loading agenda page..."))
-                page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
-                page.wait_for_timeout(3000)
+                restore_page_authentication(page)
+                safe_goto(page, ASIMUT_AGENDA_URL)
+                require_authenticated_scan_page(
+                    page,
+                    page_is_authenticated,
+                    "/agenda",
+                )
+                page.wait_for_timeout(1000)
 
                 # Scroll to load all events for the next 7 days
                 target_date = today + timedelta(days=7)
@@ -2567,14 +3735,17 @@ class AsimutBookerGUI:
                 scroll_count = 0
                 last_height = 0
                 stalled_count = 0
+                target_reached = False
 
                 while scroll_count < max_scrolls:
                     page_text = page.evaluate("() => document.body.innerText")
                     if target_date_str in page_text:
+                        target_reached = True
                         break
 
                     alt_date_str = target_date.strftime("%d %B %Y")
                     if alt_date_str in page_text:
+                        target_reached = True
                         break
 
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -2590,6 +3761,12 @@ class AsimutBookerGUI:
                         stalled_count = 0
                     last_height = new_height
                     scroll_count += 1
+
+                if not target_reached:
+                    raise RuntimeError(
+                        f"Agenda scan did not reach {target_date.isoformat()}; "
+                        "the existing event cache was preserved"
+                    )
 
                 # Scroll back to top and do final pass
                 page.evaluate("window.scrollTo(0, 0)")
@@ -2663,9 +3840,11 @@ class AsimutBookerGUI:
                                 const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
                                 if (locationLink) {
                                     const locText = (locationLink.textContent || '').trim();
-                                    const roomMatch = locText.match(/B[01]\\.[0-9]{2}/);
+                                    const roomMatch = locText.match(
+                                        /(?:^|[^A-Za-z0-9.])([A-Z][0-9]+\\.[0-9]{2})(?=$|[^A-Za-z0-9.])/i
+                                    );
                                     if (roomMatch) {
-                                        return roomMatch[0];
+                                        return roomMatch[1].toUpperCase();
                                     }
                                 }
                                 return null;
@@ -2725,28 +3904,33 @@ class AsimutBookerGUI:
 
                     return events;
                 }""")
-
+                require_authenticated_scan_page(
+                    page,
+                    page_is_authenticated,
+                    "/agenda",
+                )
+                persist_storage_state(context)
                 browser.close()
 
             # Deduplicate events
-            seen = set()
-            unique_events = []
-            for event in events_data:
-                key = f"{event['date']}_{event['startTime']}_{event['endTime']}"
-                if key not in seen:
-                    seen.add(key)
-                    unique_events.append(event)
+            unique_events = deduplicate_events(events_data)
 
             # Save to settings
-            settings = self.load_settings()
-            settings["cached_events"] = unique_events
-            self.save_settings(settings)
+            if not self._update_settings(
+                lambda settings: settings.__setitem__("cached_events", unique_events),
+                interactive=False,
+            ):
+                raise RuntimeError("Scanned events could not be saved safely")
 
             # Update UI
             self.root.after(0, lambda: self._on_scan_complete(events_frame, len(unique_events)))
 
-        except Exception as e:
-            self.root.after(0, lambda: self._on_scan_error(str(e)))
+        except Exception as exc:
+            error_message = str(exc)
+            try:
+                self.root.after(0, self._on_scan_error, error_message)
+            except (RuntimeError, tk.TclError):
+                pass
 
     def _on_scan_complete(self, events_frame, count):
         """Called when event scan completes."""
@@ -2764,17 +3948,15 @@ class AsimutBookerGUI:
 
     def _save_events_and_close(self, dialog):
         """Save ignored events to settings and close dialog."""
-        ignored_events = []
-        for event_key, var in self.event_vars.items():
-            if not var.get():  # Unchecked = ignored
-                ignored_events.append(event_key)
+        ignored_events = ignored_v2_keys_from_selection(
+            {event_key: bool(var.get()) for event_key, var in self.event_vars.items()}
+        )
 
-        settings = self.load_settings()
-        settings["ignored_events"] = ignored_events
-        self.save_settings(settings)
-
-        self.log(f"Saved {len(ignored_events)} ignored events", "info")
-        dialog.destroy()
+        if self._update_settings(
+            lambda settings: settings.__setitem__("ignored_events", ignored_events)
+        ):
+            self.log(f"Saved {len(ignored_events)} ignored events", "info")
+            dialog.destroy()
 
     # =========================================================================
     # SCAN AVAILABLE ROOMS FEATURE
@@ -2970,29 +4152,35 @@ class AsimutBookerGUI:
         """Background thread to scan available rooms."""
         try:
             from playwright.sync_api import sync_playwright
+            from book_week import (
+                authenticated_runtime_context_options,
+                page_is_authenticated,
+                persist_storage_state,
+                restore_page_authentication,
+                safe_goto,
+            )
 
             all_slots = []  # List of {date, room, start_time, end_time, duration}
             today = datetime.now().date()
             current_time_hour = datetime.now().hour + datetime.now().minute / 60.0
+            context_options = authenticated_runtime_context_options()
 
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    storage_state=str(STATE_FILE) if STATE_FILE.exists() else None,
-                    viewport={"width": 1920, "height": 1080}
-                )
+                context = browser.new_context(**context_options)
                 page = context.new_page()
 
                 # Navigate to practice rooms page
                 self.root.after(0, lambda: self.scan_rooms_progress_var.set("Loading booking page..."))
-
-                # First load the base site to establish the session
-                page.goto("https://rwcmd.asimut.net/", wait_until="networkidle")
-                page.wait_for_timeout(2000)
-
-                # Now navigate to the overview page
-                page.goto("https://rwcmd.asimut.net/overview?locationGroupId=10", wait_until="networkidle")
-                page.wait_for_timeout(3000)
+                restore_page_authentication(page)
+                safe_goto(page, ASIMUT_OVERVIEW_URL)
+                require_authenticated_scan_page(
+                    page,
+                    page_is_authenticated,
+                    "/overview",
+                    expected_query="locationGroupId=10",
+                )
+                page.wait_for_timeout(1000)
 
                 # Check current URL
                 current_url = page.url
@@ -3000,27 +4188,9 @@ class AsimutBookerGUI:
                 self.root.after(0, lambda u=current_url, t=page_title:
                     self.log(f"[Scan Debug] Initial load: {u[:80]}", "info"))
 
-                # If redirected to login, we need to abort
-                if "login" in current_url.lower() or "microsoft" in current_url.lower():
-                    self.root.after(0, lambda: self.log("[Scan Error] Not logged in - redirected to login page", "error"))
-                    browser.close()
-                    self.root.after(0, lambda: self._on_scan_rooms_error(setup_dialog, "Not logged in. Please use 'Login Setup' first."))
-                    return
-
-                # If we got redirected away from overview, try again with JavaScript
-                if "/overview" not in current_url:
-                    self.root.after(0, lambda: self.log("[Scan Debug] Redirected away, trying JS navigation...", "warning"))
-                    page.evaluate("window.location.href = '/overview?locationGroupId=10'")
-                    page.wait_for_timeout(5000)
-                    current_url = page.url
-                    self.root.after(0, lambda u=current_url: self.log(f"[Scan Debug] After JS nav: {u[:80]}", "info"))
-
                 # Wait for the location grid to appear
-                try:
-                    page.wait_for_selector(".location-name-container", timeout=15000)
-                    self.root.after(0, lambda: self.log("[Scan Debug] Found location container", "info"))
-                except:
-                    self.root.after(0, lambda: self.log("[Scan Warning] location-name-container not found", "warning"))
+                page.wait_for_selector(".location-name-container", timeout=15000)
+                self.root.after(0, lambda: self.log("[Scan Debug] Found location container", "info"))
 
                 # Scroll down to ensure all rooms are loaded, then back to top
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -3072,6 +4242,12 @@ class AsimutBookerGUI:
                         current_calendar_day = days_ahead
 
                     page.wait_for_timeout(500)
+                    require_authenticated_scan_page(
+                        page,
+                        page_is_authenticated,
+                        "/overview",
+                        expected_query="locationGroupId=10",
+                    )
 
                     # First check if page loaded correctly by looking for room elements
                     page_check = page.evaluate("""() => {
@@ -3237,16 +4413,38 @@ class AsimutBookerGUI:
                     self.root.after(0, lambda c=day_slot_count, d=date_str:
                         self.log(f"[Scan Debug] {d}: Added {c} valid slots", "info"))
 
+                require_authenticated_scan_page(
+                    page,
+                    page_is_authenticated,
+                    "/overview",
+                    expected_query="locationGroupId=10",
+                )
+                persist_storage_state(context)
                 browser.close()
 
             # Sort slots by date, then time, then room
             all_slots.sort(key=lambda s: (s['date'], s['start_hour'], s['room']))
 
             # Close setup dialog and show results
-            self.root.after(0, lambda: self._show_scan_results(setup_dialog, all_slots, selected_dates))
+            self.root.after(
+                0,
+                self._show_scan_results,
+                setup_dialog,
+                all_slots,
+                selected_dates,
+            )
 
-        except Exception as e:
-            self.root.after(0, lambda: self._on_scan_rooms_error(setup_dialog, str(e)))
+        except Exception as exc:
+            error_message = str(exc)
+            try:
+                self.root.after(
+                    0,
+                    self._on_scan_rooms_error,
+                    setup_dialog,
+                    error_message,
+                )
+            except (RuntimeError, tk.TclError):
+                pass
 
     def _on_scan_rooms_error(self, setup_dialog, error_msg):
         """Handle scan error."""

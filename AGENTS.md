@@ -20,19 +20,21 @@ Automated booking system for Royal Welsh College of Music and Drama (RWCMD) prac
 
 ## Project Overview
 
-This tool automatically books music practice rooms on the RWCMD Asimut system before other students can claim them. It runs on a schedule via Windows Task Scheduler (with wake-from-sleep support) and books rooms as soon as they become available in the booking window.
+This tool automatically books music practice rooms on the RWCMD Asimut system before other students can claim them. It runs through Windows Task Scheduler, requests wake-from-sleep on AC or battery, and books rooms as they become available. Actual wake behavior depends on Windows, firmware, and hardware support.
 
 ### Key Features
 
-- **Automated Login**: Handles Microsoft 365 SSO authentication with persistent session storage (no manual login required after initial setup)
+- **Autonomous Login**: Reuses persistent browser state first, then recovers an expired Microsoft 365 session with a Windows Credential Manager password and the local RWCMD SMS bridge—without an AI model
 - **Priority Room Booking**: Targets specific preferred rooms before falling back to alternatives
-- **Scheduled Execution**: Runs every 30 minutes (07:30-22:00) via Windows Task Scheduler with wake-from-sleep
+- **Scheduled Execution**: One non-overlapping task runs every 15 minutes (07:13-21:58) with AC/DC wake-timer requests and missed-start recovery
 - **RWCMD Booking Rules**: Respects rolling quota (28 hours/week), peak hours (2hr/day Mon-Fri 9am-4pm), and 60-min same-room gap
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
-- **GUI Control Panel**: Desktop application for monitoring, manual control, and day selection
-- **Day Selection**: Toggle specific days on/off for booking via GUI checkboxes
-- **Booking History**: Tracks all runs and bookings made
+- **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
+- **Practice Plan**: Set a default daily target from 0.5-12 hours, override individual dates, or turn dates off in one eight-day editor
+- **Verified Mutations**: A booking or extension counts only after the positive event ID and exact persisted room/date/time survive a reload
+- **Crash Recovery**: Durable pre-Save receipts stop further mutations when a result is uncertain and force agenda reconciliation on the next run
+- **Booking History**: Tracks verified runs and bookings with locked, atomic persistence
 - **Push Notifications**: Optional ntfy.sh notifications for booking results
 
 ## Technical Stack
@@ -52,25 +54,34 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 
 ### Authentication Recovery for Agents
 
-- If Asimut is signed out, use the `rwcmd-outlook` skill to sign back in through the established RWCMD Microsoft authentication and verification workflow. Do not improvise a separate login flow or store credentials or verification codes in the repository.
+- If Asimut is signed out, use the dedicated `asimut-booker-auth` skill. Its wrapper invokes the same deterministic recovery code used by scheduled booking runs; do not use an AI/browser-control model to type the password or OTP.
+- The password belongs only in the current user's Windows Credential Manager under `AsimutBooker/RWCMD-Microsoft365`. Configure it through the booker's masked interactive prompt; never put credentials, OTPs, or bridge tokens in commands, repository files, logs, or agent messages.
 
 ## Directory Structure
 
 ```
 AsimutBooker/
 ├── book_week.py          # Main booking script (entry point)
+├── asimut_auth.py        # Deterministic Credential Manager + SMS sign-in recovery
 ├── gui.py                # Desktop control panel GUI
+├── app_settings.py       # Locked, atomic shared JSON persistence
+├── event_identity.py     # Collision-safe shared agenda-event identity
+├── practice_plan.py      # Strict daily-target schema and budget helpers
+├── runtime_guard.py      # Single-instance and exact confirmation helpers
+├── mutation_receipts.py  # Crash-safe booking mutation journal
 ├── run_booker.bat        # Batch file called by Task Scheduler
 ├── AsimutBooker.bat      # GUI launcher (double-click to open)
 ├── setup_scheduled_tasks.ps1  # Creates Windows scheduled tasks
 ├── create_shortcut.ps1   # Creates desktop shortcut
 ├── config/
-│   └── config.yaml       # User configuration
+│   ├── config.example.yaml  # Exact supported advanced-config schema
+│   └── config.yaml       # Optional user override (gitignored)
 ├── data/
 │   ├── browser_state/    # Persistent login state (gitignored)
 │   │   └── state.json
 │   ├── booking_history.json  # Run history
-│   └── settings.json     # GUI settings (disabled dates, etc.)
+│   ├── settings.json     # GUI settings, day targets, and extension state
+│   └── mutation_receipts.json  # Runtime reconciliation journal (gitignored)
 ├── logs/                 # Booking logs
 │   └── scheduler.log
 ├── src/                  # Alternative module-based implementation
@@ -97,7 +108,8 @@ The GUI provides:
 - Run booker manually (visible or headless)
 - View booking history
 - Setup/remove scheduled tasks
-- Day selection checkboxes (enable/disable specific days for booking)
+- Default and per-date desired practice hours
+- Eight-day booking/off controls and strict preferred-time controls
 
 ### Command Line
 ```bash
@@ -106,13 +118,28 @@ python book_week.py
 
 # Run headless (for scheduled tasks)
 python book_week.py --headless
+
+# One-time Microsoft/RWCMD sign-in
+python book_week.py --setup-login
+
+# One-time secure autonomous-login credential setup (private terminal)
+python book_week.py --configure-autonomous-login
+
+# Verify/recover login only; never scans or changes bookings
+python book_week.py --headless --login-only
+
+# Read-only login, agenda, navigation, and eight-day room-grid health check
+python book_week.py --headless --check-only
+
+# Bounded live verification (one verified 30-minute mutation at most)
+python book_week.py --headless --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 30
 ```
 
 ### Initial Setup
-1. Run `python book_week.py` with visible browser
-2. Complete Microsoft 365 SSO login manually
-3. Browser state is saved to `data/browser_state/state.json`
-4. Subsequent runs use saved session (no login required)
+1. Run `python book_week.py --configure-autonomous-login` in a private terminal and enter the RWCMD email and masked password; Windows Credential Manager stores them for the current user.
+2. Run `python book_week.py --headless --login-only`. It reuses an existing session or completes Microsoft password + SMS recovery through the local bridge.
+3. Browser state is saved to `data/browser_state/state.json` and refreshed after every authenticated run.
+4. `python book_week.py --setup-login` remains a visible manual fallback, not the scheduled recovery path.
 
 ### Scheduled Tasks Setup
 ```powershell
@@ -120,9 +147,13 @@ python book_week.py --headless
 .\setup_scheduled_tasks.ps1
 ```
 
-This creates 30 scheduled tasks (every 30 min from 07:30-22:00) with:
-- Wake-from-sleep enabled
-- Lid close action set to "Do nothing" when plugged in
+This replaces obsolete per-time tasks with one `AsimutBooker_Recurring` task:
+- Every 15 minutes from 07:13 through 21:58
+- The task requests wake-from-sleep and setup enables AC/DC wake timers; actual wake support remains hardware/firmware dependent
+- Network gating and missed-start recovery enabled
+- Overlapping starts ignored; the booker also holds an OS single-instance lock
+- Plugged-in lid close action set to "Do nothing"
+- GUI installation/repair uses the headless Agent UAC helper and verifies the registered task
 
 ## Booking Rules (RWCMD)
 
@@ -217,14 +248,18 @@ Pending extensions take priority over new snipes. If a slot has a pending extens
 
 ## Configuration
 
-The script loads settings from `config/config.yaml` with fallback to hardcoded defaults. Key configurable options:
+Everyday preferences belong in the GUI and `data/settings.json`:
 
-- **Room priority**: Order of preferred rooms (first = most preferred)
-- **Room horizons**: How many days in advance each room can be booked (3, 5, or 7 days)
-- **Booking rules**: Rolling quota, peak hours limits, same-room gap
-- **Schedule**: Run times for the booker
+- **Practice plan**: Optional default hours per enabled day plus exact-date overrides
+- **Booking days**: Dates can be enabled or disabled independently
+- **Preferred time**: Presets or a custom range, with an optional strict-only mode
+- **Date order**: Chronological or furthest-first
 
-See `config/config.yaml` for all available options. Changes take effect on next run.
+Advanced room/rule overrides are optional. Copy `config/config.example.yaml` to
+`config/config.yaml` and edit only the documented `rules` and `rooms.priority`
+fields. A missing file uses built-in RWCMD defaults; an existing malformed file,
+unsupported field, missing PyYAML, duplicate room, or invalid horizon stops the
+run before Playwright rather than silently changing policy.
 
 **Room booking horizons** (configured in config.yaml):
 - **3 days**: B1.09, B1.16
@@ -245,6 +280,9 @@ python book_week.py
 
 # Run headless
 python book_week.py --headless
+
+# Run the complete offline regression suite
+python -m unittest discover -s tests
 ```
 
 ## Files Overview
@@ -252,13 +290,100 @@ python book_week.py --headless
 | File | Purpose |
 |------|---------|
 | `book_week.py` | Main booking script - scans agenda, navigates calendar, books slots |
+| `asimut_auth.py` | Deterministic Windows credential, Microsoft SSO, and SMS-bridge recovery |
 | `gui.py` | Tkinter GUI for monitoring and control |
+| `app_settings.py` | Strict, locked, atomic settings/history storage primitives |
+| `event_identity.py` | Deterministic v2 ignored-event identity and legacy-key resolution |
+| `practice_plan.py` | Daily-target validation and booking-budget helpers |
+| `runtime_guard.py` | Single-instance lock and exact URL/identity confirmation |
+| `mutation_receipts.py` | Durable pre-Save receipts and reconciliation state |
 | `run_booker.bat` | Wrapper script called by Task Scheduler |
-| `setup_scheduled_tasks.ps1` | Creates Windows scheduled tasks with wake timers |
-| `config/config.yaml` | User configuration (rooms, horizons, rules) |
+| `setup_scheduled_tasks.ps1` | Installs and verifies the one recurring task |
+| `config/config.example.yaml` | Exact supported advanced configuration schema |
+| `config/config.yaml` | Optional local room/rule override |
 | `data/browser_state/state.json` | Saved browser session (cookies, localStorage) |
 | `data/booking_history.json` | JSON log of all booking runs |
-| `data/settings.json` | GUI settings including disabled dates and extendable bookings |
+| `data/settings.json` | GUI settings, practice plan, ignored events, and extendable bookings |
+| `data/mutation_receipts.json` | Gitignored crash-recovery journal for remote mutations |
+
+## Reliability Contract
+
+- Authentication, existing configuration, settings, mutation journal, full
+  agenda reach, calendar date, form identity, requested time values, and
+  persisted Save identity all fail closed.
+- Creates and extensions write a receipt before Save. Explicit rejection closes
+  it; confirmed persistence verifies it; a timeout or mismatch leaves it pending
+  and prevents further mutations until an exact agenda/event reconciliation.
+  Receipts whose intended slot has already ended close safely instead of
+  permanently blocking future runs.
+- Only exact positive HTTPS `rwcmd.asimut.net/arrangement?eventId=N` URLs count
+  as saved. Stale or foreign-host URLs, `eventId=0`, wrong rooms/dates/times,
+  partial agenda scans, and ambiguous date navigation never count as success.
+  Any unexpected error after Save is reconciliation-required, never a retryable
+  slot failure in the same run.
+- Authentication always tries saved browser state first. Only an actual sign-in
+  redirect reads the Windows credential; recovery makes one password attempt,
+  consumes at most one SMS code, and persists state only after Asimut's
+  authenticated shell is visible. Missing credentials or an unaccepted factor
+  fail closed before agenda scanning or mutation.
+- Settings, history, session state, and receipts use atomic replacement; shared
+  JSON writes use interprocess locks. GUI live scans use the same deterministic
+  authentication recovery as the booker and discard stale background results.
+- Ignored events use a v2 identity covering date, start, end, title, room, and
+  reservation type. A legacy time-only key applies only when it identifies one
+  distinct scanned event; ambiguous matches ignore nothing. Ignored reservations
+  still consume daily/weekly/peak budgets and enforce their same-room gap.
+- `--check-only` performs a read-only authenticated agenda scan and traverses all
+  eight booking days. `--only-date`, `--only-room`, `--max-actions`, and
+  `--max-action-minutes` provide bounded live verification without weakening the
+  confirmation rules.
+
+## 2026-08-30 Reliability and Practice-Plan Milestone
+
+- The authoritative runtime is `book_week.py`. GUI **Check / Repair Login** runs
+  `--headless --login-only`; **Update Secure Login** opens the masked
+  `--configure-autonomous-login` prompt. The visible `--setup-login` path is a
+  CLI-only manual fallback.
+- Practice targets are optional and preserve legacy allocation when disabled.
+  Enabled plans cap each date against existing reservations and the 28-hour
+  rolling quota; the booking loop permits enough 30-minute fragments to fill a
+  target without exceeding it. Saving per-date customization enables the plan
+  explicitly, and invalid edits restore the last persisted UI state.
+- `AsimutBooker_Recurring` is the only supported task. It runs every 15 minutes
+  from 07:13 through 21:58, ignores overlap, requests AC/DC wake, catches up,
+  and calls the isolated `.venv` launcher in headless scheduled mode. It fails
+  closed if that runtime is missing or unhealthy; physical wake still depends
+  on Windows, firmware, and hardware support.
+- Offline verification covers strict settings/config, daily and weekly budgets,
+  zero/45/60-minute room gaps, date/datetime inputs, A3.39 agenda extraction,
+  exact Save transitions, uncertain and expired receipts, collision-safe event
+  identity, bounded action caps, concurrent GUI updates, authenticated GUI
+  scans, launchers, and scheduler shape. The combined suite passes 148 tests.
+  Record live check and booking evidence here only after the current RWCMD
+  session is proven.
+
+## 2026-08-30 Autonomous Authentication Milestone
+
+- `asimut_auth.py` is the non-AI authentication runtime shared by ordinary,
+  scheduled, `--login-only`, and mid-run navigation recovery paths.
+- The separate `asimut-booker-auth` Codex skill is an agent-facing wrapper for
+  that runtime; it does not receive or type credentials itself.
+- Passwords are user-scoped Windows Credential Manager secrets. SMS uses the
+  existing `RWCMD SMS Bridge` task and in-memory localhost endpoint; passwords,
+  OTPs, and bridge tokens are never persisted or logged by the booker.
+- Offline verification covers the session-first boundary, missing-credential
+  failure, exact six-digit OTP acceptance, bridge health, and secret redaction.
+  Do not log out solely to exercise the fallback; validate it naturally when
+  Microsoft next expires the saved session.
+
+## 2026-08-30 Ignored-Event Identity Milestone
+
+- GUI scans and the booking runtime share `event_identity.py`; only exact full
+  identities are deduplicated, so simultaneous classes and reservations remain
+  independently selectable.
+- Saving event preferences always writes v2 keys. Existing time-only keys remain
+  compatible when unique; ambiguous keys leave every matching event enabled and
+  prompt the user to review and save the selection.
 
 ## Maintenance Notes
 
