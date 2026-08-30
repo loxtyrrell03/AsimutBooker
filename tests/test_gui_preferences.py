@@ -1367,11 +1367,13 @@ class GuiPreferenceValidationTests(unittest.TestCase):
                 with self.assertRaises(SettingsError):
                     validate_booking_strategy_section(settings)
 
+        validated = validate_booking_strategy_section(
+            {"booking_strategy": {"reverse_date_order": True}}
+        )
+        self.assertTrue(validated["reverse_date_order"])
+        self.assertTrue(validated["daily_planning"]["enabled"])
         self.assertEqual(
-            validate_booking_strategy_section(
-                {"booking_strategy": {"reverse_date_order": True}}
-            ),
-            {"reverse_date_order": True},
+            validated["daily_planning"]["preferred_peak_start"], "12:00"
         )
 
 

@@ -1530,10 +1530,23 @@ def _request_observation_candidates(
     finished_at: datetime,
     server_time: datetime | None,
 ) -> tuple[datetime, ...]:
-    """Prefer the response server minute; otherwise use the local envelope."""
+    """Return the bounded minute buckets in which the policy was evaluated.
+
+    An HTTP ``Date`` value has whole-second precision and is only an
+    approximation.  At ``:00`` or ``:59`` its existing one-second uncertainty
+    crosses a minute boundary, while Asimut's application-generated cutoff can
+    still reflect the adjacent minute.  Keep both buckets in that narrow case;
+    the exact global-horizon duration must subsequently select one unique
+    observation.  Away from a rollover the server minute remains the sole
+    candidate.  Without a Date header, retain the bounded local request
+    envelope.
+    """
 
     if server_time is not None:
-        return (_normalize_observed_at(server_time),)
+        return _request_minute_candidates(
+            server_time - timedelta(seconds=1),
+            server_time + timedelta(seconds=1),
+        )
     return _request_minute_candidates(started_at, finished_at)
 
 

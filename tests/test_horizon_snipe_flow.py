@@ -484,6 +484,297 @@ class BoundaryDrivenCandidateTests(unittest.TestCase):
         self.assertEqual([item["room"] for item in candidates], ["Preferred"])
 
 
+class SmartHorizonPlannerIntegrationTests(unittest.TestCase):
+    TODAY = date(2026, 8, 30)
+    TARGET_DATE = date(2026, 9, 4)
+    HORIZON_MINUTES = 5 * 24 * 60
+
+    @staticmethod
+    def room_gap(room, start, end):
+        return {
+            "room": room,
+            "slots": [
+                {
+                    "startHour": start,
+                    "endHour": end,
+                    "clickX": 20,
+                    "clickY": 30,
+                }
+            ],
+        }
+
+    def policy_patch(self, rooms):
+        return mock.patch.multiple(
+            book_week,
+            ACTIVE_ROOM_POLICY=mock.Mock(),
+            PRIORITY_ROOMS=list(rooms),
+            ROOM_HORIZON_MINUTES={
+                room: self.HORIZON_MINUTES for room in rooms
+            },
+            BOOKING_WINDOW_DATES=tuple(
+                self.TODAY + book_week.timedelta(days=offset)
+                for offset in range(8)
+            ),
+            MINIMUM_BLOCK_MINUTES=30,
+            ALLOW_FRAGMENTED_SESSIONS=True,
+        )
+
+    @staticmethod
+    def tracker():
+        tracker = mock.MagicMock()
+        tracker.conflict_ranges = {}
+        tracker.reservation_ranges = {}
+        tracker.bookings = []
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_same_room_blocked_ranges.return_value = []
+        tracker.can_book.return_value = (True, "")
+        return tracker
+
+    def run_smart_scan(self, boundary, available_data, *, planning=None):
+        frozen_now = boundary - book_week.timedelta(minutes=2)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        rooms = [item["room"] for item in available_data]
+        planning_context = {"held_peak_by_date": {}}
+        navigated = []
+
+        def navigate(_page, target, _current, **_kwargs):
+            navigated.append(target)
+            return target
+
+        with (
+            self.policy_patch(rooms),
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(book_week, "navigate_to_day", side_effect=navigate),
+            mock.patch.object(
+                book_week,
+                "get_available_slots",
+                return_value=available_data,
+            ),
+            mock.patch.object(book_week, "load_extendable_bookings", return_value=[]),
+        ):
+            candidates, current_day = book_week.find_all_snipe_candidates_multi_day(
+                mock.MagicMock(),
+                self.tracker(),
+                {"enabled": False, "strict_mode": False},
+                0,
+                target_boundary=boundary,
+                candidate_limit=1,
+                daily_planning=planning or book_week.DailyPlanningPreferences(),
+                planning_context=planning_context,
+            )
+
+        return candidates, current_day, navigated, planning_context
+
+    def test_production_smart_path_holds_nine_am_edge_for_two_better_rooms(self):
+        boundary = datetime(2026, 8, 30, 9, 30)
+        available = [
+            self.room_gap("Early", 9.0, 11.0),
+            self.room_gap("Afternoon A", 12.0, 14.0),
+            self.room_gap("Afternoon B", 12.5, 14.5),
+        ]
+
+        candidates, current_day, navigated, context = self.run_smart_scan(
+            boundary,
+            available,
+        )
+
+        decision = context["decision"]
+        self.assertEqual(candidates, [])
+        self.assertEqual(current_day, 5)
+        self.assertEqual(navigated, [5])
+        self.assertEqual(decision.action, "wait")
+        self.assertEqual(decision.selected.room, "Afternoon A")
+        self.assertEqual(decision.held_peak_minutes, 120)
+        self.assertEqual(
+            context["held_peak_by_date"][self.TARGET_DATE.isoformat()],
+            120,
+        )
+        self.assertEqual(
+            {item.room for item in context["current_opportunities"]},
+            {"Early"},
+        )
+        self.assertTrue(
+            book_week.opportunity_rank(
+                decision.selected,
+                book_week.DailyPlanningPreferences(),
+                now=boundary,
+            )
+            < book_week.opportunity_rank(
+                context["current_opportunities"][0],
+                book_week.DailyPlanningPreferences(),
+                now=boundary,
+            )
+        )
+
+    def test_smart_path_books_current_edge_when_better_room_evidence_is_short(self):
+        boundary = datetime(2026, 8, 30, 9, 30)
+        available = [
+            self.room_gap("Early", 9.0, 11.0),
+            self.room_gap("Only afternoon", 12.0, 14.0),
+        ]
+
+        candidates, _, _, context = self.run_smart_scan(boundary, available)
+
+        self.assertEqual(context["decision"].action, "book_now")
+        self.assertIn("Only 1 better later room option", context["decision"].reason)
+        self.assertEqual([item["room"] for item in candidates], ["Early"])
+        self.assertEqual(candidates[0]["start_hour"], 9.0)
+        self.assertEqual(context["held_peak_by_date"], {})
+
+    def test_smart_path_uses_current_edge_after_fallback_lead_point(self):
+        boundary = datetime(2026, 8, 30, 14, 30)
+        available = [
+            self.room_gap("Current", 14.0, 15.0),
+            self.room_gap("Later A", 14.5, 16.0),
+            self.room_gap("Later B", 14.75, 16.0),
+        ]
+
+        candidates, _, _, context = self.run_smart_scan(boundary, available)
+
+        self.assertEqual(context["decision"].action, "book_now")
+        self.assertIn("fallback point has been reached", context["decision"].reason)
+        self.assertEqual([item["room"] for item in candidates], ["Current"])
+        self.assertEqual(candidates[0]["start_hour"], 14.0)
+        self.assertEqual(context["held_peak_by_date"], {})
+
+    def test_smart_path_preserves_priority_progressive_boundary_preparation(self):
+        boundary = datetime(2026, 8, 30, 13, 45)
+        frozen_now = boundary - book_week.timedelta(minutes=2)
+        rooms = ["Preferred", "Fallback"]
+        tracker = self.tracker()
+        navigated = []
+        context = {"held_peak_by_date": {}, "held_target_by_date": {}}
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        with (
+            mock.patch.multiple(
+                book_week,
+                ACTIVE_ROOM_POLICY=mock.Mock(),
+                PRIORITY_ROOMS=rooms,
+                ROOM_HORIZON_MINUTES={
+                    "Preferred": 3 * 24 * 60,
+                    "Fallback": 5 * 24 * 60,
+                },
+                BOOKING_WINDOW_DATES=tuple(
+                    self.TODAY + book_week.timedelta(days=offset)
+                    for offset in range(8)
+                ),
+                MINIMUM_BLOCK_MINUTES=30,
+                ALLOW_FRAGMENTED_SESSIONS=True,
+            ),
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(
+                book_week,
+                "navigate_to_day",
+                side_effect=lambda _page, target, _current, **_kwargs: (
+                    navigated.append(target) or target
+                ),
+            ),
+            mock.patch.object(
+                book_week,
+                "get_available_slots",
+                return_value=[
+                    self.room_gap("Preferred", 7.25, 22.25),
+                    self.room_gap("Fallback", 7.25, 22.25),
+                ],
+            ),
+            mock.patch.object(book_week, "load_extendable_bookings", return_value=[]),
+        ):
+            candidates, _ = book_week.find_all_snipe_candidates_multi_day(
+                mock.MagicMock(),
+                tracker,
+                {"enabled": False, "strict_mode": False},
+                0,
+                target_boundary=boundary,
+                candidate_limit=1,
+                daily_planning=book_week.DailyPlanningPreferences(),
+                planning_context=context,
+            )
+
+        self.assertEqual(navigated, [3])
+        self.assertEqual([item["room"] for item in candidates], ["Preferred"])
+        self.assertEqual(context["decision"].action, "book_now")
+
+    def test_waiting_on_one_date_can_still_book_an_independent_date(self):
+        boundary = datetime(2026, 8, 30, 9, 30)
+        frozen_now = boundary - book_week.timedelta(minutes=2)
+        rooms = ["Early hold", "Afternoon A", "Afternoon B", "Other date"]
+        tracker = self.tracker()
+        navigated = []
+        context = {"held_peak_by_date": {}, "held_target_by_date": {}}
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        with (
+            mock.patch.multiple(
+                book_week,
+                ACTIVE_ROOM_POLICY=mock.Mock(),
+                PRIORITY_ROOMS=rooms,
+                ROOM_HORIZON_MINUTES={
+                    "Early hold": 3 * 24 * 60,
+                    "Afternoon A": 3 * 24 * 60,
+                    "Afternoon B": 3 * 24 * 60,
+                    "Other date": 5 * 24 * 60,
+                },
+                BOOKING_WINDOW_DATES=tuple(
+                    self.TODAY + book_week.timedelta(days=offset)
+                    for offset in range(8)
+                ),
+                MINIMUM_BLOCK_MINUTES=30,
+                ALLOW_FRAGMENTED_SESSIONS=True,
+            ),
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(
+                book_week,
+                "navigate_to_day",
+                side_effect=lambda _page, target, _current, **_kwargs: (
+                    navigated.append(target) or target
+                ),
+            ),
+            mock.patch.object(
+                book_week,
+                "get_available_slots",
+                return_value=[
+                    self.room_gap("Early hold", 9.0, 11.0),
+                    self.room_gap("Afternoon A", 12.0, 14.0),
+                    self.room_gap("Afternoon B", 12.5, 14.5),
+                    self.room_gap("Other date", 9.0, 11.0),
+                ],
+            ),
+            mock.patch.object(book_week, "load_extendable_bookings", return_value=[]),
+        ):
+            candidates, _ = book_week.find_all_snipe_candidates_multi_day(
+                mock.MagicMock(),
+                tracker,
+                {"enabled": False, "strict_mode": False},
+                0,
+                target_boundary=boundary,
+                candidate_limit=1,
+                daily_planning=book_week.DailyPlanningPreferences(),
+                planning_context=context,
+            )
+
+        held_date = (self.TODAY + book_week.timedelta(days=3)).isoformat()
+        self.assertEqual(navigated, [3, 5])
+        self.assertEqual([item["room"] for item in candidates], ["Other date"])
+        self.assertEqual(context["decision"].action, "book_now")
+        self.assertEqual(context["held_peak_by_date"][held_date], 120)
+
+
 class FreshBoundaryValidationTests(unittest.TestCase):
     def test_exact_event_check_is_required_after_refilling_end_time(self):
         page = mock.MagicMock()

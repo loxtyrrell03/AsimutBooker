@@ -21,7 +21,7 @@ import os
 import copy
 import urllib.request
 import urllib.error
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -40,6 +40,27 @@ from app_settings import (
     atomic_write_json,
     load_settings as load_settings_document,
     update_settings,
+)
+from booking_strategy import (
+    BookingStrategyError,
+    DailyPlanningPreferences,
+    load_booking_strategy as load_booking_strategy_preferences,
+)
+from daily_planner import (
+    BookingOpportunity,
+    choose_horizon_opportunity,
+    enumerate_gap_opportunities,
+    interval_overlap_minutes,
+    opportunity_rank,
+    select_day_plan,
+)
+from booking_plan import (
+    BookingPlanError,
+    BookingPlanSnapshot,
+    DayPlan,
+    PlanCandidate,
+    booking_plan_fingerprint,
+    write_booking_plan,
 )
 from event_identity import (
     deduplicate_events,
@@ -1712,6 +1733,7 @@ def is_date_disabled(target_date, disabled_dates):
 # Time preference presets: name -> (start_hour, end_hour)
 TIME_PREFERENCE_PRESETS = {
     "morning": (7, 12),
+    "peak_afternoon": (12, 16),
     "afternoon": (12, 18),
     "evening": (18, 22),
     "afternoon_evening": (14, 22),
@@ -1781,22 +1803,17 @@ def load_time_preferences(settings=None):
 
 
 def load_booking_strategy(settings=None):
-    """Load booking strategy settings from settings file.
-
-    Returns:
-        dict with keys: reverse_date_order (bool)
-    """
-    default = {"reverse_date_order": False}
-
+    """Load the shared strict date-order and daily-planning strategy."""
     if settings is None:
         settings = load_settings_document(settings_file)
-    strategy = settings.get("booking_strategy", {})
-    if not isinstance(strategy, dict):
-        raise SettingsError("booking_strategy must be a JSON object")
-    reverse_date_order = strategy.get("reverse_date_order", False)
-    if not isinstance(reverse_date_order, bool):
-        raise SettingsError("booking_strategy.reverse_date_order must be true or false")
-    return {"reverse_date_order": reverse_date_order}
+    try:
+        strategy = load_booking_strategy_preferences(settings)
+    except BookingStrategyError as exc:
+        raise SettingsError(str(exc)) from exc
+    return {
+        "reverse_date_order": strategy.reverse_date_order,
+        "daily_planning": strategy.daily_planning,
+    }
 
 
 # =============================================================================
@@ -5418,6 +5435,985 @@ def _candidate_for_planned_edge(room_data, plan):
     return None
 
 
+def _strict_window_minutes(time_prefs):
+    """Return a strict HH:MM envelope in minutes, or no hard envelope."""
+
+    if not time_prefs.get("enabled") or not time_prefs.get("strict_mode"):
+        return None
+    return (
+        int(round(time_prefs["start_hour"] * 60)),
+        int(round(time_prefs["end_hour"] * 60)),
+    )
+
+
+def _hours_to_quarter_minutes(value):
+    if value is None:
+        return None
+    return max(0, int(float(value) * 4 + 1e-9) * 15)
+
+
+def _split_slot_around_blocks(slot_start, slot_end, blocked_ranges):
+    """Split one decimal-hour gap around all overlapping blocked ranges."""
+
+    if not blocked_ranges:
+        return [(slot_start, slot_end)]
+    usable = []
+    current_start = slot_start
+    for blocked_start, blocked_end in sorted(blocked_ranges, key=lambda value: value[0]):
+        if blocked_end <= current_start:
+            continue
+        if blocked_start >= slot_end:
+            break
+        if blocked_start > current_start:
+            gap_end = min(blocked_start, slot_end)
+            if (gap_end - current_start) * 60 >= MINIMUM_BLOCK_MINUTES:
+                usable.append((current_start, gap_end))
+        current_start = max(current_start, blocked_end)
+        if current_start >= slot_end:
+            break
+    if (
+        current_start < slot_end
+        and (slot_end - current_start) * 60 >= MINIMUM_BLOCK_MINUTES
+    ):
+        usable.append((current_start, slot_end))
+    return usable
+
+
+def build_day_booking_opportunities(
+    available_data,
+    target_date,
+    tracker,
+    time_prefs,
+    daily_planning,
+    *,
+    now=None,
+    remaining_daily_hours=None,
+    reserved_peak_minutes=0,
+    reserved_weekly_minutes=0,
+    only_room=None,
+):
+    """Build fresh, conflict-aware current and future opportunities for a day."""
+
+    now = now or datetime.now()
+    target_date = as_date(target_date)
+    date_key = target_date.isoformat()
+    daily_minutes = _hours_to_quarter_minutes(remaining_daily_hours)
+    weekly_minutes = max(
+        0,
+        (_hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0)
+        - reserved_weekly_minutes,
+    )
+    peak_minutes = max(
+        0,
+        int(tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes),
+    )
+    strict_window = _strict_window_minutes(time_prefs)
+    soft_preferred_window = (
+        (
+            int(round(time_prefs["start_hour"] * 60)),
+            int(round(time_prefs["end_hour"] * 60)),
+        )
+        if time_prefs.get("enabled")
+        else None
+    )
+    conflicts = tracker.conflict_ranges.get(date_key, [])
+    today_minutes = now.hour * 60 + now.minute
+    opportunities = []
+    seen = set()
+
+    for room_data in available_data:
+        room_name = room_data.get("room")
+        if room_name not in PRIORITY_ROOMS:
+            continue
+        if only_room and room_name != only_room:
+            continue
+        room_priority = PRIORITY_ROOMS.index(room_name)
+        room_blocks = tracker.get_same_room_blocked_ranges(target_date, room_name)
+        for raw_gap in room_data.get("slots", ()):
+            raw_start = float(raw_gap["startHour"])
+            raw_end = float(raw_gap["endHour"])
+            if (raw_end - raw_start) * 60 < MINIMUM_BLOCK_MINUTES:
+                continue
+            segments = _split_slot_around_blocks(raw_start, raw_end, conflicts)
+            usable_segments = []
+            for segment_start, segment_end in segments:
+                usable_segments.extend(
+                    _split_slot_around_blocks(
+                        segment_start,
+                        segment_end,
+                        room_blocks,
+                    )
+                )
+            for segment_start, segment_end in usable_segments:
+                for opportunity in enumerate_gap_opportunities(
+                    room=room_name,
+                    target_date=target_date,
+                    gap_start_hour=segment_start,
+                    gap_end_hour=segment_end,
+                    horizon_minutes=room_horizon_minutes(room_name),
+                    room_priority=room_priority,
+                    planning=daily_planning,
+                    now=now,
+                    minimum_block_minutes=MINIMUM_BLOCK_MINUTES,
+                    maximum_booking_minutes=int(MAX_BOOKING_HOURS * 60),
+                    remaining_daily_minutes=daily_minutes,
+                    remaining_weekly_minutes=weekly_minutes,
+                    remaining_peak_minutes=peak_minutes,
+                    strict_window=strict_window,
+                    soft_preferred_window=soft_preferred_window,
+                    peak_start_minutes=int(PEAK_START * 60),
+                    peak_end_minutes=int(PEAK_END * 60),
+                ):
+                    if target_date == now.date() and opportunity.start_minutes <= today_minutes:
+                        continue
+                    key = (
+                        opportunity.room,
+                        opportunity.start_minutes,
+                        opportunity.end_minutes,
+                    )
+                    if key in seen:
+                        continue
+                    can_book, _ = tracker.can_book(
+                        opportunity.room,
+                        target_date,
+                        opportunity.start_hour,
+                        opportunity.potential_minutes,
+                    )
+                    if not can_book:
+                        continue
+                    seen.add(key)
+                    opportunities.append(opportunity)
+    return opportunities
+
+
+def current_opportunities_after_hold(
+    available_data,
+    target_date,
+    tracker,
+    time_prefs,
+    daily_planning,
+    decision,
+    *,
+    now,
+    remaining_daily_hours,
+    reserved_weekly_minutes=0,
+    only_room=None,
+):
+    """Keep only genuine surplus capacity while a better session is held.
+
+    Peak, daily-target, and rolling-week capacity are all reserved together.
+    Rebuilding from the same fresh gaps lets a larger off-peak opportunity be
+    safely trimmed to real surplus instead of either consuming the held target
+    or being discarded unnecessarily.
+    """
+
+    if decision.action != "wait" or decision.selected is None:
+        return None
+    held_minutes = decision.selected.potential_minutes
+    surplus_daily_hours = (
+        None
+        if remaining_daily_hours is None
+        else max(0.0, remaining_daily_hours - held_minutes / 60)
+    )
+    protected = build_day_booking_opportunities(
+        available_data,
+        target_date,
+        tracker,
+        time_prefs,
+        daily_planning,
+        now=now,
+        remaining_daily_hours=surplus_daily_hours,
+        reserved_peak_minutes=decision.held_peak_minutes,
+        reserved_weekly_minutes=held_minutes + reserved_weekly_minutes,
+        only_room=only_room,
+    )
+    held = decision.selected
+    return [
+        item
+        for item in protected
+        if item.unlock_at <= now
+        and not (
+            item.start_minutes < held.end_minutes
+            and item.end_minutes > held.start_minutes
+        )
+        and not (
+            item.room == held.room
+            and not (
+                item.start_minutes
+                >= held.end_minutes + SAME_ROOM_GAP_MINUTES
+                or item.end_minutes + SAME_ROOM_GAP_MINUTES
+                <= held.start_minutes
+            )
+        )
+    ]
+
+
+def _opportunity_to_horizon_candidate(opportunity, *, target_boundary):
+    return {
+        "room": opportunity.room,
+        "room_priority": opportunity.room_priority,
+        "horizon_minutes": room_horizon_minutes(opportunity.room),
+        "booking_minutes": opportunity.initial_minutes,
+        "bookable_from": target_boundary,
+        "target_date": opportunity.target_date,
+        "days_ahead": (opportunity.target_date - target_boundary.date()).days,
+        "start_hour": opportunity.start_hour,
+        "end_hour": opportunity.end_hour,
+        "duration": opportunity.potential_minutes,
+        "planned_target_end_hour": opportunity.end_hour,
+        "planning_opportunity": opportunity,
+    }
+
+
+def _opportunity_to_normal_slot(opportunity):
+    return {
+        "room": opportunity.room,
+        "start_hour": opportunity.start_hour,
+        "end_hour": opportunity.end_hour,
+        "duration": opportunity.potential_minutes / 60,
+        "room_priority": opportunity.room_priority,
+        "is_good": opportunity.potential_minutes >= 60,
+        "planned_target_end_hour": opportunity.end_hour,
+        "planning_opportunity": opportunity,
+    }
+
+
+def _aware_local_datetime(value):
+    """Attach the host's local zone to planner wall-clock values."""
+
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value
+    return value.astimezone()
+
+
+def _plan_candidate_from_opportunity(opportunity, *, state, reason):
+    return PlanCandidate(
+        room=opportunity.room,
+        date=opportunity.target_date.isoformat(),
+        start_time=opportunity.start_text,
+        end_time=opportunity.end_text,
+        unlock_at=_aware_local_datetime(opportunity.unlock_at),
+        initial_minutes=opportunity.initial_minutes,
+        potential_minutes=opportunity.potential_minutes,
+        confirmed_minutes=0,
+        state=state,
+        reason=reason,
+    )
+
+
+def _plan_candidate_from_extension(booking, *, now):
+    """Reconstruct one display-only extension target from validated state."""
+
+    start_h, start_m = map(int, booking["startTime"].split(":"))
+    end_h, end_m = map(int, booking["endTime"].split(":"))
+    target_h, target_m = map(int, booking["target_end"].split(":"))
+    start_minutes = start_h * 60 + start_m
+    end_minutes = end_h * 60 + end_m
+    target_minutes = target_h * 60 + target_m
+    plan = plan_horizon_extension(
+        booking["room"],
+        booking["date"],
+        start_minutes / 60,
+        end_minutes / 60,
+        target_minutes / 60,
+        now=now,
+    )
+    if plan.can_extend:
+        unlock_at = now.replace(
+            minute=(now.minute // 15) * 15,
+            second=0,
+            microsecond=0,
+        )
+        state = "ready"
+        timing = "the next extension is ready for live revalidation"
+    else:
+        unlock_at = plan.next_unlock_at
+        state = "waiting"
+        timing = "waiting for the next exact 15-minute extension edge"
+    if unlock_at is None:
+        raise BookingPlanError(
+            "An incomplete extension target cannot be displayed as complete"
+        )
+    return PlanCandidate(
+        room=booking["room"],
+        date=booking["date"],
+        start_time=booking["startTime"],
+        end_time=booking["target_end"],
+        unlock_at=_aware_local_datetime(unlock_at),
+        initial_minutes=MINIMUM_BLOCK_MINUTES,
+        potential_minutes=target_minutes - start_minutes,
+        confirmed_minutes=end_minutes - start_minutes,
+        state=state,
+        reason=(
+            f"{end_minutes - start_minutes}/{target_minutes - start_minutes} "
+            f"minutes are confirmed; {timing}"
+        ),
+    )
+
+
+def attach_extension_progress(day_plan, planning_context, *, now):
+    """Place tracked partial sessions ahead of new potential day sessions."""
+
+    if not isinstance(planning_context, dict):
+        return day_plan
+    pending_extensions = [
+        _plan_candidate_from_extension(booking, now=now)
+        for booking in planning_context.get("extension_bookings", ())
+        if booking["date"] == day_plan.date
+    ]
+    if not pending_extensions:
+        return day_plan
+    pending_extensions.sort(
+        key=lambda candidate: (
+            candidate.state != "ready",
+            candidate.unlock_at,
+            PRIORITY_ROOMS.index(candidate.room),
+            candidate.start_time,
+        )
+    )
+    ordinary_selected = (
+        (() if day_plan.primary is None else (day_plan.primary,))
+        + day_plan.additional
+    )
+    selected = pending_extensions + list(ordinary_selected)
+    reason = (
+        f"{len(pending_extensions)} tracked horizon session(s) are partially "
+        "confirmed and retain capacity before new bookings"
+    )
+    extension_peak = planning_context.get("extension_peak_by_date", {}).get(
+        day_plan.date, 0
+    )
+    return replace(
+        day_plan,
+        status="in_progress",
+        primary=selected[0],
+        additional=tuple(selected[1:]),
+        held_peak_minutes=min(
+            extension_peak,
+            max(0, day_plan.peak_limit_minutes - day_plan.peak_used_minutes),
+        ),
+        reason=reason,
+    )
+
+
+def build_display_day_plan(
+    target_date,
+    opportunities,
+    tracker,
+    daily_planning,
+    *,
+    now,
+    target_minutes,
+    remaining_weekly_minutes=None,
+):
+    """Convert fresh opportunities into one clear display-only day plan."""
+
+    target_date = as_date(target_date)
+    existing_minutes = int(round(tracker.get_hours_for_day(target_date) * 60 / 15)) * 15
+    target_minutes = min(
+        1440,
+        max(existing_minutes, int(target_minutes // 15) * 15),
+    )
+    remaining_minutes = max(0, target_minutes - existing_minutes)
+    latest_useful_unlock = now + timedelta(
+        minutes=daily_planning.foresight_minutes
+    )
+    opportunities = [
+        item
+        for item in opportunities
+        if item.unlock_at <= now or item.unlock_at <= latest_useful_unlock
+    ]
+    selection_minutes = min(
+        remaining_minutes,
+        _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0,
+    )
+    if remaining_weekly_minutes is not None:
+        selection_minutes = min(
+            selection_minutes,
+            max(0, int(remaining_weekly_minutes // 15) * 15),
+        )
+    selected_plan = select_day_plan(
+        opportunities,
+        daily_planning,
+        now=now,
+        target_minutes=selection_minutes,
+        allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
+        remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
+        same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+    )
+    current = [item for item in opportunities if item.unlock_at <= now]
+    future = [item for item in opportunities if item.unlock_at > now]
+    decision = choose_horizon_opportunity(
+        current,
+        future,
+        daily_planning,
+        now=now,
+    )
+    if decision.action in {"book_now", "wait"} and decision.selected is not None:
+        # The displayed primary must be the exact opportunity the mutation
+        # decision selected. A stronger but insufficiently corroborated future
+        # option must never be labelled ready while runtime books the fallback.
+        forced_plan = select_day_plan(
+            (decision.selected,),
+            daily_planning,
+            now=now,
+            target_minutes=selection_minutes,
+            allow_fragmented_sessions=False,
+            remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
+            same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+        )
+        selected_plan = forced_plan
+        forced = forced_plan[0] if forced_plan else None
+        remaining_selection = max(
+            0,
+            selection_minutes - (forced.potential_minutes if forced else 0),
+        )
+        if (
+            forced is not None
+            and ALLOW_FRAGMENTED_SESSIONS
+            and remaining_selection >= MINIMUM_BLOCK_MINUTES
+        ):
+            remaining_options = [
+                item
+                for item in opportunities
+                if item != decision.selected
+                and not (
+                    item.start_minutes < forced.end_minutes
+                    and item.end_minutes > forced.start_minutes
+                )
+                and not (
+                    item.room == forced.room
+                    and not (
+                        item.start_minutes
+                        >= forced.end_minutes + SAME_ROOM_GAP_MINUTES
+                        or item.end_minutes + SAME_ROOM_GAP_MINUTES
+                        <= forced.start_minutes
+                    )
+                )
+            ]
+            selected_plan += select_day_plan(
+                remaining_options,
+                daily_planning,
+                now=now,
+                target_minutes=remaining_selection,
+                allow_fragmented_sessions=True,
+                remaining_peak_minutes=max(
+                    0,
+                    tracker.get_remaining_peak_minutes(target_date)
+                    - forced.peak_minutes,
+                ),
+                same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+            )
+
+    primary_opportunity = None
+    candidate_state = "potential"
+    held_peak = 0
+    reason = "No suitable free opportunity is currently visible"
+    if remaining_minutes < MINIMUM_BLOCK_MINUTES:
+        status = "complete"
+        reason = "The configured daily target is already met"
+    elif selected_plan:
+        primary_opportunity = selected_plan[0]
+        if decision.action == "wait" and decision.selected is not None:
+            candidate_state = "waiting"
+            held_peak = min(
+                decision.held_peak_minutes,
+                primary_opportunity.peak_minutes,
+            )
+            status = "waiting"
+            reason = decision.reason
+        elif decision.action == "book_now":
+            candidate_state = "ready"
+            status = "planned"
+            reason = decision.reason
+        else:
+            candidate_state = (
+                "waiting" if primary_opportunity.unlock_at > now else "ready"
+            )
+            status = "waiting" if candidate_state == "waiting" else "planned"
+            reason = (
+                f"Best visible opportunity is {primary_opportunity.start_text}-"
+                f"{primary_opportunity.end_text} in {primary_opportunity.room}"
+            )
+    elif decision.action == "wait":
+        # A held decision can be omitted only when an aggregate hard budget no
+        # longer supports it. Expose that honestly instead of claiming a plan.
+        primary_opportunity = None
+        candidate_state = "waiting"
+        status = "blocked"
+        reason = "The preferred opportunity no longer fits the aggregate booking budgets"
+    else:
+        status = "unplanned"
+
+    primary = (
+        None
+        if primary_opportunity is None
+        else _plan_candidate_from_opportunity(
+            primary_opportunity,
+            state=candidate_state,
+            reason=reason,
+        )
+    )
+    additional = tuple(
+        _plan_candidate_from_opportunity(
+            item,
+            state="waiting" if item.unlock_at > now else "ready",
+            reason="Selected as another non-overlapping session in this day's plan",
+        )
+        for item in selected_plan[1:]
+    )
+    ranked = sorted(
+        opportunities,
+        key=lambda item: opportunity_rank(item, daily_planning, now=now),
+    )
+    backups = []
+    seen = set()
+    for selected in selected_plan:
+        seen.add(
+            (
+                selected.room,
+                selected.start_minutes,
+                selected.end_minutes,
+            )
+        )
+    for item in ranked:
+        identity = (item.room, item.start_minutes, item.end_minutes)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        backups.append(
+            _plan_candidate_from_opportunity(
+                item,
+                state="potential",
+                reason="Visible alternative from the same fresh room-grid scan",
+            )
+        )
+        if len(backups) == 3:
+            break
+
+    peak_limit = int(MAX_PEAK_HOURS * 60) if target_date.weekday() < 5 else 0
+    peak_used = (
+        int(round(tracker.get_peak_used_for_day(target_date) / 15)) * 15
+        if peak_limit
+        else 0
+    )
+    return DayPlan(
+        date=target_date.isoformat(),
+        target_minutes=min(1440, target_minutes),
+        existing_minutes=min(1440, existing_minutes),
+        peak_used_minutes=min(peak_limit, peak_used),
+        peak_limit_minutes=peak_limit,
+        status=status,
+        primary=primary,
+        additional=additional if primary is not None else (),
+        backups=tuple(backups) if primary is not None else (),
+        held_peak_minutes=min(held_peak, max(0, peak_limit - peak_used)),
+        reason=reason,
+    )
+
+
+def _legacy_opportunity_rank(opportunity, time_prefs):
+    """Mirror the established non-foresight booking order for display."""
+
+    return (
+        0 if is_preferred_time(opportunity.start_hour, time_prefs) else 1,
+        opportunity.potential_minutes < max(MINIMUM_BLOCK_MINUTES, 60),
+        opportunity.start_minutes,
+        opportunity.room_priority,
+    )
+
+
+def _legacy_current_opportunities(opportunities, *, now):
+    """Keep the one gap-start candidate the legacy mutation path can choose.
+
+    The intelligent planner deliberately enumerates interior quarter-hour
+    starts. Legacy booking never did: after conflict/strict-window trimming it
+    uses the first currently bookable start of each maximal gap. Reducing by
+    the source-gap identity keeps a disabled planner's preview truthful.
+    """
+
+    by_gap = {}
+    for opportunity in opportunities:
+        if opportunity.unlock_at > now:
+            continue
+        key = (
+            opportunity.room,
+            opportunity.source_gap_start_minutes,
+            opportunity.source_gap_end_minutes,
+        )
+        previous = by_gap.get(key)
+        if previous is None or opportunity.start_minutes < previous.start_minutes:
+            by_gap[key] = opportunity
+    return tuple(by_gap.values())
+
+
+def build_legacy_display_day_plan(
+    target_date,
+    opportunities,
+    tracker,
+    daily_planning,
+    time_prefs,
+    *,
+    now,
+    target_minutes,
+    remaining_weekly_minutes=None,
+):
+    """Build a display plan that exactly follows disabled-planner ordering."""
+
+    target_date = as_date(target_date)
+    existing_minutes = (
+        int(round(tracker.get_hours_for_day(target_date) * 60 / 15)) * 15
+    )
+    target_minutes = min(
+        1440,
+        max(existing_minutes, int(target_minutes // 15) * 15),
+    )
+    selection_minutes = min(
+        max(0, target_minutes - existing_minutes),
+        _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0,
+    )
+    if remaining_weekly_minutes is not None:
+        selection_minutes = min(
+            selection_minutes,
+            max(0, int(remaining_weekly_minutes // 15) * 15),
+        )
+    current = _legacy_current_opportunities(opportunities, now=now)
+    rank_key = lambda item: _legacy_opportunity_rank(item, time_prefs)
+    selected = select_day_plan(
+        current,
+        daily_planning,
+        now=now,
+        target_minutes=selection_minutes,
+        allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
+        remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
+        same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+        rank_key=rank_key,
+    )
+    if selection_minutes < MINIMUM_BLOCK_MINUTES:
+        status = "complete"
+        reason = "The configured daily or rolling-week target is already met"
+    elif selected:
+        status = "planned"
+        first = selected[0]
+        reason = (
+            "Daily foresight is disabled; legacy order selects "
+            f"{first.start_text}-{first.end_text} in {first.room}"
+        )
+    else:
+        status = "unplanned"
+        reason = "No currently bookable legacy-order opportunity is visible"
+
+    selected_keys = {
+        (item.room, item.start_minutes, item.end_minutes) for item in selected
+    }
+    backups = []
+    for item in sorted(current, key=rank_key):
+        identity = (item.room, item.start_minutes, item.end_minutes)
+        if identity in selected_keys:
+            continue
+        backups.append(
+            _plan_candidate_from_opportunity(
+                item,
+                state="potential",
+                reason="Alternative in the established non-foresight booking order",
+            )
+        )
+        if len(backups) == 3:
+            break
+    selected_candidates = tuple(
+        _plan_candidate_from_opportunity(
+            item,
+            state="ready",
+            reason=reason if index == 0 else "Another legacy-order session",
+        )
+        for index, item in enumerate(selected)
+    )
+    peak_limit = int(MAX_PEAK_HOURS * 60) if target_date.weekday() < 5 else 0
+    peak_used = (
+        int(round(tracker.get_peak_used_for_day(target_date) / 15)) * 15
+        if peak_limit
+        else 0
+    )
+    return DayPlan(
+        date=target_date.isoformat(),
+        target_minutes=target_minutes,
+        existing_minutes=min(1440, existing_minutes),
+        peak_used_minutes=min(peak_limit, peak_used),
+        peak_limit_minutes=peak_limit,
+        status=status,
+        primary=selected_candidates[0] if selected_candidates else None,
+        additional=selected_candidates[1:],
+        backups=tuple(backups) if selected_candidates else (),
+        held_peak_minutes=0,
+        reason=reason,
+    )
+
+
+def publish_booking_plan(days, policy, settings, *, summary, status="active", now=None):
+    """Best-effort publication of display evidence; never booking authority."""
+
+    now = _aware_local_datetime(now or datetime.now())
+    try:
+        # The runtime itself may have added, advanced, or removed an extension
+        # record after loading its immutable planning preferences. Fold only
+        # that runtime-owned field into the fingerprint. Any concurrent GUI
+        # change to strategy, dates, rooms, targets, or ignored events therefore
+        # still makes this snapshot visibly stale instead of falsely current.
+        fingerprint_settings = dict(settings)
+        latest_settings = load_settings_document(settings_file)
+        if "extendable_bookings" in latest_settings:
+            fingerprint_settings["extendable_bookings"] = latest_settings[
+                "extendable_bookings"
+            ]
+        else:
+            fingerprint_settings.pop("extendable_bookings", None)
+        snapshot = BookingPlanSnapshot(
+            version=1,
+            generated_at=now,
+            valid_until=now + timedelta(minutes=20),
+            policy_observed_at=_aware_local_datetime(policy.observed_at),
+            strategy_fingerprint=booking_plan_fingerprint(fingerprint_settings),
+            status=status,
+            summary=summary,
+            days=tuple(sorted(days, key=lambda item: item.date)),
+        )
+        write_booking_plan(snapshot)
+        return snapshot
+    except (BookingPlanError, SettingsError) as exc:
+        print(
+            "  WARNING: Booking decision remains valid, but the display-only "
+            f"plan could not be published: {exc}"
+        )
+        return None
+
+
+def publish_planning_context(
+    planning_context,
+    policy,
+    settings,
+    *,
+    summary,
+    status="active",
+    now=None,
+):
+    """Publish every freshly observed day accumulated in the current run."""
+
+    days = tuple(
+        planning_context.get("display_days", {}).values()
+        if isinstance(planning_context, dict)
+        else ()
+    )
+    if not days:
+        return None
+    return publish_booking_plan(
+        days,
+        policy,
+        settings,
+        summary=summary,
+        status=status,
+        now=now,
+    )
+
+
+def record_plan_create_progress(
+    planning_context,
+    policy,
+    settings,
+    tracker,
+    candidate,
+    confirmed_minutes,
+    *,
+    now=None,
+):
+    """Replace a just-verified create preview with explicit extension progress."""
+
+    if not isinstance(planning_context, dict):
+        return None
+    target_date = as_date(candidate["target_date"])
+    date_key = target_date.isoformat()
+    day = planning_context.get("display_days", {}).get(date_key)
+    if day is None or day.primary is None:
+        return None
+    primary = day.primary
+    start_text = (
+        f"{int(candidate['start_hour']):02d}:"
+        f"{int(round(candidate['start_hour'] % 1 * 60)):02d}"
+    )
+    if primary.room != candidate["room"] or primary.start_time != start_text:
+        return None
+    confirmed = min(
+        primary.potential_minutes,
+        max(primary.confirmed_minutes, int(confirmed_minutes)),
+    )
+    existing_minutes = min(
+        1440,
+        int(round(tracker.get_hours_for_day(target_date) * 60 / 15)) * 15,
+    )
+    peak_limit = day.peak_limit_minutes
+    peak_used = min(
+        peak_limit,
+        int(round(tracker.get_peak_used_for_day(target_date) / 15)) * 15,
+    )
+    additional = list(day.additional)
+    if confirmed >= primary.potential_minutes:
+        new_primary = additional.pop(0) if additional else None
+        status = "planned" if new_primary is not None else (
+            "complete" if existing_minutes >= day.target_minutes else "unplanned"
+        )
+        held_peak = 0
+        reason = (
+            "The selected session is fully confirmed in Asimut; remaining "
+            "potential sessions will be replanned from a fresh grid"
+        )
+    else:
+        new_primary = replace(
+            primary,
+            confirmed_minutes=confirmed,
+            state="waiting",
+            reason=(
+                f"{confirmed}/{primary.potential_minutes} minutes are confirmed; "
+                "the remainder requires separately verified horizon extensions"
+            ),
+        )
+        status = "in_progress"
+        start_minutes = int(primary.start_time[:2]) * 60 + int(primary.start_time[3:])
+        end_minutes = int(primary.end_time[:2]) * 60 + int(primary.end_time[3:])
+        remaining_peak = interval_overlap_minutes(
+            start_minutes + confirmed,
+            end_minutes,
+            int(PEAK_START * 60),
+            int(PEAK_END * 60),
+        )
+        held_peak = min(
+            remaining_peak,
+            max(0, peak_limit - peak_used),
+        )
+        reason = new_primary.reason
+    updated = replace(
+        day,
+        existing_minutes=existing_minutes,
+        peak_used_minutes=peak_used,
+        status=status,
+        primary=new_primary,
+        additional=tuple(additional),
+        held_peak_minutes=held_peak,
+        reason=reason,
+    )
+    planning_context["display_days"][date_key] = updated
+    planning_context.setdefault("held_peak_by_date", {}).pop(date_key, None)
+    planning_context.setdefault("held_target_by_date", {}).pop(date_key, None)
+    if new_primary is None:
+        planning_context.setdefault("extension_peak_by_date", {}).pop(
+            date_key, None
+        )
+        planning_context.setdefault("extension_target_by_date", {}).pop(
+            date_key, None
+        )
+    else:
+        planning_context.setdefault("extension_peak_by_date", {})[
+            date_key
+        ] = held_peak
+        planning_context.setdefault("extension_target_by_date", {})[date_key] = (
+            new_primary.potential_minutes - new_primary.confirmed_minutes
+        )
+    try:
+        planning_context["extension_bookings"] = tuple(
+            load_extendable_bookings(load_settings_document(settings_file))
+        )
+    except SettingsError as exc:
+        print(
+            "  WARNING: Booking progress is verified, but the display plan "
+            f"could not refresh extension state: {exc}"
+        )
+    return publish_planning_context(
+        planning_context,
+        policy,
+        settings,
+        summary=reason,
+        status="active" if new_primary is not None else "complete",
+        now=now,
+    )
+
+
+def build_horizon_display_days(
+    opportunities_by_date,
+    planning_context,
+    tracker,
+    practice_plan,
+    daily_planning,
+    *,
+    now,
+    reverse_date_order=False,
+):
+    """Build horizon previews under one aggregate rolling-week allowance."""
+
+    if not isinstance(planning_context, dict):
+        raise TypeError("planning_context must be a dictionary")
+    extension_targets = planning_context.get("extension_target_by_date", {})
+    extension_weekly_minutes = sum(extension_targets.values())
+    remaining_weekly_minutes = max(
+        0,
+        int(tracker.get_remaining_quota_hours() * 4 + 1e-9) * 15,
+    )
+    planned_weekly_minutes = 0
+    ordered = sorted(
+        opportunities_by_date.items(),
+        reverse=bool(reverse_date_order),
+    )
+    display_days = []
+    for date_key, date_opportunities in ordered:
+        plan_date = date.fromisoformat(date_key)
+        existing_minutes = (
+            int(round(tracker.get_hours_for_day(plan_date) * 60 / 15)) * 15
+        )
+        if practice_plan.enabled:
+            target_minutes = int(
+                round((practice_plan.target_for(plan_date) or 0) * 60)
+            )
+        else:
+            target_minutes = max(
+                existing_minutes,
+                existing_minutes + daily_planning.desired_peak_block_minutes,
+            )
+        target_minutes = max(
+            target_minutes,
+            existing_minutes + extension_targets.get(date_key, 0),
+        )
+        available_weekly_for_new = max(
+            0,
+            remaining_weekly_minutes
+            - extension_weekly_minutes
+            - planned_weekly_minutes,
+        )
+        display_day = build_display_day_plan(
+            plan_date,
+            date_opportunities,
+            tracker,
+            daily_planning,
+            now=now,
+            target_minutes=target_minutes,
+            remaining_weekly_minutes=available_weekly_for_new,
+        )
+        selected = (
+            (() if display_day.primary is None else (display_day.primary,))
+            + display_day.additional
+        )
+        planned_weekly_minutes += sum(
+            candidate.potential_minutes - candidate.confirmed_minutes
+            for candidate in selected
+        )
+        display_day = attach_extension_progress(
+            display_day,
+            planning_context,
+            now=now,
+        )
+        planning_context.setdefault("display_days", {})[
+            display_day.date
+        ] = display_day
+        display_days.append(display_day)
+    return tuple(display_days)
+
+
 def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
     """Compatibility helper for one loaded date using boundary-driven edges."""
 
@@ -5478,6 +6474,8 @@ def find_all_snipe_candidates_multi_day(
     only_date=None,
     only_room=None,
     candidate_limit=None,
+    daily_planning=None,
+    planning_context=None,
 ):
     """Scan only exact live-derived horizon edges relevant to one boundary."""
 
@@ -5494,6 +6492,11 @@ def find_all_snipe_candidates_multi_day(
 
     disabled_dates = disabled_dates or set()
     practice_plan = practice_plan or PracticePlan()
+    # Callers predating daily planning retain the exact legacy candidate path;
+    # production always passes the validated explicit strategy.
+    daily_planning = daily_planning or DailyPlanningPreferences(enabled=False)
+    if planning_context is not None and not isinstance(planning_context, dict):
+        raise TypeError("planning_context must be a dictionary")
     plans = plan_horizon_edge_slots(
         target_boundary,
         today=today,
@@ -5544,9 +6547,13 @@ def find_all_snipe_candidates_multi_day(
     )
 
     candidates = []
+    smart_current_opportunities = []
+    smart_future_opportunities = []
+    smart_decisions_by_date = {}
     for day_index, days_ahead in enumerate(day_offsets):
         day_plans = plans_by_day[days_ahead]
         target_date = day_plans[0]["target_date"]
+        date_key = target_date.isoformat()
         if is_date_disabled(target_date, disabled_dates):
             print(f"\n    Skipping Day {days_ahead} ({target_date}): disabled by user")
             continue
@@ -5555,7 +6562,20 @@ def find_all_snipe_candidates_multi_day(
             target_date,
             tracker.get_hours_for_day(target_date),
         )
-        if daily_remaining is not None and daily_remaining < MINIMUM_BLOCK_MINUTES / 60:
+        extension_target_minutes = (
+            planning_context.get("extension_target_by_date", {}).get(date_key, 0)
+            if planning_context is not None
+            else 0
+        )
+        effective_daily_remaining = (
+            None
+            if daily_remaining is None
+            else max(0.0, daily_remaining - extension_target_minutes / 60)
+        )
+        if (
+            effective_daily_remaining is not None
+            and effective_daily_remaining < MINIMUM_BLOCK_MINUTES / 60
+        ):
             print(f"\n    Skipping Day {days_ahead} ({target_date}): daily practice target met")
             continue
         fragmentation_ok, fragmentation_reason = fragmentation_allows_new_booking(
@@ -5585,6 +6605,131 @@ def find_all_snipe_candidates_multi_day(
             for item in get_available_slots(page)
             if item.get("room") in expected_rooms
         }
+        extension_weekly_minutes = (
+            sum(planning_context.get("extension_target_by_date", {}).values())
+            if planning_context is not None
+            else 0
+        )
+        extension_peak_minutes = (
+            planning_context.get("extension_peak_by_date", {}).get(date_key, 0)
+            if planning_context is not None
+            else 0
+        )
+
+        if daily_planning.enabled:
+            cross_date_foresight_minutes = (
+                sum(
+                    minutes
+                    for held_date, minutes in planning_context.get(
+                        "held_target_by_date", {}
+                    ).items()
+                    if held_date != target_date.isoformat()
+                )
+                if planning_context is not None
+                else 0
+            )
+            day_opportunities = build_day_booking_opportunities(
+                list(available_by_room.values()),
+                target_date,
+                tracker,
+                time_prefs,
+                daily_planning,
+                now=target_boundary,
+                remaining_daily_hours=effective_daily_remaining,
+                reserved_peak_minutes=extension_peak_minutes,
+                reserved_weekly_minutes=(
+                    extension_weekly_minutes + cross_date_foresight_minutes
+                ),
+                only_room=only_room,
+            )
+            day_current = []
+            day_future = []
+            for opportunity in day_opportunities:
+                extension_key = (
+                    target_date.isoformat(),
+                    opportunity.room,
+                    opportunity.start_hour,
+                )
+                if extension_key in extension_keys:
+                    continue
+                seconds_from_boundary = (
+                    opportunity.unlock_at - target_boundary
+                ).total_seconds()
+                if abs(seconds_from_boundary) <= 1:
+                    day_current.append(opportunity)
+                elif seconds_from_boundary > 1:
+                    day_future.append(opportunity)
+            smart_current_opportunities.extend(day_current)
+            smart_future_opportunities.extend(day_future)
+            decision = choose_horizon_opportunity(
+                day_current,
+                day_future,
+                daily_planning,
+                now=target_boundary,
+            )
+            smart_decisions_by_date[date_key] = decision
+            if planning_context is not None:
+                planning_context.setdefault("opportunities_by_date", {})[
+                    date_key
+                ] = tuple(day_opportunities)
+                planning_context.setdefault("decisions_by_date", {})[
+                    date_key
+                ] = decision
+                if decision.action == "wait" and decision.selected is not None:
+                    planning_context.setdefault("held_peak_by_date", {})[
+                        date_key
+                    ] = decision.held_peak_minutes
+                    planning_context.setdefault("held_target_by_date", {})[
+                        date_key
+                    ] = decision.selected.potential_minutes
+                else:
+                    planning_context.setdefault("held_peak_by_date", {}).pop(
+                        date_key, None
+                    )
+                    planning_context.setdefault("held_target_by_date", {}).pop(
+                        date_key, None
+                    )
+            if day_current:
+                print(
+                    f"      {len(day_current)} exact edge(s) are free now; "
+                    f"{len(day_future)} later visible option(s) were evaluated"
+                )
+            else:
+                print(
+                    f"      No exact edge is free now; {len(day_future)} "
+                    "later visible option(s) were evaluated"
+                )
+            print(f"      Daily planner: {decision.reason}")
+
+            # Peak allowance is per target date, so foresight is intentionally
+            # decided within this one fresh day grid. If that day should wait,
+            # an independent edge on another date may still be used. If the
+            # selected current edge outranks every untested room, prepare it
+            # immediately and preserve the boundary-reliability fast path.
+            if decision.action == "book_now":
+                candidates.append(
+                    _opportunity_to_horizon_candidate(
+                        decision.selected,
+                        target_boundary=target_boundary,
+                    )
+                )
+                if candidate_limit == 1:
+                    selected_priority = decision.selected.room_priority
+                    remaining_priorities = [
+                        plan["room_priority"]
+                        for remaining_day in day_offsets[day_index + 1 :]
+                        for plan in plans_by_day[remaining_day]
+                    ]
+                    if (
+                        not remaining_priorities
+                        or selected_priority < min(remaining_priorities)
+                    ):
+                        print(
+                            "      Best actionable room is proven; preparing "
+                            "it without scanning lower-ranked horizon dates"
+                        )
+                        break
+            continue
 
         day_candidates = 0
         for plan in day_plans:
@@ -5613,6 +6758,42 @@ def find_all_snipe_candidates_multi_day(
                 start_hour,
                 MINIMUM_BLOCK_MINUTES,
             )
+            remaining_weekly_after_extensions = None
+            if extension_weekly_minutes:
+                remaining_weekly_after_extensions = max(
+                    0,
+                    int(tracker.get_remaining_quota_hours() * 4 + 1e-9) * 15
+                    - extension_weekly_minutes,
+                )
+            initial_peak_minutes = (
+                interval_overlap_minutes(
+                    int(round(start_hour * 60)),
+                    int(round(end_hour * 60)),
+                    int(PEAK_START * 60),
+                    int(PEAK_END * 60),
+                )
+                if target_date.weekday() < 5
+                else 0
+            )
+            remaining_peak_after_extensions = None
+            if extension_peak_minutes:
+                remaining_peak_after_extensions = max(
+                    0,
+                    tracker.get_remaining_peak_minutes(target_date)
+                    - extension_peak_minutes,
+                )
+            if (
+                remaining_weekly_after_extensions is not None
+                and remaining_weekly_after_extensions < MINIMUM_BLOCK_MINUTES
+            ):
+                can_book = False
+                reason = "rolling quota is reserved for pending extensions"
+            elif (
+                remaining_peak_after_extensions is not None
+                and initial_peak_minutes > remaining_peak_after_extensions
+            ):
+                can_book = False
+                reason = "peak allowance is reserved for pending extensions"
             if not can_book:
                 print(f"      Skipping {room_name} at {start_hour:.2f}: {reason}")
                 continue
@@ -5640,6 +6821,51 @@ def find_all_snipe_candidates_multi_day(
                     "without scanning lower-ranked horizon dates"
                 )
                 break
+
+    if daily_planning.enabled:
+        if candidates:
+            best_candidate = min(
+                candidates,
+                key=lambda item: (item["room_priority"], item["days_ahead"]),
+            )
+            best_opportunity = best_candidate["planning_opportunity"]
+            decision = next(
+                value
+                for value in smart_decisions_by_date.values()
+                if value.selected == best_opportunity
+            )
+        else:
+            waiting = [
+                value
+                for value in smart_decisions_by_date.values()
+                if value.action == "wait" and value.selected is not None
+            ]
+            if waiting:
+                decision = min(
+                    waiting,
+                    key=lambda value: (
+                        value.selected.room_priority,
+                        value.selected.target_date,
+                    ),
+                )
+            elif smart_decisions_by_date:
+                decision = next(iter(smart_decisions_by_date.values()))
+            else:
+                decision = choose_horizon_opportunity(
+                    (),
+                    (),
+                    daily_planning,
+                    now=target_boundary,
+                )
+        if planning_context is not None:
+            planning_context["decision"] = decision
+            planning_context["current_opportunities"] = tuple(
+                smart_current_opportunities
+            )
+            planning_context["future_opportunities"] = tuple(
+                smart_future_opportunities
+            )
+        print(f"\n  Daily planner result: {decision.reason}")
 
     # A common boundary is attempted in the user's GUI room order.  Date
     # distance is only a deterministic tiebreaker, never a reason to demote a
@@ -6841,6 +8067,225 @@ def extension_processing_sort_key(booking, *, now=None):
     )
 
 
+def calculate_extension_capacity_holds(
+    extendable_bookings,
+    tracker,
+    practice_plan,
+    disabled_dates,
+    *,
+    time_prefs=None,
+    now=None,
+):
+    """Reserve the exact remaining capacity of verified extension targets.
+
+    A horizon create is only useful when its later 15-minute extensions retain
+    enough daily-target, peak, and rolling-week capacity. These holds are local
+    planning constraints, never mutation authority; every extension still
+    revalidates its tracked event and live form before Save.
+    """
+
+    now = now or datetime.now()
+    live_dates = {value.isoformat() for value in booking_window_dates(now.date())}
+    remaining_weekly = max(
+        0,
+        int(tracker.get_remaining_quota_hours() * 4 + 1e-9) * 15,
+    )
+    target_by_date = {}
+    peak_by_date = {}
+    held_bookings = []
+
+    def clock_minutes(value):
+        hour, minute = map(int, value.split(":"))
+        return hour * 60 + minute
+
+    def cap_end_for_peak(target_date, start, end, remaining_peak):
+        if target_date.weekday() >= 5 or end <= int(PEAK_START * 60) or start >= int(PEAK_END * 60):
+            return end
+        peak_start = int(PEAK_START * 60)
+        peak_end = int(PEAK_END * 60)
+        remaining_peak = max(0, int(remaining_peak // 15) * 15)
+        if start < peak_start:
+            if remaining_peak >= peak_end - peak_start:
+                return end
+            return min(end, peak_start + remaining_peak)
+        if remaining_peak >= peak_end - start:
+            return end
+        return min(end, start + remaining_peak)
+
+    strict_time_prefs = time_prefs or {
+        "enabled": False,
+        "strict_mode": False,
+        "start_hour": 0.0,
+        "end_hour": 24.0,
+    }
+    ordered = sorted(
+        extendable_bookings,
+        key=lambda booking: extension_processing_sort_key(booking, now=now),
+    )
+    for booking in ordered:
+        date_key = booking["date"]
+        if (
+            booking["room"] not in PRIORITY_ROOMS
+            or date_key not in live_dates
+            or is_date_disabled(date.fromisoformat(date_key), disabled_dates)
+        ):
+            continue
+        target_date = date.fromisoformat(date_key)
+        start_time = clock_minutes(booking["startTime"])
+        current_end = clock_minutes(booking["endTime"])
+        target_end = clock_minutes(booking["target_end"])
+        start_hour = start_time / 60
+        current_end_hour = current_end / 60
+        if not interval_is_strictly_preferred(
+            start_hour,
+            current_end_hour,
+            strict_time_prefs,
+        ):
+            continue
+        if strict_time_prefs["enabled"] and strict_time_prefs["strict_mode"]:
+            target_end = min(
+                target_end,
+                int(round(strict_time_prefs["end_hour"] * 60)),
+            )
+
+        # An extension is contiguous. The first non-own conflict is therefore
+        # a hard end, even when it appeared after the horizon create.
+        for conflict_start, conflict_end in tracker.conflict_ranges.get(
+            date_key, ()
+        ):
+            conflict_start_minutes = int(round(conflict_start * 60))
+            conflict_end_minutes = int(round(conflict_end * 60))
+            is_own_booking = (
+                abs(conflict_start_minutes - start_time) <= 1
+                and conflict_end_minutes <= current_end + 1
+            )
+            if is_own_booking or conflict_end_minutes <= current_end:
+                continue
+            if conflict_start_minutes <= current_end:
+                target_end = current_end
+                break
+            target_end = min(target_end, conflict_start_minutes)
+
+        # Keep the fresh same-room gap before every other reservation or
+        # booking. Generic conflict clipping above prevents overlap; this
+        # additional cap preserves the required clear interval before it.
+        future_same_room_starts = []
+        for other_start, _other_end, other_room in tracker.reservation_ranges.get(
+            date_key, ()
+        ):
+            other_start_minutes = int(round(other_start * 60))
+            if (
+                other_room == booking["room"]
+                and abs(other_start_minutes - start_time) > 1
+                and other_start_minutes > current_end
+            ):
+                future_same_room_starts.append(other_start_minutes)
+        for other_room, other_date, other_start, _other_end in tracker.bookings:
+            other_start_minutes = int(round(other_start * 60))
+            if (
+                other_room == booking["room"]
+                and as_date(other_date).isoformat() == date_key
+                and abs(other_start_minutes - start_time) > 1
+                and other_start_minutes > current_end
+            ):
+                future_same_room_starts.append(other_start_minutes)
+        if future_same_room_starts:
+            target_end = min(
+                target_end,
+                min(future_same_room_starts) - SAME_ROOM_GAP_MINUTES,
+            )
+
+        remaining = max(0, target_end - current_end)
+        if remaining < 15 or remaining_weekly < 15:
+            continue
+
+        daily_remaining = remaining_target_hours(
+            practice_plan,
+            target_date,
+            tracker.get_hours_for_day(target_date),
+        )
+        if daily_remaining is not None:
+            daily_capacity = max(
+                0,
+                int(daily_remaining * 4 + 1e-9) * 15
+                - target_by_date.get(date_key, 0),
+            )
+            remaining = min(remaining, daily_capacity)
+        remaining = min(remaining, remaining_weekly)
+        remaining -= remaining % 15
+        if remaining < 15:
+            continue
+
+        remaining_peak = max(
+            0,
+            int(tracker.get_remaining_peak_minutes(target_date))
+            - peak_by_date.get(date_key, 0),
+        )
+        held_end = cap_end_for_peak(
+            target_date,
+            current_end,
+            current_end + remaining,
+            remaining_peak,
+        )
+        held_minutes = max(0, held_end - current_end)
+        held_minutes -= held_minutes % 15
+        if held_minutes < 15:
+            continue
+        held_peak = (
+            interval_overlap_minutes(
+                current_end,
+                current_end + held_minutes,
+                int(PEAK_START * 60),
+                int(PEAK_END * 60),
+            )
+            if target_date.weekday() < 5
+            else 0
+        )
+        target_by_date[date_key] = target_by_date.get(date_key, 0) + held_minutes
+        peak_by_date[date_key] = peak_by_date.get(date_key, 0) + held_peak
+        remaining_weekly -= held_minutes
+        planned_booking = dict(booking)
+        planned_end = current_end + held_minutes
+        planned_booking["target_end"] = (
+            f"{planned_end // 60:02d}:{planned_end % 60:02d}"
+        )
+        held_bookings.append(planned_booking)
+
+    return target_by_date, peak_by_date, tuple(held_bookings)
+
+
+def refresh_extension_capacity_holds(
+    planning_context,
+    tracker,
+    practice_plan,
+    disabled_dates,
+    *,
+    settings=None,
+    time_prefs=None,
+    now=None,
+):
+    """Replace run-scoped extension holds from the latest validated state."""
+
+    if not isinstance(planning_context, dict):
+        raise TypeError("planning_context must be a dictionary")
+    source_settings = (
+        load_settings_document(settings_file) if settings is None else settings
+    )
+    bookings = load_extendable_bookings(source_settings)
+    target_by_date, peak_by_date, held_bookings = calculate_extension_capacity_holds(
+        bookings,
+        tracker,
+        practice_plan,
+        disabled_dates,
+        time_prefs=time_prefs,
+        now=now,
+    )
+    planning_context["extension_target_by_date"] = target_by_date
+    planning_context["extension_peak_by_date"] = peak_by_date
+    planning_context["extension_bookings"] = held_bookings
+    return target_by_date, peak_by_date, held_bookings
+
+
 def process_pending_extensions(
     page,
     tracker,
@@ -6973,6 +8418,251 @@ def validate_live_scope(args, policy, *, today=None):
         )
 
 
+def generate_read_only_booking_plan(
+    page,
+    policy,
+    settings,
+    practice_plan,
+    tracker,
+    time_prefs,
+    daily_planning,
+    disabled_dates,
+    args,
+    *,
+    today,
+    reverse_date_order=False,
+    planning_context=None,
+):
+    """Scan fresh grids and publish a mutation-free, display-only day plan."""
+
+    print("\nGENERATING READ-ONLY BOOKING PLAN")
+    open_practice_room_overview(page, today)
+    current_calendar_day = 0
+    now = datetime.now()
+    live_dates = booking_window_dates(today)
+    planning_dates = tuple(reversed(live_dates)) if reverse_date_order else live_dates
+    enabled_dates = [
+        value for value in live_dates if not is_date_disabled(value, disabled_dates)
+    ]
+    planning_context = planning_context or {
+        "extension_target_by_date": {},
+        "extension_peak_by_date": {},
+        "extension_bookings": (),
+    }
+    extension_target_by_date = planning_context.get(
+        "extension_target_by_date", {}
+    )
+    extension_peak_by_date = planning_context.get("extension_peak_by_date", {})
+    total_extension_minutes = sum(extension_target_by_date.values())
+    remaining_weekly_minutes = max(
+        0,
+        int(tracker.get_remaining_quota_hours() * 4 + 1e-9) * 15,
+    )
+    planned_weekly_minutes = 0
+    day_plans = []
+    for target_date in planning_dates:
+        days_ahead = (target_date - today).days
+        if args.only_date and target_date.isoformat() != args.only_date:
+            continue
+        existing_minutes = int(
+            round(tracker.get_hours_for_day(target_date) * 60 / 15)
+        ) * 15
+        peak_limit = int(MAX_PEAK_HOURS * 60) if target_date.weekday() < 5 else 0
+        peak_used = (
+            int(round(tracker.get_peak_used_for_day(target_date) / 15)) * 15
+            if peak_limit
+            else 0
+        )
+        if is_date_disabled(target_date, disabled_dates):
+            day_plans.append(
+                DayPlan(
+                    date=target_date.isoformat(),
+                    target_minutes=existing_minutes,
+                    existing_minutes=existing_minutes,
+                    peak_used_minutes=min(peak_limit, peak_used),
+                    peak_limit_minutes=peak_limit,
+                    status="skipped",
+                    primary=None,
+                    additional=(),
+                    backups=(),
+                    held_peak_minutes=0,
+                    reason="This date is disabled in Booking Days",
+                )
+            )
+            continue
+        daily_remaining = remaining_target_hours(
+            practice_plan,
+            target_date,
+            tracker.get_hours_for_day(target_date),
+        )
+        extension_target_minutes = extension_target_by_date.get(
+            target_date.isoformat(), 0
+        )
+        extension_peak_minutes = extension_peak_by_date.get(
+            target_date.isoformat(), 0
+        )
+        if practice_plan.enabled:
+            target_minutes = int(
+                round((practice_plan.target_for(target_date) or 0) * 60)
+            )
+        else:
+            additional_hours, _ = calculate_target_hours_for_day(
+                target_date,
+                enabled_dates,
+                tracker,
+                practice_plan=practice_plan,
+            )
+            target_minutes = (
+                existing_minutes + int(additional_hours * 4 + 1e-9) * 15
+            )
+            daily_remaining = additional_hours
+        target_minutes = max(
+            target_minutes,
+            existing_minutes + extension_target_minutes,
+        )
+        effective_daily_remaining = (
+            None
+            if daily_remaining is None
+            else max(0.0, daily_remaining - extension_target_minutes / 60)
+        )
+        fragmentation_ok, fragmentation_reason = fragmentation_allows_new_booking(
+            tracker,
+            target_date,
+        )
+        if not fragmentation_ok:
+            day_plan = DayPlan(
+                date=target_date.isoformat(),
+                target_minutes=min(1440, max(existing_minutes, target_minutes)),
+                existing_minutes=min(1440, existing_minutes),
+                peak_used_minutes=min(peak_limit, peak_used),
+                peak_limit_minutes=peak_limit,
+                status="complete" if existing_minutes else "skipped",
+                primary=None,
+                additional=(),
+                backups=(),
+                held_peak_minutes=0,
+                reason=fragmentation_reason,
+            )
+            day_plans.append(
+                attach_extension_progress(
+                    day_plan,
+                    planning_context,
+                    now=now,
+                )
+            )
+            continue
+        if current_calendar_day != days_ahead:
+            current_calendar_day = navigate_to_day(
+                page,
+                days_ahead,
+                current_calendar_day,
+                base_date=today,
+            )
+        wait_for_practice_room_grid(page, target_date)
+        available_data = get_available_slots(page)
+        opportunity_planning = (
+            daily_planning
+            if daily_planning.enabled
+            else replace(
+                daily_planning,
+                desired_peak_block_minutes=int(MAX_BOOKING_HOURS * 60),
+                after_peak_mode="longest_first",
+            )
+        )
+        opportunities = build_day_booking_opportunities(
+            available_data,
+            target_date,
+            tracker,
+            time_prefs,
+            opportunity_planning,
+            now=now,
+            remaining_daily_hours=effective_daily_remaining,
+            reserved_peak_minutes=extension_peak_minutes,
+            reserved_weekly_minutes=(
+                total_extension_minutes + planned_weekly_minutes
+            ),
+            only_room=args.only_room,
+        )
+        if daily_planning.enabled:
+            latest_useful_unlock = now + timedelta(
+                minutes=daily_planning.foresight_minutes
+            )
+            opportunities = [
+                item
+                for item in opportunities
+                if item.unlock_at <= now or item.unlock_at <= latest_useful_unlock
+            ]
+        available_weekly_for_new = max(
+            0,
+            remaining_weekly_minutes
+            - total_extension_minutes
+            - planned_weekly_minutes,
+        )
+        if daily_planning.enabled:
+            day_plan = build_display_day_plan(
+                target_date,
+                opportunities,
+                tracker,
+                daily_planning,
+                now=now,
+                target_minutes=target_minutes,
+                remaining_weekly_minutes=available_weekly_for_new,
+            )
+        else:
+            day_plan = build_legacy_display_day_plan(
+                target_date,
+                opportunities,
+                tracker,
+                opportunity_planning,
+                time_prefs,
+                now=now,
+                target_minutes=target_minutes,
+                remaining_weekly_minutes=available_weekly_for_new,
+            )
+        newly_selected = (() if day_plan.primary is None else (day_plan.primary,)) + day_plan.additional
+        planned_weekly_minutes += sum(
+            candidate.potential_minutes - candidate.confirmed_minutes
+            for candidate in newly_selected
+        )
+
+        day_plan = attach_extension_progress(
+            day_plan,
+            planning_context,
+            now=now,
+        )
+        day_plans.append(day_plan)
+
+    primaries = [day.primary for day in day_plans if day.primary is not None]
+    if primaries:
+        next_candidate = min(primaries, key=lambda item: item.unlock_at)
+        summary = (
+            f"Next: {next_candidate.date} {next_candidate.start_time}-"
+            f"{next_candidate.end_time} in {next_candidate.room}"
+        )
+        status = "active"
+    elif day_plans and all(
+        day.status in {"complete", "skipped"} for day in day_plans
+    ):
+        summary = "All enabled daily targets are complete or unavailable"
+        status = "complete"
+    else:
+        summary = (
+            "No suitable potential booking is visible in the current "
+            "foresight window"
+        )
+        status = "idle"
+    snapshot = publish_booking_plan(
+        sorted(day_plans, key=lambda day: day.date),
+        policy,
+        settings,
+        summary=summary,
+        status=status,
+        now=now,
+    )
+    print(f"PLAN READY: {summary}")
+    return snapshot
+
+
 def run_booking(args, settings, practice_plan, room_preferences=None):
     """Run one authenticated booking pass with already-validated inputs."""
     today = datetime.now().date()
@@ -7085,6 +8775,57 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             browser.close()
             return 0
 
+        # Load all user planning policy before deciding whether this is a
+        # mutation-capable run or a read-only plan refresh.
+        disabled_dates = load_disabled_dates(settings)
+        time_prefs = load_time_preferences(settings)
+        booking_strategy = load_booking_strategy(settings)
+        reverse_date_order = booking_strategy["reverse_date_order"]
+        daily_planning = booking_strategy.get(
+            "daily_planning",
+            DailyPlanningPreferences(),
+        )
+        if not isinstance(daily_planning, DailyPlanningPreferences):
+            # Integration tests may replace the legacy loader with a minimal
+            # dictionary. Production settings use the shared immutable schema;
+            # an incomplete injected value cannot silently enable new logic.
+            daily_planning = DailyPlanningPreferences(enabled=False)
+        planning_context = {
+            "held_peak_by_date": {},
+            "held_target_by_date": {},
+            "extension_peak_by_date": {},
+            "extension_target_by_date": {},
+            "extension_bookings": (),
+            "display_days": {},
+        }
+        refresh_extension_capacity_holds(
+            planning_context,
+            tracker,
+            practice_plan,
+            disabled_dates,
+            time_prefs=time_prefs,
+        )
+
+        if getattr(args, "plan_only", False):
+            generate_read_only_booking_plan(
+                page,
+                policy,
+                settings,
+                practice_plan,
+                tracker,
+                time_prefs,
+                daily_planning,
+                disabled_dates,
+                args,
+                today=today,
+                reverse_date_order=reverse_date_order,
+                planning_context=planning_context,
+            )
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0
+
         # Check if we can make any bookings at all
         if tracker.is_quota_full():
             used_hours = tracker.get_total_booking_hours()
@@ -7116,10 +8857,6 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         # Load user policy before any booking-grid navigation. Pending horizon
         # extensions must be able to open their exact editor during the short
         # :13/:28/:43/:58 preparation lead.
-        disabled_dates = load_disabled_dates(settings)
-        time_prefs = load_time_preferences(settings)
-        booking_strategy = load_booking_strategy(settings)
-        reverse_date_order = booking_strategy["reverse_date_order"]
         horizon_only = bool(getattr(args, "horizon_only", False))
         extensions_only = bool(getattr(args, "extensions_only", False))
 
@@ -7135,6 +8872,13 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 args,
                 total_booked,
                 booking_details,
+            )
+            refresh_extension_capacity_holds(
+                planning_context,
+                tracker,
+                practice_plan,
+                disabled_dates,
+                time_prefs=time_prefs,
             )
 
         max_actions = getattr(args, "max_actions", None)
@@ -7176,6 +8920,14 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 print(f"  Strict mode: ON (only booking preferred times)")
         if reverse_date_order:
             print(f"\n  Booking strategy: REVERSE ORDER (furthest dates first)")
+        if daily_planning.enabled:
+            print(
+                "\n  Daily planning: prefer "
+                f"{daily_planning.preferred_peak_start}-"
+                f"{daily_planning.preferred_peak_end}, aim for "
+                f"{daily_planning.desired_peak_block_minutes} continuous minutes, "
+                f"look ahead {daily_planning.foresight_minutes} minutes"
+            )
 
         # Build list of enabled dates for smart redistribution
         enabled_dates = []
@@ -7291,7 +9043,38 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 only_date=args.only_date,
                 only_room=args.only_room,
                 candidate_limit=1,
+                daily_planning=daily_planning,
+                planning_context=planning_context,
             )
+
+            if daily_planning.enabled:
+                opportunities_by_date = planning_context.get(
+                    "opportunities_by_date", {}
+                )
+                build_horizon_display_days(
+                    opportunities_by_date,
+                    planning_context,
+                    tracker,
+                    practice_plan,
+                    daily_planning,
+                    now=target_boundary,
+                    reverse_date_order=reverse_date_order,
+                )
+                if planning_context["display_days"]:
+                    decision = planning_context.get("decision")
+                    summary = (
+                        decision.reason
+                        if decision is not None
+                        else "Fresh horizon opportunities evaluated"
+                    )
+                    publish_planning_context(
+                        planning_context,
+                        policy,
+                        settings,
+                        summary=summary,
+                        status="active",
+                        now=target_boundary,
+                    )
 
             if all_snipe_candidates:
                 # Navigate to the first candidate's day (highest priority)
@@ -7365,6 +9148,15 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                             f"{int(candidate['start_hour']):02d}:{int((candidate['start_hour'] % 1) * 60):02d} "
                             f"{int(snipe_end_hour):02d}:{int((snipe_end_hour % 1) * 60):02d} "
                             f"{snipe_minutes}"
+                        )
+                        record_plan_create_progress(
+                            planning_context,
+                            policy,
+                            settings,
+                            tracker,
+                            candidate,
+                            snipe_minutes,
+                            now=datetime.now(),
                         )
                         print(f"    [SNIPE {idx + 1}] SUCCESS!")
 
@@ -7648,7 +9440,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 s['room_priority']
             ))
 
-            if not all_slots:
+            if not all_slots and not daily_planning.enabled:
                 print("  No available slots found")
                 continue
 
@@ -7664,9 +9456,27 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             max_attempts = max(15, max_bookings_per_day * 3)
 
             # Log peak quota status for this specific day
-            remaining_peak = tracker.get_remaining_peak_minutes(target_date)
+            actual_remaining_peak = tracker.get_remaining_peak_minutes(target_date)
+            date_key = as_date(target_date).isoformat()
+            foresight_peak = planning_context["held_peak_by_date"].get(date_key, 0)
+            extension_peak = planning_context.get(
+                "extension_peak_by_date", {}
+            ).get(date_key, 0)
+            extension_target = planning_context.get(
+                "extension_target_by_date", {}
+            ).get(date_key, 0)
+            extension_weekly = sum(
+                planning_context.get("extension_target_by_date", {}).values()
+            )
+            reserved_peak = foresight_peak + extension_peak
+            remaining_peak = max(0, actual_remaining_peak - reserved_peak)
             day_peak_used = tracker.get_peak_used_for_day(target_date)
             print(f"  [DEBUG] Peak quota for {target_date.strftime('%Y-%m-%d')}: {day_peak_used:.0f}/{MAX_PEAK_HOURS * 60} min used, {remaining_peak:.0f} min remaining")
+            if reserved_peak:
+                print(
+                    f"  [Planner] Holding {reserved_peak} peak minutes for "
+                    "preferred or partially confirmed sessions"
+                )
 
             # Adjust slots to avoid conflicts AND peak zone if quota exceeded
             adjusted_slots = []
@@ -7773,7 +9583,11 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         peak_adjusted += 1
 
                     # Step 3: Adjust for weekly quota (trim if exceeds remaining hours)
-                    remaining_weekly = tracker.get_remaining_quota_hours()
+                    remaining_weekly = max(
+                        0.0,
+                        tracker.get_remaining_quota_hours()
+                        - extension_weekly / 60,
+                    )
                     adj_start, adj_end, was_weekly_adj, weekly_reason = adjust_slot_for_weekly_quota(
                         seg_start, seg_end, remaining_weekly
                     )
@@ -7795,10 +9609,15 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         planned_additional_hours=target_hours,
                         starting_day_hours=current_day_hours,
                     )
+                    if daily_remaining is not None:
+                        daily_remaining = max(
+                            0.0,
+                            daily_remaining - extension_target / 60,
+                        )
                     allowed_minutes = cap_duration_minutes(
                         (seg_end - seg_start) * 60,
                         daily_remaining,
-                        tracker.get_remaining_quota_hours(),
+                        remaining_weekly,
                         minimum_minutes=MINIMUM_BLOCK_MINUTES,
                         maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
                     )
@@ -7824,6 +9643,137 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
             all_slots = adjusted_slots
 
+            if daily_planning.enabled:
+                planning_remaining = remaining_run_daily_budget(
+                    practice_plan,
+                    target_date,
+                    tracker,
+                    planned_additional_hours=target_hours,
+                    starting_day_hours=current_day_hours,
+                )
+                extension_target_minutes = planning_context.get(
+                    "extension_target_by_date", {}
+                ).get(date_key, 0)
+                effective_planning_remaining = (
+                    None
+                    if planning_remaining is None
+                    else max(
+                        0.0,
+                        planning_remaining - extension_target_minutes / 60,
+                    )
+                )
+                cross_date_foresight_minutes = sum(
+                    minutes
+                    for held_date, minutes in planning_context.get(
+                        "held_target_by_date", {}
+                    ).items()
+                    if held_date != date_key
+                )
+                extension_weekly_minutes = sum(
+                    planning_context.get("extension_target_by_date", {}).values()
+                )
+                day_opportunities = build_day_booking_opportunities(
+                    available_data,
+                    target_date,
+                    tracker,
+                    time_prefs,
+                    daily_planning,
+                    now=scan_time,
+                    remaining_daily_hours=effective_planning_remaining,
+                    reserved_peak_minutes=extension_peak,
+                    reserved_weekly_minutes=(
+                        extension_weekly_minutes
+                        + cross_date_foresight_minutes
+                    ),
+                    only_room=args.only_room,
+                )
+                current_opportunities = [
+                    item
+                    for item in day_opportunities
+                    if item.unlock_at <= scan_time
+                ]
+                future_opportunities = [
+                    item
+                    for item in day_opportunities
+                    if item.unlock_at > scan_time
+                ]
+                day_decision = choose_horizon_opportunity(
+                    current_opportunities,
+                    future_opportunities,
+                    daily_planning,
+                    now=scan_time,
+                )
+                print(f"  [Planner] {day_decision.reason}")
+                if day_decision.action == "wait":
+                    planning_context["held_peak_by_date"][date_key] = (
+                        day_decision.held_peak_minutes
+                    )
+                    planning_context.setdefault("held_target_by_date", {})[
+                        date_key
+                    ] = day_decision.selected.potential_minutes
+                    current_opportunities = current_opportunities_after_hold(
+                        available_data,
+                        target_date,
+                        tracker,
+                        time_prefs,
+                        daily_planning,
+                        day_decision,
+                        now=scan_time,
+                        remaining_daily_hours=effective_planning_remaining,
+                        reserved_weekly_minutes=(
+                            extension_weekly_minutes
+                            + cross_date_foresight_minutes
+                        ),
+                        only_room=args.only_room,
+                    )
+                else:
+                    planning_context["held_peak_by_date"].pop(date_key, None)
+                    planning_context.setdefault("held_target_by_date", {}).pop(
+                        date_key, None
+                    )
+                current_opportunities.sort(
+                    key=lambda item: opportunity_rank(
+                        item,
+                        daily_planning,
+                        now=scan_time,
+                    )
+                )
+                display_day = build_display_day_plan(
+                    target_date,
+                    day_opportunities,
+                    tracker,
+                    daily_planning,
+                    now=scan_time,
+                    target_minutes=int(
+                        (current_day_hours + target_hours) * 4 + 1e-9
+                    )
+                    * 15,
+                    remaining_weekly_minutes=max(
+                        0,
+                        int(tracker.get_remaining_quota_hours() * 4 + 1e-9)
+                        * 15
+                        - extension_weekly_minutes
+                        - cross_date_foresight_minutes,
+                    ),
+                )
+                display_day = attach_extension_progress(
+                    display_day,
+                    planning_context,
+                    now=scan_time,
+                )
+                planning_context["display_days"][display_day.date] = display_day
+                publish_planning_context(
+                    planning_context,
+                    policy,
+                    settings,
+                    summary=display_day.reason,
+                    now=scan_time,
+                )
+                all_slots = [
+                    _opportunity_to_normal_slot(item)
+                    for item in current_opportunities
+                ]
+
             # Filter out non-preferred slots if strict mode is enabled
             if time_prefs["enabled"] and time_prefs["strict_mode"]:
                 before_count = len(all_slots)
@@ -7839,12 +9789,13 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 if filtered_count > 0:
                     print(f"  [DEBUG] Strict mode: Filtered out {filtered_count} non-preferred slots")
 
-            all_slots.sort(key=lambda s: (
-                0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
-                not s.get('is_good', False),
-                s['start_hour'],
-                s['room_priority']
-            ))
+            if not daily_planning.enabled:
+                all_slots.sort(key=lambda s: (
+                    0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
+                    not s.get('is_good', False),
+                    s['start_hour'],
+                    s['room_priority']
+                ))
 
             print(f"  [DEBUG] Starting booking attempts. Max per day: {max_bookings_per_day}, slots available: {len(all_slots)}")
 
@@ -7873,10 +9824,19 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     planned_additional_hours=target_hours,
                     starting_day_hours=current_day_hours,
                 )
+                if daily_remaining is not None:
+                    daily_remaining = max(
+                        0.0,
+                        daily_remaining - extension_target / 60,
+                    )
                 allowed_minutes = cap_duration_minutes(
                     slot['duration'] * 60,
                     daily_remaining,
-                    tracker.get_remaining_quota_hours(),
+                    max(
+                        0.0,
+                        tracker.get_remaining_quota_hours()
+                        - extension_weekly / 60,
+                    ),
                     minimum_minutes=MINIMUM_BLOCK_MINUTES,
                     maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
                 )
@@ -8023,10 +9983,19 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                                     planned_additional_hours=target_hours,
                                     starting_day_hours=current_day_hours,
                                 )
+                                if daily_remaining is not None:
+                                    daily_remaining = max(
+                                        0.0,
+                                        daily_remaining - extension_target / 60,
+                                    )
                                 allowed_minutes = cap_duration_minutes(
                                     (slot_end - slot_start) * 60,
                                     daily_remaining,
-                                    tracker.get_remaining_quota_hours(),
+                                    max(
+                                        0.0,
+                                        tracker.get_remaining_quota_hours()
+                                        - extension_weekly / 60,
+                                    ),
                                     minimum_minutes=MINIMUM_BLOCK_MINUTES,
                                     maximum_minutes=_action_maximum_minutes(args.max_action_minutes),
                                 )
@@ -8049,6 +10018,148 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                                     "click_y": slot_data["clickY"]
                                 })
 
+                    if daily_planning.enabled:
+                        refreshed_now = datetime.now()
+                        planning_remaining = remaining_run_daily_budget(
+                            practice_plan,
+                            target_date,
+                            tracker,
+                            planned_additional_hours=target_hours,
+                            starting_day_hours=current_day_hours,
+                        )
+                        date_key = as_date(target_date).isoformat()
+                        extension_target_minutes = planning_context.get(
+                            "extension_target_by_date", {}
+                        ).get(date_key, 0)
+                        extension_peak = planning_context.get(
+                            "extension_peak_by_date", {}
+                        ).get(date_key, 0)
+                        effective_planning_remaining = (
+                            None
+                            if planning_remaining is None
+                            else max(
+                                0.0,
+                                planning_remaining - extension_target_minutes / 60,
+                            )
+                        )
+                        cross_date_foresight_minutes = sum(
+                            minutes
+                            for held_date, minutes in planning_context.get(
+                                "held_target_by_date", {}
+                            ).items()
+                            if held_date != date_key
+                        )
+                        extension_weekly_minutes = sum(
+                            planning_context.get(
+                                "extension_target_by_date", {}
+                            ).values()
+                        )
+                        refreshed_opportunities = build_day_booking_opportunities(
+                            available_data,
+                            target_date,
+                            tracker,
+                            time_prefs,
+                            daily_planning,
+                            now=refreshed_now,
+                            remaining_daily_hours=effective_planning_remaining,
+                            reserved_peak_minutes=extension_peak,
+                            reserved_weekly_minutes=(
+                                extension_weekly_minutes
+                                + cross_date_foresight_minutes
+                            ),
+                            only_room=args.only_room,
+                        )
+                        current_opportunities = [
+                            item
+                            for item in refreshed_opportunities
+                            if item.unlock_at <= refreshed_now
+                        ]
+                        future_opportunities = [
+                            item
+                            for item in refreshed_opportunities
+                            if item.unlock_at > refreshed_now
+                        ]
+                        refreshed_decision = choose_horizon_opportunity(
+                            current_opportunities,
+                            future_opportunities,
+                            daily_planning,
+                            now=refreshed_now,
+                        )
+                        print(f"  [Planner] {refreshed_decision.reason}")
+                        if refreshed_decision.action == "wait":
+                            planning_context["held_peak_by_date"][date_key] = (
+                                refreshed_decision.held_peak_minutes
+                            )
+                            planning_context.setdefault("held_target_by_date", {})[
+                                date_key
+                            ] = refreshed_decision.selected.potential_minutes
+                            current_opportunities = current_opportunities_after_hold(
+                                available_data,
+                                target_date,
+                                tracker,
+                                time_prefs,
+                                daily_planning,
+                                refreshed_decision,
+                                now=refreshed_now,
+                                remaining_daily_hours=effective_planning_remaining,
+                                reserved_weekly_minutes=(
+                                    extension_weekly_minutes
+                                    + cross_date_foresight_minutes
+                                ),
+                                only_room=args.only_room,
+                            )
+                        else:
+                            planning_context["held_peak_by_date"].pop(date_key, None)
+                            planning_context.setdefault(
+                                "held_target_by_date", {}
+                            ).pop(date_key, None)
+                        current_opportunities.sort(
+                            key=lambda item: opportunity_rank(
+                                item,
+                                daily_planning,
+                                now=refreshed_now,
+                            )
+                        )
+                        display_day = build_display_day_plan(
+                            target_date,
+                            refreshed_opportunities,
+                            tracker,
+                            daily_planning,
+                            now=refreshed_now,
+                            target_minutes=int(
+                                (current_day_hours + target_hours) * 4 + 1e-9
+                            )
+                            * 15,
+                            remaining_weekly_minutes=max(
+                                0,
+                                int(
+                                    tracker.get_remaining_quota_hours()
+                                    * 4
+                                    + 1e-9
+                                )
+                                * 15
+                                - extension_weekly_minutes
+                                - cross_date_foresight_minutes,
+                            ),
+                        )
+                        display_day = attach_extension_progress(
+                            display_day,
+                            planning_context,
+                            now=refreshed_now,
+                        )
+                        planning_context["display_days"][display_day.date] = display_day
+                        publish_planning_context(
+                            planning_context,
+                            policy,
+                            settings,
+                            summary=display_day.reason,
+                            now=refreshed_now,
+                        )
+                        all_slots = [
+                            _opportunity_to_normal_slot(item)
+                            for item in current_opportunities
+                        ]
+
                     # Apply strict mode filter if enabled
                     if time_prefs["enabled"] and time_prefs["strict_mode"]:
                         all_slots = [
@@ -8060,12 +10171,13 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                             )
                         ]
 
-                    all_slots.sort(key=lambda s: (
-                        0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
-                        not s['is_good'],
-                        s['start_hour'],
-                        s['room_priority']
-                    ))
+                    if not daily_planning.enabled:
+                        all_slots.sort(key=lambda s: (
+                            0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
+                            not s['is_good'],
+                            s['start_hour'],
+                            s['room_priority']
+                        ))
                     print(f"  [DEBUG] Rebuilt slot list: {len(all_slots)} slots remaining")
 
             print(f"\n  Day summary: {day_booked} bookings made, {attempts} attempts total")
@@ -8149,6 +10261,14 @@ def build_argument_parser():
         help="Verify login, agenda, and room grid without changing bookings or history",
     )
     parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help=(
+            "Read fresh agenda/room grids and publish the display-only booking "
+            "plan without changing any Asimut booking"
+        ),
+    )
+    parser.add_argument(
         "--only-date",
         metavar="YYYY-MM-DD",
         help="Controlled live-test scope: attempt changes only on this date",
@@ -8210,10 +10330,12 @@ def _validate_cli_args(parser, args):
 
     isolated_modes = sum(
         bool(value)
-        for value in (args.horizon_only, args.extensions_only)
+        for value in (args.horizon_only, args.extensions_only, args.plan_only)
     )
     if isolated_modes > 1:
-        parser.error("--horizon-only and --extensions-only are mutually exclusive")
+        parser.error(
+            "--horizon-only, --extensions-only, and --plan-only are mutually exclusive"
+        )
 
     if args.target_time:
         try:
@@ -8250,8 +10372,18 @@ def _validate_cli_args(parser, args):
         or args.max_action_minutes is not None
         or args.horizon_only
         or args.extensions_only
+        or args.plan_only
     ):
         parser.error("--check-only cannot be combined with booking mutation limits")
+    if args.plan_only and (
+        args.target_time
+        or args.scheduled
+        or args.max_actions is not None
+        or args.max_action_minutes is not None
+    ):
+        parser.error(
+            "--plan-only cannot be scheduled, timed, or combined with mutation limits"
+        )
     if args.max_action_minutes is not None and not (args.only_date or args.only_room):
         parser.error("--max-action-minutes requires --only-date or --only-room")
     if args.horizon_only or args.extensions_only:

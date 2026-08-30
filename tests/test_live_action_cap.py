@@ -1,7 +1,7 @@
 import contextlib
 import io
 import unittest
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
@@ -217,6 +217,599 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
         self.assertEqual(result, 0)
         load.assert_not_called()
         run.assert_not_called()
+
+    def test_plan_only_accepts_read_scopes_and_rejects_mutation_or_timing_modes(self):
+        plain = self.parse_validated(["--plan-only"])
+        self.assertTrue(plain.plan_only)
+
+        scoped = self.parse_validated(
+            ["--plan-only", "--only-date", "2026-09-04", "--only-room", "B0.29"]
+        )
+        self.assertEqual(scoped.only_date, "2026-09-04")
+        self.assertEqual(scoped.only_room, "B0.29")
+
+        invalid_combinations = (
+            ["--plan-only", "--check-only"],
+            ["--plan-only", "--target-time", "10:00"],
+            ["--plan-only", "--scheduled"],
+            ["--plan-only", "--max-actions", "1"],
+            [
+                "--plan-only",
+                "--only-room",
+                "B0.29",
+                "--max-action-minutes",
+                "30",
+            ],
+            [
+                "--plan-only",
+                "--horizon-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "1",
+                "--target-time",
+                "10:00",
+            ],
+        )
+        for argv in invalid_combinations:
+            with self.subTest(argv=argv):
+                self.assert_rejected(argv)
+
+
+class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
+    def test_plan_only_publishes_after_fresh_reads_without_entering_mutation_paths(self):
+        args = SimpleNamespace(
+            headless=True,
+            check_only=False,
+            plan_only=True,
+            only_date=None,
+            only_room=None,
+            target_time=None,
+            scheduled=False,
+            max_actions=None,
+            max_action_minutes=None,
+            horizon_only=False,
+            extensions_only=False,
+        )
+        page = mock.MagicMock()
+        context = mock.MagicMock()
+        context.new_page.return_value = page
+        browser = mock.MagicMock()
+        browser.new_context.return_value = context
+        playwright = mock.MagicMock()
+        playwright.chromium.launch.return_value = browser
+        playwright_context = mock.MagicMock()
+        playwright_context.__enter__.return_value = playwright
+        time_preferences = {
+            "enabled": False,
+            "start_hour": 7.0,
+            "end_hour": 23.0,
+            "strict_mode": False,
+        }
+        daily_planning = book_week.DailyPlanningPreferences()
+
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
+            mock.patch.object(
+                book_week,
+                "authenticated_runtime_context_options",
+                return_value={},
+            ),
+            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.object(
+                book_week,
+                "refresh_live_room_policy",
+                side_effect=_refresh_test_live_policy(),
+            ) as refresh_policy,
+            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])) as scan,
+            mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
+            mock.patch.object(book_week, "load_ignored_events", return_value=set()),
+            mock.patch.object(book_week, "load_disabled_dates", return_value=set()),
+            mock.patch.object(
+                book_week,
+                "load_time_preferences",
+                return_value=time_preferences,
+            ),
+            mock.patch.object(
+                book_week,
+                "load_booking_strategy",
+                return_value={
+                    "reverse_date_order": False,
+                    "daily_planning": daily_planning,
+                },
+            ),
+            mock.patch.object(book_week, "generate_read_only_booking_plan") as generate,
+            mock.patch.object(book_week, "process_pending_extensions") as extensions,
+            mock.patch.object(book_week, "find_all_snipe_candidates_multi_day") as snipes,
+            mock.patch.object(book_week, "try_horizon_snipe") as horizon_save,
+            mock.patch.object(book_week, "try_book_slot") as ordinary_save,
+            mock.patch.object(book_week, "save_history") as history,
+            mock.patch.object(book_week, "persist_storage_state") as persist,
+        ):
+            result = book_week.run_booking(
+                args,
+                {},
+                book_week.PracticePlan(),
+                room_preferences=mock.Mock(),
+            )
+
+        self.assertEqual(result, 0)
+        refresh_policy.assert_called_once()
+        scan.assert_called_once()
+        generate.assert_called_once()
+        persist.assert_called_once_with(context)
+        context.close.assert_called_once()
+        browser.close.assert_called_once()
+        extensions.assert_not_called()
+        snipes.assert_not_called()
+        horizon_save.assert_not_called()
+        ordinary_save.assert_not_called()
+        history.assert_not_called()
+
+    def test_generate_read_only_plan_publishes_the_fresh_day_decision(self):
+        today = date(2026, 8, 31)
+        frozen_now = datetime(2026, 8, 31, 10, 0)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        opportunity = book_week.BookingOpportunity(
+            room="B0.29",
+            target_date=today,
+            start_minutes=12 * 60,
+            end_minutes=14 * 60,
+            unlock_at=datetime(2026, 8, 31, 9, 30),
+            room_priority=0,
+            initial_minutes=30,
+            potential_minutes=120,
+            preferred_minutes=120,
+            soft_preferred_minutes=120,
+            peak_minutes=120,
+            peak_window_start_minutes=9 * 60,
+            peak_window_end_minutes=16 * 60,
+            source_gap_start_minutes=12 * 60,
+            source_gap_end_minutes=14 * 60,
+        )
+        tracker = mock.MagicMock()
+        tracker.reservation_ranges = {}
+        tracker.bookings = []
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_peak_used_for_day.return_value = 0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        policy = mock.Mock(
+            observed_at=datetime(2026, 8, 31, 9, 59, tzinfo=timezone.utc)
+        )
+        args = SimpleNamespace(only_date=None, only_room=None)
+        published_snapshot = object()
+
+        with (
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(book_week, "booking_window_dates", return_value=(today,)),
+            mock.patch.object(book_week, "ALLOW_FRAGMENTED_SESSIONS", True),
+            mock.patch.object(book_week, "open_practice_room_overview") as open_grid,
+            mock.patch.object(book_week, "wait_for_practice_room_grid") as wait_grid,
+            mock.patch.object(book_week, "get_available_slots", return_value=[]) as slots,
+            mock.patch.object(
+                book_week,
+                "build_day_booking_opportunities",
+                return_value=[opportunity],
+            ),
+            mock.patch.object(
+                book_week,
+                "publish_booking_plan",
+                return_value=published_snapshot,
+            ) as publish,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            result = book_week.generate_read_only_booking_plan(
+                mock.MagicMock(),
+                policy,
+                {"booking_strategy": {}},
+                book_week.PracticePlan(enabled=True, default_hours=2.0),
+                tracker,
+                {"enabled": False, "strict_mode": False},
+                book_week.DailyPlanningPreferences(),
+                set(),
+                args,
+                today=today,
+            )
+
+        self.assertIs(result, published_snapshot)
+        open_grid.assert_called_once()
+        wait_grid.assert_called_once()
+        slots.assert_called_once()
+        publish.assert_called_once()
+        day_plans, published_policy, published_settings = publish.call_args.args
+        self.assertIs(published_policy, policy)
+        self.assertEqual(published_settings, {"booking_strategy": {}})
+        self.assertEqual(len(day_plans), 1)
+        self.assertEqual(day_plans[0].primary.room, "B0.29")
+        self.assertEqual(day_plans[0].primary.start_time, "12:00")
+        self.assertEqual(publish.call_args.kwargs["status"], "active")
+        self.assertIn("Next: 2026-08-31 12:00-14:00", publish.call_args.kwargs["summary"])
+
+    def test_disabled_daily_planning_preview_uses_legacy_gap_start_order(self):
+        today = date(2026, 8, 31)
+        frozen_now = datetime(2026, 8, 31, 13, 0)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        def opportunity(start, end, preferred):
+            return book_week.BookingOpportunity(
+                room="B0.29",
+                target_date=today,
+                start_minutes=start,
+                end_minutes=end,
+                unlock_at=datetime(2026, 8, 31, 9, 30),
+                room_priority=0,
+                initial_minutes=30,
+                potential_minutes=end - start,
+                preferred_minutes=preferred,
+                soft_preferred_minutes=preferred,
+                peak_minutes=end - start,
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=9 * 60,
+                source_gap_end_minutes=14 * 60,
+            )
+
+        early = opportunity(9 * 60, 11 * 60, 0)
+        interior_afternoon = opportunity(12 * 60, 14 * 60, 120)
+        tracker = mock.MagicMock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_peak_used_for_day.return_value = 0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        policy = mock.Mock(
+            observed_at=datetime(2026, 8, 31, 12, 59, tzinfo=timezone.utc)
+        )
+        args = SimpleNamespace(only_date=None, only_room=None)
+        disabled_strategy = book_week.DailyPlanningPreferences(
+            enabled=False,
+            desired_peak_block_minutes=60,
+        )
+
+        with (
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(book_week, "booking_window_dates", return_value=(today,)),
+            mock.patch.object(book_week, "ALLOW_FRAGMENTED_SESSIONS", True),
+            mock.patch.object(book_week, "open_practice_room_overview"),
+            mock.patch.object(book_week, "wait_for_practice_room_grid"),
+            mock.patch.object(book_week, "get_available_slots", return_value=[]),
+            mock.patch.object(
+                book_week,
+                "build_day_booking_opportunities",
+                return_value=[early, interior_afternoon],
+            ) as build,
+            mock.patch.object(book_week, "publish_booking_plan") as publish,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            book_week.generate_read_only_booking_plan(
+                mock.MagicMock(),
+                policy,
+                {},
+                book_week.PracticePlan(enabled=True, default_hours=2.0),
+                tracker,
+                {
+                    "enabled": True,
+                    "strict_mode": False,
+                    "start_hour": 12.0,
+                    "end_hour": 16.0,
+                },
+                disabled_strategy,
+                set(),
+                args,
+                today=today,
+            )
+
+        day = publish.call_args.args[0][0]
+        self.assertEqual(day.primary.start_time, "09:00")
+        self.assertIn("foresight is disabled", day.reason)
+        self.assertEqual(
+            build.call_args.args[4].desired_peak_block_minutes,
+            int(book_week.MAX_BOOKING_HOURS * 60),
+        )
+
+    def test_no_fragment_plan_still_shows_pending_extension_progress(self):
+        today = date(2026, 8, 30)
+        target_date = date(2026, 9, 4)
+        frozen_now = datetime(2026, 8, 30, 12, 31)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        tracker = mock.MagicMock()
+        tracker.get_hours_for_day.return_value = 0.5
+        tracker.get_peak_used_for_day.return_value = 30
+        tracker.get_remaining_quota_hours.return_value = 27.5
+        tracker.get_remaining_peak_minutes.return_value = 90
+        booking = {
+            "date": target_date.isoformat(),
+            "room": "B0.29",
+            "startTime": "12:00",
+            "endTime": "12:30",
+            "target_end": "14:00",
+        }
+        planning_context = {
+            "extension_target_by_date": {target_date.isoformat(): 90},
+            "extension_peak_by_date": {target_date.isoformat(): 90},
+            "extension_bookings": (booking,),
+        }
+        policy = mock.Mock(
+            observed_at=datetime(2026, 8, 30, 11, 30, tzinfo=timezone.utc)
+        )
+        args = SimpleNamespace(only_date=None, only_room=None)
+
+        with (
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(
+                book_week,
+                "booking_window_dates",
+                return_value=(target_date,),
+            ),
+            mock.patch.multiple(
+                book_week,
+                PRIORITY_ROOMS=["B0.29"],
+                ROOM_HORIZON_MINUTES={"B0.29": 5 * 24 * 60},
+                MINIMUM_BLOCK_MINUTES=30,
+            ),
+            mock.patch.object(book_week, "open_practice_room_overview"),
+            mock.patch.object(
+                book_week,
+                "fragmentation_allows_new_booking",
+                return_value=(False, "Fragments are disabled"),
+            ),
+            mock.patch.object(book_week, "wait_for_practice_room_grid") as wait_grid,
+            mock.patch.object(book_week, "get_available_slots") as slots,
+            mock.patch.object(book_week, "publish_booking_plan") as publish,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            book_week.generate_read_only_booking_plan(
+                mock.MagicMock(),
+                policy,
+                {},
+                book_week.PracticePlan(enabled=True, default_hours=2.0),
+                tracker,
+                {"enabled": False, "strict_mode": False},
+                book_week.DailyPlanningPreferences(),
+                set(),
+                args,
+                today=today,
+                planning_context=planning_context,
+            )
+
+        day = publish.call_args.args[0][0]
+        self.assertEqual(day.status, "in_progress")
+        self.assertEqual(day.primary.confirmed_minutes, 30)
+        self.assertEqual(day.primary.potential_minutes, 120)
+        wait_grid.assert_not_called()
+        slots.assert_not_called()
+
+    def test_horizon_display_reserves_one_aggregate_weekly_allowance(self):
+        now = datetime(2026, 8, 30, 10, 0)
+        dates = (date(2026, 9, 4), date(2026, 9, 5))
+
+        def opportunity(target_date, room, priority):
+            weekday_peak = 120 if target_date.weekday() < 5 else 0
+            return book_week.BookingOpportunity(
+                room=room,
+                target_date=target_date,
+                start_minutes=12 * 60,
+                end_minutes=14 * 60,
+                unlock_at=now,
+                room_priority=priority,
+                initial_minutes=30,
+                potential_minutes=120,
+                preferred_minutes=weekday_peak,
+                soft_preferred_minutes=weekday_peak,
+                peak_minutes=weekday_peak,
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=12 * 60,
+                source_gap_end_minutes=14 * 60,
+            )
+
+        opportunities_by_date = {
+            dates[0].isoformat(): (opportunity(dates[0], "First", 0),),
+            dates[1].isoformat(): (opportunity(dates[1], "Second", 1),),
+        }
+        planning_context = {
+            "extension_target_by_date": {},
+            "extension_peak_by_date": {},
+            "extension_bookings": (),
+            "display_days": {},
+        }
+        tracker = mock.MagicMock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 2.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_peak_used_for_day.return_value = 0
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["First", "Second"],
+            ALLOW_FRAGMENTED_SESSIONS=True,
+        ):
+            days = book_week.build_horizon_display_days(
+                opportunities_by_date,
+                planning_context,
+                tracker,
+                book_week.PracticePlan(),
+                book_week.DailyPlanningPreferences(),
+                now=now,
+            )
+
+        selected = [
+            candidate
+            for day in days
+            for candidate in (
+                (() if day.primary is None else (day.primary,)) + day.additional
+            )
+        ]
+        self.assertEqual(sum(item.potential_minutes for item in selected), 120)
+        self.assertIsNotNone(days[0].primary)
+        self.assertIsNone(days[1].primary)
+
+    def test_verified_horizon_create_becomes_explicit_extension_progress(self):
+        target_date = date(2026, 9, 4)
+        primary = book_week.PlanCandidate(
+            room="B0.29",
+            date=target_date.isoformat(),
+            start_time="12:00",
+            end_time="14:00",
+            unlock_at=datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc),
+            initial_minutes=30,
+            potential_minutes=120,
+            confirmed_minutes=0,
+            state="ready",
+            reason="Preferred afternoon block.",
+        )
+        day = book_week.DayPlan(
+            date=target_date.isoformat(),
+            target_minutes=120,
+            existing_minutes=0,
+            peak_used_minutes=0,
+            peak_limit_minutes=120,
+            status="planned",
+            primary=primary,
+            additional=(),
+            backups=(),
+            held_peak_minutes=0,
+            reason="Ready.",
+        )
+        context = {
+            "display_days": {day.date: day},
+            "held_peak_by_date": {},
+            "held_target_by_date": {},
+        }
+        tracker = mock.Mock()
+        tracker.get_hours_for_day.return_value = 0.5
+        tracker.get_peak_used_for_day.return_value = 30
+        candidate_data = {
+            "target_date": target_date,
+            "room": "B0.29",
+            "start_hour": 12.0,
+        }
+
+        with mock.patch.object(book_week, "publish_planning_context") as publish:
+            book_week.record_plan_create_progress(
+                context,
+                mock.Mock(),
+                {},
+                tracker,
+                candidate_data,
+                30,
+                now=datetime(2026, 8, 30, 12, 1),
+            )
+
+        updated = context["display_days"][target_date.isoformat()]
+        self.assertEqual(updated.status, "in_progress")
+        self.assertEqual(updated.primary.confirmed_minutes, 30)
+        self.assertEqual(updated.existing_minutes, 30)
+        self.assertEqual(updated.held_peak_minutes, 90)
+        self.assertEqual(context["extension_target_by_date"][updated.date], 90)
+        self.assertEqual(context["extension_peak_by_date"][updated.date], 90)
+        publish.assert_called_once()
+
+    def test_plan_publication_fingerprints_fresh_extension_state_only(self):
+        old_settings = {
+            "booking_strategy": {"source": "used-for-this-plan"},
+            "extendable_bookings": [],
+        }
+        latest_settings = {
+            "booking_strategy": {"source": "concurrent-gui-change"},
+            "extendable_bookings": [{"eventId": 42}],
+        }
+        policy = mock.Mock(
+            observed_at=datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "load_settings_document",
+                return_value=latest_settings,
+            ),
+            mock.patch.object(
+                book_week,
+                "booking_plan_fingerprint",
+                return_value="sha256:test",
+            ) as fingerprint,
+            mock.patch.object(book_week, "write_booking_plan") as write,
+        ):
+            snapshot = book_week.publish_booking_plan(
+                (),
+                policy,
+                old_settings,
+                summary="No current opportunity.",
+                status="idle",
+                now=datetime(2026, 8, 30, 10, 1),
+            )
+
+        fingerprint_settings = fingerprint.call_args.args[0]
+        self.assertEqual(
+            fingerprint_settings["booking_strategy"],
+            old_settings["booking_strategy"],
+        )
+        self.assertEqual(
+            fingerprint_settings["extendable_bookings"],
+            latest_settings["extendable_bookings"],
+        )
+        self.assertEqual(snapshot.strategy_fingerprint, "sha256:test")
+        write.assert_called_once()
+
+    def test_pending_extension_reappears_as_partial_plan_progress(self):
+        target_date = date(2026, 9, 4)
+        day = book_week.DayPlan(
+            date=target_date.isoformat(),
+            target_minutes=120,
+            existing_minutes=30,
+            peak_used_minutes=30,
+            peak_limit_minutes=120,
+            status="unplanned",
+            primary=None,
+            additional=(),
+            backups=(),
+            held_peak_minutes=0,
+            reason="No new opportunity.",
+        )
+        booking = {
+            "date": target_date.isoformat(),
+            "room": "B0.29",
+            "startTime": "12:00",
+            "endTime": "12:30",
+            "target_end": "14:00",
+        }
+        context = {
+            "extension_bookings": (booking,),
+            "extension_peak_by_date": {target_date.isoformat(): 90},
+        }
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["B0.29"],
+            ROOM_HORIZON_MINUTES={"B0.29": 5 * 24 * 60},
+            MINIMUM_BLOCK_MINUTES=30,
+        ):
+            updated = book_week.attach_extension_progress(
+                day,
+                context,
+                now=datetime(2026, 8, 30, 12, 31),
+            )
+
+        self.assertEqual(updated.status, "in_progress")
+        self.assertEqual(updated.primary.confirmed_minutes, 30)
+        self.assertEqual(updated.primary.potential_minutes, 120)
+        self.assertEqual(updated.held_peak_minutes, 90)
 
 
 class LiveActionDurationBoundaryTests(unittest.TestCase):

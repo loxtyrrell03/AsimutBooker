@@ -16,8 +16,6 @@
 
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.
 
-> **IMPORTANT FOR AI AGENTS**: When making changes to this codebase, always update this `CLAUDE.md` file to reflect new features, changed behavior, or updated architecture. Keep documentation in sync with code.
-
 ## Project Overview
 
 This tool automatically books music practice rooms on the RWCMD Asimut system before other students can claim them. It runs through Windows Task Scheduler, requests wake-from-sleep on AC or battery, and books rooms as they become available. Actual wake behavior depends on Windows, firmware, and hardware support.
@@ -34,6 +32,8 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
 - **Health Dashboard**: Shows the last successful run, next scheduled run, saved-session evidence, auth cooldown, pending mutations, and physical wake-test evidence
 - **Practice Plan**: Set a default daily target from 0.5-12 hours, override individual dates, or turn dates off across Asimut's current live booking window
+- **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
+- **Booking Plan UI**: Explains ready, waiting, in-progress, and alternative sessions in the dashboard and calendar; hatched blocks are explicitly potential rather than booked
 - **Verified Mutations**: A booking or extension counts only after the positive event ID and exact persisted room/date/time survive a reload
 - **Crash Recovery**: Durable pre-Save receipts stop further mutations when a result is uncertain and force agenda reconciliation on the next run
 - **Booking History**: Tracks verified runs and bookings with locked, atomic persistence
@@ -69,6 +69,9 @@ AsimutBooker/
 ├── app_settings.py       # Locked, atomic shared JSON persistence
 ├── event_identity.py     # Collision-safe shared agenda-event identity
 ├── practice_plan.py      # Strict daily-target schema and budget helpers
+├── booking_strategy.py   # Strict daily-planning preference schema
+├── daily_planner.py      # Pure fresh-grid opportunity ranking
+├── booking_plan.py       # Locked, display-only booking-plan snapshots
 ├── runtime_guard.py      # Single-instance and exact confirmation helpers
 ├── mutation_receipts.py  # Crash-safe booking mutation journal
 ├── room_catalog.py       # Strict read-only live Asimut room/window discovery
@@ -89,6 +92,7 @@ AsimutBooker/
 │   ├── booking_history.json  # Run history
 │   ├── settings.json     # GUI settings, room preferences, plans, and extensions
 │   ├── room_catalog.json # Display-only live catalog cache (gitignored)
+│   ├── booking_plan.json # Display-only daily plan cache (gitignored)
 │   ├── physical_wake_test.json # Optional dedicated wake-test evidence (gitignored)
 │   └── mutation_receipts.json  # Runtime reconciliation journal (gitignored)
 ├── logs/                 # Booking logs
@@ -101,7 +105,7 @@ AsimutBooker/
 │   ├── scheduler.py
 │   └── config.py
 ├── requirements.txt
-└── CLAUDE.md
+└── AGENTS.md
 ```
 
 ## Usage
@@ -120,6 +124,8 @@ The GUI provides:
 - Default and per-date desired practice hours
 - Live-window booking/off controls and strict preferred-time controls
 - A room editor for ordering, exclusions, live metadata requirements, minimum block length, and fragmented-session policy
+- A daily-strategy editor for the preferred peak window, desired session length, lookahead, confidence threshold, fallback lead, and room/time ordering
+- A booking-plan dashboard card plus month and timeline calendar overlays that distinguish confirmed time from potential future extensions
 
 ### Command Line
 ```bash
@@ -141,9 +147,25 @@ python book_week.py --headless --login-only
 # Read-only login, live room-policy refresh, agenda, and current-window grid check
 python book_week.py --headless --check-only
 
-# Bounded live verification (one verified 30-minute mutation at most)
+# Read-only fresh-grid planning; publishes the display-only booking plan
+python book_week.py --headless --plan-only
+
+# Bounded live verification (works when the selected minimum is 30 minutes)
 python book_week.py --headless --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 30
+
+# Isolated initial horizon-edge test: creates the selected minimum block only,
+# retains a larger extension target, and never falls through to another mode
+python book_week.py --headless --target-time HH:MM --horizon-only --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 120
+
+# Isolated extension test: edits tracked horizon bookings only and never creates
+# a new booking
+python book_week.py --headless --extensions-only --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 30
 ```
+
+`--horizon-only` and `--extensions-only` require a room/date scope and an
+action cap. The initial horizon-edge Save uses the selected minimum block. The
+action ceiling must be at least that minimum and must be larger when later
+extension is intended; otherwise the run safely leaves no larger target.
 
 ### Initial Setup
 1. Run `python book_week.py --configure-autonomous-login` in a private terminal and enter the RWCMD email and masked password; Windows Credential Manager stores them for the current user.
@@ -199,11 +221,14 @@ The booker automatically handles this in two phases:
 1. **Initial Booking**: At the first possible moment (the selected minimum block after the horizon), books exactly that block and saves the exact verified positive event ID/URL with its `extendable_bookings` record in settings.json
 
 2. **Extension Runs**: Every 15 minutes, the scheduled task runs again and:
+   - Processes extensions immediately after the complete agenda scan and receipt reconciliation, before loading or navigating the room overview and before any new snipe
    - Loads pending extendable bookings
+   - Sorts already-due extensions first, then edges due within three minutes, using room priority as the stable tie-break
    - Binds legacy records only from one exact complete-agenda reservation with a positive event ID, persisting that migration before editing
    - Selects the one current/legacy event card bound to that exact ID; a missing, duplicate, cancelled, or tuple-mismatched card stops without Save
-   - Calculates how much more time is now available (based on time since horizon, not time since booking)
-   - Extends each booking by the available amount (in 15-minute increments)
+   - Opens the exact editor up to three minutes before the next boundary, waits there, then fills and revalidates the new end time at the boundary
+   - Requires the editor URL to remain the exact tracked positive event ID and the Save control to be visible and enabled before creating a receipt
+   - Extends to the latest completed 15-minute boundary; a missed run catches up in one verified edit without rounding into a future boundary
    - Continues until reaching 2 hours or the target duration
 
 ### Timeline Example
@@ -223,6 +248,7 @@ The booker automatically handles this in two phases:
 
 - `is_room_available_to_book()`: Checks if a slot is past its horizon edge
 - `save_extendable_booking()`: Saves a booking for later extension
+- `plan_horizon_extension()`: Pure exact-boundary plan for due, imminent, future, and completed extensions
 - `calculate_max_extension()`: Determines how much a booking can be extended based on current time vs horizon
 - `try_extend_booking()`: Attempts to extend a booking via Asimut's edit feature
 
@@ -255,7 +281,11 @@ catches quarter-hour edges inside a full-day gap and supports arbitrary live
 
 ### Extension Priority
 
-Pending extensions take priority over new snipes. If a slot has a pending extension (from a previous horizon edge booking), the snipe scanner skips that slot to avoid conflicts.
+Pending extensions take priority over all new snipes. The extension phase runs
+before room-grid discovery, so an action cap cannot be consumed by an unrelated
+create. If an extension uses the exact boundary first, a just-opened snipe
+remains eligible only inside the bounded three-minute grace. Verified isolated
+actions return without fallible cleanup navigation.
 
 ### Key Functions
 
@@ -272,6 +302,7 @@ Everyday preferences belong in the GUI and `data/settings.json`:
 - **Booking days**: Dates can be enabled or disabled independently
 - **Preferred time**: Presets or a custom range, with an optional strict-only mode
 - **Date order**: Chronological or furthest-first
+- **Daily strategy**: Enable foresight, set a preferred peak window and desired block, require a configurable number of distinct better later rooms before waiting, choose a 0-24-hour lookahead and fallback lead, and select room-first/time-first and after-peak ordering
 - **Room order and exclusions**: Rank every live room and explicitly disable rooms
 - **Room requirements**: Optional instrument or room-type tag choices plus required feature search terms, all matched against current site metadata
 - **Session shape**: Choose a 30-120 minute minimum block in 15-minute steps. With fragments disabled, a date with an existing reservation is skipped and at most one new reservation block is created on a previously empty date
@@ -312,6 +343,9 @@ python -m unittest discover -s tests
 | `app_settings.py` | Strict, locked, atomic settings/history storage primitives |
 | `event_identity.py` | Deterministic v2 ignored-event identity and legacy-key resolution |
 | `practice_plan.py` | Daily-target validation and booking-budget helpers |
+| `booking_strategy.py` | Strict GUI/runtime schema for customizable daily foresight |
+| `daily_planner.py` | Pure ranking, wait/book decisions, and quota-aware day-plan selection |
+| `booking_plan.py` | Locked, expiring, display-only daily-plan snapshots and preference fingerprints |
 | `runtime_guard.py` | Single-instance lock and exact URL/identity confirmation |
 | `mutation_receipts.py` | Durable pre-Save receipts and reconciliation state |
 | `room_catalog.py` | Strict live category/group/room metadata and horizon discovery |
@@ -327,6 +361,7 @@ python -m unittest discover -s tests
 | `data/booking_history.json` | JSON log of all booking runs |
 | `data/settings.json` | GUI settings, room preferences, practice plan, ignored events, and extendable bookings |
 | `data/room_catalog.json` | Gitignored display-only cache of the last complete live room observation |
+| `data/booking_plan.json` | Gitignored expiring display-only plan; never booking authority |
 | `data/physical_wake_test.json` | Gitignored optional evidence from a dedicated physical wake test |
 | `data/mutation_receipts.json` | Gitignored crash-recovery journal for remote mutations |
 
@@ -335,7 +370,7 @@ python -m unittest discover -s tests
 - Authentication, existing configuration, settings, mutation journal, full
   agenda reach, calendar date, form identity, requested time values, and
   persisted Save identity all fail closed.
-- Every authenticated booking and `--check-only` run builds a new room policy
+- Every authenticated booking, `--check-only`, and `--plan-only` run builds a new room policy
   from Asimut before agenda or mutation work. Discovery reads the current
   booking category/group, group metadata, event defaults, and one no-Save check
   response per room. An incomplete or inconsistent observation stops the run;
@@ -368,14 +403,31 @@ python -m unittest discover -s tests
 - Settings, history, session state, and receipts use atomic replacement; shared
   JSON writes use interprocess locks. GUI live scans use the same deterministic
   authentication recovery as the booker and discard stale background results.
+- Daily foresight ranks only opportunities derived from the current live grid
+  and current site-owned room horizons, booking cutoff, room metadata, and
+  booking limits. Holds are date-specific and reserve daily, weekly, and peak
+  capacity, including only the feasible remainder of pending extensions.
+- `data/booking_plan.json` is an expiring explanation artifact. Its complete
+  strategy fingerprint and fresh-policy timestamp must match current settings
+  before the GUI renders it; neither the GUI nor the mutation runtime treats it
+  as booking authority.
 - Ignored events use a v2 identity covering date, start, end, title, room, and
   reservation type. A legacy time-only key applies only when it identifies one
   distinct scanned event; ambiguous matches ignore nothing. Ignored reservations
   still consume daily/weekly/peak budgets and enforce their same-room gap.
+- Scheduled launches require the repository `.venv` and prove required imports
+  before booking; there is no global-Python fallback. Schedule status, setup,
+  and elevated idempotent removal run outside the Tk UI thread.
 - `--check-only` performs a read-only authenticated policy refresh and agenda
   scan, then traverses every date currently exposed by Asimut. `--only-date`, `--only-room`, `--max-actions`, and
   `--max-action-minutes` provide bounded live verification without weakening the
-  confirmation rules.
+  confirmation rules. `--horizon-only` and `--extensions-only` additionally
+  isolate the mutation type and return after the scoped phase, so a missing
+  candidate cannot fall through to an unrelated booking.
+- `--plan-only` performs the same authenticated fresh-policy and complete-agenda
+  validation, traverses the live date window, and replaces only the display
+  snapshot. It never creates, edits, or deletes an Asimut event and cannot be
+  combined with scheduling, target timing, or mutation limits.
 
 ## 2026-08-30 Boundary-Driven Horizon Reliability Milestone
 
@@ -582,10 +634,55 @@ python -m unittest discover -s tests
   extension record existed. Current suite totals are recorded in the latest
   milestone above.
 
+## 2026-08-30 Daily Foresight and Booking-Plan Milestone
+
+- `booking_strategy.py` owns a strict GUI/runtime schema for daily foresight.
+  The default prefers one continuous 120-minute peak session inside 12:00-16:00
+  and can defer an inferior early edge only when at least two distinct better
+  live rooms support the later choice. Users can change the peak window,
+  desired duration, 0-24-hour lookahead, evidence threshold, fallback lead,
+  after-peak ordering, room/time priority, and chronological/furthest-first
+  date order.
+- Decisions are made independently per target date because peak allowance is
+  daily. The best actionable GUI-ranked room still takes the fast path to edge
+  preparation; waiting on one date never suppresses an unrelated edge on
+  another. Daily targets, rolling quota, peak allowance, non-overlap,
+  fragmentation, and the fresh same-room gap are enforced across the complete
+  selected day plan, not only one candidate.
+- Pending horizon extensions reserve only their still-feasible remainder after
+  strict-time, conflict, same-room, daily-target, peak, and rolling-week caps.
+  New-session plans share one aggregate weekly allowance across dates. If
+  foresight is disabled, the display plan mirrors established gap-start booking
+  order instead of advertising a smart decision the runtime will not take.
+- `booking_plan.py` writes a locked, atomic, 20-minute display snapshot with a
+  complete settings/config fingerprint. The Overview card explains the next
+  ready or waiting action and daily progress. Month cells and the seven-day
+  time-axis view render selected and alternative sessions as hatched potential
+  blocks; confirmed extension progress is solid and only its unconfirmed
+  remainder remains hatched. Stale or replaced plans disappear immediately and
+  no plan block is clickable as a booking action.
+- Live discovery remains the sole source of room horizons and the date cutoff.
+  A real read-only refresh exposed two ordinary site-boundary cases: an HTTP
+  Date at a minute rollover and a class ending at 10:20. Date evidence now
+  considers only its existing one-second uncertainty before exact horizon
+  validation selects one minute; free gaps round inward to the 15-minute booking
+  grid so occupied time is never expanded into.
+- The final live `--headless --plan-only` proof reused the saved session,
+  discovered 29 eligible rooms at the site's current 3-, 5-, and 7-day
+  horizons, derived the eight-date window through 6 September 2026, scanned the
+  complete five-event agenda, traversed every exposed day, and published a
+  current eight-day plan. It identified a ready 90-minute B0.14 session on
+  1 September and correctly retained 30/90 minutes of tracked B1.09 extension
+  progress on 2 September. Pending mutation receipts remained zero and the
+  read-only run made no Asimut mutation.
+- The complete offline suite passes 447 tests. A real Tk Month -> Plan -> Month
+  smoke test also proves view-specific row/column geometry is reset instead of
+  leaking a blank eighth column or oversized timeline rows.
+
 ## Maintenance Notes
 
 When modifying this codebase:
-- **Always update `CLAUDE.md`** when adding features, changing behavior, or modifying architecture
+- **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions
 - Document any new booking rules or constraints
 - Update the Files Overview table if adding new files

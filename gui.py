@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import csv
 import calendar as cal
@@ -39,6 +39,19 @@ from practice_plan import (
     load_practice_plan,
 )
 from health_status import HealthItem, collect_local_health
+from booking_plan import (
+    BookingPlanReadResult,
+    PlanCandidate,
+    booking_plan_fingerprint,
+    read_booking_plan,
+)
+from booking_strategy import (
+    BookingStrategyError,
+    BookingStrategyPreferences,
+    apply_booking_strategy_update,
+    booking_strategy_to_dict,
+    load_booking_strategy as strict_load_booking_strategy,
+)
 from room_preferences import (
     BLOCK_STEP_MINUTES,
     MAX_BLOCK_MINUTES,
@@ -72,7 +85,14 @@ ASIMUT_AGENDA_URL = "https://rwcmd.asimut.net/agenda"
 ASIMUT_OVERVIEW_URL = "https://rwcmd.asimut.net/overview?locationGroupId=10"
 
 TIME_PREFERENCE_PRESET_KEYS = frozenset(
-    {"morning", "afternoon", "evening", "afternoon_evening", "custom"}
+    {
+        "morning",
+        "peak_afternoon",
+        "afternoon",
+        "evening",
+        "afternoon_evening",
+        "custom",
+    }
 )
 ROOM_MINIMUM_BLOCK_CHOICES = tuple(
     range(MIN_BLOCK_MINUTES, MAX_BLOCK_MINUTES + 1, BLOCK_STEP_MINUTES)
@@ -590,17 +610,215 @@ def validate_time_preferences_section(settings: Mapping[str, Any]) -> dict[str, 
     }
 
 
-def validate_booking_strategy_section(settings: Mapping[str, Any]) -> dict[str, bool]:
-    """Validate and canonicalize the GUI's booking-strategy settings section."""
-    strategy = settings.get("booking_strategy", {})
-    if not isinstance(strategy, dict):
-        raise SettingsError("booking_strategy must be a JSON object")
-    return {
-        "reverse_date_order": _require_bool(
-            strategy.get("reverse_date_order", False),
-            "booking_strategy.reverse_date_order",
+def validate_booking_strategy_section(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Use the runtime's strict strategy schema in the GUI as well."""
+
+    try:
+        return booking_strategy_to_dict(strict_load_booking_strategy(settings))
+    except BookingStrategyError as exc:
+        raise SettingsError(str(exc)) from exc
+
+
+def plan_candidate_matches_event(candidate: PlanCandidate, event: Mapping[str, Any]) -> bool:
+    """Return whether a potential plan is already represented by a reservation."""
+
+    return plan_candidate_confirmed_minutes(candidate, (event,)) >= candidate.potential_minutes
+
+
+def plan_candidate_confirmed_minutes(
+    candidate: PlanCandidate,
+    events: Sequence[Mapping[str, Any]],
+) -> int:
+    """Measure a verified reservation sharing the plan's exact start/room.
+
+    A shorter reservation represents horizon-extension progress; a reservation
+    reaching or passing the target replaces the potential overlay entirely.
+    """
+
+    def clock_minutes(value):
+        if not isinstance(value, str) or len(value) != 5 or value[2] != ":":
+            return None
+        try:
+            hour, minute = map(int, value.split(":"))
+        except ValueError:
+            return None
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return hour * 60 + minute
+
+    start = clock_minutes(candidate.start_time)
+    target_end = clock_minutes(candidate.end_time)
+    if start is None or target_end is None:
+        return 0
+    confirmed = candidate.confirmed_minutes
+    for event in events:
+        if not (
+            event.get("isReservation", False)
+            and event.get("date") == candidate.date
+            and event.get("startTime") == candidate.start_time
+            and event.get("room") == candidate.room
+        ):
+            continue
+        event_end = clock_minutes(event.get("endTime"))
+        if event_end is not None and event_end > start:
+            confirmed = max(confirmed, min(target_end, event_end) - start)
+    return max(0, confirmed)
+
+
+def visible_plan_candidates(
+    result: BookingPlanReadResult | None,
+    date_key: str,
+    events: Sequence[Mapping[str, Any]] = (),
+) -> tuple[tuple[PlanCandidate, bool], ...]:
+    """Return current primary/back-up overlays, suppressing confirmed duplicates.
+
+    The boolean identifies a primary choice.  Stale and invalid snapshots never
+    produce overlays; their reason remains available in the plan status card.
+    """
+
+    if result is None or result.stale or result.snapshot is None:
+        return ()
+    day = next((item for item in result.snapshot.days if item.date == date_key), None)
+    if day is None:
+        return ()
+    candidates = []
+    if day.primary is not None:
+        candidates.append((day.primary, True))
+    candidates.extend((candidate, True) for candidate in day.additional)
+    candidates.extend((candidate, False) for candidate in day.backups)
+    return tuple(
+        (candidate, primary)
+        for candidate, primary in candidates
+        if not any(plan_candidate_matches_event(candidate, event) for event in events)
+    )
+
+
+def next_selected_plan_candidate(
+    snapshot,
+    *,
+    today: date,
+    now: datetime,
+    events: Sequence[Mapping[str, Any]] = (),
+):
+    """Return the first still-unconfirmed selected action across all days."""
+
+    if snapshot is None:
+        return None
+    if not isinstance(today, date) or isinstance(today, datetime):
+        raise TypeError("today must be a date")
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise TypeError("now must be a timezone-aware datetime")
+    today_key = today.isoformat()
+    verified_events = tuple(event for event in events if isinstance(event, Mapping))
+    selected = []
+    for day in snapshot.days:
+        if day.date < today_key or day.primary is None:
+            continue
+        selected.extend(
+            (day, candidate)
+            for candidate in (day.primary, *day.additional)
+            if not any(
+                plan_candidate_matches_event(candidate, event)
+                for event in verified_events
+            )
         )
-    }
+    if not selected:
+        return None
+    current_utc = now.astimezone(timezone.utc)
+    return min(
+        selected,
+        key=lambda value: (
+            not (
+                value[1].state == "ready"
+                or value[1].unlock_at <= current_utc
+            ),
+            value[1].unlock_at,
+            value[1].date,
+            value[1].start_time,
+        ),
+    )
+
+
+def timeline_plan_candidates(
+    result: BookingPlanReadResult | None,
+    date_key: str,
+    events: Sequence[Mapping[str, Any]] = (),
+    *,
+    alternative_limit: int = 3,
+):
+    """Keep every selected timeline block while bounding visual alternatives."""
+
+    if isinstance(alternative_limit, bool) or alternative_limit < 0:
+        raise ValueError("alternative_limit must be a non-negative integer")
+    overlays = visible_plan_candidates(result, date_key, events)
+    selected = [item for item in overlays if item[1]]
+    alternatives = [item for item in overlays if not item[1]][:alternative_limit]
+    return tuple(selected + alternatives)
+
+
+def calendar_timeline_geometry(
+    start_time: str,
+    end_time: str,
+    height: int,
+    *,
+    day_start_minutes: int = 7 * 60,
+    day_end_minutes: int = 22 * 60 + 30,
+) -> tuple[int, int]:
+    """Map one same-day HH:MM interval onto a calendar timeline."""
+
+    def minutes(value: str) -> int:
+        parsed = datetime.strptime(value, "%H:%M")
+        return parsed.hour * 60 + parsed.minute
+
+    if height <= 0 or day_end_minutes <= day_start_minutes:
+        raise ValueError("Timeline dimensions must be positive")
+    start = max(day_start_minutes, min(day_end_minutes, minutes(start_time)))
+    end = max(day_start_minutes, min(day_end_minutes, minutes(end_time)))
+    if end <= start:
+        raise ValueError("Timeline end must be after its start")
+    span = day_end_minutes - day_start_minutes
+    top = round((start - day_start_minutes) * height / span)
+    bottom = round((end - day_start_minutes) * height / span)
+    return top, max(top + 4, bottom)
+
+
+def timeline_plan_segments(
+    candidate: PlanCandidate,
+    events: Sequence[Mapping[str, Any]],
+    height: int,
+) -> tuple[int, tuple[int, int] | None, tuple[int, int] | None]:
+    """Split an extension preview into confirmed and potential geometry.
+
+    Local verified progress is sufficient to draw the solid segment; a fresher
+    exact agenda reservation can only advance it. Hatching starts at the first
+    still-unconfirmed minute instead of covering the confirmed evidence.
+    """
+
+    confirmed = min(
+        candidate.potential_minutes,
+        plan_candidate_confirmed_minutes(candidate, events),
+    )
+    start_hour, start_minute = map(int, candidate.start_time.split(":"))
+    start = start_hour * 60 + start_minute
+
+    def clock_text(total_minutes):
+        return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+    confirmed_segment = None
+    if confirmed:
+        confirmed_segment = calendar_timeline_geometry(
+            candidate.start_time,
+            clock_text(start + confirmed),
+            height,
+        )
+    potential_segment = None
+    if confirmed < candidate.potential_minutes:
+        potential_segment = calendar_timeline_geometry(
+            clock_text(start + confirmed),
+            candidate.end_time,
+            height,
+        )
+    return confirmed, confirmed_segment, potential_segment
 
 
 def validate_history_document(value: Any) -> dict[str, Any]:
@@ -1248,6 +1466,51 @@ class AsimutBookerGUI:
         self.progress_var = tk.StringVar(value="")
         ttk.Label(controls_frame, textvariable=self.progress_var, foreground="blue", font=("Segoe UI", 11)).pack(anchor=tk.W, pady=(8, 0))
 
+        # Display-only forward plan.  It is generated from a complete live scan
+        # and is never treated as booking authority by either the GUI or runtime.
+        plan_frame = ttk.LabelFrame(overview_tab, text="Booking Plan", padding="12")
+        plan_frame.pack(fill=tk.X, pady=(0, 15))
+        plan_body = ttk.Frame(plan_frame)
+        plan_body.pack(fill=tk.X)
+        plan_text = ttk.Frame(plan_body)
+        plan_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.booking_plan_headline_var = tk.StringVar(value="No current plan")
+        self.booking_plan_detail_var = tk.StringVar(
+            value="Refresh the plan to preview likely bookings. Potential blocks are not reservations."
+        )
+        ttk.Label(
+            plan_text,
+            textvariable=self.booking_plan_headline_var,
+            font=("Segoe UI", 11, "bold"),
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, anchor=tk.W)
+        ttk.Label(
+            plan_text,
+            textvariable=self.booking_plan_detail_var,
+            foreground="#555555",
+            font=("Segoe UI", 10),
+            wraplength=840,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, anchor=tk.W, pady=(3, 0))
+        plan_actions = ttk.Frame(plan_body)
+        plan_actions.pack(side=tk.RIGHT, padx=(18, 0))
+        self.plan_refresh_btn = ttk.Button(
+            plan_actions,
+            text="Refresh Plan (Read Only)",
+            command=self.refresh_booking_plan,
+            width=24,
+        )
+        self.plan_refresh_btn.pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            plan_actions,
+            text="Open Plan Calendar",
+            command=lambda: self.show_calendar_dialog("plan"),
+            width=20,
+        ).pack(side=tk.LEFT, padx=4)
+        self.booking_plan_result = BookingPlanReadResult(
+            None, True, "No booking plan has been generated yet."
+        )
+
         # Booking Days section - collapsible calendar
         days_frame = ttk.LabelFrame(preferences_tab, text="Booking Days", padding="15")
         days_frame.pack(fill=tk.X, pady=(0, 15))
@@ -1403,6 +1666,7 @@ class AsimutBookerGUI:
         self.time_prefs_preset = tk.StringVar(value="afternoon_evening")
         self.time_prefs_presets = {
             "Morning (07:00-12:00)": "morning",
+            "Peak afternoon (12:00-16:00)": "peak_afternoon",
             "Afternoon (12:00-18:00)": "afternoon",
             "Evening (18:00-22:00)": "evening",
             "Afternoon/Evening (14:00-22:00)": "afternoon_evening",
@@ -1509,16 +1773,34 @@ class AsimutBookerGUI:
             ]
         )
 
-        # Booking Strategy section
-        strategy_frame = ttk.LabelFrame(preferences_tab, text="Booking Strategy", padding="15")
+        # Daily strategy is edited in a focused dialog so the everyday page
+        # stays readable while still exposing every planning trade-off.
+        strategy_frame = ttk.LabelFrame(preferences_tab, text="Daily Booking Strategy", padding="15")
         strategy_frame.pack(fill=tk.X, pady=(0, 15))
 
         strategy_inner = ttk.Frame(strategy_frame)
         strategy_inner.pack(fill=tk.X)
 
+        self.booking_strategy_summary_var = tk.StringVar(value="Loading…")
+        ttk.Label(
+            strategy_inner,
+            textvariable=self.booking_strategy_summary_var,
+            font=("Segoe UI", 11),
+            wraplength=820,
+            justify=tk.LEFT,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
+        self.booking_strategy_btn = ttk.Button(
+            strategy_inner,
+            text="Edit Daily Planning…",
+            command=self.show_booking_strategy_dialog,
+            width=22,
+        )
+        self.booking_strategy_btn.pack(side=tk.RIGHT)
+        self._settings_controls.append(self.booking_strategy_btn)
+
         # Row 1: Reverse date order toggle
-        strategy_row1 = ttk.Frame(strategy_inner)
-        strategy_row1.pack(fill=tk.X, pady=(0, 8))
+        strategy_row1 = ttk.Frame(strategy_frame)
+        strategy_row1.pack(fill=tk.X, pady=(10, 0))
 
         self.reverse_date_order = tk.BooleanVar(value=False)
         self.reverse_date_order_cb = ttk.Checkbutton(
@@ -1533,7 +1815,7 @@ class AsimutBookerGUI:
         # Explanation label
         ttk.Label(
             strategy_row1,
-            text="(Start from the furthest enabled live-window date)",
+            text="Date order only; the day planner still ranks useful session times and rooms.",
             foreground="gray",
             font=("Segoe UI", 11)
         ).pack(side=tk.LEFT)
@@ -1613,8 +1895,125 @@ class AsimutBookerGUI:
             self._update_days_summary()
             self._update_practice_plan_summary()
             self.load_room_preferences_settings()
+        self._refresh_booking_plan_display()
         self._start_local_health_refresh()
         self.check_scheduled_tasks()
+
+    def _read_booking_plan_for_display(self):
+        """Read the display-only snapshot against the current user settings."""
+
+        try:
+            settings = self.load_settings()
+            if not self.settings_available:
+                return BookingPlanReadResult(None, True, self.settings_error)
+            return read_booking_plan(
+                now=datetime.now(timezone.utc),
+                expected_strategy_fingerprint=booking_plan_fingerprint(settings),
+            )
+        except Exception as exc:
+            return BookingPlanReadResult(
+                None, True, f"Booking plan could not be read safely: {exc}"
+            )
+
+    def _refresh_booking_plan_display(self):
+        """Show freshness, progress, and the next potential booking."""
+
+        if not hasattr(self, "booking_plan_headline_var"):
+            return
+        result = self._read_booking_plan_for_display()
+        self.booking_plan_result = result
+        self._sync_open_calendar_plan(result)
+        if result.snapshot is None:
+            self.booking_plan_headline_var.set("No current booking plan")
+            self.booking_plan_detail_var.set(
+                f"{result.reason} Refresh Plan performs a signed-in read-only scan; it does not save or edit bookings."
+            )
+            return
+        snapshot = result.snapshot
+        generated_local = snapshot.generated_at.astimezone().strftime("%d %b %H:%M")
+        if result.stale:
+            self.booking_plan_headline_var.set("Plan needs refresh — potential blocks are hidden")
+            self.booking_plan_detail_var.set(
+                f"{result.reason} Last generated {generated_local}. A stale plan is never used for booking."
+            )
+            return
+
+        current_utc = datetime.now(timezone.utc)
+        cached_events = self.load_settings().get("cached_events", [])
+        if not isinstance(cached_events, list):
+            cached_events = []
+        cached_events = [event for event in cached_events if isinstance(event, Mapping)]
+        next_selected = next_selected_plan_candidate(
+            snapshot,
+            today=datetime.now().date(),
+            now=current_utc,
+            events=cached_events,
+        )
+        if next_selected is None:
+            self.booking_plan_headline_var.set(snapshot.summary)
+            self.booking_plan_detail_var.set(
+                f"Current as of {generated_local}. No potential block is selected; {snapshot.summary}"
+            )
+            return
+
+        next_day, candidate = next_selected
+        confirmed_minutes = plan_candidate_confirmed_minutes(
+            candidate,
+            [
+                event
+                for event in cached_events
+                if event.get("date") == next_day.date
+            ],
+        )
+        unlock_local = candidate.unlock_at.astimezone()
+        unlock_text = unlock_local.strftime("%a %d %b %H:%M")
+        day_label = datetime.fromisoformat(next_day.date).strftime("%a %d %b")
+        state_text = (
+            "ready now"
+            if candidate.state == "ready" or candidate.unlock_at <= current_utc
+            else f"edge {unlock_text}"
+        )
+        if confirmed_minutes:
+            self.booking_plan_headline_var.set(
+                f"Extension progress: {day_label} {candidate.start_time}–{candidate.end_time} · "
+                f"{candidate.room} · {confirmed_minutes}/{candidate.potential_minutes} min confirmed"
+            )
+        else:
+            self.booking_plan_headline_var.set(
+                f"Next potential: {day_label} {candidate.start_time}–{candidate.end_time} · {candidate.room}"
+            )
+        projected = min(
+            next_day.target_minutes,
+            next_day.existing_minutes
+            + sum(
+                item.potential_minutes - item.confirmed_minutes
+                for item in (next_day.primary, *next_day.additional)
+            ),
+        )
+        self.booking_plan_detail_var.set(
+            f"{state_text}; projected {projected}/{next_day.target_minutes} min for the day. "
+            f"Peak: {next_day.peak_used_minutes} used + {next_day.held_peak_minutes} held "
+            f"of {next_day.peak_limit_minutes} min. {next_day.reason} "
+            f"Generated {generated_local}; "
+            + (
+                "the solid portion is confirmed and the hatched remainder is still potential."
+                if confirmed_minutes
+                else "potential, not booked."
+            )
+        )
+
+    def _sync_open_calendar_plan(self, result):
+        """Revalidate overlays in a long-lived calendar without user action."""
+
+        dialog = getattr(self, "calendar_dialog", None)
+        if (
+            dialog is None
+            or not hasattr(self, "calendar_frame")
+            or not dialog.winfo_exists()
+        ):
+            return
+        self.calendar_plan_result = result
+        self._refresh_calendar(reload_plan=False)
 
     def _start_local_health_refresh(self):
         """Read file-backed health evidence away from the Tk event loop."""
@@ -1839,6 +2238,7 @@ class AsimutBookerGUI:
         self.is_running = True
         self.run_visible_btn.config(state=tk.DISABLED)
         self.run_headless_btn.config(state=tk.DISABLED)
+        self.plan_refresh_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
 
         mode = "headless" if headless else "visible browser"
@@ -1846,16 +2246,42 @@ class AsimutBookerGUI:
         self.progress_var.set(f"Running in {mode} mode...")
 
         # Run in thread to keep UI responsive
-        thread = threading.Thread(target=self._run_booker_thread, args=(headless,))
+        thread = threading.Thread(
+            target=self._run_booker_thread,
+            args=(headless, (), "Booker"),
+        )
         thread.daemon = True
         thread.start()
 
-    def _run_booker_thread(self, headless):
+    def refresh_booking_plan(self):
+        """Generate a fresh plan through the runtime's isolated read-only mode."""
+
+        if self.is_running:
+            messagebox.showwarning(
+                "Already Running",
+                "Wait for the current booker or plan refresh to finish.",
+            )
+            return
+        self.is_running = True
+        self.run_visible_btn.config(state=tk.DISABLED)
+        self.run_headless_btn.config(state=tk.DISABLED)
+        self.plan_refresh_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.NORMAL)
+        self.log("Refreshing the forward booking plan (read only)...", "info")
+        self.progress_var.set("Refreshing booking plan — no Save or edit actions allowed...")
+        threading.Thread(
+            target=self._run_booker_thread,
+            args=(True, ("--plan-only",), "Plan refresh"),
+            daemon=True,
+        ).start()
+
+    def _run_booker_thread(self, headless, extra_args=(), operation_name="Booker"):
         """Thread function to run booker."""
         try:
             cmd = [sys.executable, str(APP_DIR / "book_week.py")]
             if headless:
                 cmd.append("--headless")
+            cmd.extend(extra_args)
 
             self.running_process = subprocess.Popen(
                 cmd,
@@ -1889,12 +2315,24 @@ class AsimutBookerGUI:
             exit_code = self.running_process.returncode
 
             if exit_code == 0:
-                self.root.after(0, lambda: self.log("Booker finished successfully.", "success"))
+                self.root.after(
+                    0,
+                    lambda: self.log(f"{operation_name} finished successfully.", "success"),
+                )
             else:
-                self.root.after(0, lambda: self.log(f"Booker finished with exit code {exit_code}", "warning"))
+                self.root.after(
+                    0,
+                    lambda: self.log(
+                        f"{operation_name} finished with exit code {exit_code}",
+                        "warning",
+                    ),
+                )
 
         except Exception as e:
-            self.root.after(0, lambda: self.log(f"Error running booker: {e}", "error"))
+            self.root.after(
+                0,
+                lambda: self.log(f"Error running {operation_name.lower()}: {e}", "error"),
+            )
         finally:
             self.root.after(0, self._on_booker_finished)
 
@@ -1904,6 +2342,7 @@ class AsimutBookerGUI:
         self.running_process = None
         self.run_visible_btn.config(state=tk.NORMAL)
         self.run_headless_btn.config(state=tk.NORMAL)
+        self.plan_refresh_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
         self.progress_var.set("")
         self.refresh_status()
@@ -2709,6 +3148,11 @@ class AsimutBookerGUI:
             return False
         try:
             atomic_update_settings(mutator, SETTINGS_FILE)
+            if hasattr(self, "booking_plan_headline_var"):
+                if threading.current_thread() is threading.main_thread():
+                    self._refresh_booking_plan_display()
+                else:
+                    self.root.after(0, self._refresh_booking_plan_display)
             return True
         except (SettingsError, PracticePlanError, TypeError, ValueError) as exc:
             self._set_settings_error(str(exc))
@@ -3655,34 +4099,289 @@ class AsimutBookerGUI:
         """Load booking strategy strictly and fail closed on malformed values."""
         settings = self.load_settings()
         try:
-            strategy = validate_booking_strategy_section(settings)
-        except SettingsError as exc:
+            strategy = strict_load_booking_strategy(settings)
+        except BookingStrategyError as exc:
             self._set_settings_error(str(exc))
-            strategy = validate_booking_strategy_section({})
-        self.reverse_date_order.set(strategy["reverse_date_order"])
-        # Smart swap disabled for now
-        # self.smart_swap_enabled.set(strategy.get("smart_swap_enabled", False))
+            strategy = BookingStrategyPreferences()
+        self.booking_strategy = strategy
+        self.reverse_date_order.set(strategy.reverse_date_order)
+        self._update_booking_strategy_summary()
+
+    def _update_booking_strategy_summary(self):
+        """Render the important strategy trade-offs in one readable sentence."""
+
+        if not hasattr(self, "booking_strategy_summary_var"):
+            return
+        daily = self.booking_strategy.daily_planning
+        if not daily.enabled:
+            summary = "Daily foresight is off; free slots use the legacy booking order."
+        else:
+            hold = (
+                f"holds early peak edges when {daily.minimum_later_options} better "
+                "later room options are visible"
+                if daily.hold_early_peak_edges
+                else "does not hold early peak edges"
+            )
+            summary = (
+                f"Prefer one {daily.desired_peak_block_minutes / 60:g}h peak session "
+                f"between {daily.preferred_peak_start} and {daily.preferred_peak_end}; "
+                f"{hold}. Look ahead {daily.foresight_minutes / 60:g}h; "
+                f"after the live peak window use {daily.after_peak_mode.replace('_', ' ')}."
+            )
+        self.booking_strategy_summary_var.set(summary)
 
     def save_strategy_settings(self):
-        """Save booking strategy settings to settings file."""
+        """Save only date order while preserving every daily-planning field."""
         try:
-            booking_strategy = validate_booking_strategy_section(
-                {
-                    "booking_strategy": {
-                        "reverse_date_order": self.reverse_date_order.get()
-                    }
-                }
+            preview_document = {
+                "booking_strategy": booking_strategy_to_dict(self.booking_strategy)
+            }
+            preview = apply_booking_strategy_update(
+                preview_document,
+                {"reverse_date_order": self.reverse_date_order.get()},
             )
-        except SettingsError as exc:
+        except BookingStrategyError as exc:
             messagebox.showerror("Invalid Booking Strategy", str(exc))
             return False
-        return self._update_settings(
-            lambda settings: settings.__setitem__("booking_strategy", booking_strategy)
-        )
+        saved = []
+
+        def mutate(settings):
+            saved.append(
+                apply_booking_strategy_update(
+                    settings,
+                    {"reverse_date_order": preview.reverse_date_order},
+                )
+            )
+
+        if not self._update_settings(mutate):
+            return False
+        self.booking_strategy = saved[0]
+        self._update_booking_strategy_summary()
+        self._refresh_booking_plan_display()
+        return True
 
     def on_strategy_changed(self):
         """Handle changes to booking strategy settings."""
         self.save_strategy_settings()
+
+    def show_booking_strategy_dialog(self):
+        """Edit the forward-looking daily planner without exposing raw JSON."""
+
+        daily = self.booking_strategy.daily_planning
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Daily Booking Strategy")
+        dialog.geometry("760x650")
+        dialog.minsize(680, 600)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        body = ttk.Frame(dialog, padding="18")
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            body,
+            text="Plan the whole day before committing scarce peak allowance",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor=tk.W)
+        ttk.Label(
+            body,
+            text=(
+                "The booker may wait for a stronger live opportunity only when the "
+                "configured evidence threshold is met. It can still use off-peak time "
+                "while a peak block is being held."
+            ),
+            foreground="#555555",
+            font=("Segoe UI", 10),
+            wraplength=700,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, anchor=tk.W, pady=(4, 14))
+
+        enabled_var = tk.BooleanVar(value=daily.enabled)
+        hold_var = tk.BooleanVar(value=daily.hold_early_peak_edges)
+        start_var = tk.StringVar(value=daily.preferred_peak_start)
+        end_var = tk.StringVar(value=daily.preferred_peak_end)
+        duration_var = tk.StringVar(value=str(daily.desired_peak_block_minutes))
+        foresight_var = tk.StringVar(value=str(daily.foresight_minutes))
+        later_var = tk.StringVar(value=str(daily.minimum_later_options))
+        fallback_var = tk.StringVar(value=str(daily.fallback_lead_minutes))
+        after_peak_var = tk.StringVar(value=daily.after_peak_mode)
+        priority_var = tk.StringVar(value=daily.priority_mode)
+
+        enable_cb = ttk.Checkbutton(
+            body,
+            text="Enable day-level foresight and peak allowance protection",
+            variable=enabled_var,
+        )
+        enable_cb.pack(anchor=tk.W, pady=(0, 12))
+
+        form = ttk.Frame(body)
+        form.pack(fill=tk.BOTH, expand=True)
+        form.columnconfigure(1, weight=1)
+        row = 0
+        controls = []
+
+        def add_row(label, widget, help_text):
+            nonlocal row
+            ttk.Label(form, text=label, font=("Segoe UI", 10, "bold")).grid(
+                row=row, column=0, sticky="w", padx=(0, 16), pady=(5, 1)
+            )
+            widget.grid(row=row, column=1, sticky="w", pady=(5, 1))
+            ttk.Label(
+                form,
+                text=help_text,
+                foreground="#666666",
+                font=("Segoe UI", 9),
+                wraplength=430,
+                justify=tk.LEFT,
+            ).grid(row=row + 1, column=1, sticky="w", pady=(0, 5))
+            controls.append(widget)
+            row += 2
+
+        quarter_times = [
+            f"{minute // 60:02d}:{minute % 60:02d}"
+            for minute in range(0, 24 * 60, 15)
+        ]
+        preferred = ttk.Frame(form)
+        ttk.Combobox(
+            preferred, textvariable=start_var, values=quarter_times, state="readonly", width=8
+        ).pack(side=tk.LEFT)
+        ttk.Label(preferred, text=" to ").pack(side=tk.LEFT)
+        ttk.Combobox(
+            preferred, textvariable=end_var, values=quarter_times, state="readonly", width=8
+        ).pack(side=tk.LEFT)
+        add_row(
+            "Preferred peak window",
+            preferred,
+            "Choose the most valuable part of the College peak-rule window (normally weekdays 09:00–16:00).",
+        )
+
+        duration_combo = ttk.Combobox(
+            form,
+            textvariable=duration_var,
+            values=[str(value) for value in range(30, 121, 15)],
+            state="readonly",
+            width=12,
+        )
+        add_row("Desired peak block", duration_combo, "Target continuous session length, in minutes.")
+
+        hold_cb = ttk.Checkbutton(
+            form,
+            text="Hold an early peak edge for demonstrably better later choices",
+            variable=hold_var,
+        )
+        add_row(
+            "Early-edge decision",
+            hold_cb,
+            "Waiting is fail-safe: it needs enough distinct live alternatives and stops near the fallback deadline.",
+        )
+
+        foresight_combo = ttk.Combobox(
+            form,
+            textvariable=foresight_var,
+            values=[str(value) for value in range(0, 24 * 60 + 1, 15)],
+            state="readonly",
+            width=12,
+        )
+        add_row("Look-ahead", foresight_combo, "How many minutes of future horizon edges may influence the decision.")
+
+        later_spin = ttk.Spinbox(form, from_=1, to=5, textvariable=later_var, width=10)
+        add_row(
+            "Required later choices",
+            later_spin,
+            "Distinct better rooms required before sacrificing a currently available peak edge.",
+        )
+
+        fallback_combo = ttk.Combobox(
+            form,
+            textvariable=fallback_var,
+            values=[str(value) for value in range(0, 241, 15)],
+            state="readonly",
+            width=12,
+        )
+        add_row(
+            "Fallback lead",
+            fallback_combo,
+            "Stop waiting this many minutes before the active peak-rule window ends so a useful fallback remains possible.",
+        )
+
+        after_peak_combo = ttk.Combobox(
+            form,
+            textvariable=after_peak_var,
+            values=("longest_first", "earliest_first", "room_first"),
+            state="readonly",
+            width=18,
+        )
+        add_row("After peak hours", after_peak_combo, "Choose longest gaps, earliest starts, or room rank first.")
+
+        priority_combo = ttk.Combobox(
+            form,
+            textvariable=priority_var,
+            values=("time_first", "room_first"),
+            state="readonly",
+            width=18,
+        )
+        add_row("Primary priority", priority_combo, "Prefer the session time first, or preserve room ranking first.")
+
+        def update_enabled_state(*_args):
+            state = tk.NORMAL if enabled_var.get() else tk.DISABLED
+            for control in controls:
+                try:
+                    descendants = [control, *control.winfo_children()]
+                    for descendant in descendants:
+                        if isinstance(descendant, ttk.Combobox) and state == tk.NORMAL:
+                            descendant.configure(state="readonly")
+                        else:
+                            descendant.configure(state=state)
+                except tk.TclError:
+                    pass
+
+        enable_cb.configure(command=update_enabled_state)
+        update_enabled_state()
+
+        buttons = ttk.Frame(dialog, padding="12")
+        buttons.pack(fill=tk.X)
+
+        def save_and_close():
+            try:
+                patch = {
+                    "daily_planning": {
+                        "enabled": enabled_var.get(),
+                        "preferred_peak_start": start_var.get(),
+                        "preferred_peak_end": end_var.get(),
+                        "desired_peak_block_minutes": int(duration_var.get()),
+                        "hold_early_peak_edges": hold_var.get(),
+                        "foresight_minutes": int(foresight_var.get()),
+                        "minimum_later_options": int(later_var.get()),
+                        "fallback_lead_minutes": int(fallback_var.get()),
+                        "after_peak_mode": after_peak_var.get(),
+                        "priority_mode": priority_var.get(),
+                    }
+                }
+                preview_document = {
+                    "booking_strategy": booking_strategy_to_dict(self.booking_strategy)
+                }
+                preview = apply_booking_strategy_update(preview_document, patch)
+            except (BookingStrategyError, TypeError, ValueError) as exc:
+                messagebox.showerror("Invalid Daily Strategy", str(exc), parent=dialog)
+                return
+            saved = []
+
+            def mutate(settings):
+                saved.append(apply_booking_strategy_update(settings, patch))
+
+            if not self._update_settings(mutate):
+                return
+            self.booking_strategy = saved[0] if saved else preview
+            self.reverse_date_order.set(self.booking_strategy.reverse_date_order)
+            self._update_booking_strategy_summary()
+            self._refresh_booking_plan_display()
+            self.log("Daily booking strategy saved; the old display plan is now stale.", "info")
+            dialog.destroy()
+
+        ttk.Button(buttons, text="Save Strategy", command=save_and_close, width=16).pack(
+            side=tk.RIGHT, padx=(8, 0)
+        )
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.RIGHT)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
     def add_history_entry(self, bookings_made, events_detected, details=""):
         """Add a new entry to booking history."""
@@ -3789,7 +4488,7 @@ class AsimutBookerGUI:
                 self._refresh_history_list(tree)
                 self.log("Booking history cleared.", "info")
 
-    def show_calendar_dialog(self):
+    def show_calendar_dialog(self, initial_view="month"):
         """Show calendar dialog for selecting booking days."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Booking Calendar")
@@ -3802,9 +4501,12 @@ class AsimutBookerGUI:
         self.calendar_dialog = dialog
 
         # Calendar state
-        self.calendar_view = tk.StringVar(value="month")  # month, fortnight, week, 3days
+        if initial_view not in {"month", "fortnight", "week", "3days", "plan"}:
+            initial_view = "month"
+        self.calendar_view = tk.StringVar(value=initial_view)
         self.calendar_start_date = datetime.now().date()
         self.calendar_events = {}  # {date_str: [events]}
+        self.calendar_plan_result = self._read_booking_plan_for_display()
 
         # Header frame
         header_frame = ttk.Frame(dialog, padding="10")
@@ -3822,7 +4524,13 @@ class AsimutBookerGUI:
 
         ttk.Label(view_frame, text="View:", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=(0, 10))
 
-        views = [("Month", "month"), ("Fortnight", "fortnight"), ("Week", "week"), ("3 Days", "3days")]
+        views = [
+            ("Month", "month"),
+            ("Fortnight", "fortnight"),
+            ("Week", "week"),
+            ("3 Days", "3days"),
+            ("Plan", "plan"),
+        ]
         for text, value in views:
             rb = ttk.Radiobutton(
                 view_frame,
@@ -3896,7 +4604,14 @@ class AsimutBookerGUI:
         ttk.Label(legend_frame, text="Legend:", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(10, 15))
 
         # Blue = selected
-        legend_selected = tk.Frame(legend_frame, bg="#4a90d9", width=20, height=20)
+        legend_selected = tk.Frame(
+            legend_frame,
+            bg="#e8f2ff",
+            width=20,
+            height=20,
+            highlightbackground="#4a90d9",
+            highlightthickness=2,
+        )
         legend_selected.pack(side=tk.LEFT, padx=(0, 5))
         legend_selected.pack_propagate(False)
         ttk.Label(legend_frame, text="= Selected for booking", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 20))
@@ -3909,7 +4624,31 @@ class AsimutBookerGUI:
 
         # Event indicator
         ttk.Label(legend_frame, text="•", font=("Segoe UI", 14), foreground="#e67e22").pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Label(legend_frame, text="= Has events", font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        ttk.Label(legend_frame, text="= Has events", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 18))
+
+        plan_legend = tk.Canvas(
+            legend_frame,
+            width=24,
+            height=16,
+            bg="#f6f9ff",
+            highlightthickness=0,
+        )
+        plan_legend.create_rectangle(
+            1,
+            1,
+            23,
+            15,
+            fill="#6fa8dc",
+            outline="#245a9a",
+            dash=(4, 2),
+            stipple="gray50",
+        )
+        plan_legend.pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(
+            legend_frame,
+            text="= Potential plan — not booked",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.LEFT)
 
         # Calendar container with scrollbar
         calendar_container = ttk.Frame(dialog, padding="10")
@@ -4049,6 +4788,8 @@ class AsimutBookerGUI:
             self.calendar_start_date += timedelta(days=14 * direction)
         elif view == "week":
             self.calendar_start_date += timedelta(days=7 * direction)
+        elif view == "plan":
+            self.calendar_start_date += timedelta(days=7 * direction)
         else:  # 3days
             self.calendar_start_date += timedelta(days=3 * direction)
         self._refresh_calendar()
@@ -4075,6 +4816,8 @@ class AsimutBookerGUI:
             dates = [self.calendar_start_date + timedelta(days=i) for i in range(14)]
         elif view == "week":
             dates = [self.calendar_start_date + timedelta(days=i) for i in range(7)]
+        elif view == "plan":
+            dates = [self.calendar_start_date + timedelta(days=i) for i in range(7)]
         else:  # 3days
             dates = [self.calendar_start_date + timedelta(days=i) for i in range(3)]
 
@@ -4085,11 +4828,32 @@ class AsimutBookerGUI:
 
         self._refresh_calendar()
 
-    def _refresh_calendar(self):
+    def _refresh_calendar(self, *, reload_plan=True):
         """Refresh the calendar display."""
+        if reload_plan:
+            self.calendar_plan_result = self._read_booking_plan_for_display()
+        # Tk retains row/column configuration after child widgets are destroyed.
+        # Reset the previous view's geometry so switching between the 7-column
+        # month grid and the 8-column time-axis plan cannot leave blank columns,
+        # oversized rows, or a squeezed calendar behind.
+        prior_columns, prior_rows = self.calendar_frame.grid_size()
         # Clear existing content
         for widget in self.calendar_frame.winfo_children():
             widget.destroy()
+        for column in range(max(prior_columns, 8)):
+            self.calendar_frame.columnconfigure(
+                column,
+                weight=0,
+                minsize=0,
+                uniform="",
+            )
+        for row in range(max(prior_rows, 8)):
+            self.calendar_frame.rowconfigure(
+                row,
+                weight=0,
+                minsize=0,
+                uniform="",
+            )
 
         view = self.calendar_view.get()
         today = datetime.now().date()
@@ -4111,6 +4875,8 @@ class AsimutBookerGUI:
             self._render_days_view(14, today, available_height)
         elif view == "week":
             self._render_days_view(7, today, available_height)
+        elif view == "plan":
+            self._render_plan_timeline_view(today, available_height)
         else:  # 3days
             self._render_days_view(3, today, available_height)
 
@@ -4208,20 +4974,272 @@ class AsimutBookerGUI:
         for r in range(rows_needed):
             self.calendar_frame.rowconfigure(r, weight=1, minsize=cell_height)
 
+    def _show_plan_candidate_details(self, candidate, primary):
+        """Explain one display-only potential booking without offering mutation."""
+
+        unlock = candidate.unlock_at.astimezone().strftime("%a %d %b %Y at %H:%M")
+        events = getattr(self, "calendar_events", {}).get(candidate.date, [])
+        confirmed_minutes = plan_candidate_confirmed_minutes(candidate, events)
+        role = (
+            "Selected extension target"
+            if primary and confirmed_minutes
+            else "Selected potential"
+            if primary
+            else "Alternative potential"
+        )
+        messagebox.showinfo(
+            "Booking Plan Progress" if confirmed_minutes else "Potential Booking — Not Booked",
+            (
+                f"{role}\n\n"
+                f"{candidate.date}  {candidate.start_time}–{candidate.end_time}\n"
+                f"Room: {candidate.room}\n"
+                f"Expected booking edge: {unlock}\n"
+                f"Initial action: {candidate.initial_minutes} minutes\n"
+                f"Potential continuous session: {candidate.potential_minutes} minutes\n"
+                f"Confirmed so far: {confirmed_minutes} minutes\n"
+                f"State: {candidate.state.replace('_', ' ')}\n\n"
+                f"Why: {candidate.reason}\n\n"
+                "This is a read-only progress view. The runtime will re-check the live "
+                "room, agenda, limits, time, and form before any further Save action."
+            ),
+            parent=getattr(self, "calendar_dialog", self.root),
+        )
+
+    def _draw_plan_chip(self, parent, candidate, primary, background, events=()):
+        """Draw a hatched plan chip; Tk's stipple provides safe pseudo-alpha."""
+
+        canvas = tk.Canvas(
+            parent,
+            height=22,
+            width=180,
+            bg=background,
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        canvas.pack(fill=tk.X, pady=1)
+        fill = "#6fa8dc" if primary else "#b8c0cc"
+        outline = "#245a9a" if primary else "#687381"
+        canvas.create_rectangle(
+            2,
+            2,
+            178,
+            20,
+            fill=fill,
+            outline=outline,
+            dash=(4, 2) if primary else (2, 3),
+            stipple="gray50",
+        )
+        confirmed = plan_candidate_confirmed_minutes(candidate, events)
+        prefix = "↗" if confirmed else "◌" if primary else "·"
+        progress = f" {confirmed}/{candidate.potential_minutes}m" if confirmed else ""
+        label = (
+            f"{prefix} {candidate.start_time}–{candidate.end_time} "
+            f"{candidate.room}{progress}"
+        )
+        if len(label) > 28:
+            label = label[:27] + "…"
+        canvas.create_text(
+            7,
+            11,
+            text=label,
+            anchor="w",
+            fill="#102a43",
+            font=("Segoe UI", 8, "bold" if primary else "normal"),
+        )
+        canvas.bind(
+            "<Button-1>",
+            lambda _event, item=candidate, selected=primary: self._show_plan_candidate_details(
+                item, selected
+            ),
+        )
+        return canvas
+
+    def _render_plan_timeline_view(self, today, available_height):
+        """Render seven days as a real time axis with translucent potential blocks."""
+
+        start_date = self.calendar_start_date
+        end_date = start_date + timedelta(days=6)
+        self.calendar_period_var.set(
+            f"Potential plan · {start_date.strftime('%d %b')} – {end_date.strftime('%d %b %Y')}"
+        )
+        timeline_height = max(480, available_height - 45)
+        self.calendar_frame.rowconfigure(0, weight=0, minsize=34)
+        self.calendar_frame.rowconfigure(1, weight=1, minsize=timeline_height)
+        self.calendar_frame.columnconfigure(0, weight=0, minsize=58)
+
+        tk.Label(
+            self.calendar_frame,
+            text="Time",
+            bg="#f0f0f0",
+            font=("Segoe UI", 9, "bold"),
+            relief="solid",
+            borderwidth=1,
+        ).grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        axis = tk.Canvas(
+            self.calendar_frame,
+            width=58,
+            height=timeline_height,
+            bg="#fafafa",
+            highlightthickness=0,
+        )
+        axis.grid(row=1, column=0, sticky="nsew", padx=1, pady=1)
+        for hour in range(7, 23):
+            y, _ = calendar_timeline_geometry(
+                f"{hour:02d}:00",
+                f"{hour:02d}:15",
+                timeline_height,
+            )
+            axis.create_text(52, y + 2, text=f"{hour:02d}:00", anchor="ne", fill="#555555", font=("Segoe UI", 8))
+
+        for index in range(7):
+            current = start_date + timedelta(days=index)
+            date_key = current.isoformat()
+            self.calendar_frame.columnconfigure(index + 1, weight=1, uniform="plan-day")
+            selected = date_key in self.day_vars and self.day_vars[date_key].get()
+            heading_bg = "#e8f2ff" if selected else "#f0f0f0"
+            heading = current.strftime("%a %d")
+            if current == today:
+                heading += " · Today"
+            if selected:
+                heading = "✓ " + heading
+            tk.Label(
+                self.calendar_frame,
+                text=heading,
+                bg=heading_bg,
+                font=("Segoe UI", 9, "bold"),
+                relief="solid",
+                borderwidth=1,
+            ).grid(row=0, column=index + 1, sticky="nsew", padx=1, pady=1)
+            canvas = tk.Canvas(
+                self.calendar_frame,
+                width=145,
+                height=timeline_height,
+                bg="#ffffff",
+                highlightbackground="#4a90d9" if selected else "#d0d0d0",
+                highlightthickness=2 if selected else 1,
+            )
+            canvas.grid(row=1, column=index + 1, sticky="nsew", padx=1, pady=1)
+            for hour in range(7, 23):
+                y, _ = calendar_timeline_geometry(
+                    f"{hour:02d}:00",
+                    f"{hour:02d}:15",
+                    timeline_height,
+                )
+                canvas.create_line(0, y, 160, y, fill="#ececec")
+
+            events = self.calendar_events.get(date_key, [])
+            for event in events:
+                try:
+                    top, bottom = calendar_timeline_geometry(
+                        event["startTime"], event["endTime"], timeline_height
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                fill = "#92cf99" if event.get("isReservation", False) else "#f3bb7d"
+                canvas.create_rectangle(3, top, 142, bottom, fill=fill, outline="#555555")
+                title = str(event.get("title") or "Event")
+                canvas.create_text(
+                    7,
+                    top + 3,
+                    text=f"{event['startTime']} {title[:16]}",
+                    anchor="nw",
+                    width=130,
+                    font=("Segoe UI", 7),
+                )
+
+            overlays = timeline_plan_candidates(
+                self.calendar_plan_result,
+                date_key,
+                events,
+            )
+            for overlay_index, (candidate, primary) in enumerate(overlays):
+                try:
+                    top, bottom = calendar_timeline_geometry(
+                        candidate.start_time,
+                        candidate.end_time,
+                        timeline_height,
+                    )
+                    confirmed, confirmed_segment, potential_segment = timeline_plan_segments(
+                        candidate,
+                        events,
+                        timeline_height,
+                    )
+                except ValueError:
+                    continue
+                inset = min(overlay_index * 7, 21)
+                tag = f"plan-{index}-{overlay_index}"
+                if confirmed_segment is not None:
+                    confirmed_top, confirmed_bottom = confirmed_segment
+                    canvas.create_rectangle(
+                        4 + inset,
+                        confirmed_top,
+                        141 - inset,
+                        confirmed_bottom,
+                        fill="#5bad64",
+                        outline="#276a32",
+                        width=2 if primary else 1,
+                        tags=(tag,),
+                    )
+                if potential_segment is not None:
+                    potential_top, potential_bottom = potential_segment
+                    canvas.create_rectangle(
+                        4 + inset,
+                        potential_top,
+                        141 - inset,
+                        potential_bottom,
+                        fill="#6fa8dc" if primary else "#b8c0cc",
+                        outline="#245a9a" if primary else "#687381",
+                        width=2 if primary else 1,
+                        dash=(4, 2) if primary else (2, 3),
+                        stipple="gray50",
+                        tags=(tag,),
+                    )
+                canvas.create_text(
+                    8 + inset,
+                    top + 3,
+                    text=(
+                        f"{'Extension' if confirmed else 'Potential' if primary else 'Alternative'}"
+                        + (
+                            f" · {confirmed}/{candidate.potential_minutes}m confirmed\n"
+                            if confirmed
+                            else " · not booked\n"
+                        )
+                        + f"{candidate.start_time}–{candidate.end_time}\n{candidate.room}"
+                    ),
+                    anchor="nw",
+                    width=max(70, 127 - inset * 2),
+                    fill="#102a43",
+                    font=("Segoe UI", 7, "bold" if primary else "normal"),
+                    tags=(tag,),
+                )
+                canvas.tag_bind(
+                    tag,
+                    "<Button-1>",
+                    lambda _event, item=candidate, selected=primary: self._show_plan_candidate_details(
+                        item, selected
+                    ),
+                )
+
     def _render_day_cell(self, row, col, current_date, date_str, today, show_day_name=False, cell_height=100):
         """Render a single day cell."""
         # Check if selected
-        is_selected = date_str in self.day_vars and self.day_vars[date_str].get()
+        is_available = date_str in self.day_vars
+        is_selected = is_available and self.day_vars[date_str].get()
         is_today = current_date == today
         is_past = current_date < today
 
         # Get events for this day
         events = self.calendar_events.get(date_str, [])
+        plan_candidates = visible_plan_candidates(
+            self.calendar_plan_result,
+            date_str,
+            events,
+        )
 
         # Background color
         if is_selected:
-            bg_color = "#4a90d9"  # Blue for selected
-            fg_color = "white"
+            bg_color = "#e8f2ff"
+            fg_color = "#102a43"
         else:
             bg_color = "white"
             fg_color = "black"
@@ -4236,7 +5254,9 @@ class AsimutBookerGUI:
             bg=bg_color,
             relief="solid",
             borderwidth=1,
-            cursor="hand2" if not is_past else ""
+            highlightbackground="#4a90d9" if is_selected else "#b5b5b5",
+            highlightthickness=2 if is_selected else 0,
+            cursor="hand2" if (not is_past and is_available) else ""
         )
         cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
 
@@ -4248,6 +5268,8 @@ class AsimutBookerGUI:
 
         if is_today:
             header_text += " (Today)"
+        if is_selected:
+            header_text = "✓ " + header_text
 
         day_label = tk.Label(
             cell,
@@ -4266,12 +5288,26 @@ class AsimutBookerGUI:
         available_for_events = cell_height - header_space
         max_events_to_show = max(1, (available_for_events - 16) // event_line_height)
 
+        displayed_plan_count = min(len(plan_candidates), 2, max_events_to_show)
+        if displayed_plan_count:
+            plan_frame = tk.Frame(cell, bg=bg_color)
+            plan_frame.pack(fill=tk.X, padx=5, pady=(1, 0))
+            for candidate, primary in plan_candidates[:displayed_plan_count]:
+                self._draw_plan_chip(
+                    plan_frame,
+                    candidate,
+                    primary,
+                    bg_color,
+                    events,
+                )
+        remaining_lines = max(0, max_events_to_show - displayed_plan_count)
+
         # Events display
-        if events:
+        if events and remaining_lines:
             events_frame = tk.Frame(cell, bg=bg_color)
             events_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
 
-            events_to_display = min(len(events), max_events_to_show)
+            events_to_display = min(len(events), remaining_lines)
             for event in events[:events_to_display]:
                 time_str = f"{event['startTime']}-{event['endTime']}"
                 title = event.get('title', 'Event')
@@ -4279,11 +5315,7 @@ class AsimutBookerGUI:
                     title = title[:14] + "…"
 
                 is_reservation = event.get('isReservation', False)
-                # Use lighter colors on blue background for better contrast
-                if is_selected:
-                    event_color = "#ffcc80" if not is_reservation else "#a5d6a7"  # Light orange/green on blue
-                else:
-                    event_color = "#e67e22" if not is_reservation else "#27ae60"  # Standard orange/green
+                event_color = "#b35e00" if not is_reservation else "#147d34"
 
                 event_lbl = tk.Label(
                     events_frame,
@@ -4307,7 +5339,7 @@ class AsimutBookerGUI:
                 more_lbl.pack(fill=tk.X)
 
         # Click handler for day selection (only for future days)
-        if not is_past:
+        if not is_past and is_available:
             def toggle_day(ds=date_str, c=cell):
                 if ds in self.day_vars:
                     current = self.day_vars[ds].get()
@@ -4316,8 +5348,6 @@ class AsimutBookerGUI:
 
             cell.bind("<Button-1>", lambda e: toggle_day())
             day_label.bind("<Button-1>", lambda e: toggle_day())
-            for child in cell.winfo_children():
-                child.bind("<Button-1>", lambda e, ds=date_str: toggle_day())
 
     def _scan_calendar_events(self):
         """Scan events for calendar display in background."""

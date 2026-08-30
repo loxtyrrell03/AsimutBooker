@@ -44,6 +44,58 @@ class RequestClockTests(unittest.TestCase):
 
         self.assertEqual(candidates, (OBSERVED + timedelta(minutes=1),))
 
+    def test_server_date_uncertainty_includes_adjacent_rollover_minute(self):
+        candidates = room_catalog._request_observation_candidates(
+            OBSERVED.replace(second=59, microsecond=900000),
+            OBSERVED + timedelta(minutes=1, microseconds=100000),
+            OBSERVED + timedelta(minutes=1),
+        )
+
+        self.assertEqual(
+            candidates,
+            (OBSERVED, OBSERVED + timedelta(minutes=1)),
+        )
+
+    def test_exact_global_horizon_selects_one_rollover_minute(self):
+        candidates = room_catalog._request_observation_candidates(
+            OBSERVED.replace(second=59, microsecond=900000),
+            OBSERVED + timedelta(minutes=1, microseconds=100000),
+            OBSERVED + timedelta(minutes=1),
+        )
+
+        matching = []
+        for candidate in candidates:
+            try:
+                parse_horizon_issues(
+                    check_payload("B0.11"),
+                    "B0.11",
+                    GLOBAL_CUTOFF,
+                    candidate,
+                    expected_global_horizon_minutes=7 * 24 * 60,
+                )
+            except RoomCatalogError:
+                continue
+            matching.append(candidate)
+
+        self.assertEqual(matching, [OBSERVED])
+
+    def test_date_uncertainty_does_not_accept_a_non_rollover_stale_minute(self):
+        candidates = room_catalog._request_observation_candidates(
+            OBSERVED + timedelta(minutes=1, seconds=29),
+            OBSERVED + timedelta(minutes=1, seconds=31),
+            OBSERVED + timedelta(minutes=1, seconds=30),
+        )
+
+        self.assertEqual(candidates, (OBSERVED + timedelta(minutes=1),))
+        with self.assertRaises(RoomCatalogError):
+            parse_horizon_issues(
+                check_payload("B0.11"),
+                "B0.11",
+                GLOBAL_CUTOFF,
+                candidates[0],
+                expected_global_horizon_minutes=7 * 24 * 60,
+            )
+
     def test_missing_server_date_retains_bounded_local_minute_candidates(self):
         started = OBSERVED.replace(second=59)
         finished = started + timedelta(seconds=2)

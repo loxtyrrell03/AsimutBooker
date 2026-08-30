@@ -45,7 +45,6 @@ class SameRoomGapBoundaryTests(unittest.TestCase):
         self.assertTrue(allowed, reason)
         self.assertEqual(tracker.bookings_today(self.day), 1)
         self.assertEqual(tracker.bookings_today(self.day_at_noon), 1)
-
     def test_session_booking_enforces_gap_before_at_zero_45_and_60_minutes(self):
         tracker = BookingTracker()
         tracker.add_booking("B1.09", self.day, 12.0, 13.0)
@@ -81,6 +80,348 @@ class SameRoomGapBoundaryTests(unittest.TestCase):
         # A room gap must not block a different room at the same adjacent time.
         allowed, reason = tracker.can_book("B1.16", self.day_at_noon, 10.0, 30)
         self.assertTrue(allowed, reason)
+
+
+class DailyPlanningCapacityHoldTests(unittest.TestCase):
+    def test_wait_reserves_daily_weekly_and_peak_capacity_together(self):
+        now = datetime(2026, 8, 30, 9, 30)
+        selected = mock.Mock(
+            potential_minutes=120,
+            start_minutes=12 * 60,
+            end_minutes=14 * 60,
+            room="B0.29",
+        )
+        decision = mock.Mock(
+            action="wait",
+            selected=selected,
+            held_peak_minutes=90,
+        )
+        ready = mock.Mock(
+            unlock_at=now,
+            start_minutes=16 * 60,
+            end_minutes=17 * 60,
+            room="B1.09",
+        )
+        future = mock.Mock(
+            unlock_at=datetime(2026, 8, 30, 10, 0),
+            start_minutes=18 * 60,
+            end_minutes=19 * 60,
+            room="B1.09",
+        )
+
+        with mock.patch.object(
+            book_week,
+            "build_day_booking_opportunities",
+            return_value=[ready, future],
+        ) as rebuild:
+            result = book_week.current_opportunities_after_hold(
+                [],
+                date(2026, 9, 4),
+                mock.Mock(),
+                {"enabled": False},
+                mock.Mock(),
+                decision,
+                now=now,
+                remaining_daily_hours=2.5,
+                only_room="B0.29",
+            )
+
+        self.assertEqual(result, [ready])
+        self.assertEqual(rebuild.call_args.kwargs["remaining_daily_hours"], 0.5)
+        self.assertEqual(rebuild.call_args.kwargs["reserved_weekly_minutes"], 120)
+        self.assertEqual(rebuild.call_args.kwargs["reserved_peak_minutes"], 90)
+
+    def test_wait_rejects_surplus_that_overlaps_the_held_session(self):
+        now = datetime(2026, 8, 30, 9, 30)
+        selected = mock.Mock(
+            potential_minutes=120,
+            start_minutes=12 * 60,
+            end_minutes=14 * 60,
+            room="B0.29",
+        )
+        decision = mock.Mock(
+            action="wait",
+            selected=selected,
+            held_peak_minutes=120,
+        )
+        overlapping = mock.Mock(
+            unlock_at=now,
+            start_minutes=11 * 60,
+            end_minutes=13 * 60,
+            room="B1.09",
+        )
+        safe = mock.Mock(
+            unlock_at=now,
+            start_minutes=16 * 60,
+            end_minutes=18 * 60,
+            room="B1.09",
+        )
+
+        with mock.patch.object(
+            book_week,
+            "build_day_booking_opportunities",
+            return_value=[overlapping, safe],
+        ):
+            result = book_week.current_opportunities_after_hold(
+                [],
+                date(2026, 9, 4),
+                mock.Mock(),
+                {"enabled": False},
+                mock.Mock(),
+                decision,
+                now=now,
+                remaining_daily_hours=4.0,
+            )
+
+        self.assertEqual(result, [safe])
+
+    def test_non_strict_time_preference_reaches_the_smart_ranker(self):
+        tracker = mock.Mock()
+        tracker.get_remaining_quota_hours.return_value = 10.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.conflict_ranges = {}
+        tracker.get_same_room_blocked_ranges.return_value = []
+        with (
+            mock.patch.object(book_week, "PRIORITY_ROOMS", ["B0.29"]),
+            mock.patch.object(book_week, "room_horizon_minutes", return_value=7200),
+            mock.patch.object(
+                book_week,
+                "enumerate_gap_opportunities",
+                return_value=[],
+            ) as enumerate_gap,
+        ):
+            book_week.build_day_booking_opportunities(
+                [
+                    {
+                        "room": "B0.29",
+                        "slots": [{"startHour": 16.0, "endHour": 20.0}],
+                    }
+                ],
+                date(2026, 9, 4),
+                tracker,
+                {
+                    "enabled": True,
+                    "strict_mode": False,
+                    "start_hour": 18.0,
+                    "end_hour": 22.0,
+                },
+                book_week.DailyPlanningPreferences(),
+                now=datetime(2026, 8, 30, 12, 0),
+            )
+
+        self.assertEqual(
+            enumerate_gap.call_args.kwargs["soft_preferred_window"],
+            (18 * 60, 22 * 60),
+        )
+        self.assertIsNone(enumerate_gap.call_args.kwargs["strict_window"])
+
+    def test_pending_extension_reserves_daily_peak_and_weekly_capacity(self):
+        today = date(2026, 8, 30)
+        target_date = date(2026, 9, 4)
+        tracker = mock.Mock()
+        tracker.get_remaining_quota_hours.return_value = 1.5
+        tracker.get_remaining_peak_minutes.return_value = 90
+        tracker.get_hours_for_day.return_value = 0.5
+        tracker.conflict_ranges = {}
+        tracker.reservation_ranges = {}
+        tracker.bookings = []
+        booking = {
+            "date": target_date.isoformat(),
+            "room": "B0.29",
+            "startTime": "12:00",
+            "endTime": "12:30",
+            "target_end": "14:00",
+        }
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["B0.29"],
+            ROOM_HORIZON_MINUTES={"B0.29": 5 * 24 * 60},
+            BOOKING_WINDOW_DATES=tuple(
+                today + book_week.timedelta(days=offset) for offset in range(8)
+            ),
+        ):
+            target_holds, peak_holds, held = (
+                book_week.calculate_extension_capacity_holds(
+                    [booking],
+                    tracker,
+                    PracticePlan(enabled=True, default_hours=2.0),
+                    set(),
+                    now=datetime(2026, 8, 30, 10, 0),
+                )
+            )
+
+        self.assertEqual(target_holds, {target_date.isoformat(): 90})
+        self.assertEqual(peak_holds, {target_date.isoformat(): 90})
+        self.assertEqual(held, (booking,))
+
+    def test_extension_hold_stops_at_the_first_strict_conflict_or_room_gap_limit(self):
+        today = date(2026, 8, 30)
+        target_date = date(2026, 9, 4)
+        tracker = BookingTracker()
+        tracker.add_existing_event(
+            target_date,
+            12.0,
+            12.5,
+            is_reservation=True,
+            room="B0.29",
+        )
+        tracker.add_existing_event(target_date, 13.5, 14.0)
+        tracker.add_existing_event(
+            target_date,
+            14.25,
+            14.75,
+            is_reservation=True,
+            room="B0.29",
+        )
+        booking = {
+            "date": target_date.isoformat(),
+            "room": "B0.29",
+            "startTime": "12:00",
+            "endTime": "12:30",
+            "target_end": "14:00",
+        }
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["B0.29"],
+            ROOM_HORIZON_MINUTES={"B0.29": 5 * 24 * 60},
+            BOOKING_WINDOW_DATES=tuple(
+                today + book_week.timedelta(days=offset) for offset in range(8)
+            ),
+        ):
+            target_holds, peak_holds, held = (
+                book_week.calculate_extension_capacity_holds(
+                    [booking],
+                    tracker,
+                    PracticePlan(enabled=True, default_hours=3.0),
+                    set(),
+                    time_prefs={
+                        "enabled": True,
+                        "strict_mode": True,
+                        "start_hour": 12.0,
+                        "end_hour": 13.75,
+                    },
+                    now=datetime(2026, 8, 30, 10, 0),
+                )
+            )
+
+        # The class permits 60 minutes and the strict end permits 75, but the
+        # fresh 60-minute same-room gap before 14:15 permits only 45.
+        self.assertEqual(target_holds, {target_date.isoformat(): 45})
+        self.assertEqual(peak_holds, {target_date.isoformat(): 45})
+        self.assertEqual(held[0]["target_end"], "13:15")
+
+    def test_extension_outside_the_current_strict_window_holds_no_capacity(self):
+        today = date(2026, 8, 30)
+        target_date = date(2026, 9, 4)
+        tracker = BookingTracker()
+        tracker.add_existing_event(
+            target_date,
+            12.0,
+            12.5,
+            is_reservation=True,
+            room="B0.29",
+        )
+        booking = {
+            "date": target_date.isoformat(),
+            "room": "B0.29",
+            "startTime": "12:00",
+            "endTime": "12:30",
+            "target_end": "14:00",
+        }
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["B0.29"],
+            ROOM_HORIZON_MINUTES={"B0.29": 5 * 24 * 60},
+            BOOKING_WINDOW_DATES=tuple(
+                today + book_week.timedelta(days=offset) for offset in range(8)
+            ),
+        ):
+            target_holds, peak_holds, held = (
+                book_week.calculate_extension_capacity_holds(
+                    [booking],
+                    tracker,
+                    PracticePlan(enabled=True, default_hours=2.0),
+                    set(),
+                    time_prefs={
+                        "enabled": True,
+                        "strict_mode": True,
+                        "start_hour": 13.0,
+                        "end_hour": 16.0,
+                    },
+                    now=datetime(2026, 8, 30, 10, 0),
+                )
+            )
+
+        self.assertEqual(target_holds, {})
+        self.assertEqual(peak_holds, {})
+        self.assertEqual(held, ())
+
+    def test_display_primary_matches_current_fallback_booking_decision(self):
+        target_date = date(2026, 9, 4)
+        now = datetime(2026, 8, 30, 9, 30)
+
+        def opportunity(room, start, end, unlock, priority, preferred):
+            return book_week.BookingOpportunity(
+                room=room,
+                target_date=target_date,
+                start_minutes=start,
+                end_minutes=end,
+                unlock_at=unlock,
+                room_priority=priority,
+                initial_minutes=30,
+                potential_minutes=end - start,
+                preferred_minutes=preferred,
+                soft_preferred_minutes=preferred,
+                peak_minutes=end - start,
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=start,
+                source_gap_end_minutes=end,
+            )
+
+        current = opportunity(
+            "Early",
+            9 * 60,
+            11 * 60,
+            now,
+            0,
+            0,
+        )
+        future = opportunity(
+            "Afternoon",
+            12 * 60,
+            14 * 60,
+            now + book_week.timedelta(hours=2),
+            1,
+            120,
+        )
+        tracker = mock.Mock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_peak_used_for_day.return_value = 0
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["Early", "Afternoon"],
+            ALLOW_FRAGMENTED_SESSIONS=True,
+            SAME_ROOM_GAP_MINUTES=60,
+        ):
+            day_plan = book_week.build_display_day_plan(
+                target_date,
+                [current, future],
+                tracker,
+                book_week.DailyPlanningPreferences(),
+                now=now,
+                target_minutes=120,
+            )
+
+        self.assertEqual(day_plan.primary.room, "Early")
+        self.assertEqual(day_plan.primary.state, "ready")
+        self.assertIn("Only 1 better later room", day_plan.reason)
 
 
 class StrictTimeWindowBoundaryTests(unittest.TestCase):
