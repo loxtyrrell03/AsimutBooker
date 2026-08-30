@@ -30,6 +30,7 @@ data/room_catalog.json.lock
 data/room_catalog.json.bak
 data/physical_wake_test.json
 data/booker-runtime.lock
+data/gui-runtime.lock
 data/settings.json.lock
 data/settings.json.bak
 data/booking_history.json.lock

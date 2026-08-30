@@ -65,6 +65,7 @@ from room_preferences import (
     room_preferences_to_dict,
     summarize_room_preferences,
 )
+from runtime_guard import SingleInstanceLock
 
 # Constants
 APP_DIR = Path(__file__).resolve().parent
@@ -73,6 +74,7 @@ LOGS_DIR = APP_DIR / "logs"
 CONFIG_FILE = APP_DIR / "config" / "config.yaml"
 HISTORY_FILE = APP_DIR / "data" / "booking_history.json"
 SETTINGS_FILE = APP_DIR / "data" / "settings.json"
+GUI_INSTANCE_LOCK_FILE = APP_DIR / "data" / "gui-runtime.lock"
 RECURRING_TASK_NAME = "AsimutBooker_Recurring"
 RECURRING_TASK_PATH = "\\"
 RECURRING_SCHEDULE_TEXT = "Every 15 minutes, 07:13-21:58"
@@ -6895,17 +6897,25 @@ class AsimutBookerGUI:
 
 
 def main():
-    root = tk.Tk()
+    instance_lock = SingleInstanceLock(GUI_INSTANCE_LOCK_FILE)
+    if not instance_lock.acquire():
+        return False
 
-    # Set DPI awareness for Windows
     try:
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(1)
-    except:
-        pass
+        root = tk.Tk()
 
-    app = AsimutBookerGUI(root)
-    root.mainloop()
+        # Set DPI awareness for Windows
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)
+        except:
+            pass
+
+        app = AsimutBookerGUI(root)
+        root.mainloop()
+        return True
+    finally:
+        instance_lock.release()
 
 
 if __name__ == "__main__":

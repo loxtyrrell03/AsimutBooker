@@ -429,6 +429,28 @@ python -m unittest discover -s tests
   snapshot. It never creates, edits, or deletes an Asimut event and cannot be
   combined with scheduling, target timing, or mutation limits.
 
+## 2026-08-30 GUI Restart-Loop and Single-Instance Milestone
+
+- The shared development watcher now excludes Asimut's `data/` and `logs/`
+  runtime trees, so atomic settings, history, plan, health, and scheduler writes
+  do not masquerade as source edits and relaunch the control panel. It still
+  fingerprints Python and supported config sources, prunes generated dependency
+  trees, and relaunches for genuine source/config changes.
+- The shared watcher owns a per-project/executable/argument Windows mutex, so
+  opening the Asimut shortcut again cannot create a second supervisor. The GUI
+  independently owns `data/gui-runtime.lock`, which protects direct and legacy
+  launch paths from creating a second control-panel process.
+- Live verification changed the settings-file timestamp and attempted a second
+  shortcut launch without changing the two-process Python GUI tree. The real
+  16:58 scheduled run then completed its runtime writes while the GUI retained
+  the same process IDs and remained responsive. The complete offline suite
+  passes 451 tests, including GUI lock contention and failure-release coverage.
+- The observed 16:58 run successfully extended B1.09 and created the verified
+  B0.29 16:30-17:00 horizon booking for 4 September. It later failed closed
+  during ordinary post-snipe refresh because the site returned today's grid
+  while Day 7 was expected; that booking-flow follow-up is separate from the
+  resolved GUI relaunch loop.
+
 ## 2026-08-30 Boundary-Driven Horizon Reliability Milestone
 
 - Horizon discovery now derives one exact start per eligible room from the
