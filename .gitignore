@@ -38,6 +38,9 @@ data/booking_history.json.bak
 data/booking_plan.json
 data/booking_plan.json.lock
 data/booking_plan.json.bak
+data/agenda_snapshot.json
+data/agenda_snapshot.json.lock
+data/agenda_snapshot.json.bak
 
 # IDE
 .vscode/

@@ -73,6 +73,7 @@ AsimutBooker/
 ├── booking_strategy.py   # Strict daily-planning preference schema
 ├── daily_planner.py      # Pure fresh-grid opportunity ranking
 ├── booking_plan.py       # Locked, display-only booking-plan snapshots
+├── agenda_snapshot.py    # Validated display-only existing booking/event snapshots
 ├── runtime_guard.py      # Single-instance and exact confirmation helpers
 ├── mutation_receipts.py  # Crash-safe booking mutation journal
 ├── room_catalog.py       # Strict read-only live Asimut room/window discovery
@@ -94,6 +95,7 @@ AsimutBooker/
 │   ├── settings.json     # GUI settings, room preferences, plans, and extensions
 │   ├── room_catalog.json # Display-only live catalog cache (gitignored)
 │   ├── booking_plan.json # Display-only daily plan cache (gitignored)
+│   ├── agenda_snapshot.json # Display-only complete agenda cache (gitignored)
 │   ├── physical_wake_test.json # Optional dedicated wake-test evidence (gitignored)
 │   └── mutation_receipts.json  # Runtime reconciliation journal (gitignored)
 ├── logs/                 # Booking logs
@@ -127,6 +129,7 @@ The GUI provides:
 - A room editor for ordering, exclusions, live metadata requirements, minimum block length, and fragmented-session policy
 - A daily-strategy editor for the preferred peak window, desired session length, lookahead, confidence threshold, fallback lead, and room/time ordering
 - A booking-plan dashboard card plus month and timeline calendar overlays that distinguish confirmed time from potential future extensions
+- Existing reservations and other Asimut agenda events in the month, day, and timeline calendar views
 
 ### Command Line
 ```bash
@@ -347,6 +350,7 @@ python -m unittest discover -s tests
 | `booking_strategy.py` | Strict GUI/runtime schema for customizable daily foresight |
 | `daily_planner.py` | Pure ranking, wait/book decisions, and quota-aware day-plan selection |
 | `booking_plan.py` | Locked, expiring, display-only daily-plan snapshots and preference fingerprints |
+| `agenda_snapshot.py` | Strict, locked, display-only snapshots of complete validated agenda scans |
 | `runtime_guard.py` | Single-instance lock and exact URL/identity confirmation |
 | `mutation_receipts.py` | Durable pre-Save receipts and reconciliation state |
 | `room_catalog.py` | Strict live category/group/room metadata and horizon discovery |
@@ -363,6 +367,7 @@ python -m unittest discover -s tests
 | `data/settings.json` | GUI settings, room preferences, practice plan, ignored events, and extendable bookings |
 | `data/room_catalog.json` | Gitignored display-only cache of the last complete live room observation |
 | `data/booking_plan.json` | Gitignored expiring display-only plan; never booking authority |
+| `data/agenda_snapshot.json` | Gitignored display-only existing bookings/classes from the latest complete agenda scan |
 | `data/physical_wake_test.json` | Gitignored optional evidence from a dedicated physical wake test |
 | `data/mutation_receipts.json` | Gitignored crash-recovery journal for remote mutations |
 
@@ -419,6 +424,10 @@ python -m unittest discover -s tests
   strategy fingerprint and fresh-policy timestamp must match current settings
   before the GUI renders it; neither the GUI nor the mutation runtime treats it
   as booking authority.
+- `data/agenda_snapshot.json` is refreshed only after the exact complete-agenda
+  extraction succeeds. It is display evidence for the GUI, never mutation or
+  booking authority; malformed, unrelated-window, and stale snapshots are
+  labelled or hidden while the previous valid artifact survives failed scans.
 - Ignored events use a v2 identity covering date, start, end, title, room, and
   reservation type. A legacy time-only key applies only when it identifies one
   distinct scanned event; ambiguous matches ignore nothing. Ignored reservations
@@ -744,6 +753,32 @@ python -m unittest discover -s tests
   proved exit-on-child in under one second, and the focused GUI/launcher suite
   passes 26 tests. Booking, scheduling, authentication, and Asimut browser state
   were not invoked by this repair.
+
+## 2026-08-30 Existing Agenda Calendar Milestone
+
+- Every successful complete agenda scan now publishes a strict, locked, atomic
+  `data/agenda_snapshot.json` containing the exact current live-window dates,
+  observation time, reservations, other events, rooms, times, titles, and
+  positive event IDs where supplied. This artifact is display-only and never
+  booking or mutation authority; failed/partial scans preserve the prior file.
+- The Calendar and event-preference refreshes now reuse the booker's one
+  authenticated, identity-checked, complete-agenda scanner instead of separate
+  DOM scrapers. The GUI loads the snapshot immediately, labels stale or
+  changed-window evidence, filters the former settings cache to current dates
+  during migration, and refreshes in the background without blanking known
+  events on failure.
+- Month/day cells and the seven-day timeline distinguish green reservations
+  from amber College events. Reservations show the exact booked room instead of
+  the generic `Reservation` title; other events retain their actual titles.
+  Booking-plan confirmation progress and ignored-event preferences read the same
+  snapshot, so every display agrees on existing agenda evidence.
+- The normal 18:13 scheduled pass published a current eight-day snapshot from a
+  complete eight-event agenda: seven reservations and one other College event
+  across four occupied dates. A real Tk timeline smoke render showed both an
+  exact room booking and a named non-booking event. The complete offline suite
+  passes 481 tests, and the shortcut-launched control panel was left visible and
+  responsive. The scheduled run continued under its existing autonomous policy;
+  snapshot publication itself performed no Asimut mutation.
 
 ## 2026-08-30 Exact Extension Editor Route Milestone
 

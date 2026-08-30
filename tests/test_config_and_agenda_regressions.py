@@ -4,7 +4,7 @@ import re
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -343,6 +343,7 @@ class AgendaIdentityTests(unittest.TestCase):
 
         self.assertEqual(event_count, 4)
         self.assertEqual(len(tracker.existing_events), 4)
+        self.assertEqual(len(tracker.agenda_events), 4)
         self.assertEqual(len(reservations), 2)
         self.assertEqual(
             [reservation["room"] for reservation in reservations],
@@ -351,6 +352,51 @@ class AgendaIdentityTests(unittest.TestCase):
         self.assertIn("A3.39", page.configured_rooms)
         self.assertIn("configuredRoomFromText(locText)", page.extraction_script)
         self.assertNotIn("identityRoomFromText", page.extraction_script)
+
+    def test_complete_agenda_scan_can_publish_display_snapshot(self):
+        today = date(2026, 8, 30)
+        window_dates = self._window_dates(today)
+        page = _AgendaPage(
+            today,
+            [
+                {
+                    "date": today.isoformat(),
+                    "daysDiff": 0,
+                    "startTime": "09:00",
+                    "endTime": "10:00",
+                    "title": "Reservation",
+                    "isReservation": True,
+                    "location": "Music Practice Room B0.29 - AHC",
+                    "eventId": 123,
+                }
+            ],
+            window_dates,
+        )
+        tracker = _AgendaTracker()
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot_path = Path(directory) / "agenda.json"
+            with (
+                mock.patch.object(book_week, "LIVE_CATALOG_ROOM_NAMES", ["B0.29"]),
+                redirect_stdout(io.StringIO()),
+            ):
+                book_week.scan_agenda(
+                    page,
+                    tracker,
+                    today,
+                    ignored_events=[],
+                    window_dates=window_dates,
+                    snapshot_path=snapshot_path,
+                )
+
+            from agenda_snapshot import read_agenda_snapshot
+
+            result = read_agenda_snapshot(
+                snapshot_path,
+                now=datetime.now().astimezone(),
+                expected_dates=window_dates,
+            )
+        self.assertIsNotNone(result.snapshot)
+        self.assertEqual(result.snapshot.events[0].room, "B0.29")
 
     def test_reservation_without_one_exact_live_room_fails_closed(self):
         today = date(2026, 8, 30)

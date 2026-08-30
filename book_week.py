@@ -41,6 +41,11 @@ from app_settings import (
     load_settings as load_settings_document,
     update_settings,
 )
+from agenda_snapshot import (
+    AGENDA_SNAPSHOT_FILE,
+    AgendaSnapshotError,
+    publish_agenda_snapshot,
+)
 from booking_strategy import (
     BookingStrategyError,
     DailyPlanningPreferences,
@@ -3622,6 +3627,7 @@ class BookingTracker:
 
     def __init__(self):
         self.bookings = []  # List of (room, date, start_hour, end_hour)
+        self.agenda_events = []  # Complete validated events from the latest scan.
         self.conflict_ranges = {}  # Per-day conflict ranges: {date: [(start, end), ...]}
         self.reservation_ranges = {}  # Per-day reservation ranges (for same-room gap buffer): {date: [(start, end), ...]}
         self.peak_hours_by_day = {}  # Per-day peak minutes: {date_key: minutes}
@@ -7550,7 +7556,15 @@ def _assert_complete_agenda_extraction(page, window_dates, events_data):
         )
 
 
-def scan_agenda(page, tracker, today, ignored_events=None, *, window_dates=None):
+def scan_agenda(
+    page,
+    tracker,
+    today,
+    ignored_events=None,
+    *,
+    window_dates=None,
+    snapshot_path=None,
+):
     """Scan every date in the freshly observed live booking window."""
     window_dates = tuple(window_dates or booking_window_dates(today))
     if not window_dates or window_dates[0] != today:
@@ -7881,6 +7895,19 @@ def scan_agenda(page, tracker, today, ignored_events=None, *, window_dates=None)
     # Remove only exact logical duplicates. Events sharing a time remain
     # distinct when title, room, or reservation type differs.
     unique_events = deduplicate_events(events_data)
+    tracker.agenda_events = [dict(event) for event in unique_events]
+    if snapshot_path is not None:
+        try:
+            publish_agenda_snapshot(
+                unique_events,
+                window_dates,
+                observed_at=datetime.now().astimezone(),
+                path=Path(snapshot_path),
+            )
+        except AgendaSnapshotError as exc:
+            # This artifact is display-only and never booking authority. Keep
+            # the authenticated run safe and leave the previous snapshot intact.
+            print(f"  [WARN] Calendar snapshot was not refreshed: {exc}")
 
     print(f"\n  Found {len(unique_events)} unique events in agenda (deduplicated from {len(events_data)}):")
 
@@ -8796,6 +8823,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             today,
             ignored_events=load_ignored_events(settings),
             window_dates=live_dates,
+            snapshot_path=AGENDA_SNAPSHOT_FILE,
         )
         reconcile_pending_mutation_receipts(page, all_reservations)
 

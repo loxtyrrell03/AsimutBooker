@@ -23,6 +23,10 @@ from app_settings import (
     load_settings as strict_load_settings,
     update_settings as atomic_update_settings,
 )
+from agenda_snapshot import (
+    AGENDA_SNAPSHOT_FILE,
+    read_agenda_snapshot,
+)
 from event_identity import (
     IgnoredEventResolution,
     deduplicate_events,
@@ -84,7 +88,6 @@ RECURRING_INTERVAL_ISO = "PT15M"
 RECURRING_DURATION_ISO = "PT14H46M"
 RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
 RECURRING_RESTART_INTERVAL_ISO = "PT1M"
-ASIMUT_AGENDA_URL = "https://rwcmd.asimut.net/agenda"
 MANUAL_RECONFIRMATION_NOTICE = (
     "Saved student bookings still need manual confirmation on RWCMD Wi-Fi."
 )
@@ -307,6 +310,43 @@ def ignored_v2_keys_from_selection(selection: Mapping[str, bool]) -> list[str]:
         if not enabled:
             ignored.append(event_key)
     return sorted(ignored)
+
+
+def group_calendar_events(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    allowed_dates: Sequence[date] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Group validated display events without leaking unrelated cached dates."""
+
+    allowed = None if allowed_dates is None else {value.isoformat() for value in allowed_dates}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        date_key = event.get("date")
+        if not isinstance(date_key, str) or (allowed is not None and date_key not in allowed):
+            continue
+        grouped.setdefault(date_key, []).append(dict(event))
+    for date_events in grouped.values():
+        date_events.sort(
+            key=lambda event: (
+                str(event.get("startTime") or ""),
+                str(event.get("endTime") or ""),
+                str(event.get("title") or ""),
+                str(event.get("room") or ""),
+            )
+        )
+    return grouped
+
+
+def calendar_event_display_name(event: Mapping[str, Any]) -> str:
+    """Use the booked room for reservations and the real title for other events."""
+
+    if event.get("isReservation") is True:
+        room = str(event.get("room") or "").strip()
+        return room or "Practice room booking"
+    return str(event.get("title") or "Calendar event").strip() or "Calendar event"
 
 
 def build_scheduler_setup_command(
@@ -2617,10 +2657,20 @@ class AsimutBookerGUI:
             return
 
         current_utc = datetime.now(timezone.utc)
-        cached_events = self.load_settings().get("cached_events", [])
-        if not isinstance(cached_events, list):
-            cached_events = []
-        cached_events = [event for event in cached_events if isinstance(event, Mapping)]
+        expected_dates = tuple(getattr(self, "booking_dates", ()))
+        agenda_result = read_agenda_snapshot(
+            AGENDA_SNAPSHOT_FILE,
+            expected_dates=expected_dates or None,
+        )
+        if agenda_result.snapshot is not None:
+            cached_events = agenda_result.snapshot.event_dicts()
+        else:
+            cached_events = self.load_settings().get("cached_events", [])
+            if not isinstance(cached_events, list):
+                cached_events = []
+            cached_events = [
+                event for event in cached_events if isinstance(event, Mapping)
+            ]
         next_selected = next_selected_plan_candidate(
             snapshot,
             today=datetime.now().date(),
@@ -5333,9 +5383,10 @@ class AsimutBookerGUI:
         legend_deselected.pack_propagate(False)
         ttk.Label(legend_frame, text="= Not selected", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 20))
 
-        # Event indicator
-        ttk.Label(legend_frame, text="•", font=("Segoe UI", 14), foreground="#e67e22").pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Label(legend_frame, text="= Has events", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 18))
+        ttk.Label(legend_frame, text="●", font=("Segoe UI", 11), foreground="#147d34").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(legend_frame, text="Booking", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 14))
+        ttk.Label(legend_frame, text="●", font=("Segoe UI", 11), foreground="#b35e00").pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(legend_frame, text="Class or event", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 18))
 
         plan_legend = tk.Canvas(
             legend_frame,
@@ -5444,48 +5495,60 @@ class AsimutBookerGUI:
         self._scan_calendar_events()
 
     def _load_cached_events(self):
-        """Load cached events from settings for instant display."""
+        """Load the latest complete agenda snapshot before the live refresh."""
+
+        expected_dates = tuple(getattr(self, "booking_dates", ()))
+        result = read_agenda_snapshot(
+            AGENDA_SNAPSHOT_FILE,
+            expected_dates=expected_dates or None,
+        )
+        self.calendar_snapshot_result = result
+        if result.snapshot is not None:
+            self.calendar_events = group_calendar_events(
+                result.snapshot.event_dicts(),
+                allowed_dates=expected_dates or result.snapshot.dates,
+            )
+            total_events = sum(len(events) for events in self.calendar_events.values())
+            age_seconds = max(
+                0,
+                int(
+                    (
+                        datetime.now(timezone.utc)
+                        - result.snapshot.observed_at.astimezone(timezone.utc)
+                    ).total_seconds()
+                ),
+            )
+            if age_seconds < 60:
+                age_text = "just now"
+            elif age_seconds < 3600:
+                age_text = f"{age_seconds // 60}m ago"
+            elif age_seconds < 86400:
+                age_text = f"{age_seconds // 3600}h ago"
+            else:
+                age_text = f"{age_seconds // 86400}d ago"
+            freshness = "may be out of date" if result.stale else f"refreshed {age_text}"
+            noun = "event" if total_events == 1 else "events"
+            self.calendar_scan_var.set(
+                f"Showing {total_events} existing {noun} · {freshness} · updating…"
+            )
+            return
+
+        # One-time compatibility fallback for installations that have not yet
+        # completed a run with the dedicated agenda snapshot. Never show dates
+        # outside the current site-owned booking window.
         settings = self.load_settings()
-        cached_events = settings.get("cached_events", [])
-        cache_timestamp = settings.get("cached_events_timestamp")
-
-        if cached_events:
-            # Group events by date
-            events_by_date = {}
-            for event in cached_events:
-                date = event.get('date')
-                if date:
-                    if date not in events_by_date:
-                        events_by_date[date] = []
-                    events_by_date[date].append(event)
-
-            self.calendar_events = events_by_date
-            total_events = sum(len(events) for events in events_by_date.values())
-
-            # Format cache age for display
-            cache_info = ""
-            if cache_timestamp:
-                try:
-                    cache_time = datetime.fromisoformat(cache_timestamp)
-                    age = datetime.now() - cache_time
-                    if age.total_seconds() < 60:
-                        cache_info = " (from just now)"
-                    elif age.total_seconds() < 3600:
-                        mins = int(age.total_seconds() / 60)
-                        cache_info = f" (from {mins}m ago)"
-                    elif age.total_seconds() < 86400:
-                        hours = int(age.total_seconds() / 3600)
-                        cache_info = f" (from {hours}h ago)"
-                    else:
-                        days = int(age.total_seconds() / 86400)
-                        cache_info = f" (from {days}d ago)"
-                except:
-                    pass
-
-            self.calendar_scan_var.set(f"Showing {total_events} cached events{cache_info} - updating...")
+        legacy_events = settings.get("cached_events", [])
+        self.calendar_events = group_calendar_events(
+            legacy_events if isinstance(legacy_events, list) else [],
+            allowed_dates=expected_dates or None,
+        )
+        total_events = sum(len(events) for events in self.calendar_events.values())
+        if total_events:
+            self.calendar_scan_var.set(
+                f"Showing {total_events} older saved events · updating…"
+            )
         else:
-            self.calendar_events = {}
-            self.calendar_scan_var.set("No cached events. Scanning...")
+            self.calendar_scan_var.set("Loading existing bookings and events…")
 
     def _navigate_calendar(self, direction):
         """Navigate calendar forward or backward."""
@@ -5850,7 +5913,7 @@ class AsimutBookerGUI:
                     continue
                 fill = "#92cf99" if event.get("isReservation", False) else "#f3bb7d"
                 canvas.create_rectangle(3, top, 142, bottom, fill=fill, outline="#555555")
-                title = str(event.get("title") or "Event")
+                title = calendar_event_display_name(event)
                 canvas.create_text(
                     7,
                     top + 3,
@@ -6023,7 +6086,7 @@ class AsimutBookerGUI:
             events_to_display = min(len(events), remaining_lines)
             for event in events[:events_to_display]:
                 time_str = f"{event['startTime']}-{event['endTime']}"
-                title = event.get('title', 'Event')
+                title = calendar_event_display_name(event)
                 if len(title) > 15:
                     title = title[:14] + "…"
 
@@ -6075,250 +6138,63 @@ class AsimutBookerGUI:
         thread.start()
 
     def _scan_calendar_events_thread(self, generation):
-        """Background thread to scan events for calendar."""
+        """Refresh the Calendar through the booker's validated agenda scanner."""
+
         try:
             from playwright.sync_api import sync_playwright
             from book_week import (
+                BookingTracker,
                 authenticated_runtime_context_options,
+                load_ignored_events,
                 page_is_authenticated,
                 persist_storage_state,
+                refresh_live_room_policy,
                 restore_page_authentication,
-                safe_goto,
+                scan_agenda,
             )
-            from room_catalog import refresh_from_site as refresh_room_catalog
 
             today = datetime.now().date()
+            settings = strict_load_settings(SETTINGS_FILE)
             context_options = authenticated_runtime_context_options()
-
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
                 context = browser.new_context(**context_options)
-                page = context.new_page()
-                restore_page_authentication(page)
-                catalog = refresh_room_catalog(page)
-                live_dates = catalog_booking_dates(catalog, today=today)
-                if not live_dates:
-                    raise RuntimeError(
-                        "Asimut returned no current booking-window dates; "
-                        "the existing event cache was preserved"
+                try:
+                    page = context.new_page()
+                    restore_page_authentication(page)
+                    policy = refresh_live_room_policy(
+                        page,
+                        self.room_preferences,
+                        today=today,
                     )
-                safe_goto(page, ASIMUT_AGENDA_URL)
-                require_authenticated_scan_page(
-                    page,
-                    page_is_authenticated,
-                    "/agenda",
-                )
-                page.wait_for_timeout(1000)
-
-                # The agenda window follows the current absolute cutoff from
-                # Asimut.  No fixed seven/eight-day (or other) assumption is
-                # allowed to authorize the GUI's event cache.
-                target_date = live_dates[-1]
-                allowed_date_strings = [value.isoformat() for value in live_dates]
-                live_room_names = [room.name for room in catalog.rooms]
-                target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
-                alternate_target_date_str = target_date.strftime("%d %B %Y")
-
-                max_scrolls = 60
-                scroll_count = 0
-                last_height = 0
-                stalled_count = 0
-                target_reached = False
-
-                while scroll_count < max_scrolls:
-                    page_text = page.evaluate("() => document.body.innerText")
-                    if (
-                        target_date_str in page_text
-                        or alternate_target_date_str in page_text
-                    ):
-                        target_reached = True
-                        break
-
-                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    page.wait_for_timeout(800)
-
-                    new_height = page.evaluate("() => document.body.scrollHeight")
-                    if new_height == last_height:
-                        stalled_count += 1
-                        if stalled_count >= 3:
-                            break
-                    else:
-                        stalled_count = 0
-                    last_height = new_height
-                    scroll_count += 1
-
-                if not target_reached:
-                    raise RuntimeError(
-                        f"Calendar agenda scan did not reach {target_date.isoformat()}; "
-                        "the existing event cache was preserved"
+                    live_dates = tuple(policy.booking_dates(today))
+                    if not live_dates:
+                        raise RuntimeError(
+                            "Asimut returned no current booking-window dates; "
+                            "the existing event snapshot was preserved"
+                        )
+                    tracker = BookingTracker()
+                    scan_agenda(
+                        page,
+                        tracker,
+                        today,
+                        ignored_events=load_ignored_events(settings),
+                        window_dates=live_dates,
+                        snapshot_path=AGENDA_SNAPSHOT_FILE,
                     )
-
-                # Final pass
-                page.evaluate("window.scrollTo(0, 0)")
-                page.wait_for_timeout(500)
-                for _ in range(max(scroll_count + 5, 15)):
-                    page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    page.wait_for_timeout(300)
-
-                # Extract events (same JS as before)
-                events_data = page.evaluate("""(scanPolicy) => {
-                    const events = [];
-                    const allowedDateSet = new Set(scanPolicy.allowedDates);
-                    const configuredRooms = scanPolicy.roomNames;
-
-                    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                                      'July', 'August', 'September', 'October', 'November', 'December'];
-
-                    function configuredRoomFromText(value) {
-                        const text = String(value || '').toLocaleLowerCase();
-                        const boundary = character => !character || !/[A-Za-z0-9.]/.test(character);
-                        const matches = configuredRooms.filter(room => {
-                            const needle = room.toLocaleLowerCase();
-                            let index = text.indexOf(needle);
-                            while (index >= 0) {
-                                if (boundary(text[index - 1]) && boundary(text[index + needle.length])) {
-                                    return true;
-                                }
-                                index = text.indexOf(needle, index + 1);
-                            }
-                            return false;
-                        });
-                        if (!matches.length) return null;
-                        const longest = Math.max(...matches.map(room => room.length));
-                        const longestMatches = matches.filter(room => room.length === longest);
-                        return longestMatches.length === 1 ? longestMatches[0] : null;
-                    }
-
-                    function isCancelled(element) {
-                        let el = element;
-                        while (el && el !== document.body) {
-                            const style = window.getComputedStyle(el);
-                            if (style.textDecoration.includes('line-through') ||
-                                style.textDecorationLine.includes('line-through')) return true;
-                            el = el.parentElement;
-                        }
-                        return false;
-                    }
-
-                    function getEventTitle(element) {
-                        let container = element;
-                        for (let i = 0; i < 10 && container; i++) {
-                            if (container.tagName === 'APP-AS-EVENT' ||
-                                container.classList.contains('as-event-panel')) {
-                                const displayName = container.querySelector('[data-cy="event-display-name"]');
-                                if (displayName) {
-                                    const nameText = (displayName.textContent || '').trim();
-                                    return (nameText === 'Reservation' || nameText.includes('Reservation'))
-                                        ? 'Reservation'
-                                        : nameText;
-                                }
-                                return 'Event';
-                            }
-                            container = container.parentElement;
-                        }
-                        return 'Event';
-                    }
-
-                    function getEventRoom(element) {
-                        let container = element;
-                        for (let i = 0; i < 10 && container; i++) {
-                            if (container.tagName === 'APP-AS-EVENT' ||
-                                container.classList.contains('as-event-panel')) {
-                                const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
-                                if (locationLink) {
-                                    const locationText = locationLink.textContent || '';
-                                    const configuredRoom = configuredRoomFromText(locationText);
-                                    if (configuredRoom) return configuredRoom;
-                                }
-                                return null;
-                            }
-                            container = container.parentElement;
-                        }
-                        return null;
-                    }
-
-                    const allElements = document.querySelectorAll('*');
-                    let currentDate = null;
-
-                    function localDateString(value) {
-                        const year = value.getFullYear();
-                        const month = String(value.getMonth() + 1).padStart(2, '0');
-                        const day = String(value.getDate()).padStart(2, '0');
-                        return `${year}-${month}-${day}`;
-                    }
-
-                    for (const element of allElements) {
-                        if (element.children.length > 0) {
-                            const hasTextChild = Array.from(element.children).some(child =>
-                                child.textContent.trim().length > 0);
-                            if (hasTextChild) continue;
-                        }
-
-                        const text = element.textContent.trim();
-
-                        const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
-                        if (dateMatch) {
-                            const day = parseInt(dateMatch[2]);
-                            const month = monthNames.indexOf(dateMatch[3]);
-                            const year = parseInt(dateMatch[4]);
-                            currentDate = new Date(year, month, day);
-                            continue;
-                        }
-
-                        const timeMatch = text.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
-                        if (timeMatch && currentDate) {
-                            if (isCancelled(element)) continue;
-
-                            const dateString = localDateString(currentDate);
-                            if (allowedDateSet.has(dateString)) {
-                                events.push({
-                                    date: dateString,
-                                    startTime: timeMatch[1],
-                                    endTime: timeMatch[2],
-                                    title: getEventTitle(element),
-                                    isReservation: getEventTitle(element) === 'Reservation',
-                                    room: getEventRoom(element)
-                                });
-                            }
-                        }
-                    }
-                    return events;
-                }""", {
-                    "allowedDates": allowed_date_strings,
-                    "roomNames": live_room_names,
-                })
-                require_authenticated_scan_page(
-                    page,
-                    page_is_authenticated,
-                    "/agenda",
-                )
-                persist_storage_state(context)
-                browser.close()
-
-            # Group events by date
-            events_by_date = {}
-            for event in events_data:
-                date = event['date']
-                if date not in events_by_date:
-                    events_by_date[date] = []
-                events_by_date[date].append(event)
-
-            # Also update cached_events in settings
-            unique_events = deduplicate_events(events_data)
-            cache_timestamp = datetime.now().isoformat()
-            if generation != self._calendar_scan_generation:
-                return
-
-            cache_applied = []
-            def update_cache(settings):
-                if generation != self._calendar_scan_generation:
-                    return
-                settings["cached_events"] = unique_events
-                settings["cached_events_timestamp"] = cache_timestamp
-                cache_applied.append(True)
-
-            if not self._update_settings(update_cache, interactive=False) or not cache_applied:
-                return
+                    require_authenticated_scan_page(
+                        page,
+                        page_is_authenticated,
+                        "/agenda",
+                    )
+                    events_by_date = group_calendar_events(
+                        tracker.agenda_events,
+                        allowed_dates=live_dates,
+                    )
+                    persist_storage_state(context)
+                finally:
+                    context.close()
+                    browser.close()
 
             self.root.after(
                 0,
@@ -6326,7 +6202,6 @@ class AsimutBookerGUI:
                 generation,
                 events_by_date,
             )
-
         except Exception as exc:
             error_message = str(exc)
             try:
@@ -6348,7 +6223,18 @@ class AsimutBookerGUI:
             return
         self.calendar_events = events_by_date
         total_events = sum(len(events) for events in self.calendar_events.values())
-        self.calendar_scan_var.set(f"✓ {total_events} events (updated just now)")
+        reservations = sum(
+            1
+            for events in self.calendar_events.values()
+            for event in events
+            if event.get("isReservation") is True
+        )
+        other_events = total_events - reservations
+        booking_word = "booking" if reservations == 1 else "bookings"
+        event_word = "event" if other_events == 1 else "events"
+        self.calendar_scan_var.set(
+            f"✓ {reservations} {booking_word} · {other_events} other {event_word} · just updated"
+        )
         self._refresh_calendar()
 
     def _on_calendar_scan_error(self, generation, error_msg):
@@ -6481,9 +6367,17 @@ class AsimutBookerGUI:
         dialog.protocol("WM_DELETE_WINDOW", on_close)
 
     def _load_and_display_events(self, events_frame):
-        """Load cached events and ignored events from settings, display in frame."""
+        """Load current agenda evidence and ignored-event preferences."""
         settings = self.load_settings()
-        cached_events = settings.get("cached_events", [])
+        expected_dates = tuple(getattr(self, "booking_dates", ()))
+        agenda_result = read_agenda_snapshot(
+            AGENDA_SNAPSHOT_FILE,
+            expected_dates=expected_dates or None,
+        )
+        if agenda_result.snapshot is not None:
+            cached_events = agenda_result.snapshot.event_dicts()
+        else:
+            cached_events = settings.get("cached_events", [])
         ignored_events = settings.get("ignored_events", [])
 
         # Clear existing widgets
@@ -6494,7 +6388,7 @@ class AsimutBookerGUI:
         if not cached_events:
             ttk.Label(
                 events_frame,
-                text="No events cached. Click 'Scan My Agenda' to load events.",
+                text="No current events are available. Click 'Scan My Agenda' to refresh.",
                 font=("Segoe UI", 11),
                 foreground="gray"
             ).pack(pady=20)
@@ -6583,284 +6477,73 @@ class AsimutBookerGUI:
         thread.start()
 
     def _scan_events_thread(self, dialog, events_frame):
-        """Background thread to scan events."""
+        """Refresh event preferences through the validated agenda scanner."""
+
         try:
-            # Import here to avoid startup delay
             from playwright.sync_api import sync_playwright
             from book_week import (
+                BookingTracker,
                 authenticated_runtime_context_options,
+                load_ignored_events,
                 page_is_authenticated,
                 persist_storage_state,
+                refresh_live_room_policy,
                 restore_page_authentication,
-                safe_goto,
+                scan_agenda,
             )
-            from room_catalog import refresh_from_site as refresh_room_catalog
 
-            events = []
             today = datetime.now().date()
+            settings = strict_load_settings(SETTINGS_FILE)
             context_options = authenticated_runtime_context_options()
-
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+            self.root.after(
+                0,
+                lambda: self.events_progress_var.set(
+                    "Refreshing booking window and agenda…"
+                ),
+            )
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
                 context = browser.new_context(**context_options)
-                page = context.new_page()
-
-                # Refresh the authoritative room/window policy before reading
-                # the agenda.  The saved catalog remains display-only.
-                self.root.after(
-                    0,
-                    lambda: self.events_progress_var.set(
-                        "Refreshing booking window from Asimut..."
-                    ),
-                )
-                restore_page_authentication(page)
-                catalog = refresh_room_catalog(page)
-                live_dates = catalog_booking_dates(catalog, today=today)
-                if not live_dates:
-                    raise RuntimeError(
-                        "Asimut returned no current booking-window dates; "
-                        "the existing event cache was preserved"
+                try:
+                    page = context.new_page()
+                    restore_page_authentication(page)
+                    policy = refresh_live_room_policy(
+                        page,
+                        self.room_preferences,
+                        today=today,
                     )
-                allowed_date_strings = [value.isoformat() for value in live_dates]
-                live_room_names = [room.name for room in catalog.rooms]
-                self.root.after(0, lambda: self.events_progress_var.set("Loading agenda page..."))
-                safe_goto(page, ASIMUT_AGENDA_URL)
-                require_authenticated_scan_page(
-                    page,
-                    page_is_authenticated,
-                    "/agenda",
-                )
-                page.wait_for_timeout(1000)
-
-                # Scroll only as far as the absolute cutoff supplied by Asimut.
-                target_date = live_dates[-1]
-                target_date_str = target_date.strftime("%d %B %Y").lstrip("0")
-
-                self.root.after(0, lambda: self.events_progress_var.set("Scrolling to load events..."))
-
-                max_scrolls = 50
-                scroll_count = 0
-                last_height = 0
-                stalled_count = 0
-                target_reached = False
-
-                while scroll_count < max_scrolls:
-                    page_text = page.evaluate("() => document.body.innerText")
-                    if target_date_str in page_text:
-                        target_reached = True
-                        break
-
-                    alt_date_str = target_date.strftime("%d %B %Y")
-                    if alt_date_str in page_text:
-                        target_reached = True
-                        break
-
-                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    page.wait_for_timeout(1000)
-
-                    new_height = page.evaluate("() => document.body.scrollHeight")
-                    if new_height == last_height:
-                        stalled_count += 1
-                        if stalled_count >= 3:
-                            break
-                        page.wait_for_timeout(500)
-                    else:
-                        stalled_count = 0
-                    last_height = new_height
-                    scroll_count += 1
-
-                if not target_reached:
-                    raise RuntimeError(
-                        f"Agenda scan did not reach {target_date.isoformat()}; "
-                        "the existing event cache was preserved"
+                    live_dates = tuple(policy.booking_dates(today))
+                    if not live_dates:
+                        raise RuntimeError(
+                            "Asimut returned no current booking-window dates; "
+                            "the existing event snapshot was preserved"
+                        )
+                    tracker = BookingTracker()
+                    scan_agenda(
+                        page,
+                        tracker,
+                        today,
+                        ignored_events=load_ignored_events(settings),
+                        window_dates=live_dates,
+                        snapshot_path=AGENDA_SNAPSHOT_FILE,
                     )
+                    require_authenticated_scan_page(
+                        page,
+                        page_is_authenticated,
+                        "/agenda",
+                    )
+                    persist_storage_state(context)
+                    event_count = len(tracker.agenda_events)
+                finally:
+                    context.close()
+                    browser.close()
 
-                # Scroll back to top and do final pass
-                page.evaluate("window.scrollTo(0, 0)")
-                page.wait_for_timeout(1000)
-
-                min_scrolls = max(scroll_count + 5, 10)
-                for i in range(min_scrolls):
-                    page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    page.wait_for_timeout(400)
-
-                page.wait_for_timeout(1000)
-
-                self.root.after(0, lambda: self.events_progress_var.set("Extracting events..."))
-
-                # Extract events using same JavaScript as book_week.py
-                events_data = page.evaluate("""(scanPolicy) => {
-                    const events = [];
-                    const allowedDateSet = new Set(scanPolicy.allowedDates);
-                    const configuredRooms = scanPolicy.roomNames;
-                    const today = new Date();
-                    today.setHours(0, 0, 0, 0);
-
-                    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                                      'July', 'August', 'September', 'October', 'November', 'December'];
-
-                    function configuredRoomFromText(value) {
-                        const text = String(value || '').toLocaleLowerCase();
-                        const boundary = character => !character || !/[A-Za-z0-9.]/.test(character);
-                        const matches = configuredRooms.filter(room => {
-                            const needle = room.toLocaleLowerCase();
-                            let index = text.indexOf(needle);
-                            while (index >= 0) {
-                                if (boundary(text[index - 1]) && boundary(text[index + needle.length])) {
-                                    return true;
-                                }
-                                index = text.indexOf(needle, index + 1);
-                            }
-                            return false;
-                        });
-                        if (!matches.length) return null;
-                        const longest = Math.max(...matches.map(room => room.length));
-                        const longestMatches = matches.filter(room => room.length === longest);
-                        return longestMatches.length === 1 ? longestMatches[0] : null;
-                    }
-
-                    function isCancelled(element) {
-                        let el = element;
-                        while (el && el !== document.body) {
-                            const style = window.getComputedStyle(el);
-                            if (style.textDecoration.includes('line-through') ||
-                                style.textDecorationLine.includes('line-through')) {
-                                return true;
-                            }
-                            const className = el.className || '';
-                            if (className.includes('cancelled') || className.includes('canceled') ||
-                                className.includes('deleted') || className.includes('removed')) {
-                                return true;
-                            }
-                            el = el.parentElement;
-                        }
-                        return false;
-                    }
-
-                    function getEventTitle(element) {
-                        let container = element;
-                        for (let i = 0; i < 10 && container; i++) {
-                            if (container.tagName === 'APP-AS-EVENT' ||
-                                container.classList.contains('as-event-panel') ||
-                                container.classList.contains('event-details-expanded')) {
-
-                                const displayName = container.querySelector('[data-cy="event-display-name"]');
-                                if (displayName) {
-                                    const nameText = (displayName.textContent || '').trim();
-                                    if (nameText === 'Reservation' || nameText.includes('Reservation')) {
-                                        return 'Reservation';
-                                    }
-                                    return nameText;
-                                }
-                                return 'Event';
-                            }
-                            container = container.parentElement;
-                        }
-                        return 'Event';
-                    }
-
-                    function getEventRoom(element) {
-                        let container = element;
-                        for (let i = 0; i < 10 && container; i++) {
-                            if (container.tagName === 'APP-AS-EVENT' ||
-                                container.classList.contains('as-event-panel') ||
-                                container.classList.contains('event-details-expanded')) {
-
-                                const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
-                                if (locationLink) {
-                                    const locText = (locationLink.textContent || '').trim();
-                                    const configuredRoom = configuredRoomFromText(locText);
-                                    if (configuredRoom) return configuredRoom;
-                                }
-                                return null;
-                            }
-                            container = container.parentElement;
-                        }
-                        return null;
-                    }
-
-                    const allElements = document.querySelectorAll('*');
-                    let currentDate = null;
-
-                    function localDateString(value) {
-                        const year = value.getFullYear();
-                        const month = String(value.getMonth() + 1).padStart(2, '0');
-                        const day = String(value.getDate()).padStart(2, '0');
-                        return `${year}-${month}-${day}`;
-                    }
-
-                    for (const element of allElements) {
-                        if (element.children.length > 0) {
-                            const hasTextChild = Array.from(element.children).some(child =>
-                                child.textContent.trim().length > 0
-                            );
-                            if (hasTextChild) continue;
-                        }
-
-                        const text = element.textContent.trim();
-
-                        const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\\s+(\\d{1,2})\\s+(January|February|March|April|May|June|July|August|September|October|November|December)\\s+(\\d{4})$/i);
-                        if (dateMatch) {
-                            const day = parseInt(dateMatch[2]);
-                            const month = monthNames.indexOf(dateMatch[3]);
-                            const year = parseInt(dateMatch[4]);
-                            currentDate = new Date(year, month, day);
-                            continue;
-                        }
-
-                        const timeMatch = text.match(/^(\\d{2}:\\d{2})\\s*[-–]\\s*(\\d{2}:\\d{2})$/);
-                        if (timeMatch && currentDate) {
-                            if (isCancelled(element)) {
-                                continue;
-                            }
-
-                            const startTime = timeMatch[1];
-                            const endTime = timeMatch[2];
-                            const eventTitle = getEventTitle(element);
-                            const eventRoom = getEventRoom(element);
-
-                            const daysDiff = Math.round((currentDate - today) / (1000 * 60 * 60 * 24));
-                            const dateString = localDateString(currentDate);
-                            if (allowedDateSet.has(dateString)) {
-                                events.push({
-                                    date: dateString,
-                                    daysDiff: daysDiff,
-                                    startTime: startTime,
-                                    endTime: endTime,
-                                    title: eventTitle,
-                                    isReservation: eventTitle === 'Reservation',
-                                    room: eventRoom
-                                });
-                            }
-                        }
-                    }
-
-                    return events;
-                }""", {
-                    "allowedDates": allowed_date_strings,
-                    "roomNames": live_room_names,
-                })
-                require_authenticated_scan_page(
-                    page,
-                    page_is_authenticated,
-                    "/agenda",
-                )
-                persist_storage_state(context)
-                browser.close()
-
-            # Deduplicate events
-            unique_events = deduplicate_events(events_data)
-
-            # Save to settings
-            if not self._update_settings(
-                lambda settings: settings.__setitem__("cached_events", unique_events),
-                interactive=False,
-            ):
-                raise RuntimeError("Scanned events could not be saved safely")
-
-            # Update UI
-            self.root.after(0, lambda: self._on_scan_complete(events_frame, len(unique_events)))
-
+            self.root.after(
+                0,
+                self._on_scan_complete,
+                events_frame,
+                event_count,
+            )
         except Exception as exc:
             error_message = str(exc)
             try:

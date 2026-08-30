@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 from app_settings import SettingsError
+from agenda_snapshot import publish_agenda_snapshot
 from gui import (
+    AGENDA_SNAPSHOT_FILE,
     AsimutBookerGUI,
     PRACTICE_TARGET_CHOICES,
     ROOM_MINIMUM_BLOCK_CHOICES,
@@ -19,9 +21,11 @@ from gui import (
     build_login_check_command,
     build_scheduler_setup_command,
     build_secure_login_update_command,
+    calendar_event_display_name,
     catalog_booking_dates,
     changed_room_preference_fields,
     format_practice_hours,
+    group_calendar_events,
     load_history_document,
     ignored_v2_keys_from_selection,
     is_exact_asimut_scan_url,
@@ -40,6 +44,69 @@ from gui import (
 from event_identity import event_identity_v2, legacy_event_identity
 from practice_plan import PracticePlan, PracticePlanError
 from room_preferences import RoomPreferences, RoomPreferencesError
+
+
+class CalendarDisplayHelperTests(unittest.TestCase):
+    def test_reservations_show_the_booked_room_and_other_events_show_their_title(self):
+        self.assertEqual(
+            calendar_event_display_name(
+                {"title": "Reservation", "isReservation": True, "room": "B0.29"}
+            ),
+            "B0.29",
+        )
+        self.assertEqual(
+            calendar_event_display_name(
+                {"title": "Performance class", "isReservation": False, "room": None}
+            ),
+            "Performance class",
+        )
+
+    def test_grouping_filters_old_cache_dates_and_sorts_each_day(self):
+        allowed = (datetime(2026, 8, 30).date(), datetime(2026, 8, 31).date())
+        grouped = group_calendar_events(
+            [
+                {"date": "2026-08-31", "startTime": "12:00", "endTime": "13:00", "title": "B"},
+                {"date": "2026-02-03", "startTime": "09:00", "endTime": "10:00", "title": "Old"},
+                {"date": "2026-08-31", "startTime": "09:00", "endTime": "10:00", "title": "A"},
+            ],
+            allowed_dates=allowed,
+        )
+        self.assertEqual(list(grouped), ["2026-08-31"])
+        self.assertEqual(
+            [event["title"] for event in grouped["2026-08-31"]],
+            ["A", "B"],
+        )
+
+    def test_calendar_loads_current_snapshot_before_starting_live_refresh(self):
+        gui = object.__new__(AsimutBookerGUI)
+        today = datetime(2026, 8, 30).date()
+        gui.booking_dates = (today, today + timedelta(days=1))
+        gui.calendar_scan_var = MagicMock()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agenda.json"
+            publish_agenda_snapshot(
+                [
+                    {
+                        "date": today.isoformat(),
+                        "startTime": "12:30",
+                        "endTime": "14:30",
+                        "title": "Reservation",
+                        "isReservation": True,
+                        "room": "B0.29",
+                        "eventId": 123,
+                    }
+                ],
+                gui.booking_dates,
+                observed_at=datetime.now(timezone.utc),
+                path=path,
+            )
+            with patch("gui.AGENDA_SNAPSHOT_FILE", path):
+                gui._load_cached_events()
+
+        self.assertEqual(gui.calendar_events[today.isoformat()][0]["room"], "B0.29")
+        status = gui.calendar_scan_var.set.call_args.args[0]
+        self.assertIn("1 existing event", status)
+        self.assertIn("refreshed", status)
 
 
 class GuiSchedulerHelpersTests(unittest.TestCase):
@@ -1026,6 +1093,7 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
     def test_calendar_auth_failure_never_replaces_cache_and_error_is_eager(self):
         gui = object.__new__(AsimutBookerGUI)
         gui._calendar_scan_generation = 7
+        gui.room_preferences = MagicMock()
         gui._update_settings = MagicMock()
         gui._on_calendar_scan_error = MagicMock()
 
@@ -1045,17 +1113,20 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
             patch("playwright.sync_api.sync_playwright", return_value=manager),
             patch("book_week.authenticated_runtime_context_options", return_value={}) as options,
             patch("book_week.restore_page_authentication") as restore,
-            patch("room_catalog.refresh_from_site", side_effect=RuntimeError("session recovery failed")) as refresh_catalog,
-            patch("book_week.safe_goto") as safe_goto,
-            patch("book_week.page_is_authenticated", return_value=False),
+            patch("book_week.refresh_live_room_policy", side_effect=RuntimeError("session recovery failed")) as refresh_policy,
+            patch("book_week.scan_agenda") as scan_agenda,
             patch("book_week.persist_storage_state") as persist,
         ):
             gui._scan_calendar_events_thread(7)
 
         options.assert_called_once_with()
         restore.assert_called_once_with(page)
-        refresh_catalog.assert_called_once_with(page)
-        safe_goto.assert_not_called()
+        refresh_policy.assert_called_once_with(
+            page,
+            gui.room_preferences,
+            today=datetime.now().date(),
+        )
+        scan_agenda.assert_not_called()
         persist.assert_not_called()
         gui._update_settings.assert_not_called()
         self.assertEqual(len(scheduled), 1)
@@ -1066,6 +1137,77 @@ class GuiAuthenticatedScanTests(unittest.TestCase):
             7,
             "session recovery failed",
         )
+
+    def test_calendar_refresh_uses_shared_complete_agenda_scanner_and_snapshot(self):
+        gui = object.__new__(AsimutBookerGUI)
+        gui._calendar_scan_generation = 8
+        gui.room_preferences = MagicMock()
+        gui._on_calendar_scan_complete = MagicMock()
+        gui._on_calendar_scan_error = MagicMock()
+        scheduled = []
+        gui.root = MagicMock()
+        gui.root.after.side_effect = lambda delay, callback, *args: scheduled.append(
+            (delay, callback, args)
+        )
+
+        manager = MagicMock()
+        playwright = manager.__enter__.return_value
+        browser = playwright.chromium.launch.return_value
+        context = browser.new_context.return_value
+        page = context.new_page.return_value
+        page.url = "https://rwcmd.asimut.net/agenda"
+        today = datetime.now().date()
+        live_dates = (today, today + timedelta(days=1))
+        policy = MagicMock()
+        policy.booking_dates.return_value = live_dates
+        tracker = MagicMock()
+        tracker.agenda_events = [
+            {
+                "date": today.isoformat(),
+                "startTime": "10:00",
+                "endTime": "11:00",
+                "title": "Reservation",
+                "isReservation": True,
+                "room": "B0.29",
+                "eventId": 123,
+            }
+        ]
+
+        with (
+            patch("gui.strict_load_settings", return_value={"ignored_events": []}),
+            patch("playwright.sync_api.sync_playwright", return_value=manager),
+            patch("book_week.authenticated_runtime_context_options", return_value={}),
+            patch("book_week.restore_page_authentication"),
+            patch("book_week.refresh_live_room_policy", return_value=policy),
+            patch("book_week.BookingTracker", return_value=tracker),
+            patch("book_week.load_ignored_events", return_value=[]) as ignored,
+            patch("book_week.scan_agenda") as scan_agenda,
+            patch("book_week.page_is_authenticated", return_value=True),
+            patch("book_week.persist_storage_state") as persist,
+        ):
+            gui._scan_calendar_events_thread(8)
+
+        ignored.assert_called_once_with({"ignored_events": []})
+        scan_agenda.assert_called_once_with(
+            page,
+            tracker,
+            today,
+            ignored_events=[],
+            window_dates=live_dates,
+            snapshot_path=AGENDA_SNAPSHOT_FILE,
+        )
+        persist.assert_called_once_with(context)
+        context.close.assert_called_once_with()
+        browser.close.assert_called_once_with()
+        self.assertEqual(len(scheduled), 1)
+        delay, callback, args = scheduled[0]
+        self.assertEqual(delay, 0)
+        callback(*args)
+        gui._on_calendar_scan_complete.assert_called_once_with(
+            8,
+            {today.isoformat(): tracker.agenda_events},
+        )
+        gui._on_calendar_scan_error.assert_not_called()
 
     def test_stale_calendar_result_cannot_replace_current_state_or_ui(self):
         gui = object.__new__(AsimutBookerGUI)
