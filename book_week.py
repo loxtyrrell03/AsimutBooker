@@ -21,6 +21,7 @@ import os
 import copy
 import urllib.request
 import urllib.error
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -286,10 +287,23 @@ DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted base
 PRIORITY_ROOMS = _CONFIG['priority_rooms']
 ROOM_HORIZONS = _CONFIG['room_horizons']
 DEFAULT_HORIZON = _CONFIG['default_horizon']
+EXTENSION_PREP_WINDOW_SECONDS = 180
+HORIZON_SAVE_SETTLE_SECONDS = 0.25
+HORIZON_SNIPE_GRACE_SECONDS = 180
 
 ASIMUT_BASE_URL = "https://rwcmd.asimut.net"
 ASIMUT_AGENDA_URL = f"{ASIMUT_BASE_URL}/agenda"
 ASIMUT_OVERVIEW_URL = f"{ASIMUT_BASE_URL}/overview?locationGroupId=10"
+
+
+def is_horizon_snipe_timing_candidate(seconds_until_bookable):
+    """Accept imminent and just-opened edges, but no stale normal slots."""
+
+    return (
+        -HORIZON_SNIPE_GRACE_SECONDS
+        <= seconds_until_bookable
+        <= HORIZON_SNIPE_GRACE_SECONDS
+    )
 
 
 def page_is_asimut_origin(page):
@@ -1134,6 +1148,59 @@ def wait_until_target_time(target_time_str, page=None):
     print(f"{'='*60}\n")
 
 
+def wait_until_datetime(target, page=None, *, label="HORIZON"):
+    """Wait for one exact local datetime while keeping the page responsive."""
+
+    now = datetime.now()
+    if now >= target:
+        # Form preparation can legitimately consume the last fraction of the
+        # lead window. Preserve the same small server-clock allowance even
+        # when the local boundary was reached before this helper was entered.
+        time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
+        return 0.0
+
+    initial_wait = (target - now).total_seconds()
+    if initial_wait > EXTENSION_PREP_WINDOW_SECONDS + 1:
+        raise BookingVerificationError(
+            f"Refusing to hold a horizon editor for {initial_wait:.1f}s; "
+            f"the preparation limit is {EXTENSION_PREP_WINDOW_SECONDS}s"
+        )
+    print(f"    [{label}] Form ready; Save unlocks in {initial_wait:.1f}s")
+    monotonic_deadline = time.monotonic() + initial_wait + 5
+    last_logged_second = None
+    last_keepalive_second = None
+    while True:
+        if time.monotonic() > monotonic_deadline:
+            raise BookingVerificationError(
+                f"{label} boundary clock did not advance safely; no Save was attempted"
+            )
+        now = datetime.now()
+        remaining = (target - now).total_seconds()
+        if remaining <= 0:
+            break
+        remaining_int = max(0, int(remaining))
+        if remaining <= 10 and remaining_int != last_logged_second:
+            print(f"    [{label}] T-{remaining:.1f}s")
+            last_logged_second = remaining_int
+        if (
+            page is not None
+            and remaining_int % 30 == 0
+            and remaining_int != last_keepalive_second
+        ):
+            try:
+                page.evaluate("1")
+            except Exception:
+                pass
+            last_keepalive_second = remaining_int
+        time.sleep(0.1 if remaining <= 10 else 0.5)
+
+    # A very small server-clock allowance avoids firing on the wrong side of
+    # the boundary without giving away the slot for the previous one-second
+    # buffer used by the legacy path.
+    time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
+    return initial_wait
+
+
 def is_room_available_to_book(room, target_date, slot_start_hour):
     """
     Check if a room is available to book based on its horizon.
@@ -1879,7 +1946,165 @@ def update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
     return found
 
 
-def calculate_max_extension(room, date_str, start_hour, current_end_hour, booking_timestamp, target_end_hour):
+@dataclass(frozen=True)
+class HorizonExtensionPlan:
+    """Pure timing decision for one horizon-edge reservation."""
+
+    can_extend: bool
+    max_end_hour: float
+    next_end_hour: float | None
+    next_unlock_at: datetime | None
+    wait_seconds: float | None
+    reason: str
+
+
+def plan_horizon_extension(
+    room,
+    date_str,
+    start_hour,
+    current_end_hour,
+    target_end_hour,
+    *,
+    now=None,
+):
+    """Plan the latest unlocked extension and the next exact 15-minute edge.
+
+    The horizon exposes another 15 minutes at each complete quarter-hour of
+    elapsed time. A late run catches up in one verified edit to the latest
+    completed boundary; it never rounds into a boundary that has not happened.
+    """
+
+    now = now or datetime.now()
+    try:
+        slot_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return HorizonExtensionPlan(
+            False,
+            current_end_hour,
+            None,
+            None,
+            None,
+            "Invalid booking date",
+        )
+
+    try:
+        start_minutes = int(round(float(start_hour) * 60))
+        current_end_minutes = int(round(float(current_end_hour) * 60))
+        target_end_minutes = int(round(float(target_end_hour) * 60))
+    except (TypeError, ValueError, OverflowError):
+        return HorizonExtensionPlan(
+            False,
+            current_end_hour,
+            None,
+            None,
+            None,
+            "Invalid booking time",
+        )
+
+    current_duration_minutes = current_end_minutes - start_minutes
+    target_duration_minutes = min(
+        target_end_minutes - start_minutes,
+        MAX_BOOKING_HOURS * 60,
+    )
+    if (
+        not 0 <= start_minutes < 24 * 60
+        or not 0 < current_end_minutes <= 24 * 60
+        or not 0 < target_end_minutes <= 24 * 60
+        or start_minutes % 15
+        or current_end_minutes % 15
+        or target_end_minutes % 15
+        or current_duration_minutes < MIN_BOOKING_MINUTES
+        or current_duration_minutes % 15
+        or target_duration_minutes < current_duration_minutes
+    ):
+        return HorizonExtensionPlan(
+            False,
+            current_end_hour,
+            None,
+            None,
+            None,
+            "Invalid extension duration",
+        )
+
+    slot_datetime = datetime.combine(slot_date, datetime.min.time()) + timedelta(
+        minutes=start_minutes
+    )
+    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
+    horizon_edge = slot_datetime - timedelta(days=horizon_days)
+    try:
+        elapsed_seconds = (now - horizon_edge).total_seconds()
+    except (AttributeError, TypeError):
+        return HorizonExtensionPlan(
+            False,
+            current_end_hour,
+            None,
+            None,
+            None,
+            "Invalid extension clock",
+        )
+
+    # Integer-second floor division makes the exact boundary contract explicit:
+    # +44:59 is still 30 minutes, while +45:00 unlocks 45 minutes.
+    completed_quarters = max(0, int(elapsed_seconds // (15 * 60)))
+    unlocked_duration_minutes = min(
+        completed_quarters * 15,
+        target_duration_minutes,
+        MAX_BOOKING_HOURS * 60,
+    )
+    unlocked_end_minutes = start_minutes + unlocked_duration_minutes
+
+    if unlocked_end_minutes >= current_end_minutes + 15:
+        max_end_hour = unlocked_end_minutes / 60
+        return HorizonExtensionPlan(
+            True,
+            max_end_hour,
+            None,
+            None,
+            0.0,
+            f"Can extend to {unlocked_end_minutes // 60:02d}:{unlocked_end_minutes % 60:02d}",
+        )
+
+    if current_duration_minutes >= target_duration_minutes:
+        return HorizonExtensionPlan(
+            False,
+            current_end_hour,
+            None,
+            None,
+            None,
+            "Already at target duration",
+        )
+
+    next_duration_minutes = current_duration_minutes + 15
+    next_end_minutes = start_minutes + next_duration_minutes
+    next_unlock_at = horizon_edge + timedelta(minutes=next_duration_minutes)
+    wait_seconds = (next_unlock_at - now).total_seconds()
+    if elapsed_seconds < 0:
+        reason = f"Not yet in horizon window ({-elapsed_seconds / 60:.0f}min early)"
+    else:
+        reason = (
+            "Next 15-minute extension unlocks at "
+            f"{next_unlock_at.strftime('%H:%M:%S')} ({max(0.0, wait_seconds):.0f}s)"
+        )
+    return HorizonExtensionPlan(
+        False,
+        current_end_hour,
+        next_end_minutes / 60,
+        next_unlock_at,
+        wait_seconds,
+        reason,
+    )
+
+
+def calculate_max_extension(
+    room,
+    date_str,
+    start_hour,
+    current_end_hour,
+    booking_timestamp,
+    target_end_hour,
+    *,
+    now=None,
+):
     """Calculate maximum possible extension for a booking made at horizon edge.
 
     When booking at the exact horizon time, only MIN_BOOKING_MINUTES can be booked.
@@ -1899,64 +2124,17 @@ def calculate_max_extension(room, date_str, start_hour, current_end_hour, bookin
     try:
         # Validate timestamp format (kept for compatibility with saved data)
         datetime.fromisoformat(booking_timestamp)
-    except:
+    except (TypeError, ValueError):
         return False, current_end_hour, "Invalid booking timestamp"
-
-    now = datetime.now()
-    horizon_days = ROOM_HORIZONS.get(room, DEFAULT_HORIZON)
-
-    # Calculate when this slot became available (horizon edge)
-    try:
-        slot_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-    except:
-        return False, current_end_hour, "Invalid booking date"
-
-    slot_datetime = datetime.combine(slot_date, datetime.min.time())
-    slot_datetime = slot_datetime.replace(
-        hour=int(start_hour),
-        minute=int((start_hour % 1) * 60)
+    plan = plan_horizon_extension(
+        room,
+        date_str,
+        start_hour,
+        current_end_hour,
+        target_end_hour,
+        now=now,
     )
-    available_from = slot_datetime - timedelta(days=horizon_days)
-
-    # Time elapsed since the horizon edge (not since booking)
-    time_since_available_mins = (now - available_from).total_seconds() / 60
-    if time_since_available_mins < 0:
-        return False, current_end_hour, f"Not yet in horizon window ({-time_since_available_mins:.0f}min early)"
-
-    # Current duration in minutes
-    current_duration_mins = (current_end_hour - start_hour) * 60
-
-    # Max total duration available at this moment (capped at 2 hours)
-    max_total_duration_mins = min(
-        time_since_available_mins,
-        MAX_BOOKING_HOURS * 60
-    )
-
-    # If horizon window hasn't advanced beyond current booking, no extension possible
-    if max_total_duration_mins < current_duration_mins:
-        return False, current_end_hour, "Horizon window hasn't advanced past current booking"
-
-    # Calculate max end hour (total duration from start)
-    max_end_hour = start_hour + max_total_duration_mins / 60
-
-    # Also cap at target end (no point going beyond what we originally wanted)
-    max_end_hour = min(max_end_hour, target_end_hour)
-
-    # Round down to nearest 15-minute interval
-    max_end_mins = int((max_end_hour % 1) * 60)
-    max_end_mins = (max_end_mins // 15) * 15
-    max_end_hour = int(max_end_hour) + max_end_mins / 60
-
-    # Need at least 15 minutes of extension to be worth it
-    extension_mins = (max_end_hour - current_end_hour) * 60
-    if extension_mins < 15:
-        return False, current_end_hour, f"Only {extension_mins:.0f}min extension possible (need 15min)"
-
-    # Check if we've already reached the target
-    if current_end_hour >= target_end_hour:
-        return False, current_end_hour, "Already at target duration"
-
-    return True, max_end_hour, f"Can extend to {int(max_end_hour):02d}:{int((max_end_hour % 1) * 60):02d}"
+    return plan.can_extend, plan.max_end_hour, plan.reason
 
 
 def is_preferred_time(start_hour, time_prefs):
@@ -2129,7 +2307,7 @@ def interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
 # BOOKING EXTENSION FUNCTIONS
 # =============================================================================
 
-def edit_reservation_end_time(page, booking, new_end_time):
+def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=None):
     """Edit an existing reservation to extend its end time.
 
     Uses Asimut's edit feature:
@@ -2145,6 +2323,8 @@ def edit_reservation_end_time(page, booking, new_end_time):
         page: Playwright page object
         booking: Dict with date, startTime, endTime, room
         new_end_time: New end time string (e.g., "10:00")
+        save_not_before: Optional exact horizon boundary. The edit form is
+            prepared immediately, but no receipt or Save occurs before it.
 
     Returns:
         True if successfully edited, False otherwise
@@ -2421,6 +2601,23 @@ def edit_reservation_end_time(page, booking, new_end_time):
         end_input = page.locator(extension_end_selector).first
 
         if end_input.count() > 0 and end_input.is_visible():
+            if save_not_before is not None:
+                # Open and prove the exact editor in advance, but wait until
+                # the horizon boundary before changing the value. This avoids
+                # relying on Asimut retaining a not-yet-valid future end time.
+                wait_until_datetime(
+                    save_not_before,
+                    page,
+                    label="EXTEND",
+                )
+                if end_input.count() == 0 or not end_input.is_visible():
+                    print(
+                        "    Extension editor closed while waiting for the "
+                        "horizon boundary; cancelling"
+                    )
+                    safe_goto(page, ASIMUT_AGENDA_URL)
+                    return False
+
             # Click and fill the new time
             end_input.click()
             end_input.fill(new_end_time)
@@ -2483,9 +2680,25 @@ def edit_reservation_end_time(page, booking, new_end_time):
 
             # 7. Click Save button
             if save_btn.count() > 0 and save_btn.is_visible():
-                event_url = page.url
-                if not is_confirmed_post_save_url(event_url):
-                    print(f"    Cannot verify the reservation event id; refusing to edit")
+                try:
+                    if not save_btn.is_enabled():
+                        print("    Save is disabled; refusing to create a receipt")
+                        safe_goto(page, ASIMUT_AGENDA_URL)
+                        return False
+                except Exception as exc:
+                    print(f"    Could not prove Save is enabled: {exc}")
+                    safe_goto(page, ASIMUT_AGENDA_URL)
+                    return False
+                current_event_url = page.url
+                if (
+                    not is_confirmed_post_save_url(current_event_url)
+                    or current_event_url != event_url
+                    or parse_confirmed_event_id(current_event_url) != event_id
+                ):
+                    print(
+                        "    Extension editor is no longer on the exact tracked "
+                        f"event {event_id}; refusing to edit"
+                    )
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
                 try:
@@ -2610,6 +2823,7 @@ def try_extend_booking(
     time_prefs=None,
     max_action_minutes=None,
     agenda_reservations=None,
+    now=None,
 ):
     """Attempt to extend an existing booking using Asimut's edit feature.
 
@@ -2704,13 +2918,43 @@ def try_extend_booking(
                 current_end = actual_end
                 current_end_hour = actual_end_hour
 
-    # Calculate if extension is possible based on time elapsed
+    # Calculate if extension is possible based on time elapsed. A scheduled
+    # run that arrives within three minutes of the next quarter-hour prepares
+    # the exact editor now and defers only the verified Save.
+    extension_now = now or datetime.now()
     can_extend, max_end_hour, reason = calculate_max_extension(
-        room, date_str, start_hour, current_end_hour, created_at, target_end_hour
+        room,
+        date_str,
+        start_hour,
+        current_end_hour,
+        created_at,
+        target_end_hour,
+        now=extension_now,
     )
 
+    save_not_before = None
     if not can_extend:
-        return False, None, reason
+        plan = plan_horizon_extension(
+            room,
+            date_str,
+            start_hour,
+            current_end_hour,
+            target_end_hour,
+            now=extension_now,
+        )
+        if (
+            plan.next_end_hour is None
+            or plan.next_unlock_at is None
+            or plan.wait_seconds is None
+            or not 0 < plan.wait_seconds <= EXTENSION_PREP_WINDOW_SECONDS
+        ):
+            return False, None, reason
+        max_end_hour = plan.next_end_hour
+        save_not_before = plan.next_unlock_at
+        print(
+            f"  [EXTEND] Preparing {room} before its "
+            f"{save_not_before.strftime('%H:%M:%S')} unlock"
+        )
 
     if remaining_daily_hours is not None:
         max_end_hour = min(max_end_hour, current_end_hour + max(0.0, remaining_daily_hours))
@@ -2834,7 +3078,15 @@ def try_extend_booking(
     print(f"{'='*60}")
 
     # Perform the edit
-    success = edit_reservation_end_time(page, booking, new_end_time)
+    if save_not_before is None:
+        success = edit_reservation_end_time(page, booking, new_end_time)
+    else:
+        success = edit_reservation_end_time(
+            page,
+            booking,
+            new_end_time,
+            save_not_before=save_not_before,
+        )
 
     if success:
         # Update tracker with the extended hours
@@ -4648,9 +4900,9 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
             # How long until this slot is bookable?
             seconds_until_bookable = (bookable_from - now).total_seconds()
 
-            # We want slots that will become bookable soon (within 3 minutes)
-            # but aren't bookable yet
-            if 0 < seconds_until_bookable <= 180:  # 0 to 3 minutes away
+            # Prepare imminent slots, while retaining a bounded catch-up grace
+            # when a priority extension consumed the exact boundary first.
+            if is_horizon_snipe_timing_candidate(seconds_until_bookable):
                 # Check if we can actually book this (quota, conflicts, etc.)
                 can_book, reason = tracker.can_book(room_name, target_date, start_hour, MIN_BOOKING_MINUTES)
                 if not can_book:
@@ -4689,7 +4941,7 @@ def find_all_snipe_candidates_multi_day(
     Scan all horizon days (7, 5, 3) for snipe candidates.
 
     This navigates to each horizon day, collects available slots, and identifies
-    candidates that will become bookable within 3 minutes.
+    candidates that become bookable within three minutes either side of now.
 
     Prioritizes extensions: Skips snipe candidates that would conflict with
     pending extensions (same room/date/time that's waiting to be extended).
@@ -4807,9 +5059,10 @@ def find_all_snipe_candidates_multi_day(
                 # How long until this slot is bookable?
                 seconds_until_bookable = (bookable_from - datetime.now()).total_seconds()
 
-                # We want slots that will become bookable soon (within 3 minutes)
-                # but aren't bookable yet
-                if 0 < seconds_until_bookable <= 180:  # 0 to 3 minutes away
+                # An extension gets the boundary first. Keep just-opened slots
+                # for three minutes so they can be attempted immediately after
+                # that verified extension instead of disappearing from snipe.
+                if is_horizon_snipe_timing_candidate(seconds_until_bookable):
                     # Check if this conflicts with a pending extension (prioritize extensions)
                     target_date_str = target_date.strftime('%Y-%m-%d')
                     if (target_date_str, room_name, start_hour) in extension_keys:
@@ -4837,7 +5090,12 @@ def find_all_snipe_candidates_multi_day(
                         "seconds_until": seconds_until_bookable
                     })
                     day_candidates += 1
-                    print(f"      Found: {room_name} at {start_hour:.2f}, bookable in {seconds_until_bookable:.0f}s")
+                    timing = (
+                        f"bookable in {seconds_until_bookable:.0f}s"
+                        if seconds_until_bookable > 0
+                        else f"opened {-seconds_until_bookable:.0f}s ago"
+                    )
+                    print(f"      Found: {room_name} at {start_hour:.2f}, {timing}")
 
         if day_candidates == 0:
             print(f"      No snipe candidates found for Day {days_ahead}")
@@ -4849,7 +5107,15 @@ def find_all_snipe_candidates_multi_day(
     if candidates:
         print(f"  Snipe order (furthest day first, then by room priority):")
         for i, c in enumerate(candidates, 1):
-            print(f"    {i}. Day {c['days_ahead']} - {c['room']} at {c['start_hour']:.2f} (bookable in {c['seconds_until']:.0f}s)")
+            timing = (
+                f"bookable in {c['seconds_until']:.0f}s"
+                if c["seconds_until"] > 0
+                else f"opened {-c['seconds_until']:.0f}s ago"
+            )
+            print(
+                f"    {i}. Day {c['days_ahead']} - {c['room']} at "
+                f"{c['start_hour']:.2f} ({timing})"
+            )
 
     return candidates, current_calendar_day
 
@@ -4908,6 +5174,12 @@ def try_horizon_snipe(
 
     now = datetime.now()
     seconds_to_wait = (bookable_from - now).total_seconds()
+    if seconds_to_wait < -HORIZON_SNIPE_GRACE_SECONDS:
+        print(
+            f"  [SNIPE] Candidate opened {-seconds_to_wait:.0f}s ago and "
+            "is outside the bounded horizon-edge grace"
+        )
+        return False
 
     print(f"\n{'='*60}")
     print(f"HORIZON SNIPE: {room} at {book_start}-{book_end}")
@@ -5024,26 +5296,93 @@ def try_horizon_snipe(
 
     if seconds_to_wait > 0:
         print(f"  [SNIPE] Waiting {seconds_to_wait:.1f} seconds...")
+        wait_until_datetime(bookable_from, page, label="SNIPE")
+    else:
+        # Exact or just-opened candidates still receive the same very small
+        # server-clock allowance as a prepared future edge.
+        print(
+            f"  [SNIPE] Adding {HORIZON_SAVE_SETTLE_SECONDS:.2f}s "
+            "server-clock allowance..."
+        )
+        time.sleep(HORIZON_SAVE_SETTLE_SECONDS)
 
-        # Countdown in the final seconds
-        while True:
-            now = datetime.now()
-            remaining = (bookable_from - now).total_seconds()
+    # Everything above was preparation. Re-prove the exact new-event form and
+    # obtain fresh controls immediately before the receipt and Save so a
+    # rerender, navigation, authentication change, or delayed earlier action
+    # cannot mutate a different booking.
+    late_seconds = (datetime.now() - bookable_from).total_seconds()
+    if late_seconds > HORIZON_SNIPE_GRACE_SECONDS:
+        print(
+            f"  [SNIPE] Prepared form is now {late_seconds:.0f}s past its "
+            "bounded horizon-edge grace; aborting"
+        )
+        go_back(page, days_ahead)
+        return False
+    if not is_new_booking_form_url(page.url):
+        print(
+            f"  [SNIPE] Exact new-booking form identity changed at {page.url}; "
+            "aborting"
+        )
+        go_back(page, days_ahead)
+        return False
 
-            if remaining <= 0:
-                break
-            elif remaining <= 10:
-                print(f"  [SNIPE] T-{remaining:.1f}s...")
-                time.sleep(0.1)  # Check every 100ms in final 10 seconds
-            elif remaining <= 30:
-                print(f"  [SNIPE] T-{remaining:.0f}s...")
-                time.sleep(1)
-            else:
-                time.sleep(1)
+    start_input = page.locator(
+        "#startDate, input[aria-label='Start time'], "
+        "input[data-cy='time-range-start-time'], input[formcontrolname='startTime']"
+    ).first
+    end_input = page.locator(
+        "#endDate, input[aria-label='End time'], "
+        "input[data-cy='time-range-end-time'], input[formcontrolname='endTime']"
+    ).first
+    if (
+        start_input.count() == 0
+        or end_input.count() == 0
+        or not start_input.is_visible()
+        or not end_input.is_visible()
+        or not booking_times_match(
+            book_start,
+            book_end,
+            start_input.input_value(),
+            end_input.input_value(),
+        )
+        or not booking_summary_matches(
+            page_booking_snapshot(page),
+            room,
+            target_date,
+            book_start,
+            book_end,
+        )
+    ):
+        print("  [SNIPE] Prepared form changed before Save; aborting")
+        go_back(page, days_ahead)
+        return False
 
-    # Wait 1 second after bookable time to ensure system is ready
-    print(f"  [SNIPE] Adding 1 second safety buffer...")
-    time.sleep(1)
+    save_btn = page.locator("button").filter(has_text="Save").first
+    if save_btn.count() == 0 or not save_btn.is_visible():
+        print("  [SNIPE] Save button disappeared before the boundary; aborting")
+        go_back(page, days_ahead)
+        return False
+    try:
+        if not save_btn.is_enabled():
+            print("  [SNIPE] Save button is disabled at the boundary; aborting")
+            go_back(page, days_ahead)
+            return False
+    except Exception as exc:
+        print(f"  [SNIPE] Could not prove Save is enabled: {exc}")
+        go_back(page, days_ahead)
+        return False
+    rejection = _visible_save_rejection(page)
+    if rejection:
+        print(f"  [SNIPE] Booking form rejects the Save: {rejection}")
+        go_back(page, days_ahead)
+        return False
+    save_box = save_btn.bounding_box()
+    if not save_box:
+        print("  [SNIPE] Save button has no current click target; aborting")
+        go_back(page, days_ahead)
+        return False
+    save_x = save_box["x"] + save_box["width"] / 2
+    save_y = save_box["y"] + save_box["height"] / 2
 
     # Click Save!
     click_time = datetime.now()
@@ -5803,6 +6142,144 @@ def save_history(bookings_made, events_detected, booking_details, *, notify=True
         print(f"Warning: Could not save history: {e}")
 
 
+def extension_processing_sort_key(booking, *, now=None):
+    """Order due extensions first, then imminent edges, then future work."""
+
+    now = now or datetime.now()
+    start_h, start_m = map(int, booking["startTime"].split(":"))
+    end_h, end_m = map(int, booking["endTime"].split(":"))
+    target_h, target_m = map(int, booking["target_end"].split(":"))
+    plan = plan_horizon_extension(
+        booking["room"],
+        booking["date"],
+        start_h + start_m / 60,
+        end_h + end_m / 60,
+        target_h + target_m / 60,
+        now=now,
+    )
+    if plan.can_extend:
+        timing_class = 0
+        timing_value = now
+    elif (
+        plan.wait_seconds is not None
+        and 0 < plan.wait_seconds <= EXTENSION_PREP_WINDOW_SECONDS
+    ):
+        timing_class = 1
+        timing_value = plan.next_unlock_at or now
+    else:
+        timing_class = 2
+        timing_value = plan.next_unlock_at or datetime.max
+    try:
+        room_priority = PRIORITY_ROOMS.index(booking["room"])
+    except ValueError:
+        room_priority = len(PRIORITY_ROOMS)
+    return (
+        timing_class,
+        timing_value,
+        room_priority,
+        booking["date"],
+        booking["startTime"],
+    )
+
+
+def process_pending_extensions(
+    page,
+    tracker,
+    all_reservations,
+    practice_plan,
+    disabled_dates,
+    time_prefs,
+    args,
+    total_booked,
+    booking_details,
+):
+    """Process verified horizon extensions before any unrelated create."""
+
+    extendable_bookings = load_extendable_bookings(
+        load_settings_document(settings_file)
+    )
+    if not extendable_bookings:
+        return total_booked, False
+
+    only_date = getattr(args, "only_date", None)
+    only_room = getattr(args, "only_room", None)
+    eligible_bookings = [
+        booking
+        for booking in extendable_bookings
+        if (not only_date or booking["date"] == only_date)
+        and (not only_room or booking["room"] == only_room)
+    ]
+    if not eligible_bookings:
+        return total_booked, False
+
+    ordering_now = datetime.now()
+    eligible_bookings.sort(
+        key=lambda booking: extension_processing_sort_key(
+            booking,
+            now=ordering_now,
+        )
+    )
+
+    print("\n" + "=" * 60)
+    print("PROCESSING BOOKING EXTENSIONS (PRIORITY PHASE)")
+    print("=" * 60)
+    print(f"Found {len(eligible_bookings)} scoped extendable booking(s)")
+
+    extensions_made = 0
+    for booking in eligible_bookings:
+        max_actions = getattr(args, "max_actions", None)
+        if max_actions is not None and total_booked >= max_actions:
+            print("  Controlled action limit reached; ending extension phase")
+            break
+        booking_date = datetime.strptime(booking["date"], "%Y-%m-%d").date()
+        if is_date_disabled(booking_date, disabled_dates):
+            print(f"  Skipped {booking['room']} {booking['date']}: date is disabled")
+            continue
+        daily_remaining = remaining_target_hours(
+            practice_plan,
+            booking_date,
+            tracker.get_hours_for_day(booking_date),
+        )
+        success, new_end, message = try_extend_booking(
+            page,
+            booking,
+            tracker,
+            remaining_daily_hours=daily_remaining,
+            time_prefs=time_prefs,
+            max_action_minutes=getattr(args, "max_action_minutes", None),
+            agenda_reservations=all_reservations,
+        )
+        if success:
+            extensions_made += 1
+            total_booked += 1
+            booking_details.append(
+                f"EXTENDED: {booking['room']} {booking['date']} "
+                f"{booking['startTime']}-{new_end}"
+            )
+            event_id = booking.get("eventId")
+            matching_agenda_entries = [
+                reservation
+                for reservation in all_reservations
+                if reservation.get("eventId") == event_id
+            ]
+            if event_id and len(matching_agenda_entries) == 1:
+                matching_agenda_entries[0]["endTime"] = new_end
+        else:
+            print(
+                f"  Skipped {booking['room']} {booking['date']} "
+                f"{booking['startTime']}: {message}"
+            )
+
+    if extensions_made > 0:
+        print(f"\nExtended {extensions_made} booking(s)")
+    print("=" * 60)
+
+    # Leave the page untouched after a verified mutation. The caller may be an
+    # extension-only or action-capped run and must be able to return success
+    # without risking a post-confirmation overview navigation failure.
+    return total_booked, True
+
+
 def run_booking(args, settings, practice_plan):
     """Run one authenticated booking pass with already-validated inputs."""
     today = datetime.now().date()
@@ -5931,29 +6408,67 @@ def run_booking(args, settings, practice_plan):
             browser.close()
             return 0
 
-        # Navigate directly to AHC practice rooms
+        # Load user policy before any booking-grid navigation. Pending horizon
+        # extensions must be able to open their exact editor during the short
+        # :13/:28/:43/:58 preparation lead.
+        disabled_dates = load_disabled_dates(settings)
+        time_prefs = load_time_preferences(settings)
+        booking_strategy = load_booking_strategy(settings)
+        reverse_date_order = booking_strategy["reverse_date_order"]
+        horizon_only = bool(getattr(args, "horizon_only", False))
+        extensions_only = bool(getattr(args, "extensions_only", False))
+
+        _extensions_considered = False
+        if not horizon_only:
+            total_booked, _extensions_considered = process_pending_extensions(
+                page,
+                tracker,
+                all_reservations,
+                practice_plan,
+                disabled_dates,
+                time_prefs,
+                args,
+                total_booked,
+                booking_details,
+            )
+
+        max_actions = getattr(args, "max_actions", None)
+        action_limit_reached = (
+            max_actions is not None and total_booked >= max_actions
+        )
+        if extensions_only or action_limit_reached:
+            reason = (
+                "extension-only scope complete"
+                if extensions_only
+                else "controlled action limit reached by priority extension"
+            )
+            print(f"\nStopping before room-grid discovery: {reason}.")
+            save_history(total_booked, events_detected, booking_details)
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0
+
+        # Only continuing runs need the room grid. A verified extension above
+        # can return early without this fallible post-success navigation.
         print("\nNavigating to practice rooms (AHC)...")
         open_practice_room_overview(page, today)
 
-        # Log what date is currently showing
-        current_header = page.locator("h1, h2, .title").first.text_content() if page.locator("h1, h2, .title").first.count() > 0 else "Unknown"
+        current_calendar_day = 0
+        current_header_locator = page.locator("h1, h2, .title").first
+        current_header = (
+            current_header_locator.text_content()
+            if current_header_locator.count() > 0
+            else "Unknown"
+        )
         print(f"  Currently showing: {current_header}")
 
-        # Load disabled dates from settings
-        disabled_dates = load_disabled_dates(settings)
         if disabled_dates:
             print(f"\n  Disabled dates (will skip): {sorted(disabled_dates)}")
-
-        # Load time preferences
-        time_prefs = load_time_preferences(settings)
         if time_prefs["enabled"]:
             print(f"\n  Time preferences: Prioritizing {int(time_prefs['start_hour']):02d}:00 - {int(time_prefs['end_hour']):02d}:00")
             if time_prefs["strict_mode"]:
                 print(f"  Strict mode: ON (only booking preferred times)")
-
-        # Load booking strategy settings
-        booking_strategy = load_booking_strategy(settings)
-        reverse_date_order = booking_strategy["reverse_date_order"]
         if reverse_date_order:
             print(f"\n  Booking strategy: REVERSE ORDER (furthest dates first)")
 
@@ -6031,7 +6546,7 @@ def run_booking(args, settings, practice_plan):
             current_calendar_day = 0  # Calendar starts on today
 
         # Wait for target time if specified (prep is done, ready to book)
-        if args.target_time:
+        if args.target_time and not extensions_only:
             # =================================================================
             # HORIZON SNIPE: Check ALL horizon days for slots about to become bookable
             # =================================================================
@@ -6125,16 +6640,33 @@ def run_booking(args, settings, practice_plan):
                         )
                         print(f"    [SNIPE {idx + 1}] SUCCESS!")
 
-                        # Navigate back to calendar for next snipe
-                        go_back(page, days_ahead)
-                        page.wait_for_timeout(500)
+                        max_actions = getattr(args, "max_actions", None)
+                        action_limit_reached = (
+                            max_actions is not None
+                            and total_booked >= max_actions
+                        )
+                        if not horizon_only and not action_limit_reached:
+                            # Only continuing work may risk cleanup navigation.
+                            # A verified bounded mutation returns as success
+                            # from the post-loop branch without touching it.
+                            go_back(page, days_ahead)
+                            page.wait_for_timeout(500)
                     else:
                         print(f"    [SNIPE {idx + 1}] FAILED, continuing to next candidate...")
 
                 print(f"\n  Snipe phase complete: {snipes_successful}/{snipes_attempted} successful")
 
                 # Navigate back to furthest enabled day for normal booking flow
-                if day_order and current_calendar_day != day_order[0]:
+                max_actions = getattr(args, "max_actions", None)
+                action_limit_reached = (
+                    max_actions is not None and total_booked >= max_actions
+                )
+                if (
+                    not horizon_only
+                    and not action_limit_reached
+                    and day_order
+                    and current_calendar_day != day_order[0]
+                ):
                     print(f"\n  Returning to Day {day_order[0]} for normal booking flow...")
                     current_calendar_day = navigate_to_day(page, day_order[0], current_calendar_day)
                     page.wait_for_timeout(500)
@@ -6142,6 +6674,23 @@ def run_booking(args, settings, practice_plan):
                 print(f"  No snipe candidates found (no slots becoming bookable within 3 minutes)")
 
             print("="*60)
+
+            max_actions = getattr(args, "max_actions", None)
+            action_limit_reached = (
+                max_actions is not None and total_booked >= max_actions
+            )
+            if horizon_only or action_limit_reached:
+                reason = (
+                    "horizon-only scope complete"
+                    if horizon_only
+                    else "controlled action limit reached by horizon snipe"
+                )
+                print(f"\nStopping before normal room scanning: {reason}.")
+                save_history(total_booked, events_detected, booking_details)
+                persist_storage_state(context)
+                context.close()
+                browser.close()
+                return 0
 
             # Now wait for remaining time (if any) and refresh for normal booking
             wait_until_target_time(args.target_time, page)
@@ -6209,70 +6758,9 @@ def run_booking(args, settings, practice_plan):
 
             print("="*60)
 
-        # =================================================================
-        # PROCESS PENDING BOOKING EXTENSIONS
-        # =================================================================
-        # Before making new bookings, try to extend any bookings that were
-        # made at the horizon edge and can now be extended.
-        extendable_bookings = load_extendable_bookings(
-            load_settings_document(settings_file)
-        )
-        if extendable_bookings:
-            print("\n" + "="*60)
-            print("PROCESSING BOOKING EXTENSIONS")
-            print("="*60)
-            print(f"Found {len(extendable_bookings)} potentially extendable booking(s)")
-
-            extensions_made = 0
-            for booking in extendable_bookings:
-                if args.max_actions is not None and total_booked >= args.max_actions:
-                    print("  Controlled action limit reached; ending extension phase")
-                    break
-                booking_date = datetime.strptime(booking["date"], "%Y-%m-%d").date()
-                if is_date_disabled(booking_date, disabled_dates):
-                    print(f"  Skipped {booking['room']} {booking['date']}: date is disabled")
-                    continue
-                if args.only_date and booking["date"] != args.only_date:
-                    continue
-                if args.only_room and booking["room"] != args.only_room:
-                    continue
-                daily_remaining = remaining_target_hours(
-                    practice_plan,
-                    booking_date,
-                    tracker.get_hours_for_day(booking_date),
-                )
-                success, new_end, message = try_extend_booking(
-                    page,
-                    booking,
-                    tracker,
-                    remaining_daily_hours=daily_remaining,
-                    time_prefs=time_prefs,
-                    max_action_minutes=args.max_action_minutes,
-                    agenda_reservations=all_reservations,
-                )
-                if success:
-                    extensions_made += 1
-                    total_booked += 1
-                    booking_details.append(
-                        f"EXTENDED: {booking['room']} {booking['date']} "
-                        f"{booking['startTime']}-{new_end}"
-                    )
-                else:
-                    print(f"  Skipped {booking['room']} {booking['date']} {booking['startTime']}: {message}")
-
-            if extensions_made > 0:
-                print(f"\nExtended {extensions_made} booking(s)")
-
-            print("="*60)
-
-            # Navigate back to booking overview after extensions
-            print("\nNavigating back to practice rooms...")
-            open_practice_room_overview(page, today)
-
-            # Reset calendar position - overview page shows today (day 0)
-            current_calendar_day = 0
-
         # Process each day in the determined order
+        if horizon_only or extensions_only:
+            day_order = []
         for day_index, days_ahead in enumerate(day_order):
             if args.max_actions is not None and total_booked >= args.max_actions:
                 print("\nControlled action limit reached; no further booking changes will be attempted.")
@@ -6927,6 +7415,23 @@ def build_argument_parser():
             "increment to 30-120 minutes in 15-minute steps"
         ),
     )
+    parser.add_argument(
+        "--horizon-only",
+        action="store_true",
+        help=(
+            "Controlled live-test mode: attempt only imminent horizon-edge "
+            "30-minute creates, never extensions or ordinary bookings"
+        ),
+    )
+    parser.add_argument(
+        "--extensions-only",
+        action="store_true",
+        help=(
+            "Controlled live-test mode: attempt only tracked horizon "
+            "extensions, never new bookings; requires an explicit "
+            "--max-action-minutes cap"
+        ),
+    )
     return parser
 
 
@@ -6944,6 +7449,13 @@ def _validate_cli_args(parser, args):
             "--setup-login, --configure-autonomous-login, and --login-only "
             "are mutually exclusive"
         )
+
+    isolated_modes = sum(
+        bool(value)
+        for value in (args.horizon_only, args.extensions_only)
+    )
+    if isolated_modes > 1:
+        parser.error("--horizon-only and --extensions-only are mutually exclusive")
 
     if args.target_time:
         try:
@@ -6978,10 +7490,23 @@ def _validate_cli_args(parser, args):
         or args.only_room
         or args.max_actions
         or args.max_action_minutes is not None
+        or args.horizon_only
+        or args.extensions_only
     ):
         parser.error("--check-only cannot be combined with booking mutation limits")
     if args.max_action_minutes is not None and not (args.only_date or args.only_room):
         parser.error("--max-action-minutes requires --only-date or --only-room")
+    if args.horizon_only or args.extensions_only:
+        if not (args.only_date or args.only_room):
+            parser.error(
+                "isolated lifecycle modes require --only-date or --only-room"
+            )
+        if args.max_actions is None:
+            parser.error("isolated lifecycle modes require --max-actions")
+    if args.extensions_only and args.max_action_minutes is None:
+        parser.error("--extensions-only requires --max-action-minutes")
+    if args.horizon_only and not (args.target_time or args.scheduled):
+        parser.error("--horizon-only requires --target-time or --scheduled")
 
 
 def _load_and_validate_runtime_settings():

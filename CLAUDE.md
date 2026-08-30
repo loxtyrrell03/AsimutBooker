@@ -115,7 +115,21 @@ python book_week.py --headless --check-only
 
 # Bounded live verification (one verified 30-minute mutation at most)
 python book_week.py --headless --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 30
+
+# Isolated initial horizon-edge test: creates 30min only, but retains a 2hr
+# extension target. Requires an imminent HH:MM boundary and never falls through
+# to extensions or ordinary booking.
+python book_week.py --headless --target-time HH:MM --horizon-only --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 120
+
+# Isolated extension test: edits tracked horizon bookings only and never creates
+# a new booking. At a normal boundary, only the newly unlocked 15min is added.
+python book_week.py --headless --extensions-only --only-date YYYY-MM-DD --only-room B0.29 --max-actions 1 --max-action-minutes 30
 ```
+
+`--horizon-only` and `--extensions-only` require a room/date scope and an
+action cap. Do not use a 30-minute action ceiling for the initial horizon-edge
+test when later extension is intended: the initial Save is still exactly 30
+minutes, but a 30-minute ceiling deliberately leaves no larger target to track.
 
 ### Initial Setup
 1. Run `python book_week.py --configure-autonomous-login` in a private terminal and enter the RWCMD email and masked password; Windows Credential Manager stores them for the current user.
@@ -171,11 +185,14 @@ The booker automatically handles this in two phases:
 1. **Initial Booking**: At the first possible moment (30 min after horizon), books the minimum 30-minute slot and saves the exact verified positive event ID/URL with its `extendable_bookings` record in settings.json
 
 2. **Extension Runs**: Every 15 minutes, the scheduled task runs again and:
+   - Processes extensions immediately after the complete agenda scan and receipt reconciliation, before loading or navigating the room overview and before any new snipe
    - Loads pending extendable bookings
+   - Sorts already-due extensions first, then edges due within three minutes, using room priority as the stable tie-break
    - Binds legacy records only from one exact complete-agenda reservation with a positive event ID, persisting that migration before editing
    - Selects the one current/legacy event card bound to that exact ID; a missing, duplicate, cancelled, or tuple-mismatched card stops without Save
-   - Calculates how much more time is now available (based on time since horizon, not time since booking)
-   - Extends each booking by the available amount (in 15-minute increments)
+   - Opens the exact editor up to three minutes before the next boundary, waits there, then fills and revalidates the new end time at the boundary
+   - Requires the editor URL to remain the exact tracked positive event ID and the Save control to be visible and enabled before creating a receipt
+   - Extends to the latest completed 15-minute boundary; a missed run catches up in one verified edit without rounding into a future boundary
    - Continues until reaching 2 hours or the target duration
 
 ### Timeline Example
@@ -195,6 +212,7 @@ The booker automatically handles this in two phases:
 
 - `is_room_available_to_book()`: Checks if a slot is past its horizon edge
 - `save_extendable_booking()`: Saves a booking for later extension
+- `plan_horizon_extension()`: Pure exact-boundary plan for due, imminent, future, and completed extensions
 - `calculate_max_extension()`: Determines how much a booking can be extended based on current time vs horizon
 - `try_extend_booking()`: Attempts to extend a booking via Asimut's edit feature
 
@@ -208,13 +226,14 @@ The booker scans **all** horizon days (7, 5, 3) for snipe candidates, not just t
    - Navigate to Day 7 → scan for 7-day horizon rooms becoming bookable
    - Navigate to Day 5 → scan for 5-day horizon rooms becoming bookable
    - Navigate to Day 3 → scan for 3-day horizon rooms becoming bookable
-   - Collect all candidates within 3-minute snipe window
+   - Collect imminent candidates and candidates that opened within the previous three minutes; this bounded grace preserves a just-opened slot when a priority extension used the exact boundary first
 
 2. **Sort candidates**: Furthest day first, then by room priority within each day
 
 3. **Sequential snipe**: Attempt each candidate in order
    - Navigate to candidate's day
    - Pre-fill form, wait for exact moment, click Save
+   - Immediately before the receipt and Save, re-prove the unsaved-event URL, room/date/times, live inputs, warnings, and a fresh visible/enabled Save control
    - On success: record booking, continue to next
    - On failure: skip, try next candidate
 
@@ -222,7 +241,11 @@ The booker scans **all** horizon days (7, 5, 3) for snipe candidates, not just t
 
 ### Extension Priority
 
-Pending extensions take priority over new snipes. If a slot has a pending extension (from a previous horizon edge booking), the snipe scanner skips that slot to avoid conflicts.
+Pending extensions take priority over all new snipes. The extension phase runs
+before any room-grid discovery, so an action cap cannot be consumed by an
+unrelated create. If an extension uses the exact boundary first, new snipe
+candidates remain eligible only inside the bounded three-minute catch-up grace.
+Verified isolated actions return without fallible cleanup navigation.
 
 ### Key Functions
 
@@ -332,7 +355,41 @@ python -m unittest discover -s tests
 - `--check-only` performs a read-only authenticated agenda scan and traverses all
   eight booking days. `--only-date`, `--only-room`, `--max-actions`, and
   `--max-action-minutes` provide bounded live verification without weakening the
-  confirmation rules.
+  confirmation rules. `--horizon-only` and `--extensions-only` additionally
+  isolate the mutation type and return immediately after the scoped phase, so a
+  missing candidate can never fall through to an unrelated booking.
+
+## 2026-08-30 Exact Horizon Lifecycle Milestone
+
+- The initial horizon-edge create is derived from `slot time - room horizon +
+  30 minutes`, prepares within three minutes, and always creates exactly the
+  minimum 30-minute reservation. A 0.25-second server-clock allowance replaces
+  the former one-second delay.
+- Pending extensions run directly after agenda/receipt reconciliation, before
+  overview work or new snipes. Due work is first, imminent boundaries are
+  pre-opened for at most three minutes, and each Save occurs only after the
+  exact 15-minute unlock. Missed runs catch up to the latest completed boundary
+  in one verified mutation, capped by the target and two-hour maximum.
+- Both create and extension paths revalidate the complete form immediately
+  before the receipt and Save. Extensions additionally require the current URL
+  to equal the tracked positive event URL and Save to be enabled. A changed
+  form, stale candidate, wrong event ID, warning, missing control, or closed
+  editor stops without a receipt or click.
+- A verified isolated mutation returns before cleanup navigation. Just-opened
+  new snipes have a three-minute grace after a priority extension, while older
+  candidates are rejected as ordinary availability.
+- Deterministic tests cover +29:59, exact +30 initial booking, +44:59, every
+  extension boundary from +45 through +120, missed-run catch-up, queue order,
+  form drift, exact event identity, disabled Save, editor disappearance, snipe
+  grace, action-cap short-circuiting, and isolated runtime modes. Live
+  end-to-end extension progression still requires a genuine safe horizon slot;
+  never log out or create an unrelated booking merely to manufacture one.
+- The scoped repository regression suite passes 237 tests; the current shared
+  checkout passes 274 including concurrent GUI work. A live `--check-only` pass
+  reused the saved session without sign-in, found the complete three-event
+  agenda, traversed all eight dates, and found 154 visible gaps. There were zero
+  active extension records and zero pending receipts, so no live mutation was
+  fabricated merely to exercise the lifecycle.
 
 ## 2026-08-30 Reliability and Practice-Plan Milestone
 

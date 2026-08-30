@@ -225,6 +225,7 @@ class BookingSaveStateTests(unittest.TestCase):
         end_input.count.return_value = 1
         end_input.is_visible.return_value = True
         end_input.input_value.return_value = self.END
+        page.extension_end_input = end_input
 
         finished_editing = mock.MagicMock()
         finished_editing.first = finished_editing
@@ -236,6 +237,7 @@ class BookingSaveStateTests(unittest.TestCase):
         save_button = mock.MagicMock()
         save_button.count.return_value = 1
         save_button.is_visible.return_value = True
+        save_button.is_enabled.return_value = True
         save_icon = mock.MagicMock()
         save_icon.first = save_icon
         save_icon.count.return_value = 0
@@ -482,6 +484,139 @@ class BookingSaveStateTests(unittest.TestCase):
             mock.call("[data-cy='event_4242'], #event_4242"),
             page.locator.call_args_list,
         )
+
+    def test_upcoming_extension_waits_before_fill_receipt_and_save(self):
+        page = self._extension_edit_page()
+        booking = {
+            "room": self.ROOM,
+            "date": self.BOOKING_DATE.isoformat(),
+            "startTime": self.START,
+            "endTime": "10:30",
+            "eventId": 4242,
+            "event_url": self.EVENT_URL,
+        }
+        sequence = []
+        boundary = datetime(2026, 8, 26, 10, 15)
+
+        page.extension_end_input.fill.side_effect = (
+            lambda _value: sequence.append("fill")
+        )
+
+        def wait(*_args, **_kwargs):
+            sequence.append("wait")
+
+        def receipt(**_kwargs):
+            sequence.append("receipt")
+            return {"id": "extension-receipt"}
+
+        with (
+            mock.patch.object(book_week, "safe_goto"),
+            mock.patch.object(
+                book_week,
+                "wait_until_datetime",
+                side_effect=wait,
+            ) as wait_mock,
+            mock.patch.object(
+                book_week,
+                "record_pending_extension",
+                side_effect=receipt,
+            ),
+            mock.patch.object(
+                book_week,
+                "verify_persisted_booking_page",
+                return_value=True,
+            ),
+            mock.patch.object(book_week, "verify_mutation_receipt"),
+        ):
+            result = book_week.edit_reservation_end_time(
+                page,
+                booking,
+                self.END,
+                save_not_before=boundary,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(sequence, ["wait", "fill", "receipt"])
+        wait_mock.assert_called_once_with(boundary, page, label="EXTEND")
+
+    def test_extension_refuses_a_different_positive_event_url(self):
+        page = self._extension_edit_page()
+        page.url = "https://rwcmd.asimut.net/arrangement?eventId=4243"
+        booking = {
+            "room": self.ROOM,
+            "date": self.BOOKING_DATE.isoformat(),
+            "startTime": self.START,
+            "endTime": "10:30",
+            "eventId": 4242,
+            "event_url": self.EVENT_URL,
+        }
+
+        with (
+            mock.patch.object(book_week, "safe_goto"),
+            mock.patch.object(book_week, "record_pending_extension") as receipt,
+        ):
+            result = book_week.edit_reservation_end_time(
+                page,
+                booking,
+                self.END,
+            )
+
+        self.assertFalse(result)
+        receipt.assert_not_called()
+        page.locator("button:has-text('Save')").first.click.assert_not_called()
+
+    def test_extension_disabled_save_never_creates_a_receipt(self):
+        page = self._extension_edit_page()
+        page.locator("button:has-text('Save')").first.is_enabled.return_value = False
+        booking = {
+            "room": self.ROOM,
+            "date": self.BOOKING_DATE.isoformat(),
+            "startTime": self.START,
+            "endTime": "10:30",
+            "eventId": 4242,
+            "event_url": self.EVENT_URL,
+        }
+
+        with (
+            mock.patch.object(book_week, "safe_goto"),
+            mock.patch.object(book_week, "record_pending_extension") as receipt,
+        ):
+            result = book_week.edit_reservation_end_time(
+                page,
+                booking,
+                self.END,
+            )
+
+        self.assertFalse(result)
+        receipt.assert_not_called()
+
+    def test_extension_editor_disappearing_during_wait_never_saves(self):
+        page = self._extension_edit_page()
+        page.extension_end_input.count.side_effect = [1, 0]
+        booking = {
+            "room": self.ROOM,
+            "date": self.BOOKING_DATE.isoformat(),
+            "startTime": self.START,
+            "endTime": "10:30",
+            "eventId": 4242,
+            "event_url": self.EVENT_URL,
+        }
+
+        with (
+            mock.patch.object(book_week, "safe_goto"),
+            mock.patch.object(book_week, "wait_until_datetime"),
+            mock.patch.object(book_week, "record_pending_extension") as receipt,
+        ):
+            result = book_week.edit_reservation_end_time(
+                page,
+                booking,
+                self.END,
+                save_not_before=datetime(2026, 8, 26, 10, 15),
+            )
+
+        self.assertFalse(result)
+        receipt.assert_not_called()
+        page.extension_end_input.fill.assert_not_called()
 
     def test_legacy_extension_reselection_uses_only_proven_canonical_panel(self):
         page = self._extension_edit_page(legacy_fallback=True)

@@ -61,6 +61,68 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(args.only_date, today)
 
+    def test_isolated_lifecycle_modes_are_scoped_and_mutually_exclusive(self):
+        self.assert_rejected(["--extensions-only"])
+        self.assert_rejected(
+            ["--extensions-only", "--only-room", "B0.29"]
+        )
+        self.assert_rejected(
+            [
+                "--extensions-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "1",
+            ]
+        )
+        self.assert_rejected(
+            [
+                "--horizon-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "1",
+            ]
+        )
+        self.assert_rejected(
+            [
+                "--horizon-only",
+                "--extensions-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "1",
+                "--target-time",
+                "10:00",
+            ]
+        )
+
+        extensions = self.parse_validated(
+            [
+                "--extensions-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "1",
+                "--max-action-minutes",
+                "30",
+            ]
+        )
+        self.assertTrue(extensions.extensions_only)
+        self.assertEqual(extensions.max_action_minutes, 30)
+        horizon = self.parse_validated(
+            [
+                "--horizon-only",
+                "--only-room",
+                "B0.29",
+                "--max-actions",
+                "1",
+                "--target-time",
+                "10:00",
+            ]
+        )
+        self.assertTrue(horizon.horizon_only)
+
 
 class LiveActionDurationBoundaryTests(unittest.TestCase):
     def test_create_cap_stays_subordinate_to_daily_and_weekly_budgets(self):
@@ -152,7 +214,7 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             check_only=False,
             only_date=None,
             only_room="B0.29",
-            target_time=None,
+            target_time="00:00",
             max_actions=1,
             max_action_minutes=30,
         )
@@ -202,6 +264,10 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
                 "try_extend_booking",
                 return_value=(True, "10:00", "Extended successfully"),
             ) as extend,
+            mock.patch.object(
+                book_week,
+                "find_all_snipe_candidates_multi_day",
+            ) as discover_snipes,
             mock.patch.object(book_week, "save_history") as save_history,
             mock.patch.object(book_week, "persist_storage_state"),
         ):
@@ -209,7 +275,185 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(extend.call_count, 1)
+        discover_snipes.assert_not_called()
         self.assertEqual(save_history.call_args.args[0], 1)
+
+    def test_extension_phase_runs_before_horizon_discovery(self):
+        args = SimpleNamespace(
+            headless=True,
+            check_only=False,
+            only_date=None,
+            only_room=None,
+            target_time="00:00",
+            max_actions=2,
+            max_action_minutes=None,
+            horizon_only=False,
+            extensions_only=False,
+        )
+        page = mock.MagicMock()
+        page.locator.return_value.first.count.return_value = 0
+        context = mock.MagicMock()
+        context.new_page.return_value = page
+        browser = mock.MagicMock()
+        browser.new_context.return_value = context
+        playwright = mock.MagicMock()
+        playwright.chromium.launch.return_value = browser
+        playwright_context = mock.MagicMock()
+        playwright_context.__enter__.return_value = playwright
+        order = []
+
+        def process_extensions(*_args, **_kwargs):
+            order.append("extensions")
+            return 1, False
+
+        def discover_snipes(*_args, **_kwargs):
+            order.append("snipes")
+            return [], 0
+
+        def open_overview(*_args, **_kwargs):
+            order.append("overview")
+
+        time_preferences = {
+            "enabled": False,
+            "start_hour": 7.0,
+            "end_hour": 23.0,
+            "strict_mode": False,
+        }
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
+            mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
+            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
+            mock.patch.object(
+                book_week,
+                "open_practice_room_overview",
+                side_effect=open_overview,
+            ),
+            mock.patch.object(book_week, "refresh_practice_room_overview"),
+            mock.patch.object(book_week, "wait_until_target_time"),
+            mock.patch.object(book_week, "load_disabled_dates", return_value=set()),
+            mock.patch.object(book_week, "load_time_preferences", return_value=time_preferences),
+            mock.patch.object(
+                book_week,
+                "load_booking_strategy",
+                return_value={"reverse_date_order": False},
+            ),
+            mock.patch.object(
+                book_week,
+                "is_any_room_bookable_on_day",
+                return_value=(False, "outside horizon"),
+            ),
+            mock.patch.object(
+                book_week,
+                "process_pending_extensions",
+                side_effect=process_extensions,
+            ),
+            mock.patch.object(
+                book_week,
+                "find_all_snipe_candidates_multi_day",
+                side_effect=discover_snipes,
+            ),
+            mock.patch.object(book_week, "save_history"),
+            mock.patch.object(book_week, "persist_storage_state"),
+        ):
+            result = book_week.run_booking(args, {}, book_week.PracticePlan())
+
+        self.assertEqual(result, 0)
+        self.assertEqual(order, ["extensions", "overview", "snipes"])
+
+    def test_horizon_only_never_extends_refreshes_or_books_normally(self):
+        args = SimpleNamespace(
+            headless=True,
+            check_only=False,
+            only_date=None,
+            only_room="B0.29",
+            target_time="00:00",
+            max_actions=1,
+            max_action_minutes=120,
+            horizon_only=True,
+            extensions_only=False,
+        )
+        page = mock.MagicMock()
+        page.locator.return_value.first.count.return_value = 0
+        context = mock.MagicMock()
+        context.new_page.return_value = page
+        browser = mock.MagicMock()
+        browser.new_context.return_value = context
+        playwright = mock.MagicMock()
+        playwright.chromium.launch.return_value = browser
+        playwright_context = mock.MagicMock()
+        playwright_context.__enter__.return_value = playwright
+        time_preferences = {
+            "enabled": False,
+            "start_hour": 7.0,
+            "end_hour": 23.0,
+            "strict_mode": False,
+        }
+        target_date = datetime.now().date()
+        candidate = {
+            "room": "B0.29",
+            "start_hour": 10.0,
+            "days_ahead": 5,
+            "target_date": target_date,
+            "bookable_from": datetime.now(),
+        }
+
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
+            mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
+            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.object(book_week, "scan_agenda", return_value=(0, [])),
+            mock.patch.object(book_week, "reconcile_pending_mutation_receipts"),
+            mock.patch.object(book_week, "open_practice_room_overview"),
+            mock.patch.object(book_week, "refresh_practice_room_overview") as refresh,
+            mock.patch.object(book_week, "wait_until_target_time") as target_wait,
+            mock.patch.object(book_week, "load_disabled_dates", return_value=set()),
+            mock.patch.object(book_week, "load_time_preferences", return_value=time_preferences),
+            mock.patch.object(
+                book_week,
+                "load_booking_strategy",
+                return_value={"reverse_date_order": False},
+            ),
+            mock.patch.object(
+                book_week,
+                "is_any_room_bookable_on_day",
+                return_value=(False, "outside horizon"),
+            ),
+            mock.patch.object(book_week, "process_pending_extensions") as extensions,
+            mock.patch.object(
+                book_week,
+                "find_all_snipe_candidates_multi_day",
+                return_value=([candidate], 0),
+            ) as discover,
+            mock.patch.object(
+                book_week,
+                "navigate_to_day",
+                return_value=5,
+            ) as navigate,
+            mock.patch.object(
+                book_week,
+                "try_horizon_snipe",
+                return_value=True,
+            ) as horizon_snipe,
+            mock.patch.object(book_week, "go_back") as go_back,
+            mock.patch.object(book_week, "try_book_slot") as normal_booking,
+            mock.patch.object(book_week, "save_history"),
+            mock.patch.object(book_week, "persist_storage_state"),
+        ):
+            result = book_week.run_booking(args, {}, book_week.PracticePlan())
+
+        self.assertEqual(result, 0)
+        extensions.assert_not_called()
+        discover.assert_called_once()
+        horizon_snipe.assert_called_once()
+        self.assertEqual(navigate.call_count, 1)
+        go_back.assert_not_called()
+        target_wait.assert_not_called()
+        refresh.assert_not_called()
+        normal_booking.assert_not_called()
 
 
 if __name__ == "__main__":

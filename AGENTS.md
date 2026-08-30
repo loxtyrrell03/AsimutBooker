@@ -439,6 +439,38 @@ python -m unittest discover -s tests
   add it only after a read-only observation establishes the RWCMD-specific
   contract and it can be journalled and reload-verified like other mutations.
 
+## 2026-08-30 Exact Horizon Lifecycle Milestone
+
+- Horizon creates derive their exact unlock as slot time minus the configured
+  room horizon plus 30 minutes, prepare inside a three-minute window, and Save
+  only the minimum 30 minutes. Pending extensions now run immediately after
+  agenda/receipt reconciliation, before overview navigation and all new snipes.
+- Extension timing is a pure 15-minute-boundary plan. Due work runs first,
+  imminent work opens the exact editor for at most three minutes and fills at
+  the boundary, and missed runs catch up in one verified edit to the latest
+  completed boundary, never beyond the target or two-hour cap.
+- Both horizon creates and extensions re-prove form identity, values, warnings,
+  and a fresh visible/enabled Save immediately before writing the receipt.
+  Extensions also require the page URL to equal the tracked positive event URL.
+  Just-opened creates receive only a three-minute post-boundary grace.
+- `--horizon-only` and `--extensions-only` are scoped, action-capped live-test
+  modes. They cannot fall through to ordinary booking and return after the
+  verified scoped phase without risky cleanup navigation. Use a ceiling above
+  30 minutes for an initial horizon-only test when later extension tracking is
+  intended; the initial mutation itself remains exactly 30 minutes.
+- Deterministic coverage includes +29:59, exact +30, every +15-minute extension
+  through +120, missed-run catch-up, priority/order, action short-circuiting,
+  form drift, exact event URL, disabled Save, editor disappearance, and isolated
+  runtime modes. A complete live extension sequence remains pending a genuine
+  safe horizon candidate; never log out or create unrelated bookings to force
+  one.
+- The scoped suite passes 237 tests; the current shared checkout passes 274
+  including concurrent GUI work. A live `--check-only` pass reused the saved
+  session without sign-in, proved the complete three-event agenda and all eight
+  room grids (154 visible gaps), and left zero active extensions and zero pending
+  receipts. No live mutation was attempted because no genuine extension record
+  existed.
+
 ## Maintenance Notes
 
 When modifying this codebase:
