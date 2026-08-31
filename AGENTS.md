@@ -1304,6 +1304,15 @@ python -m unittest discover -s tests
   evaluator-only wording checks accept equivalent human date/duration phrasing.
   Evaluations use in-memory synthetic tools and did not read or change Asimut,
   live bookings, settings, receipts, or phone runtime state.
+- Private phone runtime `04a1f8a3b10e` was deployed and independently verified at
+  `https://lox-pc.tail89d19b.ts.net:10443/`. The prior v1 pointer
+  `01a057fb-54ea-7031-b858-3a68b8ce6700` was replaced by v2 fingerprinted thread
+  `01a05985-d677-7863-b1e0-1c5ef9f7d950`. Its persisted app-server metadata has
+  `start_date`, `end_date`, `scope`, `days`, and `event_ids` reservation-selection
+  fields, exposes only plural `cancel_reservations` plus
+  `reopen_booking_window`, and has no legacy singular cancellation tool. One
+  explicit no-tool capability probe created the rollout evidence; no booking,
+  setting, receipt, or Asimut mutation was used as deployment proof.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
