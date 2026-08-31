@@ -360,6 +360,10 @@ python -m unittest discover -s tests
 | `assistant_context.py` | Strict sanitized context from app, settings, agenda, plan, rooms, health, receipts, and history |
 | `assistant_tools.py` | Allow-listed question, refresh, preference, plan, booking, and cancellation tools |
 | `assistant_plans.py` | Complete-range dated practice-target validation and persistence |
+| `phone_api.py` | Strictly reduced agenda, plan, preference, and health snapshot for the phone UI |
+| `phone_configure.py` | Atomic strict runtime configuration for the private phone origin and allow-listed Tailnet login |
+| `phone_server.py` | Loopback-only authenticated PWA/API/SSE host around the existing AssistantRuntime |
+| `phone/` | Installable React phone UI, local static build, manifest, icons, and service worker |
 | `app_settings.py` | Strict, locked, atomic settings/history storage primitives |
 | `event_identity.py` | Deterministic v2 ignored-event identity and legacy-key resolution |
 | `practice_plan.py` | Daily-target validation and booking-budget helpers |
@@ -375,6 +379,10 @@ python -m unittest discover -s tests
 | `health_status.py` | Tk-free readers for history, session, auth, mutation, and wake evidence |
 | `run_booker.bat` | Wrapper script called by Task Scheduler |
 | `setup_scheduled_tasks.ps1` | Installs and verifies the one recurring task |
+| `setup_phone_app.ps1` | Builds, configures, starts, and privately publishes the phone companion |
+| `verify_phone_deployment.ps1` | Proves the exact startup task, loopback process, PWA assets, API rejection, and tailnet-only route |
+| `tools/generate_phone_icons.py` | Deterministically renders the three-bar phone and maskable icons |
+| `tools/verify_phone_build.py` | Validates synchronized offline shell assets, manifest icons, API cache exclusion, and no source maps |
 | `config/config.example.yaml` | Exact supported advanced configuration schema |
 | `config/config.yaml` | Optional local advanced-rule override; room policy is site-owned |
 | `data/browser_state/state.json` | Saved browser session (cookies, localStorage) |
@@ -968,6 +976,55 @@ python -m unittest discover -s tests
   referenced IDs across four dates, excluded two unrelated reservations, used
   the current message for authorization, and reached no production effect.
   No live booking was cancelled during implementation or verification.
+
+## 2026-08-31 Secure Phone Companion Foundation Milestone
+
+- `phone/` is an assistant-first installable PWA with three compact destinations:
+  Assistant, Schedule, and Status. The first viewport keeps Booker health and
+  the next confirmed/potential sessions visible above a ChatGPT-style transcript,
+  concise reasoning summaries, typed-tool progress, Stop/New chat controls, and
+  a natural-language composer. Confirmed agenda events and potential plan blocks
+  remain visually and semantically distinct; cancellation shortcuts only prefill
+  an exact assistant request and never bypass current-message authorization.
+- The production companion is designed for one dedicated tailnet-only HTTPS
+  origin backed by a loopback-only Python server. The browser receives a reduced
+  display snapshot with no event IDs, cancellation match tokens, receipt bodies,
+  command output, file paths, credentials, cookies, browser state, or raw context.
+  It has no direct booking/cancellation endpoint; messages reuse the existing
+  `AssistantRuntime`, exact `gpt-5.6-terra` medium configuration, and typed Booker
+  tool surface.
+- Phone API access requires the exact public Host and Origin, one allow-listed
+  Tailscale login header, a Secure/HttpOnly/SameSite=Strict server session, and a
+  synchronizer CSRF token. API and transcript responses are no-store; CSP denies
+  external connections, framing, objects, and cross-origin access. Static serving
+  rejects dotfiles, traversal, source maps, and all repository/data paths.
+- Phone message IDs are durably reserved before a turn starts, without storing
+  prompt text, and remains unresolved through the full controller turn, so a
+  lost response, interrupted mutation, or double tap cannot repeat a mutation. The UI
+  retains that same ID across ambiguous delivery and ignores late promises after
+  SSE confirmation. A crash-window reservation survives browser and server
+  restarts, blocks every new request, and remains a visible review gate until a
+  CSRF-protected explicit acknowledgement; the uncertain request itself is never
+  replayed. One active phone turn is allowed. Each server process has a distinct
+  stream generation, so a stale high cursor resets after restart while same-process
+  resume remains max-only and duplicate-free. SSE also has bounded authorization,
+  overflow recovery, and a three-attempt backoff rather than a retry storm. The
+  public event filtering omits internal IDs, arguments, quotes, tokens, raw tool
+  results, provider errors, and hidden reasoning.
+- All assistant mutation tools now also hold one interprocess lock. This serializes
+  phone and desktop preference, plan, booking, and cancellation changes while
+  leaving read-only questions available. Existing per-turn cancellation, exact
+  identity, receipt, and booker-runtime locks remain authoritative.
+- The PWA build injects every hashed first-render JavaScript/CSS asset into its
+  source-versioned offline shell. `/api/`, health, schedules, transcripts, prompts,
+  and mutation results are never service-worker cached or replayed offline. Stale
+  plan candidates are suppressed, unavailable context is visible, and saved future
+  intentions are shown as exact dated ranges rather than misleading defaults.
+- The complete offline regression suite passes 636 tests; 41 focused phone/API/
+  PWA/lock tests and 6 browser-state decision tests pass. The
+  production static build passes TypeScript, accessibility/correctness linting,
+  synchronized-cache verification, and source-map rejection. Runtime installation
+  and a physical iPhone Add-to-Home-Screen check remain separate deployment evidence.
 
 ## Maintenance Notes
 

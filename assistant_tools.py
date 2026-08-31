@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from agenda_snapshot import AGENDA_SNAPSHOT_FILE, AgendaEvent, read_agenda_snapshot
-from app_settings import SETTINGS_FILE, SettingsError, update_settings
+from app_settings import (
+    SETTINGS_FILE,
+    InterProcessFileLock,
+    SettingsError,
+    update_settings,
+)
 from assistant_context import ContextPaths, build_assistant_context
 from assistant_plans import AssistantPlanError, apply_future_practice_plan
 from booking_strategy import (
@@ -43,6 +48,16 @@ BOOKER_SCRIPT = APP_DIR / "book_week.py"
 ProgressCallback = Callable[[str, str], None]
 MAX_BULK_CANCELLATIONS = 12
 BULK_CANCELLATION_TIMEOUT_SECONDS = 20 * 60
+ASSISTANT_MUTATION_LOCK_FILE = APP_DIR / "data" / "assistant-mutation.lock"
+MUTATING_TOOLS = frozenset(
+    {
+        "set_future_practice_plan",
+        "update_booker_preferences",
+        "run_booker",
+        "cancel_reservation",
+        "cancel_reservations",
+    }
+)
 
 _SECRET_LINE = re.compile(
     r"(?i)(password|passcode|one[- ]?time|\botp\b|authorization:|cookie|credential|sms code|bridge token)"
@@ -807,7 +822,27 @@ class BookerToolSurface:
             self._dispatch_generation.stack = stack
         stack.append(generation)
         try:
-            return handler(dict(arguments), user_request=user_request, progress=callback)
+            if tool not in MUTATING_TOOLS:
+                return handler(
+                    dict(arguments), user_request=user_request, progress=callback
+                )
+            mutation_lock = InterProcessFileLock(
+                ASSISTANT_MUTATION_LOCK_FILE,
+                timeout=1.0,
+            )
+            try:
+                mutation_lock.acquire()
+            except SettingsError as exc:
+                raise AssistantToolError(
+                    "Another assistant or Booker change has already started and is still in progress. "
+                    "Wait for it to finish before trying a second change."
+                ) from exc
+            try:
+                return handler(
+                    dict(arguments), user_request=user_request, progress=callback
+                )
+            finally:
+                mutation_lock.release()
         except AssistantToolError:
             raise
         except (

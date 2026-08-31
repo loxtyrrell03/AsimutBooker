@@ -44,6 +44,17 @@ data/agenda_snapshot.json.bak
 data/assistant_state.json
 data/assistant_state.json.lock
 data/assistant_state.json.bak
+data/assistant-mutation.lock
+data/phone-server.lock
+data/phone_server_config.json
+data/phone_server_config.json.lock
+data/phone_server_config.json.bak
+data/phone_request_ids.json
+data/phone_request_ids.json.lock
+data/phone_request_ids.json.bak
+data/phone_assistant_state.json
+data/phone_assistant_state.json.lock
+data/phone_assistant_state.json.bak
 
 # IDE
 .vscode/
@@ -55,6 +66,7 @@ data/assistant_state.json.bak
 # OS
 .DS_Store
 Thumbs.db
+artifacts/
 
 # Local config (user-specific)
 config/config.yaml
