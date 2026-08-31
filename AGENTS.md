@@ -30,12 +30,13 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
-- **In-App Assistant**: ChatGPT-style Codex chat pinned to `gpt-5.6-terra` with medium reasoning, sanitized Booker context, visible concise reasoning summaries, and typed application actions
+- **In-App Assistant**: ChatGPT-style Codex chat pinned to `gpt-5.6-terra` with medium reasoning; Terra interprets the active request against sanitized fresh Booker context, chooses typed application actions, and emits visible concise progress summaries
 - **Health Dashboard**: Shows the last successful run, next scheduled run, saved-session evidence, auth cooldown, pending mutations, and physical wake-test evidence
 - **Practice Plan**: Set a default daily target from 0.5-12 hours, override individual dates, or turn dates off across Asimut's current live booking window
 - **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
 - **Booking Plan UI**: Explains ready, waiting, in-progress, and alternative sessions in the dashboard and calendar; hatched blocks are explicitly potential rather than booked
 - **Verified Mutations**: A booking or extension counts only after the positive event ID and exact persisted room/date/time survive a reload
+- **Cancellation Memory**: Verified cancellations create persistent no-rebook windows, including the full requested daypart for broad cancellations, until the user explicitly reopens that time
 - **Manual Reconfirmation Boundary**: Student bookings remain provisional; the user reconfirms them on RWCMD Wi-Fi when Asimut enables the action, and this separate attendance step never gates cancellation, editing, extension, planning, booking, or another supported action
 - **Crash Recovery**: Durable pre-Save receipts stop further mutations when a result is uncertain and force agenda reconciliation on the next run
 - **Booking History**: Tracks verified runs and bookings with locked, atomic persistence
@@ -360,6 +361,7 @@ python -m unittest discover -s tests
 | `assistant_context.py` | Strict sanitized context from app, settings, agenda, plan, rooms, health, receipts, and history |
 | `assistant_tools.py` | Allow-listed question, refresh, preference, plan, booking, and cancellation tools |
 | `assistant_plans.py` | Complete-range dated practice-target validation and persistence |
+| `booking_blackouts.py` | Strict persistent no-rebook windows created by cancellation and removed only by explicit reopen actions |
 | `phone_api.py` | Strictly reduced agenda, plan, preference, and health snapshot for the phone UI |
 | `phone_configure.py` | Atomic strict runtime configuration for the private phone origin and allow-listed Tailnet login |
 | `phone_server.py` | Loopback-only authenticated PWA/API/SSE host around the existing AssistantRuntime |
@@ -474,8 +476,10 @@ python -m unittest discover -s tests
   process and fails closed unless the server confirms exact model
   `gpt-5.6-terra`, medium reasoning, no approvals, and a read-only/no-network
   sandbox. Shell, filesystem, browser, web-search, and subagent tools are not
-  exposed; every state change must pass one typed Booker operation tied to an
-  exact contiguous quote from the active user message.
+  exposed. Terra owns semantic interpretation and selects the typed Booker
+  operation; the host injects the complete active user message as immutable
+  provenance, then independently enforces freshness, identity, one-use selection,
+  receipt, and persistence checks before any state change.
 - Assistant context explicitly allow-lists sanitized settings, agenda, plan,
   room, health, receipt, and history fields. Credentials, cookies, browser
   storage, OTPs, bridge tokens, participant arrays, and arbitrary files are not
@@ -490,6 +494,13 @@ python -m unittest discover -s tests
   quantities require one conversational clarification. The assistant's direct
   Booker invocation is limited to one plan-selected action; it cannot promise
   an exact start time unless preferences deliberately constrain the planner.
+- Cancellation discovery returns fresh exact reservation identities and a
+  one-use opaque selection handle. Terra may select one reservation, explicit
+  event IDs, an exact date/daypart, the rolling next seven days, or all upcoming
+  reservations; the host never guesses the user's language and cancels only the
+  unchanged identities Terra selected. A broad cancellation persists its full
+  requested time window after the first verified success so a later scheduled
+  run cannot recreate another booking there.
 
 ## 2026-08-30 GUI Restart-Loop and Single-Instance Milestone
 
@@ -918,10 +929,11 @@ python -m unittest discover -s tests
   complete agenda, booking plan, live room cache, health, receipts, and recent
   history. Its only actions are typed read-only refreshes, exact preference
   patches, complete dated future practice plans, one plan-selected Booker
-  action, and positive-ID exact-tuple single or bounded bulk reservation
-  cancellation. Every mutation requires a verbatim authorization quote from
-  the current user message; negated, quoted, descriptive, informational, or
-  ambiguous requests do not authorize a change.
+  action, explicit no-rebook-window reopen actions, and bounded reservation
+  cancellation selected from fresh positive-ID exact tuples. The host injects
+  the complete current user message into every mutation as immutable provenance;
+  Terra interprets whether the request is an action, quotation, example, or
+  question, while the host independently enforces structural safety.
 - High-level plans are persisted as both an explainable intention and ordinary
   per-date practice-plan targets, so scheduled automation pursues them when the
   dates enter Asimut's live window. Each 1-92-day range must contain every date
@@ -941,11 +953,12 @@ python -m unittest discover -s tests
   preventing a stalled App Server child from surviving GUI exit. Obvious
   password, credential, passcode, OTP, and verification-code pastes are rejected
   before they reach Codex or the visible/local transcript.
-- Assistant mutation authorization rejects leading negation, informational and
-  example text, quoted instructions, and terminal withdrawals such as “actually,
-  don't” or “never mind.” A duration-capped direct Booker run additionally
-  requires both an exact date and room. `tzdata` is an explicit dependency so
-  Europe/London resolution also works on clean Windows Python installations.
+- Assistant mutation authorization has no natural-language phrase gate. It binds
+  each typed operation to the host-held active message and rejects model-supplied
+  or stale provenance; tool-specific schemas then enforce exact dates, fresh
+  identities, one-use selections, and bounded execution. `tzdata` is an explicit
+  dependency so Europe/London resolution also works on clean Windows Python
+  installations.
 
 ## 2026-08-31 Assistant Bulk Cancellation Repair Milestone
 
@@ -961,13 +974,13 @@ python -m unittest discover -s tests
   multi-icon, button, disabled, outside-overlay, and ambiguous controls remain
   fail closed. Explicit booking, reservation, and event cancellation labels
   remain supported.
-- The assistant now exposes one typed `cancel_reservations` action for at most
-  12 exact reservations. Every target must be re-resolved through one or more
-  complete `find_reservations` match sets in the active user turn, carry its
-  unchanged positive event ID, tuple, and fresh token, and belong to the exact
-  union selected for the batch. Partial broad results, additions, duplicates,
-  stale or reused tokens, new-chat carryover, and a second concurrent
-  cancellation operation are rejected before a Booker command starts.
+- The assistant exposes one typed `cancel_reservations` action for at most 64
+  exact reservations. Terra first chooses a date/daypart, rolling upcoming
+  scope, all-upcoming scope, or explicit event IDs through `find_reservations`;
+  the host returns a one-use opaque selection. Every selected target must keep
+  its positive event ID, exact tuple, and fresh token. Additions, duplicates,
+  stale or reused selections, new-chat carryover, and a second cancellation
+  operation in the same turn are rejected before a Booker command starts.
 - Bulk execution is sequential and fail-stop. Each verified cancellation must
   publish a newer complete agenda in which all remaining IDs and tuples are
   re-resolved before the next command. Exit 7 is reported as safely not applied
@@ -1219,6 +1232,36 @@ python -m unittest discover -s tests
 - The complete offline Python suite passes 657 tests. The phone's 8 Node tests
   and production static build pass, including multi-session aggregation and
   rendering support.
+
+## 2026-08-31 Terra-Led Intent and Persistent Cancellation Plan Milestone
+
+- Natural-language semantics now belong to Terra rather than a host phrase
+  parser. The host injects the complete active message into mutating calls and
+  exposes only typed Booker operations; it does not ask the model to reproduce
+  authorization quotes or special command wording.
+- `find_reservations` lets Terra choose one or many exact event IDs, an exact
+  date/daypart, the rolling next 1-31 days, or every upcoming reservation in the
+  complete fresh agenda. It returns a current-turn, one-use opaque selection;
+  `cancel_reservations` revalidates every unchanged positive ID, tuple, and token
+  before executing the selected set sequentially.
+- Verified cancellations persist no-rebook windows. Exact selections protect
+  their exact intervals and named daypart selections protect the full app-defined
+  window after the first verified success. All normal, horizon, extension, and
+  plan-only paths treat those windows as hard conflicts until a direct
+  `reopen_booking_window` action subtracts them.
+- Cancellation results distinguish requested protection from successfully
+  persisted protection, retain per-target partial outcomes, stop after uncertain
+  state, and treat display-plan invalidation failure as a warning after the
+  settings mutation has already committed.
+- Aggregate dated practice targets count existing reservations and use a bounded
+  whole-day portfolio search to select the fewest best-ranked non-overlapping
+  sessions under the 120-minute session and aggregate weekday peak limits. The
+  recurring 15-minute Booker keeps pursuing any remaining saved target.
+- The complete offline Python suite passes 699 tests. The phone passes 15 Node
+  tests, TypeScript checking, lint, both production builds, and the offline-build
+  verifier. The production `gpt-5.6-terra` medium synthetic evaluator passes all
+  19 intent, question, quotation, cancellation, planning, vague-request, and
+  injection cases without accessing Asimut or changing runtime state.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture

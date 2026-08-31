@@ -30,6 +30,14 @@ def context_fixture(*, stale=False, pending=False):
                         "daily_targets": {"private": "not for phone"},
                     }
                 ],
+                "rebooking_blackouts": [
+                    {
+                        "date": "2026-09-01",
+                        "start_time": "12:00",
+                        "end_time": "18:00",
+                        "internal": "not for phone",
+                    }
+                ],
             },
             "agenda": {
                 "available": True,
@@ -116,6 +124,16 @@ class PhoneSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["agenda"]["next_event"]["room"], "B1.09")
         self.assertEqual(snapshot["plan"]["days"][0]["primary"]["room"], "Weston Gallery")
         self.assertEqual(snapshot["preferences"]["future_intentions"][0]["title"], "Busy week")
+        self.assertEqual(
+            snapshot["preferences"]["rebooking_blackouts"],
+            [
+                {
+                    "date": "2026-09-01",
+                    "start_time": "12:00",
+                    "end_time": "18:00",
+                }
+            ],
+        )
 
     def test_pending_receipt_blocks_phone_status_without_leaking_receipt(self):
         with mock.patch.object(

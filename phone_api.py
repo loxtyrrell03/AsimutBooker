@@ -247,6 +247,21 @@ def build_phone_snapshot(*, paths: ContextPaths | None = None) -> dict[str, Any]
                 }
             )
 
+    rebooking_blackouts = []
+    for raw in _sequence(preferences.get("rebooking_blackouts")):
+        blackout = _mapping(raw)
+        date_value = _text(blackout.get("date"))
+        start_time = _text(blackout.get("start_time"))
+        end_time = _text(blackout.get("end_time"))
+        if date_value and start_time and end_time:
+            rebooking_blackouts.append(
+                {
+                    "date": date_value,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }
+            )
+
     local_now = _text(context.get("local_now"))
     timezone_name = _text(context.get("timezone"), fallback="Europe/London")
     return {
@@ -286,6 +301,7 @@ def build_phone_snapshot(*, paths: ContextPaths | None = None) -> dict[str, Any]
                 "strict_mode": _boolean(time_preferences.get("strict_mode")),
             },
             "future_intentions": future_intentions,
+            "rebooking_blackouts": rebooking_blackouts,
         },
         "health": {
             "collected_at": _text(health.get("collected_at")),

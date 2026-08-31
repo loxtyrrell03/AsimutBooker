@@ -126,7 +126,8 @@ class BookingCancellationContractTests(unittest.TestCase):
 
     def call_cancel(self, *, post_reservations=(), record_side_effect=None,
                     cancel_side_effect=None, confirmation=True,
-                    scan_side_effects=None, post_agenda_events=None):
+                    scan_side_effects=None, post_agenda_events=None,
+                    blackout_side_effect=None):
         page = mock.Mock()
         card = mock.Mock()
         more_button = mock.Mock()
@@ -180,6 +181,11 @@ class BookingCancellationContractTests(unittest.TestCase):
         def verify_receipt(*args, **kwargs):
             timeline.append("verified")
 
+        def save_blackout(*args, **kwargs):
+            timeline.append("blackout")
+            if blackout_side_effect is not None:
+                raise blackout_side_effect
+
         stack = ExitStack()
         stack.enter_context(mock.patch.object(book_week, "safe_goto"))
         stack.enter_context(mock.patch.object(book_week, "verify_persisted_booking_page"))
@@ -212,6 +218,13 @@ class BookingCancellationContractTests(unittest.TestCase):
                 side_effect=verify_receipt,
             )
         )
+        blackout = stack.enter_context(
+            mock.patch.object(
+                book_week,
+                "add_rebooking_blackout",
+                side_effect=save_blackout,
+            )
+        )
         resolve = stack.enter_context(
             mock.patch.object(book_week, "resolve_mutation_receipt")
         )
@@ -224,6 +237,7 @@ class BookingCancellationContractTests(unittest.TestCase):
         self.last_cancel_option = cancel_option
         self.last_scan = scan
         self.last_verify = verify
+        self.last_blackout = blackout
         self.last_resolve = resolve
 
         try:
@@ -311,8 +325,16 @@ class BookingCancellationContractTests(unittest.TestCase):
         self.assertLess(timeline.index("receipt"), timeline.index("cancel_click"))
         self.assertLess(timeline.index("receipt"), timeline.index("confirm_click"))
         self.assertLess(timeline.index("confirm_click"), timeline.index("complete_agenda"))
+        self.assertLess(timeline.index("complete_agenda"), timeline.index("blackout"))
+        self.assertLess(timeline.index("blackout"), timeline.index("verified"))
         self.assertLess(timeline.index("complete_agenda"), timeline.index("verified"))
         scan.assert_called_once()
+        self.last_blackout.assert_called_once_with(
+            self.DATE,
+            self.START,
+            self.END,
+            path=book_week.settings_file,
+        )
         verify.assert_called_once_with("cancel-receipt", event_url=self.EVENT_URL)
         resolve.assert_not_called()
 
@@ -326,6 +348,7 @@ class BookingCancellationContractTests(unittest.TestCase):
         self.last_cancel_option.click.assert_not_called()
         self.last_scan.assert_not_called()
         self.last_verify.assert_not_called()
+        self.last_blackout.assert_not_called()
         self.last_resolve.assert_not_called()
 
     def test_click_failure_is_uncertain_and_never_scans_or_verifies(self):
@@ -335,6 +358,7 @@ class BookingCancellationContractTests(unittest.TestCase):
             self.call_cancel(cancel_side_effect=RuntimeError("connection lost"))
         self.last_scan.assert_not_called()
         self.last_verify.assert_not_called()
+        self.last_blackout.assert_not_called()
 
     def test_unchanged_immediate_agenda_keeps_receipt_pending_for_later_reconciliation(self):
         with self.assertRaisesRegex(
@@ -346,6 +370,19 @@ class BookingCancellationContractTests(unittest.TestCase):
             )
         self.assertIn("complete_agenda", self.last_timeline)
         self.last_scan.assert_called_once()
+        self.last_verify.assert_not_called()
+        self.last_blackout.assert_not_called()
+
+    def test_blackout_write_failure_keeps_verified_cancellation_receipt_pending(self):
+        with self.assertRaisesRegex(
+            book_week.BookingVerificationError,
+            "requires reconciliation",
+        ):
+            self.call_cancel(
+                blackout_side_effect=SettingsError("settings lock unavailable")
+            )
+
+        self.last_blackout.assert_called_once()
         self.last_verify.assert_not_called()
 
     def test_transient_post_click_scan_retries_proof_without_repeating_click(self):
@@ -497,6 +534,7 @@ class BookingCancellationContractTests(unittest.TestCase):
             mock.patch.object(book_week, "verify_mutation_receipt") as verified,
             mock.patch.object(book_week, "resolve_mutation_receipt") as resolved,
             mock.patch.object(book_week, "remove_extendable_booking_by_event_id") as cleanup,
+            mock.patch.object(book_week, "add_rebooking_blackout") as blackout,
             mock.patch.object(book_week, "clear_booking_plan") as clear_plan,
         ):
             book_week.reconcile_pending_mutation_receipts(mock.Mock(), [])
@@ -504,6 +542,12 @@ class BookingCancellationContractTests(unittest.TestCase):
         verified.assert_called_once_with("cancel-receipt", event_url=self.EVENT_URL)
         resolved.assert_not_called()
         cleanup.assert_called_once_with(self.EVENT_ID)
+        blackout.assert_called_once_with(
+            future_date,
+            self.START,
+            self.END,
+            path=book_week.settings_file,
+        )
         clear_plan.assert_called_once_with()
 
         remaining = self.reservation(date=future_date)
@@ -517,6 +561,7 @@ class BookingCancellationContractTests(unittest.TestCase):
             mock.patch.object(book_week, "verify_persisted_booking_page") as page_proof,
             mock.patch.object(book_week, "verify_mutation_receipt") as verified,
             mock.patch.object(book_week, "resolve_mutation_receipt") as resolved,
+            mock.patch.object(book_week, "add_rebooking_blackout") as blackout,
         ):
             book_week.reconcile_pending_mutation_receipts(
                 mock.Mock(), [remaining]
@@ -527,6 +572,7 @@ class BookingCancellationContractTests(unittest.TestCase):
             mock.ANY, self.ROOM, future_date, self.START, self.END
         )
         verified.assert_not_called()
+        blackout.assert_not_called()
         resolved.assert_called_once_with(
             "cancel-receipt",
             resolution=(

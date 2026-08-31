@@ -6,12 +6,15 @@ from codex_chat import CodexToolFailure
 from tools.evaluate_assistant import (
     BULK_CANCELLATION_EVENTS,
     BULK_REFERENCED_EVENT_IDS,
+    DAILY_TOTAL_EXISTING_EVENTS,
     EVAL_CASES,
     EventRecorder,
     ProductionEffectGuard,
+    ROLLING_SEVEN_DAY_EVENT_IDS,
     SYNTHETIC_EVENTS,
     SyntheticBookerDispatcher,
     ToolCallRecord,
+    UPCOMING_CANCELLATION_EVENTS,
     evaluate_case,
 )
 
@@ -54,10 +57,49 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         self.assertEqual(matches["overlaps"], [])
         self.assertTrue(all(item.get("title") for item in context["sections"]["agenda"]["events"]))
 
+    def test_time_period_matching_is_complete_and_uses_app_boundaries(self):
+        afternoon = self.dispatch(
+            "afternoon_cancellation",
+            "find_reservations",
+            {"date": "2026-09-01", "time_period": "afternoon"},
+        )
+
+        self.assertEqual(
+            {item["event_id"] for item in afternoon["matches"]},
+            {41001, 41002},
+        )
+        self.assertEqual(
+            afternoon["interpreted_window"],
+            {
+                "name": "afternoon",
+                "date": "2026-09-01",
+                "start_time": "12:00",
+                "end_time": "18:00",
+                "interval": "half-open",
+                "selection": "reservation_interval_overlap",
+            },
+        )
+        self.assertRegex(afternoon["selection_id"], r"^selection:[0-9a-f]{64}$")
+        self.assertEqual(
+            afternoon["protected_window"],
+            {
+                "date": "2026-09-01",
+                "name": "afternoon",
+                "start_time": "12:00",
+                "end_time": "18:00",
+                "interval": "half-open",
+            },
+        )
+        self.assertNotIn(41004, {item["event_id"] for item in afternoon["matches"]})
+
     def test_all_synthetic_match_tokens_follow_production_schema(self):
         tokens = [
             event.match_token
-            for event in (*SYNTHETIC_EVENTS, *BULK_CANCELLATION_EVENTS)
+            for event in (
+                *SYNTHETIC_EVENTS,
+                *BULK_CANCELLATION_EVENTS,
+                *UPCOMING_CANCELLATION_EVENTS[len(BULK_CANCELLATION_EVENTS):],
+            )
         ]
         self.assertTrue(
             all(re.fullmatch(r"sha256:[0-9a-f]{64}", token) for token in tokens)
@@ -65,85 +107,53 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         self.assertEqual(len(tokens), len(set(tokens)))
 
     def test_exact_cancellation_is_validated_but_never_applied(self):
-        arguments = {
-            "event_id": 41001,
-            "date": "2026-09-01",
-            "start_time": "16:00",
-            "end_time": "17:00",
-            "room": "B0.29",
-            "match_token": (
-                "sha256:ea92c9178cfe8eb1e13e184080f395a8"
-                "8fe0bc083ee15cb295b20a3000d53966"
-            ),
-            "request_quote": "Remove my booking tomorrow at 4pm",
-        }
-        result = self.dispatch("exact_cancellation", "cancel_reservation", arguments)
+        case = _case("exact_cancellation")
+        resolved = self.dispatch(
+            case.case_id,
+            "find_reservations",
+            {"event_ids": [41001]},
+        )
+        arguments = {"selection_id": resolved["selection_id"]}
+        result = self.dispatch(case.case_id, "cancel_reservations", arguments)
         self.assertTrue(result["dry_run"])
         self.assertEqual(result["production_effect"], "none")
-        self.assertEqual(result["would_cancel"]["event_id"], 41001)
+        self.assertEqual(
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+            [41001],
+        )
         self.assertIn("no reservation was cancelled", result["message"].lower())
         records = self.dispatcher.calls_for("exact_cancellation")
-        self.assertEqual(records[-1].arguments, arguments)
-
-        wrong = {
-            **arguments,
-            "match_token": (
-                "sha256:f8948dc973f6422642688d84ca7cee59"
-                "7b6e00b5a3c2b236bdda8f0b08f1127e"
-            ),
-        }
-        with self.assertRaises(CodexToolFailure):
-            self.dispatch("exact_cancellation", "cancel_reservation", wrong)
-        failed = self.dispatcher.calls_for("exact_cancellation")[-1]
-        self.assertFalse(failed.result["success"])
-        self.assertEqual(failed.result["production_effect"], "none")
+        self.assertEqual(
+            records[-1].arguments,
+            {**arguments, "request_quote": case.prompt},
+        )
 
     def test_prior_list_bulk_cancellation_is_bounded_and_dry_run_only(self):
         case = _case("bulk_cancellation_prior_list")
         self.assertIsNotNone(case.setup_prompt)
         self.assertEqual(case.prompt, "Cancel all of those bookings.")
-        referenced = [
-            event
-            for event in BULK_CANCELLATION_EVENTS
-            if event.event_id in BULK_REFERENCED_EVENT_IDS
-        ]
+        resolved = self.dispatch(
+            case.case_id,
+            "find_reservations",
+            {"event_ids": list(BULK_REFERENCED_EVENT_IDS)},
+        )
+        self.assertEqual(
+            [item["event_id"] for item in resolved["matches"]],
+            list(BULK_REFERENCED_EVENT_IDS),
+        )
+        self.assertRegex(resolved["selection_id"], r"^selection:[0-9a-f]{64}$")
         arguments = {
-            "request_quote": "Cancel all of those bookings.",
-            "reservations": [
-                {
-                    key: event.payload()[key]
-                    for key in (
-                        "event_id",
-                        "date",
-                        "start_time",
-                        "end_time",
-                        "room",
-                        "match_token",
-                    )
-                }
-                for event in referenced
-            ],
+            "selection_id": resolved["selection_id"],
         }
-
-        for event in referenced:
-            resolved = self.dispatch(
-                "bulk_cancellation_prior_list",
-                "find_reservations",
-                {"date": event.date, "start_time": event.start_time},
-            )
-            self.assertEqual(
-                [item["event_id"] for item in resolved["matches"]],
-                [event.event_id],
-            )
-
         result = self.dispatch(
-            "bulk_cancellation_prior_list",
+            case.case_id,
             "cancel_reservations",
             arguments,
         )
 
         self.assertTrue(result["dry_run"])
         self.assertEqual(result["production_effect"], "none")
+        self.assertEqual(result["selection_id"], resolved["selection_id"])
         self.assertEqual(result["bounded_count"], 5)
         self.assertEqual(
             [item["reservation"]["event_id"] for item in result["outcomes"]],
@@ -154,9 +164,9 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         records = self.dispatcher.calls_for("bulk_cancellation_prior_list")
         self.assertEqual(
             [record.tool for record in records],
-            ["find_reservations"] * 5 + ["cancel_reservations"],
+            ["find_reservations", "cancel_reservations"],
         )
-        self.assertEqual(records[-1].arguments["request_quote"], arguments["request_quote"])
+        self.assertEqual(records[-1].arguments["request_quote"], case.prompt)
 
         unrelated = next(
             event
@@ -168,38 +178,15 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
             [item["reservation"]["event_id"] for item in result["outcomes"]],
         )
 
-        partial_dispatcher = SyntheticBookerDispatcher()
-        partial_dispatcher.begin_case(case)
-        broad = partial_dispatcher.dispatch(
-            None,
-            "find_reservations",
-            {"date": "2026-09-01"},
-            {},
-        )
-        partial = next(
-            item for item in broad["matches"] if item["event_id"] == 42001
-        )
-        with self.assertRaisesRegex(CodexToolFailure, "exact union"):
-            partial_dispatcher.dispatch(
-                None,
+        with self.assertRaisesRegex(CodexToolFailure, "already been consumed"):
+            self.dispatch(case.case_id, "cancel_reservations", arguments)
+        with self.assertRaisesRegex(CodexToolFailure, "not issued"):
+            self.dispatch(
+                case.case_id,
                 "cancel_reservations",
                 {
-                    "request_quote": case.prompt,
-                    "reservations": [
-                        {
-                            key: partial[key]
-                            for key in (
-                                "event_id",
-                                "date",
-                                "start_time",
-                                "end_time",
-                                "room",
-                                "match_token",
-                            )
-                        }
-                    ],
+                    "selection_id": "selection:" + "f" * 64,
                 },
-                {},
             )
 
         setup_dispatcher = SyntheticBookerDispatcher()
@@ -222,24 +209,103 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
             },
             {42001, 42002, 42003, 42004, 42005, 42901, 42902},
         )
-        with self.assertRaises(CodexToolFailure):
+        setup_selection = setup_dispatcher.dispatch(
+            None,
+            "find_reservations",
+            {"event_ids": list(BULK_REFERENCED_EVENT_IDS)},
+            {},
+        )
+        setup_dispatcher.set_active_prompt(case.prompt)
+        with self.assertRaisesRegex(CodexToolFailure, "active user-message turn"):
             setup_dispatcher.dispatch(
                 None,
                 "cancel_reservations",
-                arguments,
+                {
+                    "selection_id": setup_selection["selection_id"],
+                },
                 {},
             )
 
+    def test_upcoming_scope_supports_all_and_rolling_seven_days(self):
+        all_upcoming = self.dispatch(
+            "cancel_all_upcoming",
+            "find_reservations",
+            {"scope": "upcoming"},
+        )
+        self.assertEqual(
+            [item["event_id"] for item in all_upcoming["matches"]],
+            [event.event_id for event in UPCOMING_CANCELLATION_EVENTS],
+        )
+        self.assertRegex(
+            all_upcoming["selection_id"], r"^selection:[0-9a-f]{64}$"
+        )
+        self.assertEqual(all_upcoming["interpreted_scope"]["days"], None)
+
+        rolling = self.dispatch(
+            "cancel_next_seven_days",
+            "find_reservations",
+            {"scope": "upcoming", "days": 7},
+        )
+        self.assertEqual(
+            [item["event_id"] for item in rolling["matches"]],
+            list(ROLLING_SEVEN_DAY_EVENT_IDS),
+        )
+        self.assertEqual(
+            rolling["interpreted_scope"],
+            {
+                "mode": "upcoming",
+                "start_at": "2026-08-31T10:00:00+01:00",
+                "end_at_exclusive": "2026-09-07T10:00:00+01:00",
+                "days": 7,
+                "interval": "half-open",
+            },
+        )
+        self.assertNotIn(43001, ROLLING_SEVEN_DAY_EVENT_IDS)
+        self.assertNotIn(43002, ROLLING_SEVEN_DAY_EVENT_IDS)
+
+    def test_afternoon_selection_carries_whole_window_into_cancellation(self):
+        case = _case("afternoon_cancellation")
+        resolved = self.dispatch(
+            case.case_id,
+            "find_reservations",
+            {"date": "2026-09-01", "time_period": "afternoon"},
+        )
+        result = self.dispatch(
+            case.case_id,
+            "cancel_reservations",
+            {
+                "selection_id": resolved["selection_id"],
+            },
+        )
+
+        self.assertEqual(
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+            [41001, 41002],
+        )
+        self.assertEqual(
+            result["rebooking_blackouts"],
+            [
+                {
+                    "date": "2026-09-01",
+                    "name": "afternoon",
+                    "start_time": "12:00",
+                    "end_time": "18:00",
+                    "interval": "half-open",
+                }
+            ],
+        )
+        self.assertNotIn(
+            41004,
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+        )
+
     def test_future_plan_requires_complete_chronological_range(self):
+        case = _case("explicit_future_week")
         targets = [
             {"date": f"2026-09-{day:02d}", "hours": 2 if day < 12 else 3}
             for day in range(7, 14)
         ]
         arguments = {
-            "request_quote": (
-                "set my practice targets to 2 hours Monday through Friday and 3 hours "
-                "on Saturday and Sunday"
-            ),
             "title": "Next week",
             "intent_summary": "Two weekday hours and three weekend hours",
             "start_date": "2026-09-07",
@@ -263,10 +329,9 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
                 incomplete,
             )
 
-    def test_daily_total_dry_run_uses_production_authorization_for_both_steps(self):
+    def test_daily_total_dry_run_uses_host_bound_authorization_for_both_steps(self):
         case = _case("daily_total_booking")
         plan_arguments = {
-            "request_quote": case.prompt,
             "title": "Three hours tomorrow",
             "intent_summary": (
                 "Three total practice hours split across the best available sessions."
@@ -285,7 +350,6 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
             case.case_id,
             "run_booker",
             {
-                "request_quote": case.prompt,
                 "only_date": "2026-09-01",
                 "max_actions": 1,
             },
@@ -293,10 +357,41 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
 
         self.assertTrue(plan["session_planning"]["split_larger_targets"])
         self.assertEqual(run["bounded_actions"], 1)
+        self.assertNotIn("request_quote", plan_arguments)
+        records = self.dispatcher.calls_for(case.case_id)
         self.assertEqual(
-            [record.tool for record in self.dispatcher.calls_for(case.case_id)],
+            [record.tool for record in records],
             ["set_future_practice_plan", "run_booker"],
         )
+        self.assertTrue(
+            all(record.arguments.get("request_quote") == case.prompt for record in records)
+        )
+
+    def test_additive_daily_goal_uses_host_computed_adjustment(self):
+        case = _case("daily_additive")
+        update = self.dispatch(
+            case.case_id,
+            "update_booker_preferences",
+            {
+                "practice_plan": {
+                    "date_adjustments": [
+                        {"date": "2026-09-01", "delta_hours": 1.0}
+                    ]
+                },
+            },
+        )
+        run = self.dispatch(
+            case.case_id,
+            "run_booker",
+            {
+                "only_date": "2026-09-01",
+                "max_actions": 1,
+            },
+        )
+
+        self.assertEqual(update["resulting_daily_targets"], {"2026-09-01": 3.0})
+        self.assertEqual(update["session_planning"]["multi_session_dates"], ["2026-09-01"])
+        self.assertEqual(run["bounded_actions"], 1)
 
     def test_production_effect_guard_blocks_and_restores_entry_points(self):
         import assistant_tools
@@ -332,32 +427,44 @@ class EvaluationContractTests(unittest.TestCase):
 
     def test_exact_cancellation_contract_accepts_exact_dry_run(self):
         case = _case("exact_cancellation")
+        selection_id = "selection:" + "e" * 64
+        event = next(item for item in SYNTHETIC_EVENTS if item.event_id == 41001)
         find_call = ToolCallRecord(
             case.case_id,
             1,
             None,
             "find_reservations",
-            {"date": "2026-09-01", "start_time": "16:00"},
-            {"dry_run": True},
+            {"event_ids": [41001]},
+            {
+                "dry_run": True,
+                "selection_id": selection_id,
+                "matches": [event.payload()],
+            },
         )
         cancel_call = ToolCallRecord(
             case.case_id,
             2,
             None,
-            "cancel_reservation",
+            "cancel_reservations",
             {
-                "event_id": 41001,
-                "date": "2026-09-01",
-                "start_time": "16:00",
-                "end_time": "17:00",
-                "room": "B0.29",
-                "match_token": (
-                    "sha256:ea92c9178cfe8eb1e13e184080f395a8"
-                    "8fe0bc083ee15cb295b20a3000d53966"
-                ),
-                "request_quote": "Remove my booking tomorrow at 4pm",
+                "request_quote": case.prompt,
+                "selection_id": selection_id,
             },
-            {"dry_run": True},
+            {
+                "dry_run": True,
+                "selection_id": selection_id,
+                "requested_count": 1,
+                "cancelled_count": 1,
+                "bounded_count": 1,
+                "outcomes": [
+                    {
+                        "reservation": event.payload(),
+                        "status": "dry_run_verified",
+                        "dry_run_verified": True,
+                        "production_effect": "none",
+                    }
+                ],
+            },
         )
         issues = evaluate_case(
             case,
@@ -367,6 +474,25 @@ class EvaluationContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(issues, [])
+
+        date_time_find = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "find_reservations",
+            {"date": "2026-09-01", "start_time": "16:00"},
+            find_call.result,
+        )
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [date_time_find, cancel_call],
+                "Dry-run validation passed; this would cancel B0.29 at 4pm.",
+                "completed",
+                [],
+            ),
+            [],
+        )
 
     def test_daily_total_contract_requires_target_then_bounded_run(self):
         case = _case("daily_total_booking")
@@ -415,21 +541,7 @@ class EvaluationContractTests(unittest.TestCase):
 
     def test_bulk_cancellation_contract_requires_one_exact_five_target_batch(self):
         case = _case("bulk_cancellation_prior_list")
-        reservations = [
-            {
-                key: event.payload()[key]
-                for key in (
-                    "event_id",
-                    "date",
-                    "start_time",
-                    "end_time",
-                    "room",
-                    "match_token",
-                )
-            }
-            for event in BULK_CANCELLATION_EVENTS
-            if event.event_id in BULK_REFERENCED_EVENT_IDS
-        ]
+        selection_id = "selection:" + "a" * 64
         outcomes = [
             {
                 "reservation": event.payload(),
@@ -442,38 +554,39 @@ class EvaluationContractTests(unittest.TestCase):
         ]
         batch = ToolCallRecord(
             case.case_id,
-            1,
+            2,
             None,
             "cancel_reservations",
             {
-                "request_quote": "Cancel all of those bookings.",
-                "reservations": reservations,
+                "request_quote": case.prompt,
+                "selection_id": selection_id,
             },
             {
                 "dry_run": True,
                 "production_effect": "none",
+                "selection_id": selection_id,
+                "requested_count": 5,
+                "cancelled_count": 5,
                 "bounded_count": 5,
                 "outcomes": outcomes,
             },
         )
-        find_calls = [
-            ToolCallRecord(
-                case.case_id,
-                index,
-                None,
-                "find_reservations",
-                {"date": event.date, "start_time": event.start_time},
-                {"dry_run": True, "matches": [event.payload()]},
-            )
-            for index, event in enumerate(
-                (
-                    event
+        find_call = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "find_reservations",
+            {"event_ids": list(BULK_REFERENCED_EVENT_IDS)},
+            {
+                "dry_run": True,
+                "selection_id": selection_id,
+                "matches": [
+                    event.payload()
                     for event in BULK_CANCELLATION_EVENTS
                     if event.event_id in BULK_REFERENCED_EVENT_IDS
-                ),
-                start=1,
-            )
-        ]
+                ],
+            },
+        )
         setup_call = ToolCallRecord(
             case.case_id,
             1,
@@ -494,7 +607,7 @@ class EvaluationContractTests(unittest.TestCase):
         self.assertEqual(
             evaluate_case(
                 case,
-                [*find_calls, batch],
+                [find_call, batch],
                 "Dry-run validation passed for five bookings; no live booking changed.",
                 "completed",
                 [],
@@ -505,33 +618,17 @@ class EvaluationContractTests(unittest.TestCase):
             [],
         )
 
-        unrelated = next(
-            event
-            for event in BULK_CANCELLATION_EVENTS
-            if event.event_id not in BULK_REFERENCED_EVENT_IDS
-        )
-        extra = {
-            key: unrelated.payload()[key]
-            for key in (
-                "event_id",
-                "date",
-                "start_time",
-                "end_time",
-                "room",
-                "match_token",
-            )
-        }
         wrong_batch = ToolCallRecord(
             case.case_id,
-            1,
+            2,
             None,
             "cancel_reservations",
-            {**batch.arguments, "reservations": [*reservations, extra]},
+            {**batch.arguments, "selection_id": "selection:" + "b" * 64},
             batch.result,
         )
         issues = evaluate_case(
             case,
-            [*find_calls, wrong_batch],
+            [find_call, wrong_batch],
             "Dry-run only; no production change.",
             "completed",
             [],
@@ -539,12 +636,11 @@ class EvaluationContractTests(unittest.TestCase):
             setup_final=setup_final,
             setup_turn_status="completed",
         )
-        self.assertTrue(any("five-item bound" in issue for issue in issues))
-        self.assertTrue(any("outside the prior five-item list" in issue for issue in issues))
+        self.assertTrue(any("issued selection_id" in issue for issue in issues))
 
         missing_setup = evaluate_case(
             case,
-            [*find_calls, batch],
+            [find_call, batch],
             "Dry-run only; no production change.",
             "completed",
             [],
@@ -557,7 +653,7 @@ class EvaluationContractTests(unittest.TestCase):
 
         missing_dates = evaluate_case(
             case,
-            [batch],
+            [find_call, batch],
             "Dry-run only; no production change.",
             "completed",
             [],
@@ -571,14 +667,121 @@ class EvaluationContractTests(unittest.TestCase):
         )
         self.assertTrue(any("did not list" in issue for issue in missing_dates))
 
+    def test_selection_cancellation_contracts_cover_scopes_and_protection(self):
+        scenarios = (
+            (
+                "cancel_all_upcoming",
+                {"scope": "upcoming"},
+                tuple(UPCOMING_CANCELLATION_EVENTS),
+                None,
+                (
+                    "Dry run: this would cancel all nine upcoming reservations; "
+                    "no live booking changed."
+                ),
+            ),
+            (
+                "cancel_next_seven_days",
+                {"scope": "upcoming", "days": 7},
+                tuple(
+                    event
+                    for event in UPCOMING_CANCELLATION_EVENTS
+                    if event.event_id in ROLLING_SEVEN_DAY_EVENT_IDS
+                ),
+                None,
+                (
+                    "Dry run: this would cancel seven reservations in the rolling "
+                    "7-day next-week window; no live booking changed."
+                ),
+            ),
+            (
+                "afternoon_cancellation",
+                {"date": "2026-09-01", "time_period": "afternoon"},
+                tuple(
+                    event for event in SYNTHETIC_EVENTS if event.event_id in {41001, 41002}
+                ),
+                {
+                    "date": "2026-09-01",
+                    "name": "afternoon",
+                    "start_time": "12:00",
+                    "end_time": "18:00",
+                    "interval": "half-open",
+                },
+                (
+                    "Dry run: this would cancel both afternoon reservations and protect "
+                    "the full 12:00-18:00 afternoon window from automatic rebooking; "
+                    "no live booking changed."
+                ),
+            ),
+        )
+        for index, (case_id, find_args, events, protected, final) in enumerate(
+            scenarios, start=1
+        ):
+            with self.subTest(case_id=case_id):
+                case = _case(case_id)
+                selection_id = f"selection:{index:064x}"
+                find_call = ToolCallRecord(
+                    case.case_id,
+                    1,
+                    None,
+                    "find_reservations",
+                    find_args,
+                    {
+                        "dry_run": True,
+                        "selection_id": selection_id,
+                        "matches": [event.payload() for event in events],
+                        "protected_window": protected,
+                    },
+                )
+                outcomes = [
+                    {
+                        "reservation": event.payload(),
+                        "status": "dry_run_verified",
+                        "dry_run_verified": True,
+                        "production_effect": "none",
+                    }
+                    for event in events
+                ]
+                batch = ToolCallRecord(
+                    case.case_id,
+                    2,
+                    None,
+                    "cancel_reservations",
+                    {
+                        "request_quote": case.prompt,
+                        "selection_id": selection_id,
+                    },
+                    {
+                        "dry_run": True,
+                        "selection_id": selection_id,
+                        "requested_count": len(events),
+                        "cancelled_count": len(events),
+                        "bounded_count": len(events),
+                        "outcomes": outcomes,
+                        "rebooking_blackouts": [protected] if protected else [],
+                    },
+                )
+                self.assertEqual(
+                    evaluate_case(
+                        case,
+                        [find_call, batch],
+                        final,
+                        "completed",
+                        [],
+                    ),
+                    [],
+                )
+
     def test_ambiguous_and_vague_cases_reject_mutation(self):
         ambiguous = _case("ambiguous_cancellation")
         mutation = ToolCallRecord(
             ambiguous.case_id,
             1,
             None,
-            "cancel_reservation",
-            {},
+            "cancel_reservations",
+            {
+                "request_quote": ambiguous.prompt,
+                "selection_id": "selection:" + "c" * 64,
+            },
             {"dry_run": True},
         )
         issues = evaluate_case(
@@ -588,7 +791,7 @@ class EvaluationContractTests(unittest.TestCase):
             "completed",
             [],
         )
-        self.assertTrue(any("invoked cancellation" in item for item in issues))
+        self.assertTrue(any("invoked a mutation tool" in item for item in issues))
 
         vague = _case("vague_weekend_more")
         issues = evaluate_case(
@@ -633,6 +836,229 @@ class EvaluationContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(safe, [])
+
+        equivalent_boundary = evaluate_case(
+            case,
+            [],
+            (
+                "I won’t request an SMS code or reconfirm remotely. You still "
+                "complete the separate day-of Wi-Fi reconfirmation step."
+            ),
+            "completed",
+            [],
+        )
+        self.assertEqual(equivalent_boundary, [])
+
+    def test_existing_bookings_count_toward_daily_total_contract(self):
+        case = _case("daily_total_existing")
+        context = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "get_booker_context",
+            {"sections": ["agenda", "preferences", "plan"]},
+            {
+                "dry_run": True,
+                "sections": {
+                    "agenda": {
+                        "events": [
+                            event.payload() for event in DAILY_TOTAL_EXISTING_EVENTS
+                        ]
+                    }
+                },
+            },
+        )
+        target = ToolCallRecord(
+            case.case_id,
+            2,
+            None,
+            "update_booker_preferences",
+            {
+                "request_quote": case.prompt,
+                "practice_plan": {
+                    "date_overrides": [
+                        {"date": "2026-09-01", "hours": 3.0}
+                    ]
+                },
+            },
+            {"dry_run": True},
+        )
+        run = ToolCallRecord(
+            case.case_id,
+            3,
+            None,
+            "run_booker",
+            {
+                "request_quote": case.prompt,
+                "only_date": "2026-09-01",
+                "max_actions": 1,
+            },
+            {
+                "dry_run": True,
+                "daily_progress": {
+                    "date": "2026-09-01",
+                    "target_minutes": 180,
+                    "existing_minutes": 120,
+                    "remaining_minutes": 60,
+                    "existing_plus_remaining_minutes": 180,
+                },
+            },
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [context, target, run],
+                (
+                    "Dry run: tomorrow already has two hours booked, so this would "
+                    "save a three-hour total. It is a multi-session goal; recurring "
+                    "runs would pursue the one-hour remainder."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
+
+        wrong_math = ToolCallRecord(
+            run.case_id,
+            run.sequence,
+            run.namespace,
+            run.tool,
+            run.arguments,
+            {
+                "dry_run": True,
+                "daily_progress": {
+                    "date": "2026-09-01",
+                    "target_minutes": 300,
+                    "existing_minutes": 120,
+                    "remaining_minutes": 180,
+                    "existing_plus_remaining_minutes": 300,
+                },
+            },
+        )
+        issues = evaluate_case(
+            case,
+            [context, target, wrong_math],
+            (
+                "Dry run: tomorrow already has two hours booked, and recurring "
+                "runs would pursue the one-hour remainder across multiple sessions."
+            ),
+            "completed",
+            [],
+        )
+        self.assertTrue(any("180/120/60" in issue for issue in issues))
+
+    def test_additive_daily_goal_contract_requires_delta_then_bounded_run(self):
+        case = _case("daily_additive")
+        update = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "update_booker_preferences",
+            {
+                "request_quote": case.prompt,
+                "practice_plan": {
+                    "date_adjustments": [
+                        {"date": "2026-09-01", "delta_hours": 1.0}
+                    ]
+                },
+            },
+            {
+                "dry_run": True,
+                "resulting_daily_targets": {"2026-09-01": 3.0},
+            },
+        )
+        run = ToolCallRecord(
+            case.case_id,
+            2,
+            None,
+            "run_booker",
+            {
+                "request_quote": case.prompt,
+                "only_date": "2026-09-01",
+                "max_actions": 1,
+            },
+            {"dry_run": True},
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [update, run],
+                (
+                    "Dry run: this would add another one hour tomorrow, making the "
+                    "saved goal three hours, then run one bounded action."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
+
+    def test_reported_ui_copy_contract_rejects_mutation(self):
+        for case_id, mutation_tool in (
+            ("reported_ui_copy", "run_booker"),
+            ("reported_cancellation_text", "cancel_reservations"),
+        ):
+            with self.subTest(case_id=case_id):
+                case = _case(case_id)
+                self.assertEqual(
+                    evaluate_case(
+                        case,
+                        [],
+                        (
+                            "That quoted UI copy is text to discuss; I have not acted "
+                            "on the wording."
+                        ),
+                        "completed",
+                        [],
+                    ),
+                    [],
+                )
+                mutation = ToolCallRecord(
+                    case.case_id,
+                    1,
+                    None,
+                    mutation_tool,
+                    {"request_quote": case.prompt},
+                    {"success": False, "dry_run": True},
+                )
+                issues = evaluate_case(
+                    case,
+                    [mutation],
+                    "I treated the UI copy as text.",
+                    "completed",
+                    [],
+                )
+                self.assertTrue(
+                    any("invoked a mutation" in item for item in issues)
+                )
+
+    def test_booking_explanation_accepts_spelled_out_session_lengths(self):
+        case = _case("booking_explanation_only")
+        context = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "get_booker_context",
+            {"sections": ["app", "agenda", "booking_plan"]},
+            {"dry_run": True},
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [context],
+                (
+                    "A three-hour target would use a two-hour session plus a "
+                    "one-hour session because each session is limited to two hours."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
 
 
 class EventRecorderTests(unittest.IsolatedAsyncioTestCase):

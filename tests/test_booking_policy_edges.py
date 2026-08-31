@@ -423,6 +423,314 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
         self.assertEqual(day_plan.primary.state, "ready")
         self.assertIn("Only 1 better later room", day_plan.reason)
 
+    def test_display_keeps_best_full_day_portfolio_over_best_single_session(self):
+        target_date = date(2026, 9, 4)
+        now = datetime(2026, 8, 30, 17, 0)
+
+        def opportunity(room, start, end, unlock, priority):
+            return book_week.BookingOpportunity(
+                room=room,
+                target_date=target_date,
+                start_minutes=start,
+                end_minutes=end,
+                unlock_at=unlock,
+                room_priority=priority,
+                initial_minutes=30,
+                potential_minutes=end - start,
+                preferred_minutes=0,
+                soft_preferred_minutes=0,
+                peak_minutes=0,
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=start,
+                source_gap_end_minutes=end,
+            )
+
+        best = opportunity(
+            "Best",
+            16 * 60 + 30,
+            18 * 60 + 30,
+            now,
+            0,
+        )
+        earlier = opportunity(
+            "Earlier",
+            16 * 60,
+            17 * 60 + 30,
+            now - book_week.timedelta(minutes=30),
+            1,
+        )
+        later = opportunity(
+            "Later",
+            17 * 60 + 30,
+            19 * 60,
+            now + book_week.timedelta(hours=1),
+            2,
+        )
+        tracker = mock.Mock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_peak_used_for_day.return_value = 0
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["Best", "Earlier", "Later"],
+            ALLOW_FRAGMENTED_SESSIONS=True,
+            SAME_ROOM_GAP_MINUTES=60,
+        ):
+            day_plan = book_week.build_display_day_plan(
+                target_date,
+                [best, earlier, later],
+                tracker,
+                book_week.DailyPlanningPreferences(),
+                now=now,
+                target_minutes=180,
+            )
+
+        selected = (day_plan.primary, *day_plan.additional)
+        self.assertEqual(
+            [(item.room, item.start_time, item.end_time) for item in selected],
+            [
+                ("Earlier", "16:00", "17:30"),
+                ("Later", "17:30", "19:00"),
+            ],
+        )
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual(day_plan.primary.state, "ready")
+        self.assertEqual(day_plan.additional[0].state, "waiting")
+        self.assertNotIn("Best", {item.room for item in selected})
+
+    def test_future_only_portfolio_waits_only_with_existing_confidence(self):
+        target_date = date(2026, 9, 4)
+        now = datetime(2026, 8, 30, 9, 30)
+
+        def opportunity(room, start, end, unlock, priority, preferred):
+            return book_week.BookingOpportunity(
+                room=room,
+                target_date=target_date,
+                start_minutes=start,
+                end_minutes=end,
+                unlock_at=unlock,
+                room_priority=priority,
+                initial_minutes=30,
+                potential_minutes=end - start,
+                preferred_minutes=preferred,
+                soft_preferred_minutes=preferred,
+                peak_minutes=end - start,
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=start,
+                source_gap_end_minutes=end,
+            )
+
+        current = opportunity("Early", 9 * 60, 11 * 60, now, 0, 0)
+        future_a = opportunity(
+            "Afternoon A",
+            12 * 60,
+            14 * 60,
+            now + book_week.timedelta(hours=2),
+            1,
+            120,
+        )
+        future_b = opportunity(
+            "Afternoon B",
+            12 * 60,
+            14 * 60,
+            now + book_week.timedelta(hours=2),
+            2,
+            120,
+        )
+        tracker = mock.Mock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_peak_used_for_day.return_value = 0
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["Early", "Afternoon A", "Afternoon B"],
+            ALLOW_FRAGMENTED_SESSIONS=True,
+            SAME_ROOM_GAP_MINUTES=60,
+        ):
+            day_plan = book_week.build_display_day_plan(
+                target_date,
+                [current, future_a, future_b],
+                tracker,
+                book_week.DailyPlanningPreferences(),
+                now=now,
+                target_minutes=120,
+            )
+
+        self.assertEqual(day_plan.primary.room, "Afternoon A")
+        self.assertEqual(day_plan.primary.state, "waiting")
+        self.assertEqual(day_plan.status, "waiting")
+        self.assertIn("2 better visible later", day_plan.reason)
+        self.assertEqual(
+            book_week._runtime_ordered_day_opportunities(
+                [current],
+                day_plan,
+                book_week.DailyPlanningPreferences(),
+                now=now,
+            ),
+            [],
+        )
+
+    def test_current_fallback_is_trimmed_to_preserve_complete_day_target(self):
+        target_date = date(2026, 9, 4)
+        now = datetime(2026, 8, 30, 17, 0)
+
+        def opportunity(room, start, end, unlock, priority, *, initial=30):
+            return book_week.BookingOpportunity(
+                room=room,
+                target_date=target_date,
+                start_minutes=start,
+                end_minutes=end,
+                unlock_at=unlock,
+                room_priority=priority,
+                initial_minutes=initial,
+                potential_minutes=end - start,
+                preferred_minutes=0,
+                soft_preferred_minutes=0,
+                peak_minutes=0,
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=start,
+                source_gap_end_minutes=end,
+            )
+
+        current = opportunity("Current", 17 * 60, 19 * 60, now, 10)
+        future_early = opportunity(
+            "Future Early",
+            16 * 60,
+            18 * 60,
+            now + book_week.timedelta(minutes=30),
+            0,
+            initial=120,
+        )
+        future_late = opportunity(
+            "Future Late",
+            18 * 60,
+            20 * 60,
+            now + book_week.timedelta(minutes=45),
+            1,
+        )
+        tracker = mock.Mock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_peak_used_for_day.return_value = 0
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["Future Early", "Future Late", "Current"],
+            ALLOW_FRAGMENTED_SESSIONS=True,
+            SAME_ROOM_GAP_MINUTES=60,
+        ):
+            day_plan = book_week.build_display_day_plan(
+                target_date,
+                [current, future_early, future_late],
+                tracker,
+                book_week.DailyPlanningPreferences(priority_mode="room_first"),
+                now=now,
+                target_minutes=180,
+            )
+
+        selected = (day_plan.primary, *day_plan.additional)
+        self.assertEqual(
+            [(item.room, item.start_time, item.end_time) for item in selected],
+            [
+                ("Current", "17:00", "18:00"),
+                ("Future Late", "18:00", "20:00"),
+            ],
+        )
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual(day_plan.primary.state, "ready")
+        self.assertIn("fallback", day_plan.reason.casefold())
+
+    def test_runtime_orders_selected_current_first_and_keeps_trimmed_end(self):
+        target_date = date(2026, 9, 4)
+        now = datetime(2026, 8, 30, 17, 0)
+
+        def opportunity(room, start, end, priority, preferred):
+            return book_week.BookingOpportunity(
+                room=room,
+                target_date=target_date,
+                start_minutes=start,
+                end_minutes=end,
+                unlock_at=now,
+                room_priority=priority,
+                initial_minutes=30,
+                potential_minutes=end - start,
+                preferred_minutes=preferred,
+                soft_preferred_minutes=preferred,
+                peak_minutes=book_week.interval_overlap_minutes(
+                    start,
+                    end,
+                    9 * 60,
+                    16 * 60,
+                ),
+                peak_window_start_minutes=9 * 60,
+                peak_window_end_minutes=16 * 60,
+                source_gap_start_minutes=start,
+                source_gap_end_minutes=end,
+            )
+
+        individually_best = opportunity(
+            "Best",
+            12 * 60,
+            14 * 60,
+            0,
+            120,
+        )
+        selected_source = opportunity(
+            "Earlier",
+            16 * 60,
+            18 * 60,
+            1,
+            0,
+        )
+        planned_primary = book_week.PlanCandidate(
+            room="Earlier",
+            date=target_date.isoformat(),
+            start_time="16:00",
+            end_time="17:30",
+            unlock_at=now.astimezone(),
+            initial_minutes=30,
+            potential_minutes=90,
+            confirmed_minutes=0,
+            state="ready",
+            reason="Selected by the full-day plan",
+        )
+        day_plan = book_week.DayPlan(
+            date=target_date.isoformat(),
+            target_minutes=180,
+            existing_minutes=0,
+            peak_used_minutes=0,
+            peak_limit_minutes=120,
+            status="planned",
+            primary=planned_primary,
+            additional=(),
+            backups=(),
+            held_peak_minutes=0,
+            reason="Selected by the full-day plan",
+        )
+
+        ordered = book_week._runtime_ordered_day_opportunities(
+            [individually_best, selected_source],
+            day_plan,
+            book_week.DailyPlanningPreferences(),
+            now=now,
+        )
+
+        self.assertEqual([item.room for item in ordered], ["Earlier"])
+        self.assertEqual(ordered[0].potential_minutes, 90)
+        self.assertEqual(ordered[0].end_minutes, 17 * 60 + 30)
+        slot = book_week._opportunity_to_normal_slot(ordered[0])
+        self.assertEqual(slot["duration"], 1.5)
+        self.assertEqual(slot["end_hour"], 17.5)
+        self.assertEqual(slot["planned_target_end_hour"], 17.5)
+
 
 class StrictTimeWindowBoundaryTests(unittest.TestCase):
     def setUp(self):

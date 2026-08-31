@@ -68,6 +68,12 @@ from booking_plan import (
     clear_booking_plan,
     write_booking_plan,
 )
+from booking_blackouts import (
+    add_rebooking_blackout,
+    blackout_conflict_ranges,
+    load_rebooking_blackouts,
+    make_rebooking_blackout,
+)
 from event_identity import (
     deduplicate_events,
     event_identity_v2,
@@ -1043,7 +1049,9 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
 
     pending = list_pending_mutation_receipts()
     if not pending:
-        return
+        return ()
+
+    reconciled_blackouts = []
 
     agenda_records = [
         event for event in agenda_events if isinstance(event, dict)
@@ -1126,6 +1134,26 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
                     f"agenda, but extension tracking could not be cleaned up: "
                     f"{exc}; receipt {receipt['id']} remains pending"
                 ) from exc
+            try:
+                add_rebooking_blackout(
+                    receipt["date"],
+                    receipt["start"],
+                    receipt["end"],
+                    path=settings_file,
+                )
+            except SettingsError as exc:
+                raise BookingVerificationError(
+                    f"Cancellation of event {event_id} is proven by the complete "
+                    f"agenda, but its no-rebook window could not be saved: "
+                    f"{exc}; receipt {receipt['id']} remains pending"
+                ) from exc
+            reconciled_blackouts.append(
+                make_rebooking_blackout(
+                    receipt["date"],
+                    receipt["start"],
+                    receipt["end"],
+                )
+            )
             try:
                 verify_mutation_receipt(
                     receipt["id"],
@@ -1230,6 +1258,7 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
             f"  Reconciled receipt {receipt['id']}: persisted event and exact "
             "agenda reservation verified"
         )
+    return tuple(reconciled_blackouts)
 
 
 def _agenda_records_for_mutation_proof(tracker):
@@ -3150,6 +3179,12 @@ def cancel_reservation_exact(
                 "from an action that was not applied."
             )
         remove_extendable_booking_by_event_id(event_id)
+        add_rebooking_blackout(
+            date_str,
+            start_time,
+            end_time,
+            path=settings_file,
+        )
         verify_mutation_receipt(receipt["id"], event_url=event_url)
     except BookingVerificationError:
         raise
@@ -4453,6 +4488,21 @@ class BookingTracker:
         """Count bookings on a specific date."""
         target = as_date(date)
         return sum(1 for _, booking_date, _, _ in self.bookings if as_date(booking_date) == target)
+
+
+def apply_rebooking_blackouts(tracker, blackouts):
+    """Install persistent user-cancelled windows as ordinary hard conflicts."""
+
+    if not isinstance(tracker, BookingTracker):
+        raise TypeError("tracker must be a BookingTracker")
+    ranges = blackout_conflict_ranges(blackouts)
+    for date_key, date_ranges in ranges.items():
+        target_date = date.fromisoformat(date_key)
+        for start_hour, end_hour in date_ranges:
+            existing = tracker.conflict_ranges.get(date_key, ())
+            if (start_hour, end_hour) not in existing:
+                tracker.add_conflict(target_date, start_hour, end_hour)
+    return sum(len(date_ranges) for date_ranges in ranges.values())
 
 
 def _normalize_practice_room_name(value, configured_rooms=None):
@@ -6348,6 +6398,114 @@ def _opportunity_to_normal_slot(opportunity):
     }
 
 
+def _runtime_ordered_day_opportunities(
+    current_opportunities,
+    day_plan,
+    daily_planning,
+    *,
+    now,
+):
+    """Put the ready full-day plan first, retaining its exact durations.
+
+    ``build_display_day_plan`` deliberately stores a reduced ``PlanCandidate``
+    rather than a mutation-capable object. Rebind each ready candidate to the
+    same freshly derived current opportunity before attempting anything, then
+    copy the portfolio's possibly trimmed end time onto that opportunity. If
+    the displayed primary is not ready, or any ready candidate cannot be
+    rebound exactly, return no mutation candidates instead of silently falling
+    back to a different plan.
+    """
+
+    if day_plan.primary is None or day_plan.primary.state != "ready":
+        return []
+    selected = (day_plan.primary, *day_plan.additional)
+    ready = [candidate for candidate in selected if candidate.state == "ready"]
+    if not ready:
+        return []
+
+    def parse_time(value):
+        if not isinstance(value, str):
+            return None
+        pieces = value.split(":")
+        if len(pieces) != 2 or not all(piece.isdigit() for piece in pieces):
+            return None
+        hour, minute = map(int, pieces)
+        if hour < 0 or hour > 24 or minute < 0 or minute > 59:
+            return None
+        if hour == 24 and minute != 0:
+            return None
+        result = hour * 60 + minute
+        return result if result % 15 == 0 else None
+
+    current = list(current_opportunities)
+    ordered = []
+    used_starts = set()
+    for candidate in ready:
+        try:
+            candidate_date = date.fromisoformat(candidate.date)
+        except (TypeError, ValueError):
+            return []
+        start_minutes = parse_time(candidate.start_time)
+        end_minutes = parse_time(candidate.end_time)
+        if (
+            start_minutes is None
+            or end_minutes is None
+            or end_minutes <= start_minutes
+            or candidate.potential_minutes != end_minutes - start_minutes
+            or candidate.potential_minutes < candidate.initial_minutes
+        ):
+            return []
+        matches = [
+            item
+            for item in current
+            if item.room == candidate.room
+            and item.target_date == candidate_date
+            and item.start_minutes == start_minutes
+            and item.end_minutes >= end_minutes
+            and item.initial_minutes == candidate.initial_minutes
+        ]
+        if not matches:
+            return []
+        source = min(
+            matches,
+            key=lambda item: (
+                item.end_minutes != end_minutes,
+                opportunity_rank(item, daily_planning, now=now),
+                item.end_minutes,
+            ),
+        )
+        planned = replace(
+            source,
+            end_minutes=end_minutes,
+            potential_minutes=candidate.potential_minutes,
+            preferred_minutes=min(
+                source.preferred_minutes,
+                candidate.potential_minutes,
+            ),
+            soft_preferred_minutes=min(
+                source.soft_preferred_minutes,
+                candidate.potential_minutes,
+            ),
+            peak_minutes=interval_overlap_minutes(
+                start_minutes,
+                end_minutes,
+                source.peak_window_start_minutes,
+                source.peak_window_end_minutes,
+            ),
+        )
+        identity = (planned.room, planned.target_date, planned.start_minutes)
+        if identity in used_starts:
+            return []
+        used_starts.add(identity)
+        ordered.append(planned)
+
+    # Do not append individually attractive fallbacks here. If a selected
+    # member loses a live race, booking an unplanned overlapping alternative
+    # could destroy the rest of the target-maximizing portfolio. The next
+    # recurring pass will rebuild from a fresh grid instead.
+    return ordered
+
+
 def _aware_local_datetime(value):
     """Attach the host's local zone to planner wall-clock values."""
 
@@ -6511,6 +6669,12 @@ def build_display_day_plan(
         remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
     )
+    # The planner returns members in desirability order. Runtime can act only
+    # on unlocked members, so preserve that order within each group while
+    # putting the best current member ahead of every future member.
+    selected_plan = tuple(
+        item for item in selected_plan if item.unlock_at <= now
+    ) + tuple(item for item in selected_plan if item.unlock_at > now)
     current = [item for item in opportunities if item.unlock_at <= now]
     future = [item for item in opportunities if item.unlock_at > now]
     decision = choose_horizon_opportunity(
@@ -6519,61 +6683,31 @@ def build_display_day_plan(
         daily_planning,
         now=now,
     )
-    if decision.action in {"book_now", "wait"} and decision.selected is not None:
-        # The displayed primary must be the exact opportunity the mutation
-        # decision selected. A stronger but insufficiently corroborated future
-        # option must never be labelled ready while runtime books the fallback.
-        forced_plan = select_day_plan(
-            (decision.selected,),
+    selected_current = [item for item in selected_plan if item.unlock_at <= now]
+    if (
+        selected_plan
+        and not selected_current
+        and decision.action == "book_now"
+        and decision.selected is not None
+    ):
+        # A future-only optimum is not enough authority to pass up a current
+        # edge. Preserve the existing confidence/fallback decision, but let the
+        # whole-day optimizer trim that current source and combine it with
+        # compatible sessions. Forcing its full duration can strand otherwise
+        # achievable target time later in the day.
+        selected_plan = select_day_plan(
+            opportunities,
             daily_planning,
             now=now,
             target_minutes=selection_minutes,
-            allow_fragmented_sessions=False,
+            allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
             remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
             same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+            required_opportunity=decision.selected,
         )
-        selected_plan = forced_plan
-        forced = forced_plan[0] if forced_plan else None
-        remaining_selection = max(
-            0,
-            selection_minutes - (forced.potential_minutes if forced else 0),
-        )
-        if (
-            forced is not None
-            and ALLOW_FRAGMENTED_SESSIONS
-            and remaining_selection >= MINIMUM_BLOCK_MINUTES
-        ):
-            remaining_options = [
-                item
-                for item in opportunities
-                if item != decision.selected
-                and not (
-                    item.start_minutes < forced.end_minutes
-                    and item.end_minutes > forced.start_minutes
-                )
-                and not (
-                    item.room == forced.room
-                    and not (
-                        item.start_minutes
-                        >= forced.end_minutes + SAME_ROOM_GAP_MINUTES
-                        or item.end_minutes + SAME_ROOM_GAP_MINUTES
-                        <= forced.start_minutes
-                    )
-                )
-            ]
-            selected_plan += select_day_plan(
-                remaining_options,
-                daily_planning,
-                now=now,
-                target_minutes=remaining_selection,
-                allow_fragmented_sessions=True,
-                remaining_peak_minutes=max(
-                    0,
-                    tracker.get_remaining_peak_minutes(target_date)
-                    - forced.peak_minutes,
-                ),
-                same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
-            )
+        selected_plan = tuple(
+            item for item in selected_plan if item.unlock_at <= now
+        ) + tuple(item for item in selected_plan if item.unlock_at > now)
 
     primary_opportunity = None
     candidate_state = "potential"
@@ -6584,7 +6718,23 @@ def build_display_day_plan(
         reason = "The configured daily target is already met"
     elif selected_plan:
         primary_opportunity = selected_plan[0]
-        if decision.action == "wait" and decision.selected is not None:
+        if primary_opportunity.unlock_at <= now:
+            candidate_state = "ready"
+            status = "planned"
+            if (
+                decision.action == "book_now"
+                and decision.selected is not None
+                and primary_opportunity.room == decision.selected.room
+                and primary_opportunity.start_minutes
+                == decision.selected.start_minutes
+            ):
+                reason = decision.reason
+            else:
+                reason = (
+                    "Selected the best current step in the optimized full-day "
+                    "practice plan"
+                )
+        elif decision.action == "wait" and decision.selected is not None:
             candidate_state = "waiting"
             held_peak = min(
                 decision.held_peak_minutes,
@@ -6592,15 +6742,9 @@ def build_display_day_plan(
             )
             status = "waiting"
             reason = decision.reason
-        elif decision.action == "book_now":
-            candidate_state = "ready"
-            status = "planned"
-            reason = decision.reason
         else:
-            candidate_state = (
-                "waiting" if primary_opportunity.unlock_at > now else "ready"
-            )
-            status = "waiting" if candidate_state == "waiting" else "planned"
+            candidate_state = "waiting"
+            status = "waiting"
             reason = (
                 f"Best visible opportunity is {primary_opportunity.start_text}-"
                 f"{primary_opportunity.end_text} in {primary_opportunity.room}"
@@ -9330,6 +9474,13 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
     print("="*60)
 
     tracker = BookingTracker()
+    rebooking_blackouts = load_rebooking_blackouts(settings)
+    apply_rebooking_blackouts(tracker, rebooking_blackouts)
+    if rebooking_blackouts:
+        print(
+            f"Loaded {len(rebooking_blackouts)} persistent cancelled-time "
+            "window(s); overlapping bookings will remain suppressed"
+        )
     total_booked = 0
     events_detected = 0
     booking_details = []
@@ -9362,9 +9513,16 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             window_dates=live_dates,
             snapshot_path=AGENDA_SNAPSHOT_FILE,
         )
-        reconcile_pending_mutation_receipts(
+        reconciled_blackouts = reconcile_pending_mutation_receipts(
             page,
             _agenda_records_for_mutation_proof(tracker),
+        )
+        # Reconciliation can prove an interrupted cancellation and persist its
+        # no-rebook window during this run. Install that new rule before any
+        # create or extension is considered.
+        apply_rebooking_blackouts(
+            tracker,
+            reconciled_blackouts or (),
         )
 
         if _cancellation_requested(args):
@@ -10389,8 +10547,30 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     daily_planning,
                     now=scan_time,
                 )
-                print(f"  [Planner] {day_decision.reason}")
-                if day_decision.action == "wait":
+                runtime_day_plan = build_display_day_plan(
+                    target_date,
+                    day_opportunities,
+                    tracker,
+                    daily_planning,
+                    now=scan_time,
+                    target_minutes=int(
+                        (current_day_hours + target_hours) * 4 + 1e-9
+                    )
+                    * 15,
+                    remaining_weekly_minutes=max(
+                        0,
+                        int(tracker.get_remaining_quota_hours() * 4 + 1e-9)
+                        * 15
+                        - extension_weekly_minutes
+                        - cross_date_foresight_minutes,
+                    ),
+                )
+                print(f"  [Planner] {runtime_day_plan.reason}")
+                if (
+                    runtime_day_plan.primary is not None
+                    and runtime_day_plan.primary.state == "waiting"
+                    and day_decision.action == "wait"
+                ):
                     planning_context["held_peak_by_date"][date_key] = (
                         day_decision.held_peak_minutes
                     )
@@ -10417,33 +10597,14 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     planning_context.setdefault("held_target_by_date", {}).pop(
                         date_key, None
                     )
-                current_opportunities.sort(
-                    key=lambda item: opportunity_rank(
-                        item,
-                        daily_planning,
-                        now=scan_time,
-                    )
-                )
-                display_day = build_display_day_plan(
-                    target_date,
-                    day_opportunities,
-                    tracker,
+                runtime_opportunities = _runtime_ordered_day_opportunities(
+                    current_opportunities,
+                    runtime_day_plan,
                     daily_planning,
                     now=scan_time,
-                    target_minutes=int(
-                        (current_day_hours + target_hours) * 4 + 1e-9
-                    )
-                    * 15,
-                    remaining_weekly_minutes=max(
-                        0,
-                        int(tracker.get_remaining_quota_hours() * 4 + 1e-9)
-                        * 15
-                        - extension_weekly_minutes
-                        - cross_date_foresight_minutes,
-                    ),
                 )
                 display_day = attach_extension_progress(
-                    display_day,
+                    runtime_day_plan,
                     planning_context,
                     now=scan_time,
                 )
@@ -10457,7 +10618,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 )
                 all_slots = [
                     _opportunity_to_normal_slot(item)
-                    for item in current_opportunities
+                    for item in runtime_opportunities
                 ]
 
             # Filter out non-preferred slots if strict mode is enabled
@@ -10771,8 +10932,34 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                             daily_planning,
                             now=refreshed_now,
                         )
-                        print(f"  [Planner] {refreshed_decision.reason}")
-                        if refreshed_decision.action == "wait":
+                        runtime_day_plan = build_display_day_plan(
+                            target_date,
+                            refreshed_opportunities,
+                            tracker,
+                            daily_planning,
+                            now=refreshed_now,
+                            target_minutes=int(
+                                (current_day_hours + target_hours) * 4 + 1e-9
+                            )
+                            * 15,
+                            remaining_weekly_minutes=max(
+                                0,
+                                int(
+                                    tracker.get_remaining_quota_hours()
+                                    * 4
+                                    + 1e-9
+                                )
+                                * 15
+                                - extension_weekly_minutes
+                                - cross_date_foresight_minutes,
+                            ),
+                        )
+                        print(f"  [Planner] {runtime_day_plan.reason}")
+                        if (
+                            runtime_day_plan.primary is not None
+                            and runtime_day_plan.primary.state == "waiting"
+                            and refreshed_decision.action == "wait"
+                        ):
                             planning_context["held_peak_by_date"][date_key] = (
                                 refreshed_decision.held_peak_minutes
                             )
@@ -10799,37 +10986,14 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                             planning_context.setdefault(
                                 "held_target_by_date", {}
                             ).pop(date_key, None)
-                        current_opportunities.sort(
-                            key=lambda item: opportunity_rank(
-                                item,
-                                daily_planning,
-                                now=refreshed_now,
-                            )
-                        )
-                        display_day = build_display_day_plan(
-                            target_date,
-                            refreshed_opportunities,
-                            tracker,
+                        runtime_opportunities = _runtime_ordered_day_opportunities(
+                            current_opportunities,
+                            runtime_day_plan,
                             daily_planning,
                             now=refreshed_now,
-                            target_minutes=int(
-                                (current_day_hours + target_hours) * 4 + 1e-9
-                            )
-                            * 15,
-                            remaining_weekly_minutes=max(
-                                0,
-                                int(
-                                    tracker.get_remaining_quota_hours()
-                                    * 4
-                                    + 1e-9
-                                )
-                                * 15
-                                - extension_weekly_minutes
-                                - cross_date_foresight_minutes,
-                            ),
                         )
                         display_day = attach_extension_progress(
-                            display_day,
+                            runtime_day_plan,
                             planning_context,
                             now=refreshed_now,
                         )
@@ -10843,7 +11007,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         )
                         all_slots = [
                             _opportunity_to_normal_slot(item)
-                            for item in current_opportunities
+                            for item in runtime_opportunities
                         ]
 
                     # Apply strict mode filter if enabled
@@ -11221,6 +11385,7 @@ def _load_and_validate_runtime_settings():
     load_ignored_events(settings)
     load_time_preferences(settings)
     load_booking_strategy(settings)
+    load_rebooking_blackouts(settings)
     load_extendable_bookings(settings)
     list_pending_mutation_receipts()
     try:

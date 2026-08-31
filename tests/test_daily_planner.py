@@ -1,5 +1,6 @@
 import unittest
 from datetime import date, datetime, timedelta
+from time import perf_counter
 
 from booking_strategy import DailyPlanningPreferences
 from daily_planner import (
@@ -362,6 +363,121 @@ class DailyPlannerTests(unittest.TestCase):
 
         self.assertEqual(sum(item.potential_minutes for item in selected), 180)
         self.assertEqual({item.room for item in selected}, {"B1.09", "B1.10"})
+
+    def test_required_current_source_can_trim_to_complete_future_portfolio(self):
+        now = datetime(2026, 8, 30, 17, 0)
+        planning = self.prefs()
+        current = self.opportunities("Current", 17, 19, now)[0]
+        future = self.opportunities("Future", 18, 20, now, priority=1)[0]
+
+        selected = select_day_plan(
+            [current, future],
+            planning,
+            now=now,
+            target_minutes=180,
+            allow_fragmented_sessions=True,
+            remaining_peak_minutes=120,
+            same_room_gap_minutes=60,
+            required_opportunity=current,
+        )
+
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual(
+            {
+                (item.room, item.start_text, item.end_text)
+                for item in selected
+            },
+            {
+                ("Current", "17:00", "18:00"),
+                ("Future", "18:00", "20:00"),
+            },
+        )
+
+    def test_day_portfolio_finds_three_session_target_beyond_one_seed_greedy(self):
+        now = datetime(2026, 8, 30, 17, 0)
+        planning = self.prefs()
+
+        def fixed(room, start, end, priority):
+            return self.opportunities(
+                room,
+                start / 60,
+                end / 60,
+                now,
+                priority=priority,
+            )[0]
+
+        # A one-seed greedy completion used to choose R5 for 60 minutes and R0
+        # for 105, then stop at 165.  Reaching 180 requires two non-greedy
+        # truncations before the final 105-minute block.
+        candidates = [
+            fixed("R1", 1125, 1230, 1),
+            fixed("R0", 1140, 1245, 2),
+            fixed("R6", 1155, 1260, 3),
+            fixed("R7", 1095, 1185, 5),
+            fixed("R4", 1170, 1260, 0),
+            fixed("R3", 1170, 1245, 4),
+            fixed("R5", 1080, 1140, 6),
+            fixed("R2", 1170, 1200, 7),
+        ]
+
+        selected = select_day_plan(
+            candidates,
+            planning,
+            now=now,
+            target_minutes=180,
+            allow_fragmented_sessions=True,
+            remaining_peak_minutes=120,
+            same_room_gap_minutes=0,
+        )
+
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual(len(selected), 3)
+        self.assertEqual(
+            {
+                (item.room, item.start_text, item.end_text)
+                for item in selected
+            },
+            {
+                ("R5", "18:00", "18:45"),
+                ("R1", "18:45", "19:15"),
+                ("R6", "19:15", "21:00"),
+            },
+        )
+
+    def test_large_day_portfolio_search_stays_bounded(self):
+        now = datetime(2026, 8, 30, 8, 0)
+        planning = self.prefs()
+        candidates = []
+        for room_index in range(22):
+            for start_index in range(50):
+                start = 8 * 60 + start_index * 15
+                end = min(start + 120, 22 * 60)
+                candidates.append(
+                    self.opportunities(
+                        f"R{room_index:02d}",
+                        start / 60,
+                        end / 60,
+                        now,
+                        priority=room_index,
+                    )[0]
+                )
+        self.assertEqual(len(candidates), 1100)
+
+        started = perf_counter()
+        selected = select_day_plan(
+            candidates,
+            planning,
+            now=now,
+            target_minutes=180,
+            allow_fragmented_sessions=True,
+            remaining_peak_minutes=120,
+            same_room_gap_minutes=60,
+        )
+        elapsed = perf_counter() - started
+
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual(len(selected), 2)
+        self.assertLess(elapsed, 2.0)
 
     def test_day_plan_respects_aggregate_peak_and_same_room_gap(self):
         now = datetime(2026, 8, 30, 8, 0)

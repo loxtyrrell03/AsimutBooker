@@ -216,6 +216,19 @@ class BookingPlanTests(unittest.TestCase):
             booking_plan_fingerprint(ignored_changed),
         )
 
+        blackout_changed = dict(first)
+        blackout_changed["rebooking_blackouts"] = [
+            {
+                "date": "2026-09-01",
+                "start_time": "12:00",
+                "end_time": "18:00",
+            }
+        ]
+        self.assertNotEqual(
+            booking_plan_fingerprint(first),
+            booking_plan_fingerprint(blackout_changed),
+        )
+
     def test_settings_fingerprint_includes_advanced_rule_file(self):
         config_path = Path(self.temporary.name) / "config.yaml"
         config_path.write_text("rules:\n  peak_end: 16\n", encoding="utf-8")

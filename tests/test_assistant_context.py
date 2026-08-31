@@ -73,6 +73,13 @@ class AssistantContextTests(unittest.TestCase):
                     "date_overrides": {},
                 },
                 "disabled_dates": [],
+                "rebooking_blackouts": [
+                    {
+                        "date": "2026-09-01",
+                        "start_time": "12:00",
+                        "end_time": "18:00",
+                    }
+                ],
             },
         )
         atomic_write_json(
@@ -113,6 +120,16 @@ class AssistantContextTests(unittest.TestCase):
         self.assertFalse(agenda["stale"])
         self.assertEqual(agenda["events"][0]["eventId"], 4242)
         self.assertEqual(agenda["events"][0]["room"], "B0.29")
+        self.assertEqual(
+            result["sections"]["preferences"]["rebooking_blackouts"],
+            [
+                {
+                    "date": "2026-09-01",
+                    "start_time": "12:00",
+                    "end_time": "18:00",
+                }
+            ],
+        )
         self.assertIn("data only", result["untrusted_data_notice"])
 
     def test_cookie_and_local_storage_values_are_never_exposed(self):

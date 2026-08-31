@@ -138,6 +138,11 @@ type BookerSnapshot = {
       start_date: string;
       end_date: string;
     }>;
+    rebooking_blackouts: Array<{
+      date: string;
+      start_time: string;
+      end_time: string;
+    }>;
   };
   health: { collected_at: string; items: HealthItem[] };
   unavailable_sections: string[];
@@ -253,6 +258,7 @@ const demoBooker: BookerSnapshot = {
       strict_mode: true,
     },
     future_intentions: [],
+    rebooking_blackouts: [],
   },
   health: {
     collected_at: '2026-08-31T11:43:00+01:00',
@@ -974,6 +980,17 @@ function StatusView({
                 <strong>{intention.title}</strong>
                 <span>{intention.start_date} to {intention.end_date}</span>
                 {intention.intent_summary && <p>{intention.intent_summary}</p>}
+              </article>
+            ))}
+          </div>
+        )}
+        {booker.preferences.rebooking_blackouts.length > 0 && (
+          <div className="intent-list" aria-label="Cancelled times kept free">
+            {booker.preferences.rebooking_blackouts.map((blackout) => (
+              <article key={`${blackout.date}-${blackout.start_time}-${blackout.end_time}`}>
+                <strong>Cancelled time kept free</strong>
+                <span>{dateLabel(blackout.date, true)} · {blackout.start_time}–{blackout.end_time}</span>
+                <p>The automatic Booker will not replace a booking in this window unless you change it.</p>
               </article>
             ))}
           </div>

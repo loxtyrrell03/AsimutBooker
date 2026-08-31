@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from agenda_snapshot import AGENDA_SNAPSHOT_FILE, read_agenda_snapshot
 from app_settings import SETTINGS_FILE, SettingsError, load_settings
 from assistant_plans import load_assistant_plans
+from booking_blackouts import load_rebooking_blackouts
 from booking_plan import PLAN_FILE, booking_plan_fingerprint, read_booking_plan
 from booking_strategy import booking_strategy_to_dict, load_booking_strategy
 from health_status import (
@@ -49,6 +50,7 @@ APP_CAPABILITIES = {
         "Booking history plus optional ntfy result notifications",
         "Practice targets, date overrides, disabled dates, and preferred time windows",
         "Daily totals automatically split into a ranked portfolio of legal non-overlapping sessions",
+        "Verified cancellations persist exact no-rebook time windows until the user changes them",
         "Explainable future practice intentions resolved into exact dated targets",
         "Room ordering, exclusions, metadata requirements, and session-shape rules",
         "Daily foresight with quota-aware primary, additional, and backup sessions",
@@ -65,7 +67,7 @@ APP_CAPABILITIES = {
         "Set preferred-time, foresight, room-order, room-requirement, and session-shape preferences",
         "Save high-level future intentions only after resolving a numeric target for every date",
         "Run one plan-selected autonomous booking action under the ordinary live safeguards",
-        "Resolve and cancel one or a bounded explicit set of current reservations by positive event ID and complete tuple",
+        "Let Terra select and cancel any bounded set of current reservations while the host revalidates every positive event ID",
     ],
     "manual_or_gui_boundaries": [
         "Initial credential setup uses the masked private prompt and Windows Credential Manager, never chat",
@@ -205,6 +207,7 @@ def _settings_context(settings_path: Path) -> dict[str, Any]:
     practice = load_practice_plan(settings)
     strategy = load_booking_strategy(settings)
     rooms = load_room_preferences(settings)
+    blackouts = load_rebooking_blackouts(settings)
     return {
         "disabled_dates": _validate_disabled_dates(settings),
         "practice_plan": {
@@ -216,6 +219,7 @@ def _settings_context(settings_path: Path) -> dict[str, Any]:
         "booking_strategy": booking_strategy_to_dict(strategy),
         "room_preferences": room_preferences_to_dict(rooms),
         "extendable_bookings": _safe_extendable_bookings(settings),
+        "rebooking_blackouts": [item.to_dict() for item in blackouts],
         "future_practice_intentions": list(load_assistant_plans(settings)),
         "ignored_event_count": len(settings.get("ignored_events", []))
         if isinstance(settings.get("ignored_events", []), list)
