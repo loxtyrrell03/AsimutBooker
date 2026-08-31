@@ -17,12 +17,22 @@ $PhoneDir = Join-Path $WorkingDir "phone"
 $BuildPath = Join-Path $PhoneDir "dist-phone\index.html"
 $TailscalePath = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
 $VerifyPath = Join-Path $WorkingDir "verify_phone_deployment.ps1"
+$CodexCommand = Get-Command codex.exe -CommandType Application -ErrorAction SilentlyContinue
 
 foreach ($RequiredPath in @($PythonPath, $PythonwPath, $ServerPath, $TailscalePath, $VerifyPath)) {
     if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
         throw "Required phone-app dependency is missing: $RequiredPath"
     }
 }
+if ($null -eq $CodexCommand -or -not (Test-Path -LiteralPath $CodexCommand.Source -PathType Leaf)) {
+    throw "The Codex CLI executable was not found. Run phone setup from Codex."
+}
+$CodexPath = [string]$CodexCommand.Source
+$BasePythonwPath = (& $PythonPath -c "import pathlib, sys; print(pathlib.Path(sys._base_executable).with_name('pythonw.exe'))").Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $BasePythonwPath -PathType Leaf)) {
+    throw "The virtual environment's base windowless Python runtime could not be resolved."
+}
+$AllowedPythonwPaths = @($PythonwPath, $BasePythonwPath)
 
 $TailnetStatus = (& $TailscalePath status --json | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0 -or $null -eq $TailnetStatus.Self) {
@@ -86,7 +96,7 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "The isolated Python runtime could not import the phone service."
 }
-& $PythonPath (Join-Path $WorkingDir "phone_configure.py") --allowed-login $AllowedLogin --public-origin $PublicOrigin --path $ConfigPath
+& $PythonPath (Join-Path $WorkingDir "phone_configure.py") --allowed-login $AllowedLogin --public-origin $PublicOrigin --codex-executable $CodexPath --path $ConfigPath
 if ($LASTEXITCODE -ne 0) {
     throw "The private phone configuration could not be written."
 }
@@ -101,7 +111,7 @@ if ($Occupied.Count -gt 0) {
     foreach ($Listener in $Occupied) {
         $Process = Get-CimInstance Win32_Process -Filter "ProcessId=$($Listener.OwningProcess)" -ErrorAction Stop
         if (
-            [string]$Process.ExecutablePath -ieq $PythonwPath -and
+            $AllowedPythonwPaths -icontains [string]$Process.ExecutablePath -and
             [string]$Process.CommandLine -like "*phone_server.py*"
         ) {
             $Owned = $true

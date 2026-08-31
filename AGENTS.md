@@ -993,6 +993,11 @@ python -m unittest discover -s tests
   It has no direct booking/cancellation endpoint; messages reuse the existing
   `AssistantRuntime`, exact `gpt-5.6-terra` medium configuration, and typed Booker
   tool surface.
+- Phone configuration version 2 pins one existing absolute `codex.exe` path and
+  passes it directly into the App Server controller. The logon task therefore
+  never depends on an interactive shell's `PATH`; setup discovers the current
+  Codex installation, and both configuration loading and deployment verification
+  reject a missing or differently named executable.
 - Phone API access requires the exact public Host and Origin, one allow-listed
   Tailscale login header, a Secure/HttpOnly/SameSite=Strict server session, and a
   synchronizer CSRF token. API and transcript responses are no-store; CSP denies
@@ -1020,7 +1025,9 @@ python -m unittest discover -s tests
   and mutation results are never service-worker cached or replayed offline. Stale
   plan candidates are suppressed, unavailable context is visible, and saved future
   intentions are shown as exact dated ranges rather than misleading defaults.
-- The complete offline regression suite passes 636 tests; 41 focused phone/API/
+  Cache writes are awaited inside the fetch lifecycle so failures cannot become
+  unhandled background promises.
+- The complete offline regression suite passes 638 tests; 43 focused phone/API/
   PWA/lock tests and 6 browser-state decision tests pass. The
   production static build passes TypeScript, accessibility/correctness linting,
   synchronized-cache verification, and source-map rejection. Runtime installation

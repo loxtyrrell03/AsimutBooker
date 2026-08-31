@@ -16,6 +16,7 @@ from phone_server import (
     PhoneServerConfig,
     RequestLedger,
     SessionStore,
+    load_phone_server_config,
     public_assistant_event,
 )
 
@@ -215,6 +216,34 @@ class EventHubTests(unittest.TestCase):
 
 
 class PhoneAssistantServiceTests(unittest.TestCase):
+    def test_runtime_receives_the_configured_codex_executable(self):
+        captured = {}
+
+        class RecordingRuntime(FakeRuntime):
+            def __init__(self, event_handler, **kwargs):
+                captured.update(kwargs)
+                super().__init__(event_handler, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "phone_server.build_phone_snapshot", return_value={"status": {"state": "ready"}}
+        ):
+            codex_executable = str(Path(directory) / "codex.exe")
+            service = PhoneAssistantService(
+                runtime_factory=RecordingRuntime,
+                ledger=MemoryLedger(),
+                state_path=Path(directory) / "state.json",
+                workspace=Path(directory) / "workspace",
+                codex_executable=codex_executable,
+            )
+            try:
+                self.assertIsNotNone(service.runtime)
+                self.assertEqual(
+                    captured["controller_kwargs"]["codex_executable"],
+                    codex_executable,
+                )
+            finally:
+                service.close()
+
     def test_duplicate_message_id_executes_exactly_once(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch(
             "phone_server.build_phone_snapshot", return_value={"status": {"state": "ready"}}
@@ -623,6 +652,36 @@ class SessionStoreTests(unittest.TestCase):
         session = store.issue("owner@example.test")
         self.assertIsNotNone(store.get(session.token, "OWNER@example.test"))
         self.assertIsNone(store.get(session.token, "someone-else@example.test"))
+
+
+class PhoneServerConfigTests(unittest.TestCase):
+    def test_config_requires_one_existing_exact_codex_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "codex.exe"
+            executable.write_bytes(b"test executable placeholder")
+            path = root / "phone.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "allowed_login": "owner@example.test",
+                        "public_origin": "https://lox-pc.tail.test:10443",
+                        "host": "127.0.0.1",
+                        "port": 8794,
+                        "codex_executable": str(executable),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = load_phone_server_config(path)
+            self.assertEqual(config.codex_executable, str(executable.resolve()))
+
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["codex_executable"] = str(root / "missing" / "codex.exe")
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaises(PhoneServerError):
+                load_phone_server_config(path)
 
 
 class HTTPBoundaryTests(unittest.TestCase):

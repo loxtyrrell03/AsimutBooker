@@ -96,6 +96,7 @@ class PhoneServerConfig:
     public_origin: str
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    codex_executable: str | None = None
 
     @property
     def public_host(self) -> str:
@@ -116,14 +117,16 @@ def load_phone_server_config(path: Path = CONFIG_FILE) -> PhoneServerConfig:
         "public_origin",
         "host",
         "port",
+        "codex_executable",
     }:
         raise PhoneServerError("Phone server configuration has unexpected fields")
-    if raw.get("version") != 1:
+    if raw.get("version") != 2:
         raise PhoneServerError("Phone server configuration version is unsupported")
     login = raw.get("allowed_login")
     origin = raw.get("public_origin")
     host = raw.get("host")
     port = raw.get("port")
+    codex_executable = raw.get("codex_executable")
     if not isinstance(login, str) or not login.strip() or len(login) > 320:
         raise PhoneServerError("Phone server identity allow-list is invalid")
     parsed = urlsplit(origin) if isinstance(origin, str) else None
@@ -140,11 +143,21 @@ def load_phone_server_config(path: Path = CONFIG_FILE) -> PhoneServerConfig:
         raise PhoneServerError("Phone server must bind to exact loopback")
     if type(port) is not int or not 1024 <= port <= 65535:
         raise PhoneServerError("Phone server port is invalid")
+    if not isinstance(codex_executable, str) or not codex_executable.strip():
+        raise PhoneServerError("Phone server Codex executable is invalid")
+    codex_path = Path(codex_executable)
+    if (
+        not codex_path.is_absolute()
+        or codex_path.name.casefold() != "codex.exe"
+        or not codex_path.is_file()
+    ):
+        raise PhoneServerError("Phone server Codex executable is unavailable")
     return PhoneServerConfig(
         allowed_login=login.strip().casefold(),
         public_origin=origin.rstrip("/"),
         host=host,
         port=port,
+        codex_executable=str(codex_path.resolve()),
     )
 
 
@@ -434,6 +447,7 @@ class PhoneAssistantService:
         state_path: Path = ASSISTANT_STATE_FILE,
         workspace: Path | None = None,
         stream_generation: str | None = None,
+        codex_executable: str | None = None,
     ) -> None:
         self.events = EventHub()
         self.ledger = ledger or RequestLedger()
@@ -454,16 +468,23 @@ class PhoneAssistantService:
         self._runtime_factory = runtime_factory
         self._state_path = Path(state_path)
         self._workspace = Path(workspace)
+        self._codex_executable = codex_executable
         self._runtime: Any | None = None
 
     @property
     def runtime(self) -> Any:
         with self._runtime_lock:
             if self._runtime is None:
+                runtime_options: dict[str, Any] = {}
+                if self._codex_executable:
+                    runtime_options["controller_kwargs"] = {
+                        "codex_executable": self._codex_executable
+                    }
                 self._runtime = self._runtime_factory(
                     self._receive_runtime_event,
                     state_path=self._state_path,
                     assistant_workspace=self._workspace,
+                    **runtime_options,
                 )
                 self._runtime.start()
             return self._runtime
@@ -736,7 +757,9 @@ class PhoneApplication:
         secure_cookie: bool = True,
     ) -> None:
         self.config = config
-        self.assistant = assistant or PhoneAssistantService()
+        self.assistant = assistant or PhoneAssistantService(
+            codex_executable=config.codex_executable
+        )
         self.static_dir = Path(static_dir).resolve()
         self.secure_cookie = secure_cookie
         self.sessions = SessionStore()

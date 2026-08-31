@@ -40,10 +40,11 @@ self.addEventListener('fetch', (event) => {
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
-        .then((response) => {
+        .then(async (response) => {
           if (response.ok) {
             const copy = response.clone();
-            caches.open(SHELL_CACHE).then((cache) => cache.put('/', copy));
+            const cache = await caches.open(SHELL_CACHE);
+            await cache.put('/', copy);
           }
           return response;
         })
@@ -56,10 +57,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;
-        return fetch(request).then((response) => {
+        return fetch(request).then(async (response) => {
           if (response.ok) {
             const copy = response.clone();
-            caches.open(ASSET_CACHE).then((cache) => cache.put(request, copy));
+            const cache = await caches.open(ASSET_CACHE);
+            await cache.put(request, copy);
           }
           return response;
         });

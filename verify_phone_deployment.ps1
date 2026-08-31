@@ -10,17 +10,27 @@ $BackendPort = 8794
 $HttpsPort = 10443
 $WorkingDir = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $PythonwPath = Join-Path $WorkingDir ".venv\Scripts\pythonw.exe"
+$PythonPath = Join-Path $WorkingDir ".venv\Scripts\python.exe"
 $ServerPath = Join-Path $WorkingDir "phone_server.py"
 $ConfigPath = Join-Path $WorkingDir "data\phone_server_config.json"
 $BuildDir = Join-Path $WorkingDir "phone\dist-phone"
 $TailscalePath = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
 
+$BasePythonwPath = (& $PythonPath -c "import pathlib, sys; print(pathlib.Path(sys._base_executable).with_name('pythonw.exe'))").Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $BasePythonwPath -PathType Leaf)) {
+    throw "The virtual environment's base windowless Python runtime could not be resolved."
+}
+$AllowedPythonwPaths = @($PythonwPath, $BasePythonwPath)
+
 $Config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 if (
-    $Config.version -ne 1 -or
+    $Config.version -ne 2 -or
     $Config.host -cne "127.0.0.1" -or
     $Config.port -ne $BackendPort -or
-    [string]::IsNullOrWhiteSpace([string]$Config.allowed_login)
+    [string]::IsNullOrWhiteSpace([string]$Config.allowed_login) -or
+    [string]::IsNullOrWhiteSpace([string]$Config.codex_executable) -or
+    -not (Test-Path -LiteralPath ([string]$Config.codex_executable) -PathType Leaf) -or
+    [IO.Path]::GetFileName([string]$Config.codex_executable) -ine "codex.exe"
 ) {
     throw "The phone server configuration is not the exact private contract."
 }
@@ -58,7 +68,7 @@ if ($Listeners.Count -ne 1) {
 }
 $Process = Get-CimInstance Win32_Process -Filter "ProcessId=$($Listeners[0].OwningProcess)" -ErrorAction Stop
 if (
-    [string]$Process.ExecutablePath -ine $PythonwPath -or
+    $AllowedPythonwPaths -inotcontains [string]$Process.ExecutablePath -or
     [string]$Process.CommandLine -notlike "*phone_server.py*" -or
     [string]$Process.CommandLine -notlike "*phone_server_config.json*"
 ) {
@@ -74,7 +84,7 @@ if ($Manifest.display -ne "standalone" -or $Manifest.start_url -ne "/" -or @($Ma
     throw "The deployed PWA manifest is incomplete."
 }
 foreach ($Asset in @("/", "/sw.js", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/apple-touch-icon.png")) {
-    $Response = Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort$Asset" -Headers @{ Host = $PublicHost } -TimeoutSec 4
+    $Response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$BackendPort$Asset" -Headers @{ Host = $PublicHost } -TimeoutSec 4
     if ($Response.StatusCode -ne 200) {
         throw "A required phone asset is unavailable: $Asset"
     }
@@ -94,13 +104,13 @@ function Get-StatusCode {
 }
 
 $SensitiveStatus = Get-StatusCode {
-    Invoke-WebRequest -Uri "http://127.0.0.1:$BackendPort/data/settings.json" -Headers @{ Host = $PublicHost } -TimeoutSec 4
+    Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$BackendPort/data/settings.json" -Headers @{ Host = $PublicHost } -TimeoutSec 4
 }
 if ($SensitiveStatus -ne 404) {
     throw "The static server exposed a repository data path."
 }
 $AnonymousApiStatus = Get-StatusCode {
-    Invoke-WebRequest `
+    Invoke-WebRequest -UseBasicParsing `
         -Uri "http://127.0.0.1:$BackendPort/api/v1/session" `
         -Method Post `
         -Headers @{ Host = $PublicHost; Origin = [string]$Config.public_origin; "Sec-Fetch-Site" = "same-origin" } `
@@ -124,7 +134,11 @@ $FunnelStatus = @(& $TailscalePath funnel status)
 if ($LASTEXITCODE -ne 0) {
     throw "Tailscale Funnel status could not be read."
 }
-if (($FunnelStatus -join "`n") -match [Regex]::Escape($PublicHost)) {
+$UnexpectedFunnelOrigin = @($FunnelStatus | Where-Object {
+    ([string]$_).StartsWith("https://$PublicHost", [StringComparison]::OrdinalIgnoreCase) -and
+    [string]$_ -cne $ExpectedOriginLine
+})
+if ($UnexpectedFunnelOrigin.Count -gt 0) {
     throw "The private phone origin was unexpectedly exposed through Funnel."
 }
 

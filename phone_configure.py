@@ -13,15 +13,17 @@ def write_phone_config(
     *,
     allowed_login: str,
     public_origin: str,
+    codex_executable: str,
     path: Path = CONFIG_FILE,
 ) -> None:
     target = Path(path)
     document = {
-        "version": 1,
+        "version": 2,
         "allowed_login": allowed_login.strip().casefold(),
         "public_origin": public_origin.rstrip("/"),
         "host": DEFAULT_HOST,
         "port": DEFAULT_PORT,
+        "codex_executable": str(Path(codex_executable).resolve()),
     }
     # Validate the exact schema before replacing the active configuration.
     probe = target.with_name(f".{target.name}.validation")
@@ -39,11 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Configure the private Asimut phone service")
     parser.add_argument("--allowed-login", required=True)
     parser.add_argument("--public-origin", required=True)
+    parser.add_argument("--codex-executable", required=True)
     parser.add_argument("--path", type=Path, default=CONFIG_FILE)
     args = parser.parse_args(argv)
     write_phone_config(
         allowed_login=args.allowed_login,
         public_origin=args.public_origin,
+        codex_executable=args.codex_executable,
         path=args.path,
     )
     return 0
