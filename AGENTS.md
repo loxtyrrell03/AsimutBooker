@@ -30,7 +30,8 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
-- **In-App Assistant**: ChatGPT-style Codex chat pinned to `gpt-5.6-terra` with medium reasoning; Terra interprets the active request against sanitized fresh Booker context, chooses typed application actions, and emits visible concise progress summaries
+- **In-App Assistant**: ChatGPT-style Codex chat pinned to `gpt-5.6-terra` with medium reasoning; the host refreshes the complete live Asimut agenda before every prompt, then Terra interprets the active request against that fresh context, chooses typed application actions, and emits visible concise progress summaries
+- **Phone Schedule**: The private PWA performs a real agenda-and-plan refresh when Schedule opens and every five minutes while it remains open; manual refresh bypasses the short server cooldown, and last-checked agenda/plan data stays visible during failures
 - **Health Dashboard**: Shows the last successful run, next scheduled run, saved-session evidence, auth cooldown, pending mutations, and physical wake-test evidence
 - **Practice Plan**: Set a default daily target from 0.5-12 hours, override individual dates, or turn dates off across Asimut's current live booking window
 - **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
@@ -161,6 +162,9 @@ python book_week.py --headless --login-only
 
 # Read-only login, live room-policy refresh, agenda, and current-window grid check
 python book_week.py --headless --check-only
+
+# Faster live-policy and complete-agenda refresh without grid traversal
+python book_week.py --headless --agenda-only --wait-for-runtime-seconds 180
 
 # Read-only fresh-grid planning; publishes the display-only booking plan
 python book_week.py --headless --plan-only
@@ -468,6 +472,10 @@ python -m unittest discover -s tests
   confirmation rules. `--horizon-only` and `--extensions-only` additionally
   isolate the mutation type and return after the scoped phase, so a missing
   candidate cannot fall through to an unrelated booking.
+- `--agenda-only` performs the authenticated live-policy and complete-agenda
+  refresh, then exits before room-grid traversal or any booking mutation. Its
+  bounded runtime-lock wait prevents a concurrent scheduled pass from being
+  misreported as a successful refresh; unresolved contention returns nonzero.
 - `--plan-only` performs the same authenticated fresh-policy and complete-agenda
   validation, traverses the live date window, and replaces only the display
   snapshot. It never creates, edits, or deletes an Asimut event and cannot be
@@ -480,6 +488,10 @@ python -m unittest discover -s tests
   operation; the host injects the complete active user message as immutable
   provenance, then independently enforces freshness, identity, one-use selection,
   receipt, and persistence checks before any state change.
+- Every accepted assistant prompt first runs the host-controlled `--agenda-only`
+  preflight and supplies that newly validated snapshot to Terra. A failed
+  preflight is explicitly non-authoritative: cached absence can never justify a
+  "no reservations" answer or an agenda-dependent mutation.
 - Assistant context explicitly allow-lists sanitized settings, agenda, plan,
   room, health, receipt, and history fields. Credentials, cookies, browser
   storage, OTPs, bridge tokens, participant arrays, and arbitrary files are not
@@ -1313,6 +1325,30 @@ python -m unittest discover -s tests
   `reopen_booking_window`, and has no legacy singular cancellation tool. One
   explicit no-tool capability probe created the rollout evidence; no booking,
   setting, receipt, or Asimut mutation was used as deployment proof.
+
+## 2026-08-31 Live Prompt Freshness and Phone Schedule Milestone
+
+- The assistant host now performs a complete read-only Asimut agenda preflight
+  before every prompt reaches Terra. The fresh result supersedes cached chat
+  claims; failure context explicitly forbids treating cached absence as proof
+  that no reservations exist or attempting an agenda-dependent mutation.
+- `--agenda-only` refreshes authenticated live room policy and the complete
+  agenda snapshot without traversing availability grids. Assistant refreshes
+  wait up to three minutes for the shared Booker lock, and read-only contention
+  returns exit 6 instead of a false-success exit 0.
+- The phone `/api/v1/live-refresh` endpoint runs the real typed read-only Booker
+  workflow with single-flight protection. Schedule automatically requests a
+  fresh plan when opened and every five minutes while visible; manual refresh is
+  forced, while chats and live refreshes remain mutually exclusive.
+- The Schedule tab now shows reservation count, booked time, potential-session
+  count, live refresh progress, and last-checked timestamps. Stale agenda and
+  plan content remains visible and clearly labelled instead of being hidden;
+  plan staleness alone no longer labels the entire Booker stale.
+- The complete offline Python suite passes 728 tests, including the final two
+  runtime-lock regressions; the focused final suite passes 133 tests,
+  the phone suite passes 16 tests, TypeScript checking and lint pass, both phone
+  production builds complete, and the offline phone-build verifier passes.
+  Runtime deployment is recorded separately after installation verification.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture

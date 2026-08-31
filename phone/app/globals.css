@@ -612,6 +612,15 @@ summary:focus-visible {
 .attention-card p,
 .install-card p { margin-top: 2px; color: #bb8888; font-size: 10px; line-height: 1.4; }
 
+.schedule-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: -4px 0 15px; }
+.schedule-metrics > div { min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 13px; background: #111f1b; }
+.schedule-metrics span,
+.schedule-metrics strong { display: block; }
+.schedule-metrics span { overflow: hidden; color: #71877e; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.schedule-metrics strong { margin-top: 4px; color: #e8f3ed; font-size: 15px; }
+.refresh-state-line { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 9px 11px; border: 1px solid rgb(168 239 199 / 12%); border-radius: 12px; background: #12241d; color: #93aa9f; font-size: 9px; }
+.refresh-state-line svg { width: 14px; height: 14px; flex: 0 0 auto; color: var(--mint); }
+
 .schedule-legend { display: flex; gap: 15px; margin-bottom: 20px; color: #869b92; font-size: 10px; }
 .schedule-legend span { display: flex; align-items: center; gap: 6px; }
 .schedule-legend i { width: 13px; height: 8px; border-radius: 3px; }

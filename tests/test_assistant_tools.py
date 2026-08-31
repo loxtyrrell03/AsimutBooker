@@ -1409,8 +1409,18 @@ class AssistantToolSurfaceTests(unittest.TestCase):
 
     def test_refresh_modes_are_read_only_and_allow_listed(self):
         for scope, expected in {
-            "agenda": ["--headless", "--check-only"],
-            "plan": ["--headless", "--plan-only"],
+            "agenda": [
+                "--headless",
+                "--agenda-only",
+                "--wait-for-runtime-seconds",
+                "180",
+            ],
+            "plan": [
+                "--headless",
+                "--plan-only",
+                "--wait-for-runtime-seconds",
+                "180",
+            ],
             "login": ["--headless", "--login-only"],
         }.items():
             with self.subTest(scope=scope):

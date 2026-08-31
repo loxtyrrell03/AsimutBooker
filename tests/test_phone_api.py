@@ -211,14 +211,18 @@ class PhoneSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["unavailable_sections"], ["plan"])
         self.assertNotIn("private", str(snapshot))
 
-    def test_missing_current_plan_is_stale_not_ready(self):
+    def test_missing_current_plan_keeps_booker_ready_with_update_label(self):
         context = context_fixture()
         context["sections"]["plan"] = {"available": False, "stale": True, "days": []}
         context["errors"] = {}
         with mock.patch.object(phone_api, "build_assistant_context", return_value=context):
             snapshot = phone_api.build_phone_snapshot()
 
-        self.assertEqual(snapshot["status"]["state"], "stale")
+        self.assertEqual(snapshot["status"]["state"], "ready")
+        self.assertEqual(
+            snapshot["status"]["label"],
+            "Booker ready · plan update available",
+        )
 
 
 if __name__ == "__main__":

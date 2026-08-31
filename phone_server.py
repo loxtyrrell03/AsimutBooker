@@ -490,6 +490,8 @@ class PhoneAssistantService:
         # its loop thread; an RLock makes both orderings safe.
         self._request_lock = threading.RLock()
         self._runtime_lock = threading.Lock()
+        self._live_refresh_lock = threading.Lock()
+        self._last_live_refresh = {"agenda": 0.0, "plan": 0.0}
         self._active_lock = threading.Lock()
         self._active_client_message_id: str | None = None
         self._active_turn_started = False
@@ -659,6 +661,8 @@ class PhoneAssistantService:
                 raise PhoneRateLimitError(
                     "Too many assistant messages; wait a moment and try again"
                 )
+            if self._live_refresh_lock.locked():
+                return False, "turn_in_progress"
             if self.is_busy:
                 return False, "turn_in_progress"
             # Reserve before the runtime can invoke any mutation, then record
@@ -715,6 +719,71 @@ class PhoneAssistantService:
         with self._runtime_lock:
             runtime = self._runtime
         return False if runtime is None else bool(runtime.stop())
+
+    def refresh_live(self, scope: str, *, force: bool = False) -> dict[str, Any]:
+        """Refresh Asimut-backed phone data once, never merely reread the cache."""
+
+        if scope not in {"agenda", "plan"}:
+            raise ValueError("scope must be agenda or plan")
+        if not self._live_refresh_lock.acquire(blocking=False):
+            raise PhoneActiveTurnError("A live Booker refresh is already running")
+        try:
+            with self._request_lock:
+                if self.is_busy:
+                    raise PhoneActiveTurnError(
+                        "Wait for the active assistant turn before refreshing Booker data"
+                    )
+            if not force and time.monotonic() - self._last_live_refresh[scope] < 60:
+                return self.snapshot()
+
+            def progress(title: str, detail: str) -> None:
+                self._receive_runtime_event(
+                    {
+                        "kind": "activity",
+                        "status": "in_progress",
+                        "title": title,
+                        "text": detail,
+                    }
+                )
+
+            self._receive_runtime_event(
+                {
+                    "kind": "activity",
+                    "status": "in_progress",
+                    "title": "Refreshing schedule from Asimut",
+                    "text": (
+                        "Checking live reservations and the current automatic plan"
+                        if scope == "plan"
+                        else "Checking live reservations"
+                    ),
+                }
+            )
+            try:
+                self.runtime.refresh_booker_data(scope, progress=progress)
+            except Exception as exc:
+                self._receive_runtime_event(
+                    {
+                        "kind": "activity",
+                        "status": "failed",
+                        "title": "Live schedule refresh failed",
+                        "text": "The last known schedule remains visible; try again shortly",
+                    }
+                )
+                raise PhoneServerError(
+                    "The live Booker refresh did not complete"
+                ) from exc
+            self._last_live_refresh[scope] = time.monotonic()
+            self._receive_runtime_event(
+                {
+                    "kind": "activity",
+                    "status": "completed",
+                    "title": "Schedule refreshed",
+                    "text": "The phone schedule now reflects current Asimut data",
+                }
+            )
+            return self.snapshot()
+        finally:
+            self._live_refresh_lock.release()
 
     def new_chat(self) -> bool:
         accepted = bool(self.runtime.new_chat())
@@ -1130,6 +1199,37 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_refresh", "Refresh takes no fields.")
                 return
             self._json(HTTPStatus.OK, self.app.assistant.snapshot())
+            return
+        if path == "/api/v1/live-refresh":
+            if set(payload) != {"scope", "force"}:
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_live_refresh",
+                    "Live refresh requires scope and force.",
+                )
+                return
+            scope = payload.get("scope")
+            force = payload.get("force")
+            if scope not in {"agenda", "plan"} or type(force) is not bool:
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_live_refresh",
+                    "Live refresh fields are invalid.",
+                )
+                return
+            try:
+                bootstrap = self.app.assistant.refresh_live(scope, force=force)
+            except PhoneActiveTurnError as exc:
+                self._error(HTTPStatus.CONFLICT, "refresh_busy", str(exc))
+                return
+            except PhoneServerError:
+                self._error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "live_refresh_failed",
+                    "Live Asimut data could not be refreshed. Try again shortly.",
+                )
+                return
+            self._json(HTTPStatus.OK, bootstrap)
             return
         self._error(HTTPStatus.NOT_FOUND, "not_found", "Endpoint not found.")
 

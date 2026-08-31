@@ -71,6 +71,11 @@ file-change, web, browser, MCP, collaboration, or any other general Codex tool;
 the typed application tools are the only authorized data and action surface.
 
 Grounding and trust:
+- The host performs a complete live agenda refresh before every user prompt and
+  supplies its result as live_agenda_preflight. Treat a successful preflight as
+  newer than conversation history and cached agenda claims. If it failed, never
+  claim that there are no reservations and never make an agenda-dependent
+  mutation until refresh_booker_data succeeds in the turn.
 - Read current Booker context before answering state-dependent questions,
   including questions about how the Booker would act under current plans or
   preferences. Say when evidence is stale. Refresh agenda or plan data when
@@ -527,6 +532,7 @@ class AssistantRuntime:
                 )
         self._state_lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._data_refresh_lock = threading.Lock()
         self._thread_generation = 0
         self._active_turn_generation: int | None = None
         self._active_turn_token: str | None = None
@@ -609,7 +615,7 @@ class AssistantRuntime:
             begin_turn()
         self._dispatcher.set_active_user_request(self._active_prompt)
         self._submit(
-            self._send_prompt(self._active_prompt, generation),
+            self._send_prompt(self._active_prompt, generation, turn_token),
             operation="send",
             expected_generation=generation,
             turn_token=turn_token,
@@ -811,10 +817,21 @@ class AssistantRuntime:
             }
         )
 
-    async def _send_prompt(self, prompt: str, generation: int) -> None:
+    async def _send_prompt(
+        self,
+        prompt: str,
+        generation: int,
+        turn_token: str,
+    ) -> None:
         controller = await self._ensure_controller()
         await self._start_controller(generation)
-        if not self._is_current_generation(generation):
+        if not self._is_active_turn(generation, turn_token):
+            return
+        live_agenda_preflight = await self._refresh_live_agenda_before_turn(
+            generation,
+            turn_token,
+        )
+        if not self._is_active_turn(generation, turn_token):
             return
         self._append_message("user", prompt, expected_generation=generation)
         mutation_context_provider = getattr(
@@ -850,6 +867,14 @@ class AssistantRuntime:
                 },
             }
         additional_context = {
+            "live_agenda_preflight": {
+                "kind": "application",
+                "value": json.dumps(
+                    live_agenda_preflight,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ),
+            },
             "asimut_application_contract": {
                 "kind": "application",
                 "value": json.dumps(APP_CAPABILITIES, ensure_ascii=False),
@@ -886,7 +911,7 @@ class AssistantRuntime:
                 ),
             },
         }
-        if not self._is_current_generation(generation):
+        if not self._is_active_turn(generation, turn_token):
             return
         await controller.send_message(
             prompt,
@@ -909,6 +934,94 @@ class AssistantRuntime:
                     "text": str(exc),
                 }
             )
+
+    def refresh_booker_data(
+        self,
+        scope: str,
+        *,
+        progress: Callable[[str, str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Run one host-controlled read-only refresh outside model semantics."""
+
+        refresher = getattr(self._surface, "refresh_read_only", None)
+        if not callable(refresher):
+            raise AssistantRuntimeError("The Booker refresh surface is unavailable")
+        callback = progress or (lambda _title, _detail: None)
+        with self._data_refresh_lock:
+            result = refresher(scope, progress=callback)
+        if not isinstance(result, Mapping):
+            raise AssistantRuntimeError("The Booker refresh returned invalid context")
+        return dict(result)
+
+    async def _refresh_live_agenda_before_turn(
+        self,
+        generation: int,
+        turn_token: str,
+    ) -> dict[str, Any]:
+        """Refresh live agenda evidence before Terra sees the active prompt."""
+
+        def progress(title: str, detail: str) -> None:
+            if not self._is_active_turn(generation, turn_token):
+                return
+            self._safe_emit(
+                {
+                    "kind": "activity",
+                    "status": "in_progress",
+                    "title": title,
+                    "text": detail,
+                }
+            )
+
+        self._safe_emit(
+            {
+                "kind": "activity",
+                "status": "in_progress",
+                "title": "Refreshing live agenda",
+                "text": "Checking Asimut for bookings added or changed since the last run",
+            }
+        )
+        try:
+            context = await asyncio.to_thread(
+                self.refresh_booker_data,
+                "agenda",
+                progress=progress,
+            )
+        except Exception:
+            self._safe_emit(
+                {
+                    "kind": "activity",
+                    "status": "failed",
+                    "title": "Live agenda refresh unavailable",
+                    "text": (
+                        "Cached reservations will not be treated as proof that no "
+                        "booking exists"
+                    ),
+                }
+            )
+            return {
+                "refreshed": False,
+                "authority": (
+                    "Live Asimut refresh failed. Cached agenda data cannot prove that "
+                    "there are no reservations; refresh in this turn before any "
+                    "agenda-dependent mutation."
+                ),
+                "snapshot": {},
+            }
+        self._safe_emit(
+            {
+                "kind": "activity",
+                "status": "completed",
+                "title": "Live agenda refreshed",
+                "text": "Current Asimut reservations are ready for this request",
+            }
+        )
+        return {
+            "refreshed": True,
+            "authority": (
+                "Host-controlled live Asimut agenda evidence for the active user prompt."
+            ),
+            "snapshot": context,
+        }
 
     async def _stop_turn(self, generation: int, turn_token: str) -> None:
         controller = await self._ensure_controller()

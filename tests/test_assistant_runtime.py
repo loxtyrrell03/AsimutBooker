@@ -26,6 +26,19 @@ class FakeSurface:
         self.cancelled = False
         self.turns_started = 0
         self.cancellation_context_clears = 0
+        self.refresh_calls = []
+        self.refresh_error = None
+        self.refresh_context = {
+            "local_now": "2026-08-31T16:00:00+01:00",
+            "sections": {
+                "agenda": {
+                    "available": True,
+                    "stale": False,
+                    "reservations": [],
+                }
+            },
+            "errors": {},
+        }
         self.mutation_context_calls = 0
         self.mutation_contexts = [
             {
@@ -62,6 +75,13 @@ class FakeSurface:
         index = min(self.mutation_context_calls, len(self.mutation_contexts) - 1)
         self.mutation_context_calls += 1
         return json.loads(json.dumps(self.mutation_contexts[index]))
+
+    def refresh_read_only(self, scope, *, progress):
+        self.refresh_calls.append(scope)
+        progress("Refreshing live agenda", "Fixture Asimut data refreshed")
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        return json.loads(json.dumps(self.refresh_context))
 
 
 class FakeController:
@@ -538,6 +558,15 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertIn("only authorized data and action surface", controller.kwargs["developer_instructions"])
         self.assertEqual(self.runtime.model_label, "GPT-5.6 Terra · medium")
         self.assertEqual(self.surface.turns_started, 1)
+        self.assertEqual(self.surface.refresh_calls, ["agenda"])
+        live_preflight = json.loads(
+            controller.sent_message_kwargs[0]["additional_context"]
+            ["live_agenda_preflight"]["value"]
+        )
+        self.assertTrue(live_preflight["refreshed"])
+        self.assertFalse(
+            live_preflight["snapshot"]["sections"]["agenda"]["stale"]
+        )
 
     def test_fresh_mutation_state_is_rebuilt_and_injected_on_every_turn(self):
         self.surface.mutation_contexts = [
@@ -588,6 +617,30 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertIn("supersedes", contracts[1]["authority"])
         self.assertTrue(contracts[1]["available"])
         self.assertEqual(self.surface.mutation_context_calls, 2)
+        self.assertEqual(self.surface.refresh_calls, ["agenda", "agenda"])
+
+    def test_failed_preflight_is_explicitly_non_authoritative(self):
+        self.surface.refresh_error = AssistantToolError("fixture refresh failed")
+        self.runtime.start()
+        self.wait_for(lambda: FakeController.instances and FakeController.instances[0].thread_id)
+
+        self.assertTrue(self.runtime.send("Cancel all my upcoming reservations"))
+        self.wait_for(lambda: not self.runtime.is_busy)
+
+        controller = FakeController.instances[0]
+        preflight = json.loads(
+            controller.sent_message_kwargs[0]["additional_context"]
+            ["live_agenda_preflight"]["value"]
+        )
+        self.assertFalse(preflight["refreshed"])
+        self.assertIn("cannot prove", preflight["authority"])
+        self.assertEqual(preflight["snapshot"], {})
+        self.assertTrue(
+            any(
+                event.get("title") == "Live agenda refresh unavailable"
+                for event in self.events
+            )
+        )
 
     def test_unavailable_mutation_state_is_never_labelled_fresh(self):
         self.surface.mutation_contexts = [

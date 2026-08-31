@@ -9525,6 +9525,16 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             reconciled_blackouts or (),
         )
 
+        if getattr(args, "agenda_only", False):
+            persist_storage_state(context)
+            print(
+                "AGENDA READY: authenticated live policy and complete agenda "
+                "snapshot refreshed without room-grid traversal."
+            )
+            context.close()
+            browser.close()
+            return 0
+
         if _cancellation_requested(args):
             try:
                 cancelled, events_detected = cancel_reservation_exact(
@@ -11111,11 +11121,29 @@ def build_argument_parser():
         help="Verify login, agenda, and room grid without changing bookings or history",
     )
     parser.add_argument(
+        "--agenda-only",
+        action="store_true",
+        help=(
+            "Refresh the authenticated agenda snapshot without traversing room "
+            "availability or changing bookings"
+        ),
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help=(
             "Read fresh agenda/room grids and publish the display-only booking "
             "plan without changing any Asimut booking"
+        ),
+    )
+    parser.add_argument(
+        "--wait-for-runtime-seconds",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help=(
+            "For read-only refresh modes, wait briefly for another Booker run "
+            "to release the shared runtime lock"
         ),
     )
     parser.add_argument(
@@ -11279,13 +11307,14 @@ def _validate_cli_args(parser, args):
         for value in (
             args.horizon_only,
             args.extensions_only,
+            args.agenda_only,
             args.plan_only,
             cancellation_requested,
         )
     )
     if isolated_modes > 1:
         parser.error(
-            "--horizon-only, --extensions-only, --plan-only, and exact "
+            "--horizon-only, --extensions-only, --agenda-only, --plan-only, and exact "
             "cancellation are mutually exclusive"
         )
 
@@ -11338,6 +11367,7 @@ def _validate_cli_args(parser, args):
         or args.max_action_minutes is not None
         or args.horizon_only
         or args.extensions_only
+        or args.agenda_only
         or args.plan_only
     ):
         parser.error("--check-only cannot be combined with booking mutation limits")
@@ -11349,6 +11379,26 @@ def _validate_cli_args(parser, args):
     ):
         parser.error(
             "--plan-only cannot be scheduled, timed, or combined with mutation limits"
+        )
+    if args.agenda_only and (
+        args.target_time
+        or args.scheduled
+        or args.only_date
+        or args.only_room
+        or args.max_actions is not None
+        or args.max_action_minutes is not None
+    ):
+        parser.error(
+            "--agenda-only cannot be scheduled, timed, scoped to booking targets, "
+            "or combined with mutation limits"
+        )
+    if not 0 <= args.wait_for_runtime_seconds <= 300:
+        parser.error("--wait-for-runtime-seconds must be between 0 and 300")
+    if args.wait_for_runtime_seconds and not (
+        args.agenda_only or args.check_only or args.plan_only
+    ):
+        parser.error(
+            "--wait-for-runtime-seconds is valid only with a read-only refresh mode"
         )
     if args.max_action_minutes is not None and not (args.only_date or args.only_room):
         parser.error("--max-action-minutes requires --only-date or --only-room")
@@ -11478,9 +11528,20 @@ def main(argv=None):
 
     runtime_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
     try:
-        if not runtime_lock.acquire():
-            print("Another AsimutBooker run is already active; this run will exit cleanly.")
-            return 0
+        acquired = runtime_lock.acquire()
+        wait_seconds = int(getattr(args, "wait_for_runtime_seconds", 0) or 0)
+        if not acquired and wait_seconds:
+            print(
+                "Another AsimutBooker run is active; waiting for a fresh "
+                f"read-only refresh slot for up to {wait_seconds} seconds."
+            )
+            deadline = time.monotonic() + wait_seconds
+            while not acquired and time.monotonic() < deadline:
+                time.sleep(0.25)
+                acquired = runtime_lock.acquire()
+        if not acquired:
+            print("Another AsimutBooker run is already active; this run did not refresh data.")
+            return 6 if (args.agenda_only or args.check_only or args.plan_only) else 0
         return run_booking(args, settings, practice_plan, room_preferences) or 0
     except KeyboardInterrupt:
         print("Booking run cancelled.")

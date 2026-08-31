@@ -57,6 +57,8 @@ class FakeRuntime:
         self.accept_send = True
         self.fail_terminally = False
         self.emit_turn_started = True
+        self.refresh_calls = []
+        self.refresh_error = None
 
     def start(self):
         self.event_handler({"kind": "connection", "status": "ready", "text": self.model_label})
@@ -100,6 +102,13 @@ class FakeRuntime:
         self.is_busy = False
         return was_busy
 
+    def refresh_booker_data(self, scope, *, progress):
+        self.refresh_calls.append(scope)
+        progress("Checking Asimut", "Fixture refresh")
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        return {"scope": scope, "fresh": True}
+
     def new_chat(self):
         if self.is_busy:
             return False
@@ -120,6 +129,8 @@ class FakeAssistant:
         self.submit_error = None
         self.submit_result = (True, "accepted")
         self.unresolved_reserved_count = 0
+        self.live_refresh_calls = []
+        self.live_refresh_error = None
 
     @property
     def is_busy(self):
@@ -136,6 +147,12 @@ class FakeAssistant:
             "unresolved_reserved_count": self.unresolved_reserved_count,
             "booker": {"status": {"state": "ready"}},
         }
+
+    def refresh_live(self, scope, *, force=False):
+        self.live_refresh_calls.append((scope, force))
+        if self.live_refresh_error is not None:
+            raise self.live_refresh_error
+        return self.snapshot()
 
     def submit(self, request_id, text):
         if self.submit_error is not None:
@@ -259,6 +276,45 @@ class EventHubTests(unittest.TestCase):
 
 
 class PhoneAssistantServiceTests(unittest.TestCase):
+    def test_live_plan_refresh_runs_real_runtime_work_and_returns_new_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "phone_server.build_phone_snapshot", return_value={"status": {"state": "ready"}}
+        ):
+            service = PhoneAssistantService(
+                runtime_factory=FakeRuntime,
+                ledger=MemoryLedger(),
+                state_path=Path(directory) / "state.json",
+                workspace=Path(directory) / "workspace",
+            )
+            try:
+                snapshot = service.refresh_live("plan", force=True)
+                self.assertEqual(service.runtime.refresh_calls, ["plan"])
+                self.assertEqual(snapshot["booker"]["status"]["state"], "ready")
+                events, _ = service.events.wait_after(0, timeout=0)
+                self.assertIn("Schedule refreshed", [item.get("title") for item in events])
+            finally:
+                service.close()
+
+    def test_failed_live_refresh_keeps_last_snapshot_available(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "phone_server.build_phone_snapshot", return_value={"status": {"state": "stale"}}
+        ):
+            service = PhoneAssistantService(
+                runtime_factory=FakeRuntime,
+                ledger=MemoryLedger(),
+                state_path=Path(directory) / "state.json",
+                workspace=Path(directory) / "workspace",
+            )
+            try:
+                service.runtime.refresh_error = RuntimeError("private fixture detail")
+                with self.assertRaisesRegex(PhoneServerError, "did not complete"):
+                    service.refresh_live("agenda", force=True)
+                self.assertEqual(
+                    service.snapshot()["booker"]["status"]["state"], "stale"
+                )
+            finally:
+                service.close()
+
     def test_runtime_receives_the_configured_codex_executable(self):
         captured = {}
 
@@ -810,6 +866,43 @@ class HTTPBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(status, 202)
         self.assertEqual(self.assistant.submissions, [(request_id, "What is tomorrow?")])
+
+    def test_live_refresh_endpoint_is_explicit_and_invokes_asimut_refresh(self):
+        cookie, csrf = self.open_session()
+        headers = {
+            "Cookie": cookie,
+            "X-Asimut-CSRF": csrf,
+            "Content-Type": "application/json",
+        }
+        status, _, body = self.request(
+            "POST",
+            "/api/v1/live-refresh",
+            headers=headers,
+            body=json.dumps({"scope": "plan", "force": True}),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.assistant.live_refresh_calls, [("plan", True)])
+        self.assertEqual(json.loads(body)["booker"]["status"]["state"], "ready")
+
+        status, _, body = self.request(
+            "POST",
+            "/api/v1/live-refresh",
+            headers=headers,
+            body=json.dumps({"scope": "all", "force": True}),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "invalid_live_refresh")
+
+        self.assistant.live_refresh_error = PhoneServerError("private fixture detail")
+        status, _, body = self.request(
+            "POST",
+            "/api/v1/live-refresh",
+            headers=headers,
+            body=json.dumps({"scope": "agenda", "force": False}),
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)["error"], "live_refresh_failed")
+        self.assertNotIn("private", body.decode("utf-8"))
 
     def test_wrong_identity_origin_and_csrf_fail_closed(self):
         status, _, _ = self.request(

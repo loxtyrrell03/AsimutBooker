@@ -798,6 +798,25 @@ class BookerToolSurface:
 
         return build_assistant_context(["mutations"], paths=self.paths)
 
+    def refresh_read_only(
+        self,
+        scope: str,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
+        """Refresh one safe Booker view without relying on model tool choice."""
+
+        result = self.dispatch(
+            "refresh_booker_data",
+            {"scope": scope},
+            user_request="",
+            progress=progress,
+        )
+        context = result.get("context")
+        if not isinstance(context, Mapping):
+            raise AssistantToolError("The Booker refresh returned invalid context")
+        return dict(context)
+
     def cancel_active(self) -> None:
         with self._cancel_lock:
             generation = self._turn_generation
@@ -970,8 +989,18 @@ class BookerToolSurface:
             raise AssistantToolError("refresh_booker_data requires only scope")
         scope = arguments["scope"]
         flags = {
-            "agenda": ["--headless", "--check-only"],
-            "plan": ["--headless", "--plan-only"],
+            "agenda": [
+                "--headless",
+                "--agenda-only",
+                "--wait-for-runtime-seconds",
+                "180",
+            ],
+            "plan": [
+                "--headless",
+                "--plan-only",
+                "--wait-for-runtime-seconds",
+                "180",
+            ],
             "login": ["--headless", "--login-only"],
         }.get(scope)
         if flags is None:

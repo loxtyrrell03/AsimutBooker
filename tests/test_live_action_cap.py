@@ -263,8 +263,128 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assert_rejected(argv)
 
+    def test_agenda_only_is_unscoped_read_only_and_can_wait_for_runtime(self):
+        args = self.parse_validated(
+            ["--agenda-only", "--wait-for-runtime-seconds", "180"]
+        )
+        self.assertTrue(args.agenda_only)
+        self.assertEqual(args.wait_for_runtime_seconds, 180)
+        for argv in (
+            ["--agenda-only", "--only-date", "2026-09-01"],
+            ["--agenda-only", "--max-actions", "1"],
+            ["--agenda-only", "--plan-only"],
+            ["--wait-for-runtime-seconds", "1"],
+            ["--agenda-only", "--wait-for-runtime-seconds", "301"],
+        ):
+            with self.subTest(argv=argv):
+                self.assert_rejected(argv)
+
+    def test_read_only_lock_contention_is_not_reported_as_a_successful_refresh(self):
+        runtime_lock = mock.Mock()
+        runtime_lock.acquire.return_value = False
+        with (
+            mock.patch.object(book_week, "SingleInstanceLock", return_value=runtime_lock),
+            mock.patch.object(
+                book_week,
+                "_load_and_validate_runtime_settings",
+                return_value=({}, book_week.PracticePlan(), mock.Mock()),
+            ),
+            mock.patch.object(book_week, "run_booking") as run,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            result = book_week.main(["--agenda-only"])
+
+        self.assertEqual(result, 6)
+        run.assert_not_called()
+        runtime_lock.release.assert_called_once()
+
+    def test_read_only_refresh_waits_for_the_active_booker_then_runs(self):
+        runtime_lock = mock.Mock()
+        runtime_lock.acquire.side_effect = [False, True]
+        with (
+            mock.patch.object(book_week, "SingleInstanceLock", return_value=runtime_lock),
+            mock.patch.object(
+                book_week,
+                "_load_and_validate_runtime_settings",
+                return_value=({}, book_week.PracticePlan(), mock.Mock()),
+            ),
+            mock.patch.object(book_week.time, "monotonic", side_effect=[0.0, 0.0]),
+            mock.patch.object(book_week.time, "sleep") as sleep,
+            mock.patch.object(book_week, "run_booking", return_value=0) as run,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            result = book_week.main(
+                ["--agenda-only", "--wait-for-runtime-seconds", "1"]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(runtime_lock.acquire.call_count, 2)
+        sleep.assert_called_once_with(0.25)
+        run.assert_called_once()
+        runtime_lock.release.assert_called_once()
+
 
 class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
+    def test_agenda_only_stops_after_complete_scan_without_grid_or_mutation(self):
+        args = SimpleNamespace(
+            headless=True,
+            check_only=False,
+            agenda_only=True,
+            plan_only=False,
+            only_date=None,
+            only_room=None,
+            target_time=None,
+            scheduled=False,
+            max_actions=None,
+            max_action_minutes=None,
+            horizon_only=False,
+            extensions_only=False,
+        )
+        page = mock.MagicMock()
+        context = mock.MagicMock()
+        context.new_page.return_value = page
+        browser = mock.MagicMock()
+        browser.new_context.return_value = context
+        playwright = mock.MagicMock()
+        playwright.chromium.launch.return_value = browser
+        playwright_context = mock.MagicMock()
+        playwright_context.__enter__.return_value = playwright
+
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
+            mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
+            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.object(
+                book_week,
+                "refresh_live_room_policy",
+                side_effect=_refresh_test_live_policy(),
+            ) as refresh_policy,
+            mock.patch.object(book_week, "scan_agenda", return_value=(2, [])) as scan,
+            mock.patch.object(book_week, "reconcile_pending_mutation_receipts", return_value=[]),
+            mock.patch.object(book_week, "load_ignored_events", return_value=set()),
+            mock.patch.object(book_week, "load_rebooking_blackouts", return_value=[]),
+            mock.patch.object(book_week, "persist_storage_state") as persist,
+            mock.patch.object(book_week, "open_practice_room_overview") as open_grid,
+            mock.patch.object(book_week, "process_pending_extensions") as extensions,
+            mock.patch.object(book_week, "try_book_slot") as ordinary_save,
+        ):
+            result = book_week.run_booking(
+                args,
+                {},
+                book_week.PracticePlan(),
+                room_preferences=mock.Mock(),
+            )
+
+        self.assertEqual(result, 0)
+        refresh_policy.assert_called_once()
+        scan.assert_called_once()
+        persist.assert_called_once_with(context)
+        open_grid.assert_not_called()
+        extensions.assert_not_called()
+        ordinary_save.assert_not_called()
+        context.close.assert_called_once()
+        browser.close.assert_called_once()
     def test_plan_only_publishes_after_fresh_reads_without_entering_mutation_paths(self):
         args = SimpleNamespace(
             headless=True,

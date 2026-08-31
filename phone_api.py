@@ -223,12 +223,16 @@ def build_phone_snapshot(*, paths: ContextPaths | None = None) -> dict[str, Any]
     ):
         overall_state = "attention"
         overall_label = "Booker needs attention"
-    elif agenda_stale or plan_stale or not plan_available or "warning" in health_states:
+    elif agenda_stale or "warning" in health_states:
         overall_state = "stale"
         overall_label = "Booker data needs a refresh"
     else:
         overall_state = "ready"
-        overall_label = "Booker ready"
+        overall_label = (
+            "Booker ready · plan update available"
+            if plan_stale or not plan_available
+            else "Booker ready"
+        )
 
     practice = _mapping(preferences.get("practice_plan"))
     time_preferences = _mapping(preferences.get("time_preferences"))
