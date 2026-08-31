@@ -12,11 +12,12 @@ from assistant_runtime import (
     AssistantRuntime,
     AssistantRuntimeError,
     BookerCodexToolDispatcher,
+    assistant_contract_fingerprint,
     load_assistant_state,
     save_assistant_state,
 )
 from assistant_tools import AssistantToolError
-from codex_chat import CodexToolFailure
+from codex_chat import CodexChatController, CodexToolFailure
 
 
 class FakeSurface:
@@ -79,10 +80,16 @@ class FakeController:
         self.new_chat_entered = threading.Event()
         self.new_chat_release = threading.Event()
         self.new_chat_release.set()
+        self.new_chat_calls = 0
+        self.block_send_message = False
+        self.send_message_entered = threading.Event()
+        self.send_message_release = threading.Event()
+        self.send_message_release.set()
         self.block_shutdown = False
         self.shutdown_entered = threading.Event()
         self.sent_messages = []
         self.sent_message_kwargs = []
+        self.resumed_thread_ids = []
         self.user_input_answers = []
         type(self).instances.append(self)
 
@@ -94,14 +101,21 @@ class FakeController:
         if self.block_new_chat:
             self.new_chat_entered.set()
             await asyncio.to_thread(self.new_chat_release.wait)
-        self.thread_id = f"thread-{len(type(self).instances)}"
+        self.new_chat_calls += 1
+        self.thread_id = (
+            f"thread-{len(type(self).instances)}-{self.new_chat_calls}"
+        )
         return self.thread_id
 
     async def resume(self, thread_id):
+        self.resumed_thread_ids.append(thread_id)
         self.thread_id = thread_id
         return thread_id
 
     async def send_message(self, text, **kwargs):
+        if self.block_send_message:
+            self.send_message_entered.set()
+            await asyncio.to_thread(self.send_message_release.wait)
         self.sent_messages.append(text)
         self.sent_message_kwargs.append(dict(kwargs))
         self.active_turn_id = "turn-1"
@@ -148,7 +162,8 @@ class AssistantStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "assistant.json"
             state = {
-                "version": 1,
+                "version": 2,
+                "contract_fingerprint": "a" * 64,
                 "thread_id": "thread-1",
                 "messages": [
                     {
@@ -164,6 +179,275 @@ class AssistantStateTests(unittest.TestCase):
             path.write_text("{}", encoding="utf-8")
             with self.assertRaisesRegex(AssistantRuntimeError, "unexpected"):
                 load_assistant_state(path)
+
+    def test_legacy_state_migrates_without_losing_visible_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "assistant.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "thread_id": "stale-thread",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "text": "Cancel all my reservations",
+                                "created_at": "2026-08-31T18:56:50Z",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            migrated = load_assistant_state(path)
+
+            self.assertEqual(migrated["version"], 2)
+            self.assertIsNone(migrated["contract_fingerprint"])
+            self.assertEqual(migrated["thread_id"], "stale-thread")
+            self.assertEqual(
+                migrated["messages"][0]["text"], "Cancel all my reservations"
+            )
+
+    def test_contract_change_starts_fresh_thread_and_keeps_transcript(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "assistant.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "thread_id": "stale-thread",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "text": "Cancel all my reservations",
+                                "created_at": "2026-08-31T18:56:50Z",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            events = []
+            surface = FakeSurface()
+            FakeController.instances = []
+            runtime = AssistantRuntime(
+                events.append,
+                tool_surface=surface,
+                state_path=path,
+                controller_factory=FakeController,
+                assistant_workspace=Path(directory) / "workspace",
+            )
+            try:
+                runtime.start()
+                deadline = time.monotonic() + 3
+                while (
+                    not FakeController.instances
+                    or FakeController.instances[0].thread_id is None
+                ):
+                    if time.monotonic() >= deadline:
+                        self.fail("Timed out waiting for replacement assistant thread")
+                    time.sleep(0.01)
+
+                controller = FakeController.instances[0]
+                self.assertNotEqual(controller.thread_id, "stale-thread")
+                migrated = load_assistant_state(path)
+                self.assertEqual(
+                    migrated["contract_fingerprint"],
+                    assistant_contract_fingerprint(surface.tool_specs),
+                )
+                self.assertEqual(
+                    migrated["messages"][0]["text"],
+                    "Cancel all my reservations",
+                )
+                self.assertIn(
+                    "fresh reasoning context",
+                    migrated["messages"][-1]["text"],
+                )
+                self.assertTrue(
+                    any(
+                        event.get("status") == "contract_refreshed"
+                        for event in events
+                    )
+                )
+            finally:
+                runtime.close()
+
+            replacement_thread = load_assistant_state(path)["thread_id"]
+            FakeController.instances = []
+            second_runtime = AssistantRuntime(
+                lambda event: None,
+                tool_surface=surface,
+                state_path=path,
+                controller_factory=FakeController,
+                assistant_workspace=Path(directory) / "workspace-2",
+            )
+            try:
+                second_runtime.start()
+                deadline = time.monotonic() + 3
+                while (
+                    not FakeController.instances
+                    or FakeController.instances[0].thread_id is None
+                ):
+                    if time.monotonic() >= deadline:
+                        self.fail("Timed out waiting for migrated thread resume")
+                    time.sleep(0.01)
+                self.assertEqual(
+                    FakeController.instances[0].thread_id,
+                    replacement_thread,
+                )
+                self.assertEqual(
+                    sum(
+                        "fresh reasoning context" in item["text"]
+                        for item in load_assistant_state(path)["messages"]
+                    ),
+                    1,
+                )
+            finally:
+                second_runtime.close()
+
+    def test_matching_contract_resumes_existing_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "assistant.json"
+            surface = FakeSurface()
+            fingerprint = assistant_contract_fingerprint(surface.tool_specs)
+            save_assistant_state(
+                {
+                    "version": 2,
+                    "contract_fingerprint": fingerprint,
+                    "thread_id": "current-thread",
+                    "messages": [],
+                },
+                path,
+            )
+            FakeController.instances = []
+            runtime = AssistantRuntime(
+                lambda event: None,
+                tool_surface=surface,
+                state_path=path,
+                controller_factory=FakeController,
+                assistant_workspace=Path(directory) / "workspace",
+            )
+            try:
+                runtime.start()
+                deadline = time.monotonic() + 3
+                while (
+                    not FakeController.instances
+                    or FakeController.instances[0].thread_id is None
+                ):
+                    if time.monotonic() >= deadline:
+                        self.fail("Timed out waiting for resumed assistant thread")
+                    time.sleep(0.01)
+                self.assertEqual(
+                    FakeController.instances[0].thread_id, "current-thread"
+                )
+            finally:
+                runtime.close()
+
+    def test_contract_fingerprint_covers_core_prompt_app_prompt_and_tools(self):
+        surface = FakeSurface()
+        baseline = assistant_contract_fingerprint(surface.tool_specs)
+
+        changed_tools = json.loads(json.dumps(surface.tool_specs))
+        changed_tools[0]["description"] = "changed fixture"
+        self.assertNotEqual(
+            assistant_contract_fingerprint(changed_tools), baseline
+        )
+        with mock.patch(
+            "assistant_runtime.ASSISTANT_DEVELOPER_INSTRUCTIONS",
+            ASSISTANT_DEVELOPER_INSTRUCTIONS + "\nChanged app contract.",
+        ):
+            self.assertNotEqual(
+                assistant_contract_fingerprint(surface.tool_specs), baseline
+            )
+        with mock.patch(
+            "codex_chat._CORE_DEVELOPER_INSTRUCTIONS",
+            "Changed core contract.",
+        ):
+            self.assertNotEqual(
+                assistant_contract_fingerprint(surface.tool_specs), baseline
+            )
+
+        contract_variants = {
+            "approval_policy": "on-request",
+            "thread_sandbox": "workspace-write",
+            "reasoning_summary": "detailed",
+            "turn_sandbox_policy": {"type": "workspaceWrite"},
+            "thread_config": {"features": {"shell_tool": True}},
+        }
+        for field, replacement in contract_variants.items():
+            with self.subTest(field=field):
+                changed_contract = CodexChatController.effective_thread_contract()
+                changed_contract[field] = replacement
+                with mock.patch.object(
+                    CodexChatController,
+                    "effective_thread_contract",
+                    return_value=changed_contract,
+                ):
+                    self.assertNotEqual(
+                        assistant_contract_fingerprint(surface.tool_specs), baseline
+                    )
+
+    def test_malformed_contract_fingerprint_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "assistant.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "contract_fingerprint": "not-a-fingerprint",
+                        "thread_id": "stale-thread",
+                        "messages": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                AssistantRuntimeError, "fingerprint is invalid"
+            ):
+                load_assistant_state(path)
+
+    def test_failed_contract_migration_save_never_resumes_stale_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "assistant.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "thread_id": "stale-thread",
+                        "messages": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            FakeController.instances = []
+            with mock.patch(
+                "assistant_runtime.save_assistant_state",
+                side_effect=AssistantRuntimeError("fixture write failed"),
+            ):
+                runtime = AssistantRuntime(
+                    lambda event: None,
+                    tool_surface=FakeSurface(),
+                    state_path=path,
+                    controller_factory=FakeController,
+                    assistant_workspace=Path(directory) / "workspace",
+                )
+            try:
+                runtime.start()
+                deadline = time.monotonic() + 3
+                while (
+                    not FakeController.instances
+                    or FakeController.instances[0].thread_id is None
+                ):
+                    if time.monotonic() >= deadline:
+                        self.fail("Timed out waiting for safe replacement thread")
+                    time.sleep(0.01)
+                self.assertNotEqual(
+                    FakeController.instances[0].thread_id,
+                    "stale-thread",
+                )
+            finally:
+                runtime.close()
 
 
 class BookerDispatcherTests(unittest.TestCase):
@@ -239,6 +523,10 @@ class AssistantRuntimeTests(unittest.TestCase):
         state = load_assistant_state(Path(self.temp_dir.name) / "assistant.json")
         self.assertEqual([item["role"] for item in state["messages"]], ["user", "assistant"])
         self.assertEqual(state["messages"][1]["text"], "Your fixture plan is ready.")
+        self.assertEqual(
+            state["contract_fingerprint"],
+            assistant_contract_fingerprint(self.surface.tool_specs),
+        )
         kinds = [event["kind"] for event in self.events]
         self.assertIn("reasoning_summary_delta", kinds)
         self.assertIn("assistant_delta", kinds)
@@ -340,6 +628,19 @@ class AssistantRuntimeTests(unittest.TestCase):
             "Never say a mutation is pending based only on conversation history",
             normalized_instructions,
         )
+        self.assertIn(
+            "immediately preceding focused clarification",
+            normalized_instructions,
+        )
+        self.assertIn(
+            '"this week", "the next week", and "over the next week" mean the rolling next seven days',
+            normalized_instructions,
+        )
+        self.assertIn("Use one inclusive range selection", normalized_instructions)
+        self.assertIn(
+            '"next week" means the next Monday-Sunday calendar week',
+            normalized_instructions,
+        )
 
     def test_sensitive_prompt_is_not_duplicated_in_local_transcript(self):
         self.runtime.start()
@@ -386,6 +687,8 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.wait_for(lambda: not self.runtime.is_busy)
 
         self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-stop-turn"
         self.assertTrue(self.runtime.stop())
         self.wait_for(lambda: not self.runtime.is_busy)
         self.assertTrue(self.surface.cancelled)
@@ -418,6 +721,108 @@ class AssistantRuntimeTests(unittest.TestCase):
             )
         )
 
+    def test_new_chat_pointer_failure_cannot_resurrect_old_thread(self):
+        self.runtime.start()
+        self.wait_for(
+            lambda: FakeController.instances
+            and FakeController.instances[0].thread_id
+        )
+        controller = FakeController.instances[0]
+        old_thread = controller.thread_id
+        original_save = save_assistant_state
+        writes = 0
+
+        def fail_new_pointer(state, path):
+            nonlocal writes
+            writes += 1
+            if writes == 1:
+                return original_save(state, path)
+            raise AssistantRuntimeError("fixture pointer write failed")
+
+        with mock.patch(
+            "assistant_runtime.save_assistant_state",
+            side_effect=fail_new_pointer,
+        ):
+            self.assertTrue(self.runtime.new_chat())
+            self.wait_for(lambda: not self.runtime.is_busy)
+
+        self.assertNotEqual(controller.thread_id, old_thread)
+        durable = load_assistant_state(
+            Path(self.temp_dir.name) / "assistant.json"
+        )
+        self.assertIsNone(durable["thread_id"])
+        self.assertEqual(durable["messages"], [])
+        self.assertTrue(
+            any(
+                event.get("title")
+                == "Asimut Assistant could not continue"
+                for event in self.events
+            )
+        )
+
+    def test_inflight_send_cannot_restore_old_pointer_during_new_chat_failure(self):
+        state_path = Path(self.temp_dir.name) / "assistant.json"
+        self.runtime.start()
+        self.wait_for(
+            lambda: FakeController.instances
+            and FakeController.instances[0].thread_id
+        )
+        controller = FakeController.instances[0]
+        old_thread = controller.thread_id
+        controller.block_send_message = True
+        controller.send_message_release.clear()
+        controller.block_new_chat = True
+        controller.new_chat_release.clear()
+
+        self.assertTrue(self.runtime.send("Explain tomorrow"))
+        self.assertTrue(controller.send_message_entered.wait(timeout=2))
+
+        original_save = save_assistant_state
+
+        def fail_replacement_pointer(state, path):
+            thread_id = state.get("thread_id")
+            if isinstance(thread_id, str) and thread_id != old_thread:
+                raise AssistantRuntimeError("fixture replacement pointer failed")
+            return original_save(state, path)
+
+        with mock.patch(
+            "assistant_runtime.save_assistant_state",
+            side_effect=fail_replacement_pointer,
+        ):
+            self.assertTrue(self.runtime.new_chat())
+            self.assertTrue(controller.new_chat_entered.wait(timeout=2))
+            self.assertIsNone(load_assistant_state(state_path)["thread_id"])
+
+            controller.send_message_release.set()
+            self.wait_for(lambda: bool(controller.sent_messages))
+            self.assertIsNone(load_assistant_state(state_path)["thread_id"])
+
+            controller.new_chat_release.set()
+            self.wait_for(lambda: not self.runtime.is_busy)
+
+        durable = load_assistant_state(state_path)
+        self.assertIsNone(durable["thread_id"])
+        self.assertEqual(durable["messages"], [])
+
+        replacement = AssistantRuntime(
+            lambda event: None,
+            tool_surface=self.surface,
+            state_path=state_path,
+            controller_factory=FakeController,
+            assistant_workspace=Path(self.temp_dir.name) / "replacement-workspace",
+        )
+        try:
+            replacement.start()
+            self.wait_for(
+                lambda: len(FakeController.instances) >= 2
+                and FakeController.instances[-1].thread_id is not None
+            )
+            replacement_controller = FakeController.instances[-1]
+            self.assertEqual(replacement_controller.resumed_thread_ids, [])
+            self.assertNotEqual(replacement_controller.thread_id, old_thread)
+        finally:
+            replacement.close()
+
     def test_close_forces_controller_shutdown_after_graceful_timeout(self):
         self.runtime.start()
         self.wait_for(lambda: FakeController.instances and FakeController.instances[0].thread_id)
@@ -434,6 +839,9 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.runtime.start()
         self.wait_for(lambda: FakeController.instances and FakeController.instances[0].thread_id)
         controller = FakeController.instances[0]
+        self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-clarification-turn"
 
         self.runtime._handle_controller_event(
             {
@@ -453,6 +861,8 @@ class AssistantRuntimeTests(unittest.TestCase):
 
     def test_interrupted_turn_does_not_persist_a_partial_assistant_answer(self):
         self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-interrupted-turn"
         self.runtime._assistant_fragments = ["Partial answer that was stopped."]
         self.runtime._handle_controller_event(
             {"kind": "turn_completed", "turn_id": "turn-1", "status": "interrupted"}
@@ -464,6 +874,8 @@ class AssistantRuntimeTests(unittest.TestCase):
 
     def test_separate_assistant_updates_restore_as_separate_paragraphs(self):
         self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-separate-updates-turn"
         self.runtime._handle_controller_event(
             {"kind": "assistant_delta", "item_id": "progress-1", "text": "I’ll check."}
         )
@@ -479,6 +891,8 @@ class AssistantRuntimeTests(unittest.TestCase):
 
     def test_commentary_stays_in_progress_and_only_final_answer_is_persisted(self):
         self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-commentary-turn"
         self.runtime._handle_controller_event(
             {
                 "kind": "assistant_delta",
@@ -515,6 +929,8 @@ class AssistantRuntimeTests(unittest.TestCase):
 
     def test_old_completion_cannot_clear_a_new_runtime_turn(self):
         self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-new-runtime-turn"
         self.runtime._active_turn_id = "turn-2"
         self.runtime._active_prompt = "New request"
         self.runtime._assistant_fragments = ["New response in progress"]
@@ -528,8 +944,38 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime._active_prompt, "New request")
         self.assertEqual(self.runtime._assistant_fragments, ["New response in progress"])
 
+    def test_stale_operation_failure_and_controller_event_cannot_clear_new_turn(self):
+        old_generation = self.runtime._thread_generation
+        old_token = "old-turn"
+        self.runtime._thread_generation += 1
+        self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "new-turn"
+        self.runtime._active_prompt = "New request"
+        self.runtime._assistant_fragments = ["New response in progress"]
+        current_source = object()
+        self.runtime._controller_event_source = current_source
+
+        self.runtime._handle_operation_failure(
+            "send",
+            RuntimeError("late old failure"),
+            expected_generation=old_generation,
+            turn_token=old_token,
+        )
+        self.runtime._handle_controller_event(
+            {"kind": "connection", "status": "failed"},
+            object(),
+        )
+
+        self.assertTrue(self.runtime.is_busy)
+        self.assertEqual(self.runtime._active_turn_token, "new-turn")
+        self.assertEqual(self.runtime._active_prompt, "New request")
+        self.assertEqual(self.runtime._assistant_fragments, ["New response in progress"])
+
     def test_transcript_write_failure_never_leaves_the_ui_busy(self):
         self.runtime._busy = True
+        self.runtime._active_turn_generation = self.runtime._thread_generation
+        self.runtime._active_turn_token = "fixture-write-failure-turn"
         self.runtime._assistant_fragments = ["A complete answer."]
         with mock.patch(
             "assistant_runtime.save_assistant_state",

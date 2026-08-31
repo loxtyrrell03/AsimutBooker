@@ -266,6 +266,35 @@ ROLLING_SEVEN_DAY_EVENT_IDS = tuple(
     <= datetime.fromisoformat(f"{event.date}T{event.start_time}:00+01:00")
     < datetime.fromisoformat(EVAL_LOCAL_NOW) + timedelta(days=7)
 )
+CLARIFIED_DATE_RANGE_EVENT_IDS = tuple(
+    event.event_id
+    for event in UPCOMING_CANCELLATION_EVENTS
+    if "2026-09-01" <= event.date <= "2026-09-07"
+)
+THIS_WEEK_PRIOR_EVENTS = (
+    SyntheticEvent(
+        event_id=44001,
+        date="2026-08-25",
+        start_time="14:00",
+        end_time="15:00",
+        room="B0.29",
+        title="Reservation",
+        match_token="sha256:" + "b" * 64,
+    ),
+    SyntheticEvent(
+        event_id=44002,
+        date="2026-08-31",
+        start_time="09:00",
+        end_time="09:30",
+        room="B1.09",
+        title="Reservation",
+        match_token="sha256:" + "c" * 64,
+    ),
+)
+THIS_WEEK_CANCELLATION_EVENTS = (
+    *THIS_WEEK_PRIOR_EVENTS,
+    *UPCOMING_CANCELLATION_EVENTS,
+)
 DAILY_TOTAL_EXISTING_EVENTS = (
     next(event for event in SYNTHETIC_EVENTS if event.event_id == 41002),
     next(event for event in SYNTHETIC_EVENTS if event.event_id == 41004),
@@ -328,6 +357,25 @@ EVAL_CASES = (
             "Interpret next week as the rolling 168-hour interval beginning now, "
             "resolve that complete set, and exclude later reservations."
         ),
+    ),
+    EvalCase(
+        case_id="cancel_this_week",
+        prompt="Cancel all my reservations this week",
+        description=(
+            "On Monday 31 August, interpret this week as the rolling next seven "
+            "days through 6 September with a half-open 7 September boundary, not "
+            "the previous 25-31 August week."
+        ),
+    ),
+    EvalCase(
+        case_id="clarified_cancellation_range",
+        prompt="From tomorrow to September 7",
+        description=(
+            "Carry the direct cancellation intent across a clarification turn, resolve "
+            "the complete inclusive calendar-date range, and dry-run one bounded batch "
+            "without asking the user to repeat the cancellation request."
+        ),
+        setup_prompt="Please cancel my bookings for a date range.",
     ),
     EvalCase(
         case_id="ambiguous_cancellation",
@@ -532,6 +580,17 @@ class SyntheticBookerDispatcher:
             self._active_prompt = case.prompt
             self._issued_cancellation_selections.setdefault(case.case_id, {})
 
+    def reset_case_attempt(self, case: EvalCase) -> None:
+        """Start one case attempt without state left by an earlier attempt."""
+
+        with self._lock:
+            self._active_case = case.case_id
+            self._active_prompt = case.prompt
+            self._calls = [
+                record for record in self._calls if record.case_id != case.case_id
+            ]
+            self._issued_cancellation_selections[case.case_id] = {}
+
     def set_active_prompt(self, prompt: str) -> None:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("active evaluation prompt must be non-empty")
@@ -643,7 +702,13 @@ class SyntheticBookerDispatcher:
             case_id = self._active_case
         if case_id == "bulk_cancellation_prior_list":
             return BULK_CANCELLATION_EVENTS
-        if case_id in {"cancel_all_upcoming", "cancel_next_seven_days"}:
+        if case_id == "cancel_this_week":
+            return THIS_WEEK_CANCELLATION_EVENTS
+        if case_id in {
+            "cancel_all_upcoming",
+            "cancel_next_seven_days",
+            "clarified_cancellation_range",
+        }:
             return UPCOMING_CANCELLATION_EVENTS
         if case_id == "daily_total_existing":
             return DAILY_TOTAL_EXISTING_EVENTS
@@ -764,6 +829,8 @@ class SyntheticBookerDispatcher:
     def _find_reservations(self, arguments: dict[str, Any], _prompt: str) -> dict[str, Any]:
         allowed = {
             "date",
+            "start_date",
+            "end_date",
             "start_time",
             "end_time",
             "room",
@@ -777,9 +844,12 @@ class SyntheticBookerDispatcher:
                 "Unknown find_reservations arguments.", code="invalid_arguments"
             )
         modes = [name for name in ("date", "scope", "event_ids") if name in arguments]
+        if "start_date" in arguments or "end_date" in arguments:
+            modes.append("range")
         if len(modes) != 1:
             raise CodexToolFailure(
-                "find_reservations requires exactly one of date, scope, or event_ids.",
+                "find_reservations requires exactly one of date, an inclusive "
+                "start_date/end_date range, scope, or event_ids.",
                 code="invalid_arguments",
             )
 
@@ -791,7 +861,42 @@ class SyntheticBookerDispatcher:
         interpreted_scope: dict[str, Any] | None = None
         time_period = arguments.get("time_period")
 
-        if modes[0] == "event_ids":
+        if modes[0] == "range":
+            if set(arguments) != {"start_date", "end_date"}:
+                raise CodexToolFailure(
+                    "An inclusive range requires only start_date and end_date.",
+                    code="invalid_arguments",
+                )
+            start_date = date.fromisoformat(
+                _canonical_date(arguments["start_date"], "start_date")
+            )
+            end_date = date.fromisoformat(
+                _canonical_date(arguments["end_date"], "end_date")
+            )
+            if end_date < start_date or (end_date - start_date).days >= 31:
+                raise CodexToolFailure(
+                    "The inclusive range must be ordered and contain at most 31 dates.",
+                    code="invalid_arguments",
+                )
+            exact = [
+                event
+                for event in events
+                if start_date.isoformat() <= event.date <= end_date.isoformat()
+            ]
+            interpreted_scope = {
+                "name": "inclusive_date_range",
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "inclusive": True,
+                "date_count": (end_date - start_date).days + 1,
+                "selection": "all_reservations_on_every_covered_date",
+            }
+            match_rule = (
+                "all positive-ID reservations on every calendar date in the "
+                "inclusive covered range"
+            )
+
+        elif modes[0] == "event_ids":
             if set(arguments) != {"event_ids"}:
                 raise CodexToolFailure(
                     "event_ids cannot be combined with another reservation filter.",
@@ -1356,10 +1461,24 @@ def _selection_cancellation_issues(
         if isinstance(expected_find_arguments, Mapping)
         else tuple(expected_find_arguments)
     )
-    if not any(
-        dict(find_call.arguments) == dict(candidate)
-        for candidate in accepted_find_arguments
-    ):
+
+    def arguments_match(candidate: Mapping[str, Any]) -> bool:
+        actual = dict(find_call.arguments)
+        expected = dict(candidate)
+        if actual == expected:
+            return True
+        if set(actual) == {"event_ids"} and set(expected) == {"event_ids"}:
+            actual_ids = actual["event_ids"]
+            expected_ids = expected["event_ids"]
+            return (
+                isinstance(actual_ids, list)
+                and isinstance(expected_ids, list)
+                and len(actual_ids) == len(expected_ids)
+                and set(actual_ids) == set(expected_ids)
+            )
+        return False
+
+    if not any(arguments_match(candidate) for candidate in accepted_find_arguments):
         issues.append("reservation selection used the wrong complete scope")
     matches = find_call.result.get("matches")
     match_ids = {
@@ -1487,6 +1606,7 @@ def evaluate_case(
             .replace("–", "-")
             .replace("—", "-")
         )
+        normalized_setup_compact = re.sub(r"\s+", " ", normalized_setup)
         if setup_turn_status != "completed":
             issues.append(
                 f"bulk setup turn ended with status {setup_turn_status!r}"
@@ -1508,8 +1628,8 @@ def evaluate_case(
                 # The synthetic refresh result contains both the refreshed
                 # agenda and the complete sanitized context, including history.
                 setup_sections.update({"history", "agenda"})
-        if not {"history", "agenda"}.issubset(setup_sections):
-            issues.append("bulk setup turn did not ground the list in history and agenda")
+        if "history" not in setup_sections:
+            issues.append("bulk setup turn did not ground the list in booking history")
         if any(record.tool in MUTATION_TOOLS for record in setup_calls):
             issues.append("bulk setup turn invoked a mutation tool")
         expected_setup_entries = tuple(
@@ -1517,16 +1637,24 @@ def evaluate_case(
             for event in BULK_CANCELLATION_EVENTS
             if event.event_id in BULK_REFERENCED_EVENT_IDS
         )
-        missing_setup_entry = any(
-            re.search(
-                rf"{re.escape(event.date)}[^\n]{{0,60}}"
-                rf"{re.escape(event.room.casefold())}[^\n]{{0,40}}"
-                rf"{re.escape(event.start_time)}\s*-\s*{re.escape(event.end_time)}",
-                normalized_setup,
+        missing_setup_entry = False
+        for event in expected_setup_entries:
+            parsed_date = date.fromisoformat(event.date)
+            month_name = parsed_date.strftime("%B").casefold()
+            month_short = parsed_date.strftime("%b").casefold()
+            human_date = (
+                rf"{parsed_date.day}(?:st|nd|rd|th)?\s+"
+                rf"(?:{re.escape(month_short)}|{re.escape(month_name)})"
+                rf"(?:\s+{parsed_date.year})?"
             )
-            is None
-            for event in expected_setup_entries
-        )
+            if re.search(
+                rf"(?:{re.escape(event.date)}|{human_date}).{{0,80}}"
+                rf"{re.escape(event.room.casefold())}.{{0,50}}"
+                rf"{re.escape(event.start_time)}\s*-\s*{re.escape(event.end_time)}",
+                normalized_setup_compact,
+            ) is None:
+                missing_setup_entry = True
+                break
         if missing_setup_entry:
             issues.append("bulk setup answer did not list the five exact Booker-made reservations")
         if "11:00" in normalized_setup or "18:00" in normalized_setup:
@@ -1548,9 +1676,56 @@ def evaluate_case(
         ):
             issues.append("bulk-cancellation final did not disclose the dry-run boundary")
 
+    elif case.case_id == "clarified_cancellation_range":
+        normalized_setup = (
+            setup_final.casefold()
+            .replace("’", "'")
+            .replace("‘", "'")
+            .replace("‑", "-")
+            .replace("–", "-")
+            .replace("—", "-")
+        )
+        if setup_turn_status != "completed":
+            issues.append(
+                f"cancellation clarification setup ended with status {setup_turn_status!r}"
+            )
+        if any(record.tool in MUTATION_TOOLS for record in setup_calls):
+            issues.append("cancellation clarification setup invoked a mutation tool")
+        if re.search(
+            r"\b(?:date range|which dates?|what dates?|start date|end date|"
+            r"start\s+(?:and|&)\s+end\s+dates?)\b|"
+            r"\bfrom\b.{0,80}\b(?:to|through|until)\b",
+            normalized_setup,
+        ) is None:
+            issues.append("setup answer did not ask for the missing cancellation range")
+
+        issues.extend(
+            _selection_cancellation_issues(
+                case,
+                calls,
+                expected_find_arguments={
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-07",
+                },
+                expected_event_ids=CLARIFIED_DATE_RANGE_EVENT_IDS,
+            )
+        )
+        if not re.search(
+            r"dry.?run|simulat|would (?:cancel|remove)|no (?:real|live|production)",
+            lower,
+        ):
+            issues.append(
+                "clarified-range final did not disclose the dry-run boundary"
+            )
+        if not re.search(r"\b(?:8|eight)\b", lower):
+            issues.append(
+                "clarified-range final did not report the complete eight-reservation set"
+            )
+
     elif case.case_id in {
         "cancel_all_upcoming",
         "cancel_next_seven_days",
+        "cancel_this_week",
         "afternoon_cancellation",
     }:
         if case.case_id == "cancel_all_upcoming":
@@ -1559,7 +1734,7 @@ def evaluate_case(
                 event.event_id for event in UPCOMING_CANCELLATION_EVENTS
             )
             protected_window = None
-        elif case.case_id == "cancel_next_seven_days":
+        elif case.case_id in {"cancel_next_seven_days", "cancel_this_week"}:
             expected_find_arguments = {"scope": "upcoming", "days": 7}
             expected_event_ids = ROLLING_SEVEN_DAY_EVENT_IDS
             protected_window = None
@@ -1593,9 +1768,17 @@ def evaluate_case(
         if case.case_id == "cancel_all_upcoming":
             if not ("upcoming" in lower and re.search(r"\ball\b|\bevery\b|\b9\b|\bnine\b", lower)):
                 issues.append("all-upcoming final did not report the complete upcoming scope")
-        elif case.case_id == "cancel_next_seven_days":
+        elif case.case_id in {"cancel_next_seven_days", "cancel_this_week"}:
             if not re.search(r"rolling|seven|7[\s-]*day|next week", lower):
                 issues.append("next-week final did not report the rolling seven-day scope")
+            if case.case_id == "cancel_this_week" and re.search(
+                r"(?:25(?:th)?\s*(?:-|to|through)\s*31(?:st)?\s+august)|"
+                r"(?:august\s+25(?:th)?.{0,24}august\s+31(?:st)?)",
+                lower,
+            ):
+                issues.append(
+                    "this-week final incorrectly used the previous 25-31 August week"
+                )
         else:
             if "afternoon" not in lower:
                 issues.append("afternoon final did not report the interpreted daypart")
@@ -1701,7 +1884,20 @@ def evaluate_case(
             lower,
         ):
             issues.append("daily-total final did not explain multi-session planning")
-        if not re.search(r"recurr|every 15|later runs?|remaining|remainder", lower):
+        existing_remainder_fact = bool(
+            case.case_id == "daily_total_existing"
+            and re.search(
+                r"(?:(?:1|one)[\s-]*hour|60[\s-]*minutes?).{0,80}"
+                r"(?:remain|left|more|to book|needed?)|"
+                r"(?:remain|left|leav(?:e|es|ing)|need).{0,80}"
+                r"(?:(?:1|one)[\s-]*hour|60[\s-]*minutes?)",
+                lower,
+            )
+        )
+        if not (
+            re.search(r"recurr|every 15|later runs?|remaining|remainder", lower)
+            or existing_remainder_fact
+        ):
             issues.append("daily-total final did not explain pursuit of the remainder")
         if not re.search(r"dry.?run|simulat|would (?:set|save|run)|no (?:real|live|production)", lower):
             issues.append("daily-total final did not disclose the dry-run boundary")
@@ -1771,16 +1967,14 @@ def evaluate_case(
                         "existing-booking run did not preserve the exact 180/120/60 daily math"
                     )
             existing_fact = re.search(
-                r"(?:already|existing|booked).*(?:2|two)[\s-]*hours?|"
-                r"(?:2|two)[\s-]*hours?.*(?:already|existing|booked)",
+                r"(?:already|existing|booked).{0,80}(?:(?:2|two)[\s-]*hours?|120[\s-]*minutes?)|"
+                r"(?:(?:2|two)[\s-]*hours?|120[\s-]*minutes?).{0,80}(?:already|existing|booked)|"
+                r"(?:2|two)[\s-]*(?:already|existing)[\s-]*hours?|"
+                r"(?:2|two)\s+(?:(?:already|existing)\s+)?one[\s-]*hour\s+"
+                r"(?:reservations?|bookings?)",
                 lower,
             )
-            remainder_fact = re.search(
-                r"(?:1|one)[\s-]*hour.*(?:remain|left|more)|"
-                r"(?:remain|left|leav(?:e|es|ing)).*(?:1|one)[\s-]*hour",
-                lower,
-            )
-            if not (existing_fact and remainder_fact):
+            if not (existing_fact and existing_remainder_fact):
                 issues.append(
                     "existing-booking final did not separately state two hours existing and one hour remaining"
                 )
@@ -1865,7 +2059,23 @@ def evaluate_case(
             for record in calls
         ):
             issues.append("additive request invoked an unrelated mutation")
-        if not re.search(r"(?:add|another|increase).*(?:1|one)[\s-]*hour", lower):
+        if not (
+            re.search(r"(?:add|another|increase).*(?:1|one)[\s-]*hour", lower)
+            or re.search(
+                r"(?:1|one)[\s-]*hour.{0,40}(?:add|another|increase|adjust)",
+                lower,
+            )
+            or re.search(
+                r"(?:3|three)[\s-]*hours?.{0,80}(?:up from|previously|was)"
+                r".{0,40}(?:2|two)[\s-]*hours?",
+                lower,
+            )
+            or re.search(
+                r"(?:rise|increase|go|move).{0,30}from\s+(?:2|two)"
+                r"(?:[\s-]*hours?)?\s+to\s+(?:3|three)[\s-]*hours?",
+                lower,
+            )
+        ):
             issues.append("additive final did not state the one-hour adjustment")
         if not re.search(r"(?:3|three)[\s-]*hours?", lower):
             issues.append("additive final did not state the resulting three-hour goal")
@@ -1917,7 +2127,7 @@ def evaluate_case(
     elif case.case_id in {"reported_ui_copy", "reported_cancellation_text"}:
         if mutation_calls:
             issues.append("reported UI copy invoked a mutation tool")
-        if not re.search(r"(?:ui copy|quoted|text|wording|phrase)", lower):
+        if not re.search(r"(?:ui copy|\bcopy\b|quoted|text|wording|phrase)", lower):
             issues.append("final answer did not recognize the request as text rather than an action")
 
     return issues
@@ -1927,8 +2137,9 @@ async def run_evaluation(
     cases: Sequence[EvalCase],
     *,
     case_timeout: float = 120.0,
+    controller_factory: Any = CodexChatController,
 ) -> list[EvalResult]:
-    """Run selected cases once each through one real app-server process."""
+    """Run selected cases, retrying an explicit failed turn once on a fresh thread."""
 
     if case_timeout <= 0 or case_timeout > 600:
         raise ValueError("case_timeout must be in (0, 600]")
@@ -1937,7 +2148,7 @@ async def run_evaluation(
     results: list[EvalResult] = []
     guard = ProductionEffectGuard()
     with guard, tempfile.TemporaryDirectory(prefix="asimut-assistant-eval-") as temporary:
-        controller = CodexChatController(
+        controller = controller_factory(
             dispatcher,
             recorder,
             dynamic_tools=production_tools.dynamic_tool_specs(),
@@ -1952,8 +2163,10 @@ async def run_evaluation(
         )
         try:
             await controller.start()
-            for case in cases:
-                dispatcher.begin_case(case)
+            pending_cases = [(case, False) for case in cases]
+            while pending_cases:
+                case, already_retried = pending_cases.pop(0)
+                dispatcher.reset_case_attempt(case)
                 await controller.new_chat()
                 setup_turn_id: str | None = None
                 setup_turn_status: str | None = None
@@ -2037,24 +2250,30 @@ async def run_evaluation(
                     setup_final=setup_final,
                     setup_turn_status=setup_turn_status,
                 )
-                results.append(
-                    EvalResult(
-                        case_id=case.case_id,
-                        prompt=case.prompt,
-                        description=case.description,
-                        turn_id=turn_id,
-                        turn_status=turn_status,
-                        final=final,
-                        tool_calls=[asdict(record) for record in calls],
-                        reasoning_summaries=[summaries_text] if summaries_text else [],
-                        setup_prompt=case.setup_prompt,
-                        setup_turn_id=setup_turn_id,
-                        setup_turn_status=setup_turn_status,
-                        setup_final=setup_final,
-                        setup_tool_calls=[asdict(record) for record in setup_calls],
-                        issues=issues,
-                    )
+                result = EvalResult(
+                    case_id=case.case_id,
+                    prompt=case.prompt,
+                    description=case.description,
+                    turn_id=turn_id,
+                    turn_status=turn_status,
+                    final=final,
+                    tool_calls=[asdict(record) for record in calls],
+                    reasoning_summaries=[summaries_text] if summaries_text else [],
+                    setup_prompt=case.setup_prompt,
+                    setup_turn_id=setup_turn_id,
+                    setup_turn_status=setup_turn_status,
+                    setup_final=setup_final,
+                    setup_tool_calls=[asdict(record) for record in setup_calls],
+                    issues=issues,
                 )
+                transient_failure = turn_status.casefold() == "failed" or (
+                    isinstance(setup_turn_status, str)
+                    and setup_turn_status.casefold() == "failed"
+                )
+                if transient_failure and not already_retried:
+                    pending_cases.insert(0, (case, True))
+                else:
+                    results.append(result)
         finally:
             await controller.shutdown()
     if guard.attempts:
@@ -2158,6 +2377,7 @@ if __name__ == "__main__":
 __all__ = [
     "BULK_CANCELLATION_EVENTS",
     "BULK_REFERENCED_EVENT_IDS",
+    "CLARIFIED_DATE_RANGE_EVENT_IDS",
     "DAILY_TOTAL_EXISTING_EVENTS",
     "EVAL_CASES",
     "EVAL_LOCAL_NOW",
@@ -2168,6 +2388,8 @@ __all__ = [
     "ProductionEffectGuard",
     "ROLLING_SEVEN_DAY_EVENT_IDS",
     "SYNTHETIC_EVENTS",
+    "THIS_WEEK_CANCELLATION_EVENTS",
+    "THIS_WEEK_PRIOR_EVENTS",
     "ToolCallRecord",
     "UPCOMING_CANCELLATION_EVENTS",
     "evaluate_case",

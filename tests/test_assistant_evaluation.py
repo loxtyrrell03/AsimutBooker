@@ -6,6 +6,7 @@ from codex_chat import CodexToolFailure
 from tools.evaluate_assistant import (
     BULK_CANCELLATION_EVENTS,
     BULK_REFERENCED_EVENT_IDS,
+    CLARIFIED_DATE_RANGE_EVENT_IDS,
     DAILY_TOTAL_EXISTING_EVENTS,
     EVAL_CASES,
     EventRecorder,
@@ -13,14 +14,60 @@ from tools.evaluate_assistant import (
     ROLLING_SEVEN_DAY_EVENT_IDS,
     SYNTHETIC_EVENTS,
     SyntheticBookerDispatcher,
+    THIS_WEEK_PRIOR_EVENTS,
     ToolCallRecord,
     UPCOMING_CANCELLATION_EVENTS,
     evaluate_case,
+    run_evaluation,
 )
 
 
 def _case(case_id):
     return next(case for case in EVAL_CASES if case.case_id == case_id)
+
+
+class _ScriptedEvalController:
+    def __init__(self, dispatcher, event_handler, scripts):
+        self.dispatcher = dispatcher
+        self.event_handler = event_handler
+        self.scripts = list(scripts)
+        self.new_chat_calls = 0
+        self.send_calls = 0
+        self.interrupt_calls = 0
+        self.shutdown_calls = 0
+
+    async def start(self):
+        return None
+
+    async def new_chat(self):
+        self.new_chat_calls += 1
+        return f"thread-{self.new_chat_calls}"
+
+    async def send_message(self, _prompt, **_kwargs):
+        self.send_calls += 1
+        turn_id = f"turn-{self.send_calls}"
+        status, final, record_read = self.scripts.pop(0)
+        if record_read:
+            self.dispatcher.dispatch(
+                None,
+                "get_booker_context",
+                {"sections": ["agenda"]},
+                {"emit_progress": lambda _event: None},
+            )
+        if final:
+            self.event_handler(
+                {"kind": "assistant_delta", "turn_id": turn_id, "text": final}
+            )
+        self.event_handler(
+            {"kind": "turn_completed", "turn_id": turn_id, "status": status}
+        )
+        return turn_id
+
+    async def interrupt(self):
+        self.interrupt_calls += 1
+
+    async def shutdown(self):
+        self.shutdown_calls += 1
 
 
 class SyntheticBookerDispatcherTests(unittest.TestCase):
@@ -92,6 +139,27 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         )
         self.assertNotIn(41004, {item["event_id"] for item in afternoon["matches"]})
 
+    def test_reset_case_attempt_discards_calls_and_cancellation_selections(self):
+        case = _case("afternoon_cancellation")
+        self.dispatcher.begin_case(case)
+        selection = self.dispatcher.dispatch(
+            None,
+            "find_reservations",
+            {"date": "2026-09-01", "time_period": "afternoon"},
+            {"emit_progress": self.progress.append},
+        )
+
+        self.dispatcher.reset_case_attempt(case)
+
+        self.assertEqual(self.dispatcher.calls_for(case.case_id), [])
+        with self.assertRaisesRegex(CodexToolFailure, "not issued"):
+            self.dispatcher.dispatch(
+                None,
+                "cancel_reservations",
+                {"selection_id": selection["selection_id"]},
+                {"emit_progress": self.progress.append},
+            )
+
     def test_all_synthetic_match_tokens_follow_production_schema(self):
         tokens = [
             event.match_token
@@ -99,6 +167,7 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
                 *SYNTHETIC_EVENTS,
                 *BULK_CANCELLATION_EVENTS,
                 *UPCOMING_CANCELLATION_EVENTS[len(BULK_CANCELLATION_EVENTS):],
+                *THIS_WEEK_PRIOR_EVENTS,
             )
         ]
         self.assertTrue(
@@ -262,6 +331,117 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         )
         self.assertNotIn(43001, ROLLING_SEVEN_DAY_EVENT_IDS)
         self.assertNotIn(43002, ROLLING_SEVEN_DAY_EVENT_IDS)
+
+    def test_clarified_range_continues_cancellation_with_followup_only_prompt(self):
+        case = _case("clarified_cancellation_range")
+        self.assertEqual(case.setup_prompt, "Please cancel my bookings for a date range.")
+        self.assertEqual(case.prompt, "From tomorrow to September 7")
+
+        guard = ProductionEffectGuard()
+        with guard:
+            self.dispatcher.begin_case(case)
+            self.dispatcher.set_active_prompt(case.setup_prompt)
+            setup_context = self.dispatcher.dispatch(
+                None,
+                "get_booker_context",
+                {"sections": ["agenda"]},
+                {},
+            )
+            self.dispatcher.set_active_prompt(case.prompt)
+            current_context = self.dispatcher.dispatch(
+                None,
+                "get_booker_context",
+                {"sections": ["agenda"]},
+                {},
+            )
+            resolved = self.dispatcher.dispatch(
+                None,
+                "find_reservations",
+                {"start_date": "2026-09-01", "end_date": "2026-09-07"},
+                {},
+            )
+            result = self.dispatcher.dispatch(
+                None,
+                "cancel_reservations",
+                {"selection_id": resolved["selection_id"]},
+                {},
+            )
+
+        self.assertEqual(
+            [
+                event["event_id"]
+                for event in setup_context["sections"]["agenda"]["events"]
+                if "2026-09-01" <= event["date"] <= "2026-09-07"
+            ],
+            list(CLARIFIED_DATE_RANGE_EVENT_IDS),
+        )
+        self.assertEqual(
+            [item["event_id"] for item in resolved["matches"]],
+            list(CLARIFIED_DATE_RANGE_EVENT_IDS),
+        )
+        self.assertEqual(
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+            list(CLARIFIED_DATE_RANGE_EVENT_IDS),
+        )
+        self.assertEqual(result["production_effect"], "none")
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(guard.attempts, [])
+        cancel_record = self.dispatcher.calls_for(case.case_id)[-1]
+        self.assertEqual(cancel_record.tool, "cancel_reservations")
+        self.assertEqual(cancel_record.arguments["request_quote"], case.prompt)
+        self.assertNotEqual(
+            cancel_record.arguments["request_quote"],
+            case.setup_prompt,
+        )
+
+    def test_this_week_rolls_forward_from_monday_and_excludes_previous_week(self):
+        case = _case("cancel_this_week")
+        context = self.dispatch(
+            case.case_id,
+            "get_booker_context",
+            {"sections": ["agenda"]},
+        )
+        agenda_ids = {
+            event["event_id"]
+            for event in context["sections"]["agenda"]["events"]
+        }
+        prior_ids = {event.event_id for event in THIS_WEEK_PRIOR_EVENTS}
+        self.assertTrue(prior_ids.issubset(agenda_ids))
+
+        resolved = self.dispatch(
+            case.case_id,
+            "find_reservations",
+            {"scope": "upcoming", "days": 7},
+        )
+        resolved_ids = [item["event_id"] for item in resolved["matches"]]
+        self.assertEqual(resolved_ids, list(ROLLING_SEVEN_DAY_EVENT_IDS))
+        self.assertTrue(prior_ids.isdisjoint(resolved_ids))
+        self.assertEqual(
+            resolved["interpreted_scope"],
+            {
+                "mode": "upcoming",
+                "start_at": "2026-08-31T10:00:00+01:00",
+                "end_at_exclusive": "2026-09-07T10:00:00+01:00",
+                "days": 7,
+                "interval": "half-open",
+            },
+        )
+
+        result = self.dispatch(
+            case.case_id,
+            "cancel_reservations",
+            {"selection_id": resolved["selection_id"]},
+        )
+        self.assertEqual(
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+            list(ROLLING_SEVEN_DAY_EVENT_IDS),
+        )
+        self.assertEqual(result["production_effect"], "none")
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(
+            self.dispatcher.calls_for(case.case_id)[-1].arguments["request_quote"],
+            case.prompt,
+        )
 
     def test_afternoon_selection_carries_whole_window_into_cancellation(self):
         case = _case("afternoon_cancellation")
@@ -592,16 +772,16 @@ class EvaluationContractTests(unittest.TestCase):
             1,
             None,
             "get_booker_context",
-            {"sections": ["history", "agenda"]},
+            {"sections": ["history"]},
             {"dry_run": True},
         )
         setup_final = (
             "The five Booker-made reservations are: "
-            "2026-09-01, B0.14, 16:00-17:30; "
-            "2026-09-02, B1.09, 14:00-15:30; "
-            "2026-09-02, B0.29, 16:00-16:30; "
-            "2026-09-03, B0.29, 12:30-14:30; "
-            "2026-09-04, B0.29, 13:45-14:15."
+            "Tue 1 Sep — B0.14, 16:00–17:30; "
+            "Wed 2 Sep — B1.09, 14:00–15:30; "
+            "Wed 2 Sep — B0.29, 16:00–16:30; "
+            "Thu 3 Sep — B0.29, 12:30–14:30; "
+            "Fri 4 Sep — B0.29, 13:45–14:15."
         )
 
         self.assertEqual(
@@ -694,6 +874,21 @@ class EvaluationContractTests(unittest.TestCase):
                 ),
             ),
             (
+                "cancel_this_week",
+                {"scope": "upcoming", "days": 7},
+                tuple(
+                    event
+                    for event in UPCOMING_CANCELLATION_EVENTS
+                    if event.event_id in ROLLING_SEVEN_DAY_EVENT_IDS
+                ),
+                None,
+                (
+                    "Dry run: this would cancel seven reservations in the rolling "
+                    "7-day window from 31 August through 6 September; no live "
+                    "booking changed."
+                ),
+            ),
+            (
                 "afternoon_cancellation",
                 {"date": "2026-09-01", "time_period": "afternoon"},
                 tuple(
@@ -770,6 +965,151 @@ class EvaluationContractTests(unittest.TestCase):
                     ),
                     [],
                 )
+
+    def test_two_turn_range_clarification_carries_cancellation_intent(self):
+        case = _case("clarified_cancellation_range")
+        events = tuple(
+            event
+            for event in UPCOMING_CANCELLATION_EVENTS
+            if event.event_id in CLARIFIED_DATE_RANGE_EVENT_IDS
+        )
+        selection_id = "selection:" + "d" * 64
+        setup_read = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "get_booker_context",
+            {"sections": ["agenda"]},
+            {"dry_run": True, "production_effect": "none"},
+        )
+        find_call = ToolCallRecord(
+            case.case_id,
+            2,
+            None,
+            "find_reservations",
+            {"start_date": "2026-09-01", "end_date": "2026-09-07"},
+            {
+                "dry_run": True,
+                "selection_id": selection_id,
+                "matches": [event.payload() for event in events],
+            },
+        )
+        outcomes = [
+            {
+                "reservation": event.payload(),
+                "status": "dry_run_verified",
+                "dry_run_verified": True,
+                "production_effect": "none",
+            }
+            for event in events
+        ]
+        cancel_call = ToolCallRecord(
+            case.case_id,
+            3,
+            None,
+            "cancel_reservations",
+            {
+                "request_quote": case.prompt,
+                "selection_id": selection_id,
+            },
+            {
+                "dry_run": True,
+                "production_effect": "none",
+                "selection_id": selection_id,
+                "requested_count": len(events),
+                "cancelled_count": len(events),
+                "bounded_count": len(events),
+                "outcomes": outcomes,
+                "rebooking_blackouts": [],
+            },
+        )
+        final = (
+            "Dry run: I would cancel all 8 reservations from tomorrow through "
+            "September 7; no live or production booking changed."
+        )
+        setup_final = "What date range should I cancel? Please give the start and end dates."
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [find_call, cancel_call],
+                final,
+                "completed",
+                [],
+                setup_calls=[setup_read],
+                setup_final=setup_final,
+                setup_turn_status="completed",
+            ),
+            [],
+        )
+
+        missing_clarification = evaluate_case(
+            case,
+            [find_call, cancel_call],
+            final,
+            "completed",
+            [],
+            setup_calls=[setup_read],
+            setup_final="Which bookings do you mean?",
+            setup_turn_status="completed",
+        )
+        self.assertTrue(
+            any("missing cancellation range" in issue for issue in missing_clarification)
+        )
+
+        wrong_active_prompt = ToolCallRecord(
+            case.case_id,
+            3,
+            None,
+            "cancel_reservations",
+            {
+                "request_quote": case.setup_prompt,
+                "selection_id": selection_id,
+            },
+            cancel_call.result,
+        )
+        wrong_prompt_issues = evaluate_case(
+            case,
+            [find_call, wrong_active_prompt],
+            final,
+            "completed",
+            [],
+            setup_calls=[setup_read],
+            setup_final=setup_final,
+            setup_turn_status="completed",
+        )
+        self.assertTrue(
+            any("full exact active user message" in issue for issue in wrong_prompt_issues)
+        )
+
+    def test_this_week_contract_rejects_previous_august_week_wording(self):
+        case = _case("cancel_this_week")
+        dispatcher = SyntheticBookerDispatcher()
+        dispatcher.begin_case(case)
+        resolved = dispatcher.dispatch(
+            None,
+            "find_reservations",
+            {"scope": "upcoming", "days": 7},
+            {},
+        )
+        dispatcher.dispatch(
+            None,
+            "cancel_reservations",
+            {"selection_id": resolved["selection_id"]},
+            {},
+        )
+        issues = evaluate_case(
+            case,
+            dispatcher.calls_for(case.case_id),
+            (
+                "Dry run: I would cancel seven reservations in the previous "
+                "25-31 August week; no live booking changed."
+            ),
+            "completed",
+            [],
+        )
+        self.assertTrue(
+            any("previous 25-31 August week" in issue for issue in issues)
+        )
 
     def test_ambiguous_and_vague_cases_reject_mutation(self):
         ambiguous = _case("ambiguous_cancellation")
@@ -910,14 +1250,74 @@ class EvaluationContractTests(unittest.TestCase):
                 case,
                 [context, target, run],
                 (
-                    "Dry run: tomorrow already has two hours booked, so this would "
-                    "save a three-hour total. It is a multi-session goal; recurring "
-                    "runs would pursue the one-hour remainder."
+                    "Dry run: this would save a three-hour total. Your two existing "
+                    "hours count, leaving one hour. It is a multi-session goal; "
+                    "recurring runs would pursue the remainder."
                 ),
                 "completed",
                 [],
             ),
             [],
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [context, target, run],
+                (
+                    "Dry run: the three-hour multi-session goal counts the 120 minutes "
+                    "already booked, leaving 60 minutes needed. Recurring runs pursue "
+                    "the remainder; no production setting or booking changed."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [context, target, run],
+                (
+                    "Dry run: tomorrow's three-hour total is a multi-session goal. "
+                    "Your two existing hours count, leaving one hour."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [context, target, run],
+                (
+                    "Dry run: the three-hour goal is multi-session. Your two existing "
+                    "one-hour bookings count, leaving 1 hour to book."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
+
+        missing_remainder = evaluate_case(
+            case,
+            [context, target, run],
+            (
+                "Dry run: tomorrow's three-hour total is a multi-session goal. "
+                "Your two existing hours count."
+            ),
+            "completed",
+            [],
+        )
+        self.assertTrue(
+            any("pursuit of the remainder" in issue for issue in missing_remainder)
+        )
+        self.assertTrue(
+            any("one hour remaining" in issue for issue in missing_remainder)
         )
 
         wrong_math = ToolCallRecord(
@@ -987,8 +1387,8 @@ class EvaluationContractTests(unittest.TestCase):
                 case,
                 [update, run],
                 (
-                    "Dry run: this would add another one hour tomorrow, making the "
-                    "saved goal three hours, then run one bounded action."
+                    "Dry run: tomorrow is now a 3-hour total practice goal, up from "
+                    "2 hours, then one bounded action would run."
                 ),
                 "completed",
                 [],
@@ -1008,8 +1408,8 @@ class EvaluationContractTests(unittest.TestCase):
                         case,
                         [],
                         (
-                            "That quoted UI copy is text to discuss; I have not acted "
-                            "on the wording."
+                            "That copy requests an action, but it still needs an explicit "
+                            "user instruction; I did not run it."
                         ),
                         "completed",
                         [],
@@ -1093,6 +1493,79 @@ class EventRecorderTests(unittest.IsolatedAsyncioTestCase):
             recorder.turn_text("turn-2", "reasoning_summary_delta"),
             "Checked context",
         )
+
+
+class RunEvaluationRetryTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def factory_for(scripts):
+        instances = []
+
+        def factory(dispatcher, event_handler, **_kwargs):
+            instance = _ScriptedEvalController(dispatcher, event_handler, scripts)
+            instances.append(instance)
+            return instance
+
+        return factory, instances
+
+    async def test_failed_turn_retries_once_with_fresh_thread_and_case_state(self):
+        factory, instances = self.factory_for(
+            [
+                ("failed", "", True),
+                (
+                    "completed",
+                    "That is quoted UI copy, so no action was taken.",
+                    False,
+                ),
+            ]
+        )
+
+        results = await run_evaluation(
+            [_case("reported_ui_copy")],
+            case_timeout=1,
+            controller_factory=factory,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].passed)
+        self.assertEqual(results[0].tool_calls, [])
+        self.assertEqual(instances[0].new_chat_calls, 2)
+        self.assertEqual(instances[0].send_calls, 2)
+
+    async def test_failed_turn_is_retried_at_most_once(self):
+        factory, instances = self.factory_for(
+            [("failed", "", False), ("failed", "", False)]
+        )
+
+        results = await run_evaluation(
+            [_case("reported_ui_copy")],
+            case_timeout=1,
+            controller_factory=factory,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].passed)
+        self.assertEqual(results[0].turn_status, "failed")
+        self.assertEqual(instances[0].new_chat_calls, 2)
+        self.assertEqual(instances[0].send_calls, 2)
+
+    async def test_completed_semantic_failure_is_not_retried(self):
+        factory, instances = self.factory_for(
+            [("completed", "No action was taken.", False)]
+        )
+
+        results = await run_evaluation(
+            [_case("reported_ui_copy")],
+            case_timeout=1,
+            controller_factory=factory,
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].passed)
+        self.assertTrue(
+            any("recognize the request as text" in issue for issue in results[0].issues)
+        )
+        self.assertEqual(instances[0].new_chat_calls, 1)
+        self.assertEqual(instances[0].send_calls, 1)
 
 
 if __name__ == "__main__":

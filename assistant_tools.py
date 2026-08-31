@@ -55,6 +55,7 @@ DEFAULT_PYTHON = APP_DIR / ".venv" / "Scripts" / "python.exe"
 BOOKER_SCRIPT = APP_DIR / "book_week.py"
 ProgressCallback = Callable[[str, str], None]
 MAX_BULK_CANCELLATIONS = 64
+MAX_RESERVATION_RANGE_DAYS = 31
 BULK_CANCELLATION_TIMEOUT_SECONDS = 20 * 60
 ASSISTANT_MUTATION_LOCK_FILE = APP_DIR / "data" / "assistant-mutation.lock"
 MUTATING_TOOLS = frozenset(
@@ -153,6 +154,20 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
     find_reservations_schema = _object_schema(
         {
             "date": canonical_date,
+            "start_date": {
+                **canonical_date,
+                "description": (
+                    "First calendar date in an inclusive reservation range. Must be "
+                    "paired with end_date; the range may contain at most 31 dates."
+                ),
+            },
+            "end_date": {
+                **canonical_date,
+                "description": (
+                    "Last calendar date in an inclusive reservation range. Must be "
+                    "paired with start_date and be on or after it."
+                ),
+            },
             "start_time": clock,
             "end_time": clock,
             "room": {"type": "string", "minLength": 1, "maxLength": 120},
@@ -202,17 +217,48 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             "oneOf": [
                 {
                     "required": ["date"],
-                    "not": {"required": ["scope"]},
+                    "not": {
+                        "anyOf": [
+                            {"required": ["start_date"]},
+                            {"required": ["end_date"]},
+                            {"required": ["scope"]},
+                            {"required": ["event_ids"]},
+                        ]
+                    },
+                },
+                {
+                    "required": ["start_date", "end_date"],
+                    "not": {
+                        "anyOf": [
+                            {"required": ["date"]},
+                            {"required": ["scope"]},
+                            {"required": ["event_ids"]},
+                            {"required": ["days"]},
+                            {"required": ["start_time"]},
+                            {"required": ["end_time"]},
+                            {"required": ["room"]},
+                            {"required": ["time_period"]},
+                        ]
+                    },
                 },
                 {
                     "required": ["scope"],
-                    "not": {"required": ["date"]},
+                    "not": {
+                        "anyOf": [
+                            {"required": ["date"]},
+                            {"required": ["start_date"]},
+                            {"required": ["end_date"]},
+                            {"required": ["event_ids"]},
+                        ]
+                    },
                 },
                 {
                     "required": ["event_ids"],
                     "not": {
                         "anyOf": [
                             {"required": ["date"]},
+                            {"required": ["start_date"]},
+                            {"required": ["end_date"]},
                             {"required": ["scope"]},
                         ]
                     },
@@ -236,6 +282,8 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                 "not": {
                     "anyOf": [
                         {"required": ["date"]},
+                        {"required": ["start_date"]},
+                        {"required": ["end_date"]},
                         {"required": ["start_time"]},
                         {"required": ["end_time"]},
                         {"required": ["room"]},
@@ -254,6 +302,8 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                 "not": {
                     "anyOf": [
                         {"required": ["date"]},
+                        {"required": ["start_date"]},
+                        {"required": ["end_date"]},
                         {"required": ["scope"]},
                         {"required": ["days"]},
                         {"required": ["start_time"]},
@@ -321,10 +371,11 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             "name": "find_reservations",
             "description": (
                 "Let Terra resolve whichever reservation set it judges the user means against "
-                "the validated agenda. It may submit selected event_ids, an exact date/time, a "
-                "named daypart, or scope=upcoming (optionally days=7). The host returns an opaque "
-                "one-use selection_id tied to the complete fresh exact set, so cancellation is "
-                "one easy follow-up call. A stale snapshot requires refresh."
+                "the validated agenda. It may submit selected event_ids, an exact date/time, an "
+                "inclusive start_date/end_date range, a named daypart, or scope=upcoming "
+                "(optionally days=7). The host returns an opaque one-use selection_id tied to "
+                "the complete fresh exact set, so cancellation is one easy follow-up call. A "
+                "stale or incompletely covered snapshot requires refresh."
             ),
             "inputSchema": find_reservations_schema,
         },
@@ -947,6 +998,8 @@ class BookerToolSurface:
     ) -> dict[str, Any]:
         allowed = {
             "date",
+            "start_date",
+            "end_date",
             "start_time",
             "end_time",
             "room",
@@ -961,10 +1014,15 @@ class BookerToolSurface:
                 f"Unknown find_reservations argument(s): {sorted(unknown)}"
             )
         modes = [field for field in ("date", "scope", "event_ids") if field in arguments]
+        if "start_date" in arguments or "end_date" in arguments:
+            modes.append("range")
         if len(modes) != 1:
             raise AssistantToolError(
-                "find_reservations requires exactly one of date, scope, or event_ids"
+                "find_reservations requires exactly one of date, an inclusive "
+                "start_date/end_date range, scope, or event_ids"
             )
+        if modes[0] == "range":
+            return self._find_reservations_by_date_range(arguments, progress=progress)
         if modes[0] == "event_ids":
             return self._find_reservations_by_event_ids(arguments, progress=progress)
         if modes[0] == "scope":
@@ -1095,6 +1153,122 @@ class BookerToolSurface:
             ),
         }
         return response
+
+    def _find_reservations_by_date_range(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        progress: ProgressCallback,
+    ) -> dict[str, Any]:
+        if set(arguments) != {"start_date", "end_date"}:
+            if "start_date" not in arguments or "end_date" not in arguments:
+                raise AssistantToolError(
+                    "An inclusive date range requires both start_date and end_date"
+                )
+            raise AssistantToolError(
+                "An inclusive date range cannot be combined with date, scope, "
+                "event_ids, days, or reservation filters"
+            )
+        start_date = date.fromisoformat(
+            _canonical_date(arguments["start_date"], "start_date")
+        )
+        end_date = date.fromisoformat(
+            _canonical_date(arguments["end_date"], "end_date")
+        )
+        if end_date < start_date:
+            raise AssistantToolError("end_date must be on or after start_date")
+        date_count = (end_date - start_date).days + 1
+        if date_count > MAX_RESERVATION_RANGE_DAYS:
+            raise AssistantToolError(
+                "An inclusive reservation range may contain at most "
+                f"{MAX_RESERVATION_RANGE_DAYS} calendar dates"
+            )
+
+        interpreted_scope = {
+            "name": "inclusive_date_range",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "inclusive": True,
+            "date_count": date_count,
+            "selection": "all_reservations_on_every_covered_date",
+        }
+        progress(
+            "Finding reservations in date range",
+            "Checking every inclusive calendar date in the validated agenda",
+        )
+        result = read_agenda_snapshot(self.paths.agenda)
+        if result.snapshot is None or result.stale:
+            return {
+                "fresh": False,
+                "refresh_required": True,
+                "reason": result.reason or "No current agenda snapshot is available.",
+                "matches": [],
+                "overlaps": [],
+                "selection_id": None,
+                "interpreted_window": None,
+                "interpreted_scope": interpreted_scope,
+            }
+
+        required_dates = {
+            start_date + timedelta(days=offset) for offset in range(date_count)
+        }
+        missing_dates = sorted(required_dates - set(result.snapshot.dates))
+        if missing_dates:
+            return {
+                "fresh": False,
+                "refresh_required": True,
+                "coverage_required": True,
+                "reason": (
+                    "The complete agenda snapshot does not cover every date in the "
+                    "inclusive range; missing dates: "
+                    + ", ".join(item.isoformat() for item in missing_dates)
+                ),
+                "matches": [],
+                "overlaps": [],
+                "selection_id": None,
+                "interpreted_window": None,
+                "interpreted_scope": interpreted_scope,
+            }
+
+        matches = [
+            event
+            for event in result.snapshot.events
+            if event.is_reservation
+            and type(event.event_id) is int
+            and event.event_id > 0
+            and start_date <= event.date <= end_date
+        ]
+        matches.sort(
+            key=lambda event: (
+                event.date,
+                event.start_time,
+                event.end_time,
+                int(event.event_id or 0),
+            )
+        )
+        if len(matches) > MAX_BULK_CANCELLATIONS:
+            raise AssistantToolError(
+                "The fresh inclusive date-range set exceeds the bounded cancellation "
+                f"capacity of {MAX_BULK_CANCELLATIONS}; choose a smaller date range"
+            )
+        match_payloads = [
+            _event_payload(result.snapshot.observed_at, event) for event in matches
+        ]
+        selection_id = self._remember_cancellation_selections(match_payloads)
+        return {
+            "fresh": True,
+            "refresh_required": False,
+            "observed_at": result.snapshot.observed_at.isoformat(),
+            "matches": match_payloads,
+            "overlaps": [],
+            "selection_id": selection_id,
+            "interpreted_window": None,
+            "interpreted_scope": interpreted_scope,
+            "match_rule": (
+                "all positive-ID reservations on every calendar date in the "
+                "inclusive covered range"
+            ),
+        }
 
     def _find_reservations_by_event_ids(
         self,

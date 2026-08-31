@@ -30,6 +30,8 @@ LOGGER = logging.getLogger(__name__)
 CODEX_MODEL = "gpt-5.6-terra"
 CODEX_REASONING_EFFORT = "medium"
 CODEX_REASONING_SUMMARY = "concise"
+CODEX_APPROVAL_POLICY = "never"
+CODEX_THREAD_SANDBOX = "read-only"
 
 _CORE_DEVELOPER_INSTRUCTIONS = """
 You are the conversational interface for Asimut Booker. Use only the
@@ -177,7 +179,9 @@ class CodexChatController:
         self._dynamic_tools = tuple(self._copy_json_value(item) for item in dynamic_tools)
         self._allowed_tools = self._collect_allowed_tools(self._dynamic_tools)
         self._cwd = resolved_cwd
-        self._developer_instructions = self._join_instructions(developer_instructions)
+        self._developer_instructions = self.effective_developer_instructions(
+            developer_instructions
+        )
         self._process_command = command
         self._process_environment = dict(process_environment or {})
         self._request_timeout = float(request_timeout)
@@ -313,8 +317,8 @@ class CodexChatController:
                     "model": CODEX_MODEL,
                     "allowProviderModelFallback": False,
                     "cwd": str(self._cwd),
-                    "approvalPolicy": "never",
-                    "sandbox": "read-only",
+                    "approvalPolicy": CODEX_APPROVAL_POLICY,
+                    "sandbox": CODEX_THREAD_SANDBOX,
                     "config": self._thread_config(),
                     "serviceName": "Asimut Booker",
                     "developerInstructions": self._developer_instructions,
@@ -351,8 +355,8 @@ class CodexChatController:
                     "threadId": thread_id,
                     "model": CODEX_MODEL,
                     "cwd": str(self._cwd),
-                    "approvalPolicy": "never",
-                    "sandbox": "read-only",
+                    "approvalPolicy": CODEX_APPROVAL_POLICY,
+                    "sandbox": CODEX_THREAD_SANDBOX,
                     "config": self._thread_config(),
                     "developerInstructions": self._developer_instructions,
                     "excludeTurns": True,
@@ -458,8 +462,8 @@ class CodexChatController:
                     "threadId": self._thread_id,
                     "input": [{"type": "text", "text": text, "text_elements": []}],
                     "cwd": str(self._cwd),
-                    "approvalPolicy": "never",
-                    "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+                    "approvalPolicy": CODEX_APPROVAL_POLICY,
+                    "sandboxPolicy": self.effective_turn_sandbox_policy(),
                     "model": CODEX_MODEL,
                     "effort": CODEX_REASONING_EFFORT,
                     "summary": CODEX_REASONING_SUMMARY,
@@ -633,7 +637,7 @@ class CodexChatController:
             raise CodexConfigurationError(
                 f"{operation} did not honor {CODEX_REASONING_EFFORT} reasoning"
             )
-        if result.get("approvalPolicy") != "never":
+        if result.get("approvalPolicy") != CODEX_APPROVAL_POLICY:
             raise CodexConfigurationError(f"{operation} changed the approval policy")
         sandbox = result.get("sandbox")
         if not isinstance(sandbox, Mapping) or sandbox.get("type") != "readOnly":
@@ -1608,7 +1612,7 @@ class CodexChatController:
             raise ValueError("Codex tool specifications must be JSON serializable") from exc
 
     @staticmethod
-    def _thread_config() -> dict[str, Any]:
+    def effective_thread_config() -> dict[str, Any]:
         """Return the exact fail-closed config applied to start and resume."""
 
         return {
@@ -1622,14 +1626,44 @@ class CodexChatController:
         }
 
     @staticmethod
+    def effective_turn_sandbox_policy() -> dict[str, Any]:
+        """Return the exact sandbox policy applied to every turn."""
+
+        return {"type": "readOnly", "networkAccess": False}
+
+    @staticmethod
+    def effective_thread_contract() -> dict[str, Any]:
+        """Return every non-prompt setting that defines a durable thread contract."""
+
+        return {
+            "model": CODEX_MODEL,
+            "reasoning_effort": CODEX_REASONING_EFFORT,
+            "reasoning_summary": CODEX_REASONING_SUMMARY,
+            "approval_policy": CODEX_APPROVAL_POLICY,
+            "thread_sandbox": CODEX_THREAD_SANDBOX,
+            "turn_sandbox_policy": CodexChatController.effective_turn_sandbox_policy(),
+            "thread_config": CodexChatController.effective_thread_config(),
+        }
+
+    @staticmethod
+    def _thread_config() -> dict[str, Any]:
+        return CodexChatController.effective_thread_config()
+
+    @staticmethod
     def _optional_string(value: Any) -> str | None:
         return value if isinstance(value, str) and value else None
 
     @staticmethod
-    def _join_instructions(additional: str) -> str:
+    def effective_developer_instructions(additional: str) -> str:
+        """Return the exact instruction text sent on thread start and resume."""
+
         if not additional.strip():
             return _CORE_DEVELOPER_INSTRUCTIONS
         return f"{_CORE_DEVELOPER_INSTRUCTIONS}\n\n{additional.strip()}"
+
+    @staticmethod
+    def _join_instructions(additional: str) -> str:
+        return CodexChatController.effective_developer_instructions(additional)
 
     @staticmethod
     def _tool_title(namespace: Any, tool: Any) -> str:

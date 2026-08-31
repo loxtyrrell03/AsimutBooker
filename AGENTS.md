@@ -1263,6 +1263,48 @@ python -m unittest discover -s tests
   19 intent, question, quotation, cancellation, planning, vague-request, and
   injection cases without accessing Asimut or changing runtime state.
 
+## 2026-08-31 Assistant Contract Rotation and Calendar Intent Milestone
+
+- Phone deployment alone is not a valid assistant-contract update: Codex dynamic
+  tools are established when a durable thread starts, and resuming an older
+  thread can retain its previous prompt/tool registry. Assistant state version 2
+  therefore stores a SHA-256 contract fingerprint over the exact combined
+  developer instructions, dynamic tool schemas, model, reasoning effort and
+  summary, approval policy, thread/turn sandboxes, and fail-closed thread config.
+  A missing or changed fingerprint keeps the bounded visible transcript, adds one
+  explicit fresh-context boundary, clears the stale pointer, and starts a new
+  Terra thread before another turn can run.
+- New Chat has a synchronous thread generation. A Send captures its generation,
+  plus a unique turn token, while reset increments the generation before
+  asynchronous work; stale startup, completion, transcript, and pointer writes
+  become no-ops. Controller events are also bound to the exact owned controller,
+  so an obsolete process cannot clear a newer turn. The reset boundary is persisted before remote
+  `thread/start`, state writes are serialized through the lifecycle/state locks,
+  and a failed final pointer write leaves durable `thread_id=null`. This prevents
+  an in-flight old turn or disk-write failure from resurrecting the prior thread.
+- Cancellation `this week`, `the next week`, and `over the next week` mean the
+  rolling upcoming seven-day interval for current-booking requests. On Monday
+  31 August 2026 that is 31 August through 6 September, with a half-open
+  7 September boundary; already-ended Monday reservations are excluded by the
+  host's upcoming-scope selector. Practice-plan `next week` retains standard
+  next-Monday-through-Sunday calendar meaning, so its weekend is 12-13 September.
+- `find_reservations` now has a first-class inclusive `start_date`/`end_date`
+  mode in addition to one date/daypart, upcoming scope, and arbitrary event IDs.
+  The host requires both canonical ordered endpoints, at most 31 dates, complete
+  fresh agenda coverage for every date, positive reservation event IDs, and no
+  more than 64 targets, then issues one opaque current-turn selection. A natural
+  clarification answer such as `From tomorrow to September 7` can therefore
+  complete the pending cancellation in one selection/batch without restating a
+  magic command or making an invalid range call.
+- The complete offline Python suite passes 720 tests, including legacy-state
+  rotation, prompt/tool/sandbox fingerprint drift, pointer-write failures, the
+  in-flight Send/New Chat race, inclusive range coverage, Monday rolling scope,
+  and natural clarification continuation. The production
+  `gpt-5.6-terra` medium synthetic harness passes all 21 intent and safety cases;
+  evaluator-only wording checks accept equivalent human date/duration phrasing.
+  Evaluations use in-memory synthetic tools and did not read or change Asimut,
+  live bookings, settings, receipts, or phone runtime state.
+
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions

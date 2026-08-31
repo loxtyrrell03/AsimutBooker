@@ -58,7 +58,7 @@ APP_CAPABILITIES = {
         "Crash-safe mutation receipts and exact event-ID persistence checks",
         "Recurring 15-minute Windows schedule with health evidence",
         "Read-only login, agenda, availability, and planning refreshes",
-        "Exact-ID single or bounded bulk reservation cancellation through the assistant action surface",
+        "Single, inclusive-date-range, upcoming-scope, or bounded selected-set reservation cancellation through the assistant action surface",
     ],
     "assistant_actions": [
         "Answer questions from sanitized preferences, agenda, plan, room, health, receipt, and history context",
@@ -67,7 +67,7 @@ APP_CAPABILITIES = {
         "Set preferred-time, foresight, room-order, room-requirement, and session-shape preferences",
         "Save high-level future intentions only after resolving a numeric target for every date",
         "Run one plan-selected autonomous booking action under the ordinary live safeguards",
-        "Let Terra select and cancel any bounded set of current reservations while the host revalidates every positive event ID",
+        "Let Terra select and cancel an exact date range, upcoming scope, or arbitrary bounded set while the host revalidates every positive event ID",
     ],
     "manual_or_gui_boundaries": [
         "Initial credential setup uses the masked private prompt and Windows Credential Manager, never chat",

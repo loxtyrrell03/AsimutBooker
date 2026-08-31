@@ -185,7 +185,14 @@ class AssistantToolSurfaceTests(unittest.TestCase):
         self.assertEqual(find_schema["properties"]["event_ids"]["maxItems"], 64)
         self.assertEqual(find_schema["properties"]["scope"]["enum"], ["upcoming"])
         self.assertEqual(find_schema["properties"]["days"]["maximum"], 31)
+        self.assertIn("start_date", find_schema["properties"])
+        self.assertIn("end_date", find_schema["properties"])
         self.assertTrue(any("oneOf" in item for item in find_schema["allOf"]))
+        mode_schema = next(item for item in find_schema["allOf"] if "oneOf" in item)
+        self.assertIn(
+            ["start_date", "end_date"],
+            [branch.get("required") for branch in mode_schema["oneOf"]],
+        )
 
         for name in {
             "set_future_practice_plan",
@@ -584,11 +591,136 @@ class AssistantToolSurfaceTests(unittest.TestCase):
         self.assertEqual(next_week["interpreted_scope"]["days"], 7)
         self.assertRegex(next_week["selection_id"], r"^selection:[0-9a-f]{64}$")
 
+    def test_inclusive_date_range_returns_one_exact_multi_day_selection(self):
+        first = date.today() + timedelta(days=1)
+        second = first + timedelta(days=1)
+        third = first + timedelta(days=2)
+        self._publish(
+            [
+                self._reservation(411, first - timedelta(days=1), "14:00", "15:00"),
+                self._reservation(412, first, "16:00", "17:00"),
+                self._reservation(413, second, "10:00", "11:00"),
+                self._reservation(
+                    None,
+                    second,
+                    "11:00",
+                    "12:00",
+                    "B0.90",
+                ),
+                self._reservation(
+                    414,
+                    second,
+                    "12:00",
+                    "13:00",
+                    is_reservation=False,
+                ),
+                self._reservation(415, third, "09:00", "10:00"),
+                self._reservation(416, third + timedelta(days=1), "14:00", "15:00"),
+            ]
+        )
+        result = self.surface.dispatch(
+            "find_reservations",
+            {"start_date": first.isoformat(), "end_date": third.isoformat()},
+        )
+        self.assertTrue(result["fresh"])
+        self.assertEqual(
+            [item["event_id"] for item in result["matches"]],
+            [412, 413, 415],
+        )
+        self.assertEqual(result["overlaps"], [])
+        self.assertRegex(result["selection_id"], r"^selection:[0-9a-f]{64}$")
+        self.assertEqual(
+            result["interpreted_scope"],
+            {
+                "name": "inclusive_date_range",
+                "start_date": first.isoformat(),
+                "end_date": third.isoformat(),
+                "inclusive": True,
+                "date_count": 3,
+                "selection": "all_reservations_on_every_covered_date",
+            },
+        )
+        self.assertIn("positive-ID reservations", result["match_rule"])
+
+    def test_inclusive_date_range_requires_both_canonical_ordered_endpoints(self):
+        first = date.today() + timedelta(days=1)
+        second = first + timedelta(days=1)
+        invalid_arguments = (
+            {"start_date": first.isoformat()},
+            {"end_date": second.isoformat()},
+            {"start_date": "2026-9-1", "end_date": "2026-09-02"},
+            {"start_date": second.isoformat(), "end_date": first.isoformat()},
+            {
+                "start_date": first.isoformat(),
+                "end_date": (first + timedelta(days=31)).isoformat(),
+            },
+            {
+                "start_date": first.isoformat(),
+                "end_date": second.isoformat(),
+                "room": "B0.29",
+            },
+        )
+        for arguments in invalid_arguments:
+            with self.subTest(arguments=arguments), self.assertRaises(AssistantToolError):
+                self.surface.dispatch("find_reservations", arguments)
+
+    def test_inclusive_date_range_requires_complete_coverage_for_every_date(self):
+        first = date.today() + timedelta(days=1)
+        covered_end = first + timedelta(days=1)
+        missing_end = first + timedelta(days=2)
+        self._publish(
+            [
+                self._reservation(
+                    421,
+                    first,
+                    "09:00",
+                    "10:00",
+                    is_reservation=False,
+                ),
+                self._reservation(
+                    422,
+                    covered_end,
+                    "09:00",
+                    "10:00",
+                    is_reservation=False,
+                ),
+            ]
+        )
+        result = self.surface.dispatch(
+            "find_reservations",
+            {"start_date": first.isoformat(), "end_date": missing_end.isoformat()},
+        )
+        self.assertFalse(result["fresh"])
+        self.assertTrue(result["refresh_required"])
+        self.assertTrue(result["coverage_required"])
+        self.assertIn(missing_end.isoformat(), result["reason"])
+        self.assertEqual(result["matches"], [])
+        self.assertIsNone(result["selection_id"])
+
+    def test_inclusive_date_range_obeys_bulk_cancellation_limit(self):
+        booking_date = date.today() + timedelta(days=1)
+        self._publish(
+            [self._reservation(event_id, booking_date) for event_id in range(2000, 2065)]
+        )
+        with self.assertRaisesRegex(AssistantToolError, "capacity of 64"):
+            self.surface.dispatch(
+                "find_reservations",
+                {
+                    "start_date": booking_date.isoformat(),
+                    "end_date": booking_date.isoformat(),
+                },
+            )
+
     def test_find_modes_and_upcoming_filters_fail_closed(self):
         booking_date = (date.today() + timedelta(days=1)).isoformat()
         invalid_arguments = (
             {},
             {"date": booking_date, "scope": "upcoming"},
+            {
+                "date": booking_date,
+                "start_date": booking_date,
+                "end_date": booking_date,
+            },
             {"date": booking_date, "days": 7},
             {"scope": "future"},
             {"scope": "upcoming", "days": 0},
