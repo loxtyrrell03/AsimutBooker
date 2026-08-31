@@ -1030,8 +1030,22 @@ python -m unittest discover -s tests
 - The complete offline regression suite passes 638 tests; 43 focused phone/API/
   PWA/lock tests and 6 browser-state decision tests pass. The
   production static build passes TypeScript, accessibility/correctness linting,
-  synchronized-cache verification, and source-map rejection. Runtime installation
-  and a physical iPhone Add-to-Home-Screen check remain separate deployment evidence.
+  synchronized-cache verification, and source-map rejection.
+- Commit `32f34ea4396d` is installed as the limited interactive-user
+  `AsimutBooker_Phone` logon task. It owns exactly one `127.0.0.1:8794` listener
+  and is privately exposed at `https://lox-pc.tail89d19b.ts.net:10443/` through
+  one Tailscale Serve route; the verifier confirms exact task arguments, process
+  identity, build version, security headers, install assets, API denial without
+  identity, and absence of a public Funnel route while preserving unrelated
+  Serve routes.
+- A fresh live phone session confirmed `GPT-5.6 Terra · medium`, ready Booker
+  context, zero unresolved request reservations, and 3/3 harmless assistant turns
+  through the actual HTTPS/SSE boundary. It answered tomorrow's reservations,
+  explained the next plan and automatic-booker behavior, and summarized saved
+  practice targets/future intentions while emitting reasoning-summary/activity
+  and `get_booker_context` progress plus correlated terminal events. No mutation
+  tool, booking, cancellation, settings write, or live Booker action ran. A
+  physical iPhone Add-to-Home-Screen launch remains separate device evidence.
 
 ## Maintenance Notes
 
