@@ -1045,6 +1045,13 @@ python -m unittest discover -s tests
   messages, schedules, or mutations. Clean pnpm installs explicitly allow build
   scripts only for the pinned esbuild, Sharp, and workerd dependencies required
   by the Vite/Vinext/Cloudflare toolchain.
+- Sites version 1 was saved from pushed standalone phone-source commit
+  `aa0b880d9236c6ecf396e81883efd8f1f069228d` and privately deployed at
+  `https://asimut-booker-phone-lox.loxtyrrell.chatgpt.site`. Deployment access
+  was verified as custom owner-only: the current owner is the sole allowed
+  account, with no external user, workspace group, tenant group, or HTTP tunnel
+  binding. The production page is therefore a private launcher, not an alternate
+  Booker API origin.
 - A fresh live phone session confirmed `GPT-5.6 Terra · medium`, ready Booker
   context, zero unresolved request reservations, and 3/3 harmless assistant turns
   through the actual HTTPS/SSE boundary. It answered tomorrow's reservations,
