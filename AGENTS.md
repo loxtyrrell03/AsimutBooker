@@ -1190,6 +1190,36 @@ python -m unittest discover -s tests
 
 ## Maintenance Notes
 
+## 2026-08-31 Natural Daily Goals and Session Portfolio Milestone
+
+- Clear outcome wording such as "book/get me three hours tomorrow" now
+  authorizes the exact dated target write required to fulfil the request as well
+  as one bounded date-scoped Booker run. Users never need to restate internal
+  implementation language. The evaluator calls the same production
+  authorization contract, so model tests can no longer pass wording that the
+  installed assistant rejects.
+- A dated duration is an aggregate daily goal, including existing reservations,
+  rather than one impossible reservation. Targets above Asimut's 120-minute
+  session limit are explicitly pursued through multiple non-overlapping ranked
+  sessions; weekday peak use remains capped at 120 minutes in aggregate, and
+  recurring runs continue pursuing the remaining saved target after the
+  assistant's one-action immediate safety cap.
+- `select_day_plan` now performs a bounded whole-day portfolio search. It
+  maximizes fulfilled target minutes before preferring fewer and better-ranked
+  sessions, while retaining overlap, same-room-gap, peak, weekly, and target
+  limits. Regression coverage includes the former greedy trap where one
+  attractive 120-minute block hid a feasible pair of 90-minute blocks.
+- The phone schedule renders the primary plus every additional selected session
+  and shows their combined planned duration, so a 120+60-minute plan is visible
+  as two potential sessions rather than one incomplete block.
+- Production-backed synthetic evaluation now covers formal, concise, polite,
+  deferred, and explanation-only three-hour requests in addition to schedule,
+  cancellation, multi-day-plan, vague-quantity, and injection cases. No
+  evaluator path launches the live Booker or changes local settings.
+- The complete offline Python suite passes 657 tests. The phone's 8 Node tests
+  and production static build pass, including multi-session aggregation and
+  rendering support.
+
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions

@@ -48,6 +48,7 @@ APP_CAPABILITIES = {
         "Complete agenda scanning for reservations, classes, and conflicts",
         "Booking history plus optional ntfy result notifications",
         "Practice targets, date overrides, disabled dates, and preferred time windows",
+        "Daily totals automatically split into a ranked portfolio of legal non-overlapping sessions",
         "Explainable future practice intentions resolved into exact dated targets",
         "Room ordering, exclusions, metadata requirements, and session-shape rules",
         "Daily foresight with quota-aware primary, additional, and backup sessions",
@@ -60,7 +61,7 @@ APP_CAPABILITIES = {
     "assistant_actions": [
         "Answer questions from sanitized preferences, agenda, plan, room, health, receipt, and history context",
         "Refresh login health, the complete live agenda/grid, or the explainable booking plan without mutation",
-        "Enable or disable exact dates and update dated/default practice targets",
+        "Enable or disable exact dates and turn natural daily-total requests into dated practice targets",
         "Set preferred-time, foresight, room-order, room-requirement, and session-shape preferences",
         "Save high-level future intentions only after resolving a numeric target for every date",
         "Run one plan-selected autonomous booking action under the ordinary live safeguards",
@@ -80,6 +81,10 @@ APP_CAPABILITIES = {
         "rolling_quota": "28 hours per rolling week",
         "weekday_peak_quota": "2 hours per day, Monday-Friday 09:00-16:00",
         "booking_duration": "live site limits, currently 30-120 minutes",
+        "daily_target_semantics": (
+            "A dated duration is total desired practice, including existing reservations; "
+            "targets above 120 minutes are pursued through multiple sessions"
+        ),
         "same_room_gap": "the greater of the configured/default gap and the live site minimum",
         "manual_reconfirmation": (
             "This is a separate day-of attendance step on RWCMD Wi-Fi. The assistant "

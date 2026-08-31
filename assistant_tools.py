@@ -59,6 +59,107 @@ MUTATING_TOOLS = frozenset(
     }
 )
 
+# Mutation authorization is deliberately shared with the model evaluation
+# harness.  Keeping the real verb contract in one place prevents a synthetic
+# evaluation from accepting wording that the installed assistant rejects.
+_PRACTICE_GOAL_ACTION_PATTERN = (
+    r"\b(?:book(?:s|ed|ing)?|reserv(?:e|es|ed|ing)|"
+    r"arrang(?:e|es|ed|ing)|schedul(?:e|es|ed|ing)|"
+    r"plan(?:s|ned|ning)?|set(?:s|ting)?|chang(?:e|es|ed|ing)|"
+    r"updat(?:e|es|ed|ing)|practi[cs](?:e|es|ed|ing)|"
+    r"fit(?:s|ting)?|squeez(?:e|es|ed|ing)|get(?:s|ting)?|"
+    r"giv(?:e|es|ing)|mak(?:e|es|ing)|made|try|"
+    r"cap(?:s|ped|ping)?|limit(?:s|ed|ing)?|skip(?:s|ped|ping)?|"
+    r"turn(?:s|ed|ing)?|do|does|did|done|doing|only|off|"
+    r"lighter|easier|harder|busier|more|less|"
+    r"hours?|minutes?|\d+(?:\.\d+)?\s*h(?:rs?)?|"
+    r"weekdays?|weekends?)\b"
+)
+_PRACTICE_GOAL_IMPERATIVE_PATTERN = (
+    r"\b(?:book|reserve|arrange|schedule|plan|set|change|update|"
+    r"practice|practise|fit|squeeze|get|give|make|try|cap|limit|"
+    r"skip|turn|do|\d+(?:\.\d+)?\s*h(?:rs?)?)\b"
+)
+_TARGET_SETTING_ACTION_PATTERN = (
+    r"\b(?:schedul(?:e|es|ed|ing)|plan(?:s|ned|ning)?|"
+    r"set(?:s|ting)?|chang(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|"
+    r"sav(?:e|es|ed|ing)|practi[cs](?:e|es|ed|ing)|"
+    r"cap(?:s|ped|ping)?|limit(?:s|ed|ing)?|skip(?:s|ped|ping)?|"
+    r"turn(?:s|ed|ing)?|do|does|did|done|doing|only|off|"
+    r"lighter|easier|harder|busier|more|less|hours?|minutes?|"
+    r"\d+(?:\.\d+)?\s*h(?:rs?)?|weekdays?|weekends?|"
+    r"enabl(?:e|es|ed|ing)|disabl(?:e|es|ed|ing)|"
+    r"exclud(?:e|es|ed|ing)|includ(?:e|es|ed|ing)|"
+    r"prefer(?:s|red|ring)?|us(?:e|es|ed|ing))\b"
+)
+_TARGET_SETTING_IMPERATIVE_PATTERN = (
+    r"\b(?:schedule|plan|set|change|update|save|practice|practise|"
+    r"cap|limit|skip|turn|do|enable|disable|exclude|include|prefer|use|"
+    r"\d+(?:\.\d+)?\s*h(?:rs?)?)\b"
+)
+_LIVE_BOOKING_ACTION_PATTERN = (
+    r"\b(?:book(?:s|ed|ing)?|reserv(?:e|es|ed|ing)|"
+    r"arrang(?:e|es|ed|ing)|fit(?:s|ting)?|squeez(?:e|es|ed|ing)|"
+    r"get(?:s|ting)?|find(?:s|ing)?|run(?:s|ning)?|"
+    r"start(?:s|ed|ing)?|creat(?:e|es|ed|ing)|"
+    r"mak(?:e|es|ing)|made|try|practi[cs](?:e|es|ed|ing)|"
+    r"hours?|minutes?|\d+(?:\.\d+)?\s*h(?:rs?)?)\b"
+)
+_LIVE_BOOKING_IMPERATIVE_PATTERN = (
+    r"\b(?:book|reserve|arrange|fit|squeeze|get|find|run|start|"
+    r"create|make|try|practice|practise|"
+    r"\d+(?:\.\d+)?\s*h(?:rs?)?)\b"
+)
+_PREFERENCE_ACTION_PATTERN = (
+    r"\b(?:book(?:s|ed|ing)?|reserv(?:e|es|ed|ing)|"
+    r"arrang(?:e|es|ed|ing)|schedul(?:e|es|ed|ing)|"
+    r"plan(?:s|ned|ning)?|set(?:s|ting)?|chang(?:e|es|ed|ing)|"
+    r"updat(?:e|es|ed|ing)|practi[cs](?:e|es|ed|ing)|"
+    r"fit(?:s|ting)?|squeez(?:e|es|ed|ing)|get(?:s|ting)?|"
+    r"giv(?:e|es|ing)|mak(?:e|es|ing)|made|try|"
+    r"cap(?:s|ped|ping)?|limit(?:s|ed|ing)?|skip(?:s|ped|ping)?|"
+    r"turn(?:s|ed|ing)?|do|does|did|done|doing|only|off|"
+    r"lighter|easier|harder|busier|more|less|"
+    r"hours?|minutes?|\d+(?:\.\d+)?\s*h(?:rs?)?|"
+    r"weekdays?|weekends?|enabl(?:e|es|ed|ing)|"
+    r"disabl(?:e|es|ed|ing)|exclud(?:e|es|ed|ing)|"
+    r"includ(?:e|es|ed|ing)|prefer(?:s|red|ring)?|"
+    r"us(?:e|es|ed|ing))\b"
+)
+_PREFERENCE_IMPERATIVE_PATTERN = (
+    r"\b(?:book|reserve|arrange|schedule|plan|set|change|update|"
+    r"practice|practise|fit|squeeze|get|give|make|try|cap|limit|"
+    r"skip|turn|do|enable|disable|exclude|include|prefer|use)\b"
+)
+_CANCELLATION_ACTION_PATTERN = (
+    r"\b(?:cancel(?:s|l?ed|l?ing)?|"
+    r"remov(?:e|es|ed|ing)|delet(?:e|es|ed|ing))\b"
+)
+_CANCELLATION_IMPERATIVE_PATTERN = r"\b(?:cancel|remove|delete)\b"
+
+_MUTATION_AUTHORIZATION_PATTERNS = {
+    "set_future_practice_plan": (
+        _PRACTICE_GOAL_ACTION_PATTERN,
+        _PRACTICE_GOAL_IMPERATIVE_PATTERN,
+    ),
+    "update_booker_preferences": (
+        _PREFERENCE_ACTION_PATTERN,
+        _PREFERENCE_IMPERATIVE_PATTERN,
+    ),
+    "run_booker": (
+        _LIVE_BOOKING_ACTION_PATTERN,
+        _LIVE_BOOKING_IMPERATIVE_PATTERN,
+    ),
+    "cancel_reservation": (
+        _CANCELLATION_ACTION_PATTERN,
+        _CANCELLATION_IMPERATIVE_PATTERN,
+    ),
+    "cancel_reservations": (
+        _CANCELLATION_ACTION_PATTERN,
+        _CANCELLATION_IMPERATIVE_PATTERN,
+    ),
+}
+
 _SECRET_LINE = re.compile(
     r"(?i)(password|passcode|one[- ]?time|\botp\b|authorization:|cookie|credential|sms code|bridge token)"
 )
@@ -238,9 +339,14 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             "description": (
                 "Turn a high-level future practice intention into the complete dated targets "
                 "that the autonomous Booker will pursue as those dates enter the live window. "
+                "A dated duration is the total practice goal for that date, not one booking; "
+                "targets above the site session maximum are split across multiple ranked, "
+                "non-overlapping sessions. Direct outcome wording such as 'book/get me three "
+                "hours tomorrow' authorizes this necessary target write without a restatement. "
                 "Supply every date in the range exactly once; 0 hours turns that date off. "
-                "If words such as 'more' do not determine a numeric target, ask one concise "
-                "clarifying question before calling. The saved intent remains explainable and revisable."
+                "Resolve relative amounts from an explicit or saved numeric baseline; if no "
+                "numeric result is determined, ask one concise clarification. The saved intent "
+                "remains explainable and revisable."
             ),
             "inputSchema": _object_schema(
                 {
@@ -448,7 +554,9 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             "name": "run_booker",
             "description": (
                 "Run the autonomous booker for one plan-selected action after an explicit user "
-                "booking request. It cannot bind an exact start time by itself. The run shares "
+                "booking outcome. This immediate safety cap is not the daily practice limit: "
+                "the saved dated target remains active and recurring runs pursue the remaining "
+                "ranked sessions. It cannot bind an exact start time by itself. The run shares "
                 "the runtime lock, refreshes live policy/agenda, and keeps all existing exact-save "
                 "safeguards. A duration cap requires both an exact date and exact room. Never use "
                 "for a question or speculative action."
@@ -649,7 +757,7 @@ def _authorize_mutation(
         match.span()
         for match in re.finditer(re.escape(normalized_quote), normalized_request)
     ]
-    clause_start = r"(?:^|(?<=[.!?:;])\s+)"
+    clause_start = r"(?:^|(?<=[,.!?:;])\s+)"
     direct_request_lead = (
         r"(?:please\s+)?(?:can|could|would|will) you(?:\s+please)?\s+"
     )
@@ -690,6 +798,62 @@ def _authorize_mutation(
             "the active user message."
         )
     return quote.strip()
+
+
+def authorize_tool_mutation(
+    tool: str,
+    arguments: Mapping[str, Any],
+    user_request: str,
+) -> str:
+    """Apply the production authorization contract for one typed mutation.
+
+    The dry-run model evaluator calls this same function.  This is important:
+    accepting only a substring in evaluation can hide a production-only
+    rejection and make natural phrasing appear supported when it is not.
+    """
+
+    patterns = _MUTATION_AUTHORIZATION_PATTERNS.get(tool)
+    if patterns is None:
+        raise AssistantToolError(f"Unsupported mutating assistant tool: {tool}")
+    if tool in {"set_future_practice_plan", "update_booker_preferences"}:
+        quote = arguments.get("request_quote")
+        normalized_quote = _normalize_quote(quote) if isinstance(quote, str) else ""
+        target_lead = re.search(_TARGET_SETTING_IMPERATIVE_PATTERN, normalized_quote)
+        booking_lead = re.search(_LIVE_BOOKING_IMPERATIVE_PATTERN, normalized_quote)
+        if target_lead is not None and (
+            booking_lead is None or target_lead.start() <= booking_lead.start()
+        ):
+            # "Set tomorrow to three hours, but don't book yet" authorizes the
+            # target write while explicitly withholding the separate live run.
+            # Select the target-only verb family so that later negated booking
+            # wording cannot accidentally veto the affirmative scoped change.
+            patterns = (
+                _TARGET_SETTING_ACTION_PATTERN,
+                _TARGET_SETTING_IMPERATIVE_PATTERN,
+            )
+    if tool == "run_booker":
+        normalized_request = _normalize_quote(user_request)
+        explicit_booking = re.search(
+            r"\b(?:book|reserve|arrange|fit|squeeze|get|find|run|start|"
+            r"create|make|practice|practise|try)\b",
+            normalized_request,
+        )
+        target_only = re.search(
+            r"\b(?:set|change|update|save|edit)\b.{0,60}"
+            r"\b(?:target|plan|goal|preference)\b",
+            normalized_request,
+        )
+        if target_only and explicit_booking is None:
+            raise AssistantToolError(
+                "This request changes a saved target but does not authorize an immediate booking run."
+            )
+    action_pattern, imperative_pattern = patterns
+    return _authorize_mutation(
+        arguments,
+        user_request,
+        action_pattern=action_pattern,
+        imperative_pattern=imperative_pattern,
+    )
 
 
 def _event_token(observed_at: Any, event: AgendaEvent) -> str:
@@ -1042,20 +1206,8 @@ class BookerToolSurface:
         user_request: str,
         progress: ProgressCallback,
     ) -> dict[str, Any]:
-        _authorize_mutation(
-            arguments,
-            user_request,
-            action_pattern=(
-                r"\b(?:plan(?:s|ned|ning)?|schedul(?:e|es|ed|ing)|"
-                r"set(?:s|ting)?|chang(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|"
-                r"practi[cs](?:e|es|ed|ing)|cap(?:s|ped|ping)?|"
-                r"limit(?:s|ed|ing)?|skip(?:s|ped|ping)?|"
-                r"do|does|did|done|doing|only|off|weekdays?|weekends?)\b"
-            ),
-            imperative_pattern=(
-                r"\b(?:plan|schedule|set|change|update|practice|practise|"
-                r"cap|limit|skip|do)\b"
-            ),
+        authorize_tool_mutation(
+            "set_future_practice_plan", arguments, user_request
         )
         expected = {
             "request_quote",
@@ -1097,6 +1249,19 @@ class BookerToolSurface:
                 "These exact date targets are now active in practice_plan. Live room, quota, "
                 "conflict, and booking-window rules still apply."
             ),
+            "target_semantics": "Each value is total desired practice on that date.",
+            "session_planning": {
+                "maximum_single_session_minutes": 120,
+                "split_larger_targets": True,
+                "ranking": "best feasible non-overlapping sessions from current preferences",
+                "weekday_peak_minutes_maximum": 120,
+                "recurring_runs_pursue_remaining_target": True,
+                "multi_session_dates": [
+                    item["date"]
+                    for item in arguments["daily_targets"]
+                    if float(item["hours"]) * 60 > 120
+                ],
+            },
         }
 
     def _update_preferences(
@@ -1106,21 +1271,8 @@ class BookerToolSurface:
         user_request: str,
         progress: ProgressCallback,
     ) -> dict[str, Any]:
-        _authorize_mutation(
-            arguments,
-            user_request,
-            action_pattern=(
-                r"\b(?:set(?:s|ting)?|chang(?:e|es|ed|ing)|"
-                r"updat(?:e|es|ed|ing)|turn(?:s|ed|ing)?|"
-                r"enabl(?:e|es|ed|ing)|disabl(?:e|es|ed|ing)|"
-                r"exclud(?:e|es|ed|ing)|includ(?:e|es|ed|ing)|"
-                r"prefer(?:s|red|ring)?|only|us(?:e|es|ed|ing)|"
-                r"mak(?:e|es|ing)|made)\b"
-            ),
-            imperative_pattern=(
-                r"\b(?:set|change|update|turn|enable|disable|exclude|"
-                r"include|prefer|only|use|make)\b"
-            ),
+        authorize_tool_mutation(
+            "update_booker_preferences", arguments, user_request
         )
         patch = dict(arguments)
         patch.pop("request_quote", None)
@@ -1162,9 +1314,29 @@ class BookerToolSurface:
 
         changed = update_settings(mutate, self.paths.settings)
         progress("Preferences saved", "The next plan refresh will use the updated settings")
+        multi_session_dates = []
+        practice_patch = patch.get("practice_plan")
+        if isinstance(practice_patch, Mapping):
+            for item in practice_patch.get("date_overrides", []):
+                if (
+                    isinstance(item, Mapping)
+                    and isinstance(item.get("date"), str)
+                    and isinstance(item.get("hours"), (int, float))
+                    and not isinstance(item.get("hours"), bool)
+                    and float(item["hours"]) * 60 > 120
+                ):
+                    multi_session_dates.append(item["date"])
         return {
             "changed": changed,
             "note": "The existing display plan is now marked stale until it is refreshed.",
+            "target_semantics": "Dated practice hours are total daily goals, not one booking.",
+            "session_planning": {
+                "maximum_single_session_minutes": 120,
+                "split_larger_targets": True,
+                "weekday_peak_minutes_maximum": 120,
+                "recurring_runs_pursue_remaining_target": True,
+                "multi_session_dates": sorted(set(multi_session_dates)),
+            },
         }
 
     @staticmethod
@@ -1301,16 +1473,7 @@ class BookerToolSurface:
         user_request: str,
         progress: ProgressCallback,
     ) -> dict[str, Any]:
-        _authorize_mutation(
-            arguments,
-            user_request,
-            action_pattern=(
-                r"\b(?:book(?:s|ed|ing)?|reserv(?:e|es|ed|ing)|"
-                r"run(?:s|ning)?|start(?:s|ed|ing)?|"
-                r"creat(?:e|es|ed|ing)|mak(?:e|es|ing)|made)\b"
-            ),
-            imperative_pattern=r"\b(?:book|reserve|run|start|create|make)\b",
-        )
+        authorize_tool_mutation("run_booker", arguments, user_request)
         allowed = {
             "request_quote",
             "only_date",
@@ -1371,15 +1534,7 @@ class BookerToolSurface:
         user_request: str,
         progress: ProgressCallback,
     ) -> dict[str, Any]:
-        _authorize_mutation(
-            arguments,
-            user_request,
-            action_pattern=(
-                r"\b(?:cancel(?:s|l?ed|l?ing)?|"
-                r"remov(?:e|es|ed|ing)|delet(?:e|es|ed|ing))\b"
-            ),
-            imperative_pattern=r"\b(?:cancel|remove|delete)\b",
-        )
+        authorize_tool_mutation("cancel_reservation", arguments, user_request)
         required = self._cancellation_target_fields() | {"request_quote"}
         if set(arguments) != required:
             raise AssistantToolError(
@@ -1413,15 +1568,7 @@ class BookerToolSurface:
         user_request: str,
         progress: ProgressCallback,
     ) -> dict[str, Any]:
-        _authorize_mutation(
-            arguments,
-            user_request,
-            action_pattern=(
-                r"\b(?:cancel(?:s|l?ed|l?ing)?|"
-                r"remov(?:e|es|ed|ing)|delet(?:e|es|ed|ing))\b"
-            ),
-            imperative_pattern=r"\b(?:cancel|remove|delete)\b",
-        )
+        authorize_tool_mutation("cancel_reservations", arguments, user_request)
         if set(arguments) != {"request_quote", "reservations"}:
             raise AssistantToolError(
                 "cancel_reservations requires one request quote and an exact reservations list"
@@ -1922,5 +2069,6 @@ __all__ = [
     "AssistantToolError",
     "BookerToolSurface",
     "ToolResult",
+    "authorize_tool_mutation",
     "dynamic_tool_specs",
 ]

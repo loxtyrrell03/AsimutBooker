@@ -263,6 +263,41 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
                 incomplete,
             )
 
+    def test_daily_total_dry_run_uses_production_authorization_for_both_steps(self):
+        case = _case("daily_total_booking")
+        plan_arguments = {
+            "request_quote": case.prompt,
+            "title": "Three hours tomorrow",
+            "intent_summary": (
+                "Three total practice hours split across the best available sessions."
+            ),
+            "start_date": "2026-09-01",
+            "end_date": "2026-09-01",
+            "daily_targets": [{"date": "2026-09-01", "hours": 3.0}],
+            "replace_overlapping": False,
+        }
+        plan = self.dispatch(
+            case.case_id,
+            "set_future_practice_plan",
+            plan_arguments,
+        )
+        run = self.dispatch(
+            case.case_id,
+            "run_booker",
+            {
+                "request_quote": case.prompt,
+                "only_date": "2026-09-01",
+                "max_actions": 1,
+            },
+        )
+
+        self.assertTrue(plan["session_planning"]["split_larger_targets"])
+        self.assertEqual(run["bounded_actions"], 1)
+        self.assertEqual(
+            [record.tool for record in self.dispatcher.calls_for(case.case_id)],
+            ["set_future_practice_plan", "run_booker"],
+        )
+
     def test_production_effect_guard_blocks_and_restores_entry_points(self):
         import assistant_tools
 
@@ -332,6 +367,51 @@ class EvaluationContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(issues, [])
+
+    def test_daily_total_contract_requires_target_then_bounded_run(self):
+        case = _case("daily_total_booking")
+        plan = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "set_future_practice_plan",
+            {
+                "request_quote": case.prompt,
+                "title": "Three hours tomorrow",
+                "intent_summary": "Three total hours split into desirable sessions.",
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-01",
+                "daily_targets": [{"date": "2026-09-01", "hours": 3.0}],
+                "replace_overlapping": False,
+            },
+            {"dry_run": True},
+        )
+        run = ToolCallRecord(
+            case.case_id,
+            2,
+            None,
+            "run_booker",
+            {
+                "request_quote": case.prompt,
+                "only_date": "2026-09-01",
+                "max_actions": 1,
+            },
+            {"dry_run": True},
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [plan, run],
+                (
+                    "Dry run only: this would save a three-hour total, split it across "
+                    "multiple sessions, and recurring runs would pursue the remainder."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
 
     def test_bulk_cancellation_contract_requires_one_exact_five_target_batch(self):
         case = _case("bulk_cancellation_prior_list")

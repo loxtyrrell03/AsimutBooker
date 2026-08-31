@@ -261,6 +261,34 @@ EVAL_CASES = (
         description="Resolve an explicit future range into every dated target.",
     ),
     EvalCase(
+        case_id="daily_total_booking",
+        prompt="Book 3 hours of practice tomorrow.",
+        description=(
+            "Infer one 180-minute daily total, save it, and start one bounded "
+            "date-scoped action while recurring runs pursue the other sessions."
+        ),
+    ),
+    EvalCase(
+        case_id="daily_total_concise",
+        prompt="tmrw: 3h total pls",
+        description="Resolve concise natural wording into the same dated total and bounded run.",
+    ),
+    EvalCase(
+        case_id="daily_total_polite",
+        prompt="Could you book me three hours tomorrow?",
+        description="Treat a polite request as an instruction rather than an informational question.",
+    ),
+    EvalCase(
+        case_id="daily_total_deferred",
+        prompt="Set tomorrow to three hours, but don't book anything yet.",
+        description="Save the dated total while honoring the explicit no-run boundary.",
+    ),
+    EvalCase(
+        case_id="booking_explanation_only",
+        prompt="Could you explain how you would book three hours tomorrow?",
+        description="Explain multi-session behavior without mutating any Booker state.",
+    ),
+    EvalCase(
         case_id="vague_weekend_more",
         prompt="Next week I want more practice on the weekend.",
         description="Ask for a numeric target instead of inventing what more means.",
@@ -331,19 +359,17 @@ def _normalized(value: str) -> str:
     return " ".join(value.strip().casefold().split())
 
 
-def _authorized_quote(arguments: Mapping[str, Any], prompt: str) -> str:
-    quote = arguments.get("request_quote")
-    if not isinstance(quote, str) or len(quote.strip()) < 8:
-        raise CodexToolFailure(
-            "The dry-run mutation needs an exact quote from the active request.",
-            code="missing_request_quote",
-        )
-    if _normalized(quote) not in _normalized(prompt):
-        raise CodexToolFailure(
-            "The authorization quote is not present in the active request.",
-            code="invalid_request_quote",
-        )
-    return quote.strip()
+def _authorized_quote(
+    tool: str,
+    arguments: Mapping[str, Any],
+    prompt: str,
+) -> str:
+    """Exercise the exact production mutation-authorization contract."""
+
+    try:
+        return production_tools.authorize_tool_mutation(tool, arguments, prompt)
+    except production_tools.AssistantToolError as exc:
+        raise CodexToolFailure(str(exc), code="invalid_request_quote") from exc
 
 
 def _canonical_date(value: Any, label: str) -> str:
@@ -480,6 +506,14 @@ class SyntheticBookerDispatcher:
             case_id = self._active_case
         if case_id == "bulk_cancellation_prior_list":
             return BULK_CANCELLATION_EVENTS
+        if case_id in {
+            "daily_total_booking",
+            "daily_total_concise",
+            "daily_total_polite",
+            "daily_total_deferred",
+            "booking_explanation_only",
+        }:
+            return ()
         return SYNTHETIC_EVENTS
 
     def _all_context(self) -> dict[str, Any]:
@@ -636,7 +670,7 @@ class SyntheticBookerDispatcher:
     def _set_future_practice_plan(
         self, arguments: dict[str, Any], prompt: str
     ) -> dict[str, Any]:
-        _authorized_quote(arguments, prompt)
+        _authorized_quote("set_future_practice_plan", arguments, prompt)
         required = {
             "request_quote",
             "title",
@@ -665,30 +699,86 @@ class SyntheticBookerDispatcher:
             "dry_run": True,
             "production_effect": "none",
             "would_set_future_practice_plan": arguments,
+            "target_semantics": "Each value is total desired practice on that date.",
+            "session_planning": {
+                "maximum_single_session_minutes": 120,
+                "split_larger_targets": True,
+                "weekday_peak_minutes_maximum": 120,
+                "recurring_runs_pursue_remaining_target": True,
+            },
             "message": "Dry-run validation passed; no practice target was saved.",
         }
 
     def _update_preferences(self, arguments: dict[str, Any], prompt: str) -> dict[str, Any]:
-        _authorized_quote(arguments, prompt)
+        _authorized_quote("update_booker_preferences", arguments, prompt)
+        multi_session_dates = [
+            item.get("date")
+            for item in arguments.get("practice_plan", {}).get("date_overrides", [])
+            if isinstance(item, Mapping)
+            and isinstance(item.get("hours"), (int, float))
+            and not isinstance(item.get("hours"), bool)
+            and float(item["hours"]) * 60 > 120
+        ] if isinstance(arguments.get("practice_plan"), Mapping) else []
         return {
             "synthetic": True,
             "dry_run": True,
             "production_effect": "none",
             "would_update": arguments,
+            "target_semantics": "Dated practice hours are total daily goals.",
+            "session_planning": {
+                "maximum_single_session_minutes": 120,
+                "split_larger_targets": True,
+                "weekday_peak_minutes_maximum": 120,
+                "recurring_runs_pursue_remaining_target": True,
+                "multi_session_dates": multi_session_dates,
+            },
         }
 
     def _run_booker(self, arguments: dict[str, Any], prompt: str) -> dict[str, Any]:
-        _authorized_quote(arguments, prompt)
+        _authorized_quote("run_booker", arguments, prompt)
+        allowed = {
+            "request_quote",
+            "only_date",
+            "only_room",
+            "max_actions",
+            "max_action_minutes",
+        }
+        unknown = set(arguments) - allowed
+        if unknown:
+            raise CodexToolFailure(
+                f"Unknown run_booker argument(s): {sorted(unknown)}",
+                code="invalid_arguments",
+            )
+        if arguments.get("max_actions") != 1:
+            raise CodexToolFailure(
+                "run_booker requires max_actions=1.",
+                code="invalid_arguments",
+            )
+        if "only_date" in arguments:
+            _canonical_date(arguments["only_date"], "only_date")
+        if "max_action_minutes" in arguments and not {
+            "only_date",
+            "only_room",
+        }.issubset(arguments):
+            raise CodexToolFailure(
+                "max_action_minutes requires only_date and only_room.",
+                code="invalid_arguments",
+            )
         return {
             "synthetic": True,
             "dry_run": True,
             "production_effect": "none",
             "would_run": arguments,
-            "message": "The live Booker was not launched.",
+            "bounded_actions": 1,
+            "saved_target_remains_active": True,
+            "message": (
+                "The live Booker was not launched. In production this would attempt one "
+                "plan-selected action; recurring runs would pursue the saved remainder."
+            ),
         }
 
     def _cancel_reservation(self, arguments: dict[str, Any], prompt: str) -> dict[str, Any]:
-        _authorized_quote(arguments, prompt)
+        _authorized_quote("cancel_reservation", arguments, prompt)
         required = {
             "event_id",
             "date",
@@ -726,7 +816,7 @@ class SyntheticBookerDispatcher:
     def _cancel_reservations(
         self, arguments: dict[str, Any], prompt: str
     ) -> dict[str, Any]:
-        _authorized_quote(arguments, prompt)
+        _authorized_quote("cancel_reservations", arguments, prompt)
         if set(arguments) != {"request_quote", "reservations"}:
             raise CodexToolFailure(
                 "The bounded cancellation batch is incomplete.",
@@ -1148,6 +1238,118 @@ def evaluate_case(
                 issues.append("future plan did not resolve the seven exact daily targets")
         if not re.search(r"dry.?run|simulat|would (?:set|save)|no (?:real|live|production)", lower):
             issues.append("future-plan final did not disclose the dry-run boundary")
+
+    elif case.case_id in {
+        "daily_total_booking",
+        "daily_total_concise",
+        "daily_total_polite",
+    }:
+        plans = [record for record in calls if record.tool == "set_future_practice_plan"]
+        runs = [
+            record
+            for record in calls
+            if record.tool == "run_booker" and record.result.get("success") is not False
+        ]
+        preference_updates = [
+            record for record in calls if record.tool == "update_booker_preferences"
+        ]
+        valid_preference_targets = []
+        for record in preference_updates:
+            args = record.arguments
+            if set(args) != {"request_quote", "practice_plan"}:
+                continue
+            practice = args.get("practice_plan")
+            if not isinstance(practice, Mapping) or set(practice) != {"date_overrides"}:
+                continue
+            if practice.get("date_overrides") == [
+                {"date": "2026-09-01", "hours": 3.0}
+            ]:
+                valid_preference_targets.append(record)
+        target_writes = [*plans, *valid_preference_targets]
+        if len(target_writes) != 1:
+            issues.append("daily-total request did not save exactly one dated target")
+        elif plans:
+            args = plans[0].arguments
+            if args.get("start_date") != "2026-09-01" or args.get("end_date") != "2026-09-01":
+                issues.append("daily-total request resolved the wrong date")
+            if args.get("daily_targets") != [
+                {"date": "2026-09-01", "hours": 3.0}
+            ]:
+                issues.append("daily-total request did not resolve one 3-hour total")
+            quote = args.get("request_quote")
+            if not isinstance(quote, str) or _normalized(quote) not in _normalized(case.prompt):
+                issues.append("daily-total target quote was not from the prompt")
+        else:
+            quote = valid_preference_targets[0].arguments.get("request_quote")
+            if not isinstance(quote, str) or _normalized(quote) not in _normalized(case.prompt):
+                issues.append("daily-total target quote was not from the prompt")
+        if len(runs) != 1:
+            issues.append("daily-total request did not start exactly one bounded run")
+        else:
+            args = runs[0].arguments
+            if args.get("only_date") != "2026-09-01" or args.get("max_actions") != 1:
+                issues.append("daily-total run was not bounded to tomorrow and one action")
+            if "only_room" in args or "max_action_minutes" in args:
+                issues.append("daily-total run invented a room or per-action duration")
+        if target_writes and runs and calls.index(target_writes[0]) > calls.index(runs[0]):
+            issues.append("daily-total run started before its dated target was saved")
+        if len(preference_updates) != len(valid_preference_targets):
+            issues.append("dated total caused an unrelated global preference mutation")
+        if not re.search(r"(?:3|three)[\s-]*(?:hours?|h\b)", lower):
+            issues.append("daily-total final did not state the three-hour goal")
+        if not re.search(r"split|multiple|multi.?session|more than one|2\s*hours?.*1\s*hour|120.*60", lower):
+            issues.append("daily-total final did not explain multi-session planning")
+        if not re.search(r"recurr|every 15|later runs?|remaining|remainder", lower):
+            issues.append("daily-total final did not explain pursuit of the remainder")
+        if not re.search(r"dry.?run|simulat|would (?:set|save|run)|no (?:real|live|production)", lower):
+            issues.append("daily-total final did not disclose the dry-run boundary")
+
+    elif case.case_id == "daily_total_deferred":
+        plans = [record for record in calls if record.tool == "set_future_practice_plan"]
+        preference_updates = [
+            record for record in calls if record.tool == "update_booker_preferences"
+        ]
+        valid_preference_targets = [
+            record
+            for record in preference_updates
+            if set(record.arguments) == {"request_quote", "practice_plan"}
+            and isinstance(record.arguments.get("practice_plan"), Mapping)
+            and record.arguments["practice_plan"].get("date_overrides")
+            == [{"date": "2026-09-01", "hours": 3.0}]
+        ]
+        valid_plans = [
+            record
+            for record in plans
+            if record.arguments.get("start_date") == "2026-09-01"
+            and record.arguments.get("end_date") == "2026-09-01"
+            and record.arguments.get("daily_targets")
+            == [{"date": "2026-09-01", "hours": 3.0}]
+        ]
+        if len(valid_preference_targets) + len(valid_plans) != 1:
+            issues.append("deferred daily-total request did not save one exact target")
+        if any(record.tool == "run_booker" for record in calls):
+            issues.append("deferred daily-total request attempted a booking run")
+        if len(preference_updates) != len(valid_preference_targets):
+            issues.append("deferred daily-total request changed unrelated preferences")
+        if not re.search(
+            r"not (?:book|run)|won't (?:book|run)|"
+            r"without (?:starting |making )?(?:any )?(?:book(?:ing)?|run)|"
+            r"no (?:book(?:ing)?|booker run)",
+            lower,
+        ):
+            issues.append("deferred final did not acknowledge the no-run boundary")
+        if not re.search(r"dry.?run|simulat|would (?:set|save)|no (?:real|live|production)", lower):
+            issues.append("deferred final did not disclose the dry-run boundary")
+
+    elif case.case_id == "booking_explanation_only":
+        if mutation_calls:
+            issues.append("booking explanation invoked a mutation tool")
+        if "get_booker_context" not in tools:
+            issues.append("booking explanation did not read Booker context")
+        if not re.search(r"split|multiple|multi.?session|more than one|2\s*hours?.*1\s*hour|120.*60", lower):
+            issues.append("booking explanation omitted multi-session behavior")
+        if not re.search(r"(?:2|two)[\s-]*hours?.*(?:peak|session)|(?:peak|session).*(?:2|two)[\s-]*hours?", lower):
+            issues.append("booking explanation omitted the two-hour constraint")
 
     elif case.case_id == "vague_weekend_more":
         if mutation_calls:

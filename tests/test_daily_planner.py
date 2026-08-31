@@ -320,6 +320,49 @@ class DailyPlannerTests(unittest.TestCase):
                 or second.end_minutes <= first.start_minutes
             )
 
+    def test_day_plan_fulfils_three_hours_with_peak_and_off_peak_sessions(self):
+        now = datetime(2026, 8, 30, 8, 0)
+        planning = self.prefs()
+        preferred_peak = self.opportunities("B0.29", 12, 14, now)[0]
+        off_peak = self.opportunities("B1.09", 16, 17, now, priority=1)[0]
+
+        selected = select_day_plan(
+            [preferred_peak, off_peak],
+            planning,
+            now=now,
+            target_minutes=180,
+            allow_fragmented_sessions=True,
+            remaining_peak_minutes=120,
+            same_room_gap_minutes=60,
+        )
+
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual(sum(item.peak_minutes for item in selected), 120)
+        self.assertEqual(
+            {(item.start_text, item.end_text) for item in selected},
+            {("12:00", "14:00"), ("16:00", "17:00")},
+        )
+
+    def test_day_portfolio_avoids_best_single_slot_when_two_fill_target(self):
+        now = datetime(2026, 8, 30, 8, 0)
+        planning = self.prefs()
+        individually_best = self.opportunities("B0.29", 16.5, 18.5, now)[0]
+        earlier = self.opportunities("B1.09", 16, 17.5, now, priority=1)[0]
+        later = self.opportunities("B1.10", 17.5, 19, now, priority=2)[0]
+
+        selected = select_day_plan(
+            [individually_best, earlier, later],
+            planning,
+            now=now,
+            target_minutes=180,
+            allow_fragmented_sessions=True,
+            remaining_peak_minutes=120,
+            same_room_gap_minutes=60,
+        )
+
+        self.assertEqual(sum(item.potential_minutes for item in selected), 180)
+        self.assertEqual({item.room for item in selected}, {"B1.09", "B1.10"})
+
     def test_day_plan_respects_aggregate_peak_and_same_room_gap(self):
         now = datetime(2026, 8, 30, 8, 0)
         planning = self.prefs(desired_peak_block_minutes=60)

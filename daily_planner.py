@@ -496,7 +496,14 @@ def select_day_plan(
     same_room_gap_minutes: int = 0,
     rank_key=None,
 ) -> tuple[BookingOpportunity, ...]:
-    """Select a non-overlapping, target-bounded set for display/plan-only use."""
+    """Select a target-maximizing, desirable whole-day session portfolio.
+
+    Opportunities are individually ranked, but a daily goal is not one
+    opportunity.  A bounded seed search avoids the classic greedy failure where
+    one attractive two-hour block prevents two compatible 90-minute blocks from
+    fulfilling a three-hour target.  Every candidate portfolio still obeys the
+    aggregate peak budget, schedule overlap, and same-room gap.
+    """
 
     remaining = max(0, int(floor(target_minutes / QUARTER_MINUTES)) * QUARTER_MINUTES)
     peak_remaining = (
@@ -512,60 +519,163 @@ def select_day_plan(
         0,
         int(floor(same_room_gap_minutes / QUARTER_MINUTES)) * QUARTER_MINUTES,
     )
-    selected: list[BookingOpportunity] = []
     if rank_key is None:
         rank_key = lambda value: opportunity_rank(value, planning, now=now)
-    for item in sorted(opportunities, key=rank_key):
-        if remaining < item.initial_minutes:
-            break
-        if any(
-            item.start_minutes < existing.end_minutes
-            and item.end_minutes > existing.start_minutes
-            for existing in selected
-        ):
-            continue
-        if any(
-            item.room == existing.room
-            and not (
-                item.start_minutes >= existing.end_minutes + same_room_gap_minutes
-                or item.end_minutes + same_room_gap_minutes <= existing.start_minutes
-            )
-            for existing in selected
-        ):
-            continue
-        planned_minutes = min(item.potential_minutes, remaining)
-        planned_minutes -= planned_minutes % QUARTER_MINUTES
-        if planned_minutes < item.initial_minutes:
-            continue
+    ranked = sorted(
+        opportunities,
+        key=lambda item: (
+            rank_key(item),
+            item.room,
+            item.start_minutes,
+            item.end_minutes,
+        ),
+    )
+    if not ranked or remaining <= 0:
+        return ()
+
+    def fitted_candidate(
+        item: BookingOpportunity,
+        selected: Sequence[BookingOpportunity],
+        minutes_left: int,
+        peak_left: int,
+        *,
+        exact_minutes: int | None = None,
+    ) -> BookingOpportunity | None:
+        if minutes_left < item.initial_minutes:
+            return None
+        latest_end = item.end_minutes
+        for existing in selected:
+            if existing.start_minutes <= item.start_minutes < existing.end_minutes:
+                return None
+            if item.start_minutes < existing.start_minutes:
+                latest_end = min(latest_end, existing.start_minutes)
+            if item.room != existing.room:
+                continue
+            if item.start_minutes >= existing.end_minutes:
+                if item.start_minutes < existing.end_minutes + same_room_gap_minutes:
+                    return None
+            else:
+                latest_end = min(
+                    latest_end,
+                    existing.start_minutes - same_room_gap_minutes,
+                )
+        maximum = min(item.potential_minutes, minutes_left, latest_end - item.start_minutes)
+        maximum -= maximum % QUARTER_MINUTES
+        requested = maximum if exact_minutes is None else min(maximum, exact_minutes)
+        requested -= requested % QUARTER_MINUTES
+        if requested < item.initial_minutes:
+            return None
         planned_end = _peak_capped_end(
             item.start_minutes,
-            item.start_minutes + planned_minutes,
-            peak_remaining,
+            item.start_minutes + requested,
+            peak_left,
             peak_start=item.peak_window_start_minutes,
             peak_end=item.peak_window_end_minutes,
         )
         planned_minutes = planned_end - item.start_minutes
         if planned_minutes < item.initial_minutes:
-            continue
+            return None
         planned_peak = interval_overlap_minutes(
             item.start_minutes,
             planned_end,
             item.peak_window_start_minutes,
             item.peak_window_end_minutes,
         )
-        chosen = replace(
+        return replace(
             item,
             end_minutes=planned_end,
             potential_minutes=planned_minutes,
             preferred_minutes=min(item.preferred_minutes, planned_minutes),
-            soft_preferred_minutes=min(
-                item.soft_preferred_minutes, planned_minutes
-            ),
+            soft_preferred_minutes=min(item.soft_preferred_minutes, planned_minutes),
             peak_minutes=planned_peak,
         )
-        selected.append(chosen)
-        remaining -= planned_minutes
-        peak_remaining -= planned_peak
-        if not allow_fragmented_sessions:
-            break
-    return tuple(selected)
+
+    def greedy_completion(
+        seeded: Sequence[BookingOpportunity],
+    ) -> tuple[BookingOpportunity, ...]:
+        selected = list(seeded)
+        used = sum(item.potential_minutes for item in selected)
+        used_peak = sum(item.peak_minutes for item in selected)
+        if not allow_fragmented_sessions and selected:
+            return tuple(selected)
+        for item in ranked:
+            if used >= remaining:
+                break
+            chosen = fitted_candidate(
+                item,
+                selected,
+                remaining - used,
+                max(0, peak_remaining - used_peak),
+            )
+            if chosen is None:
+                continue
+            selected.append(chosen)
+            used += chosen.potential_minutes
+            used_peak += chosen.peak_minutes
+            if not allow_fragmented_sessions:
+                break
+        return tuple(selected)
+
+    def portfolio_key(plan: Sequence[BookingOpportunity]) -> tuple:
+        total = sum(item.potential_minutes for item in plan)
+        ranked_quality = tuple(
+            sorted(
+                (
+                    rank_key(item),
+                    -item.potential_minutes,
+                    item.room,
+                    item.start_minutes,
+                    item.end_minutes,
+                )
+                for item in plan
+            )
+        )
+        chronological = tuple(
+            sorted((item.start_minutes, item.end_minutes, item.room) for item in plan)
+        )
+        return (-total, len(plan), ranked_quality, chronological)
+
+    portfolios = [greedy_completion(())]
+    if allow_fragmented_sessions:
+        # Keep the search bounded on large fresh grids while retaining both the
+        # strongest-ranked choices and temporal diversity across the day.
+        seed_items = list(ranked[:96])
+        seen_seed_ids = {
+            (item.room, item.start_minutes, item.end_minutes, item.unlock_at)
+            for item in seed_items
+        }
+        best_at_start: dict[int, BookingOpportunity] = {}
+        for item in ranked:
+            best_at_start.setdefault(item.start_minutes, item)
+        for item in best_at_start.values():
+            identity = (item.room, item.start_minutes, item.end_minutes, item.unlock_at)
+            if identity not in seen_seed_ids:
+                seed_items.append(item)
+                seen_seed_ids.add(identity)
+
+        for item in seed_items:
+            maximum = min(item.potential_minutes, remaining)
+            maximum -= maximum % QUARTER_MINUTES
+            for duration in range(item.initial_minutes, maximum + 1, QUARTER_MINUTES):
+                seed = fitted_candidate(
+                    item,
+                    (),
+                    remaining,
+                    peak_remaining,
+                    exact_minutes=duration,
+                )
+                if seed is not None:
+                    portfolios.append(greedy_completion((seed,)))
+
+    best = min(portfolios, key=portfolio_key)
+    return tuple(
+        sorted(
+            best,
+            key=lambda item: (
+                rank_key(item),
+                item.room,
+                item.start_minutes,
+                item.end_minutes,
+            ),
+        )
+    )

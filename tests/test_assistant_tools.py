@@ -11,6 +11,7 @@ from assistant_tools import (
     AssistantToolCancelled,
     AssistantToolError,
     BookerToolSurface,
+    authorize_tool_mutation,
     dynamic_tool_specs,
 )
 from mutation_receipts import SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION
@@ -278,6 +279,99 @@ class AssistantToolSurfaceTests(unittest.TestCase):
         self.assertEqual(saved["practice_plan"]["date_overrides"]["2026-09-07"], 2.0)
         self.assertEqual(saved["practice_plan"]["date_overrides"]["2026-09-13"], 4.0)
         self.assertEqual(result["plan"]["start_date"], "2026-09-07")
+
+    def test_clear_daily_total_authorizes_target_write_and_one_bounded_run(self):
+        request = "Book 3 hours of practice tomorrow"
+        target_date = "2026-09-01"
+
+        plan_result = self.surface.dispatch(
+            "set_future_practice_plan",
+            {
+                "request_quote": request,
+                "title": "Three hours tomorrow",
+                "intent_summary": (
+                    "Three total practice hours split across the best available "
+                    "sessions as needed."
+                ),
+                "start_date": target_date,
+                "end_date": target_date,
+                "daily_targets": [{"date": target_date, "hours": 3.0}],
+                "replace_overlapping": False,
+            },
+            user_request=request,
+        )
+        run_result = self.surface.dispatch(
+            "run_booker",
+            {
+                "request_quote": request,
+                "only_date": target_date,
+                "max_actions": 1,
+            },
+            user_request=request,
+        )
+
+        saved = load_settings(self.paths.settings)
+        self.assertEqual(
+            saved["practice_plan"]["date_overrides"][target_date], 3.0
+        )
+        self.assertEqual(
+            plan_result["session_planning"]["multi_session_dates"],
+            [target_date],
+        )
+        self.assertTrue(
+            plan_result["session_planning"][
+                "recurring_runs_pursue_remaining_target"
+            ]
+        )
+        self.assertEqual(run_result["verified_actions"], 1)
+        self.assertEqual(
+            self.commands[-1],
+            ["--headless", "--max-actions", "1", "--only-date", target_date],
+        )
+
+    def test_natural_practice_outcomes_share_production_authorization(self):
+        requests = (
+            "Book 3 hours of practice tomorrow",
+            "Get me 3h tomorrow",
+            "I need three hours tomorrow",
+            "Could you book me three hours tomorrow?",
+            "Tomorrow: 3h total please",
+        )
+        for request in requests:
+            with self.subTest(request=request):
+                arguments = {"request_quote": request}
+                self.assertEqual(
+                    authorize_tool_mutation(
+                        "set_future_practice_plan", arguments, request
+                    ),
+                    request,
+                )
+                self.assertEqual(
+                    authorize_tool_mutation("run_booker", arguments, request),
+                    request,
+                )
+
+    def test_goal_only_questions_and_withdrawals_do_not_authorize_a_run(self):
+        cases = (
+            "Could you explain how you would book three hours tomorrow?",
+            "Book three hours tomorrow. Actually, don't.",
+            "Set my practice target to three hours tomorrow.",
+        )
+        for request in cases:
+            with self.subTest(request=request), self.assertRaises(AssistantToolError):
+                authorize_tool_mutation(
+                    "run_booker", {"request_quote": request}, request
+                )
+
+        deferred = "Set tomorrow to three hours, but don't book anything yet."
+        self.assertEqual(
+            authorize_tool_mutation(
+                "update_booker_preferences",
+                {"request_quote": "Set tomorrow to three hours"},
+                deferred,
+            ),
+            "Set tomorrow to three hours",
+        )
 
     def test_mutation_quote_must_come_from_active_user_message(self):
         with self.assertRaisesRegex(AssistantToolError, "not present"):

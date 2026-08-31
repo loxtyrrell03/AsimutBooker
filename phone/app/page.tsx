@@ -35,6 +35,7 @@ import {
   updateProgressNarrative,
   upsertReasoningPart,
 } from '@/lib/phone_state';
+import { selectedPlanMinutes, selectedPlanSessions } from '@/lib/plan_state';
 
 const PRIVATE_ORIGIN = 'https://lox-pc.tail89d19b.ts.net:10443';
 const subscribeBrowserSnapshot = () => () => undefined;
@@ -842,27 +843,43 @@ function ScheduleView({
         ) : booker.plan.days.length === 0 ? (
           <div className="empty-inline">No current potential blocks.</div>
         ) : (
-          booker.plan.days.map((day) => (
-            <article className="plan-day" key={day.date}>
-              <div className="plan-date">
-                <strong>{dateLabel(day.date, true)}</strong>
-                <span>{Math.round(day.existing_minutes / 60 * 10) / 10}h booked · {Math.round(day.target_minutes / 60 * 10) / 10}h target</span>
-              </div>
-              {day.primary ? (
-                <div className="potential-card">
-                  <div><Clock3 /></div>
-                  <div>
-                    <Badge variant="outline">{day.primary.state}</Badge>
-                    <h4>{day.primary.start_time}–{day.primary.end_time}</h4>
-                    <p>{day.primary.room}</p>
-                    <small>{day.primary.reason || day.reason}</small>
-                  </div>
+          booker.plan.days.map((day) => {
+            const sessions = selectedPlanSessions(day);
+            const plannedMinutes = selectedPlanMinutes(day);
+            return (
+              <article className="plan-day" key={day.date}>
+                <div className="plan-date">
+                  <strong>{dateLabel(day.date, true)}</strong>
+                  <span>
+                    {Math.round(day.existing_minutes / 60 * 10) / 10}h booked ·{' '}
+                    {Math.round(day.target_minutes / 60 * 10) / 10}h target
+                    {plannedMinutes > 0
+                      ? ` · ${Math.round(plannedMinutes / 60 * 10) / 10}h across ${sessions.length} planned ${sessions.length === 1 ? 'session' : 'sessions'}`
+                      : ''}
+                  </span>
                 </div>
-              ) : (
-                <p className="day-reason">{day.reason}</p>
-              )}
-            </article>
-          ))
+                {sessions.length ? (
+                  <div className="potential-list">
+                    {sessions.map((candidate, index) => (
+                      <div className="potential-card" key={`${candidate.room}-${candidate.start_time}-${candidate.end_time}`}>
+                        <div><Clock3 /></div>
+                        <div>
+                          <Badge variant="outline">
+                            {sessions.length > 1 ? `Session ${index + 1} · ` : ''}{candidate.state}
+                          </Badge>
+                          <h4>{candidate.start_time}–{candidate.end_time}</h4>
+                          <p>{candidate.room}</p>
+                          <small>{candidate.reason || day.reason}</small>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="day-reason">{day.reason}</p>
+                )}
+              </article>
+            );
+          })
         )}
       </section>
     </section>
