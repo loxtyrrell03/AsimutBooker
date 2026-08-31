@@ -477,6 +477,42 @@ class AssistantRuntimeTests(unittest.TestCase):
         state = load_assistant_state(Path(self.temp_dir.name) / "assistant.json")
         self.assertEqual(state["messages"][0]["text"], "I’ll check.\n\nTwo bookings found.")
 
+    def test_commentary_stays_in_progress_and_only_final_answer_is_persisted(self):
+        self.runtime._busy = True
+        self.runtime._handle_controller_event(
+            {
+                "kind": "assistant_delta",
+                "item_id": "commentary-1",
+                "phase": "commentary",
+                "first_delta": True,
+                "text": "I’ll check the agenda first.",
+            }
+        )
+        self.runtime._handle_controller_event(
+            {
+                "kind": "assistant_delta",
+                "item_id": "answer-1",
+                "phase": "final_answer",
+                "first_delta": True,
+                "text": "Tomorrow is clear.",
+            }
+        )
+        self.runtime._handle_controller_event(
+            {"kind": "turn_completed", "turn_id": "turn-1", "status": "completed"}
+        )
+
+        state = load_assistant_state(Path(self.temp_dir.name) / "assistant.json")
+        self.assertEqual(state["messages"][-1]["text"], "Tomorrow is clear.")
+        commentary = [event for event in self.events if event["kind"] == "commentary_delta"]
+        self.assertEqual(commentary[-1]["text"], "I’ll check the agenda first.")
+        self.assertTrue(
+            any(
+                event["kind"] == "assistant_delta"
+                and event.get("phase") == "final_answer"
+                for event in self.events
+            )
+        )
+
     def test_old_completion_cannot_clear_a_new_runtime_turn(self):
         self.runtime._busy = True
         self.runtime._active_turn_id = "turn-2"

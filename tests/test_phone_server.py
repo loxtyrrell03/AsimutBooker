@@ -161,6 +161,49 @@ class FakeAssistant:
 
 
 class PublicEventTests(unittest.TestCase):
+    def test_streamed_deltas_preserve_spaces_and_keep_commentary_out_of_chat(self):
+        self.assertEqual(
+            public_assistant_event(
+                {"kind": "assistant_delta", "text": " tomorrow "}
+            ),
+            {"kind": "assistant.delta", "text": " tomorrow "},
+        )
+        self.assertEqual(
+            public_assistant_event(
+                {
+                    "kind": "commentary_delta",
+                    "text": "I’ll check ",
+                    "first_delta": True,
+                }
+            ),
+            {"kind": "progress.delta", "text": "I’ll check ", "replace": True},
+        )
+
+    def test_reasoning_parts_are_indexed_and_generic_thread_churn_is_hidden(self):
+        self.assertEqual(
+            public_assistant_event(
+                {
+                    "kind": "reasoning_summary_delta",
+                    "text": "**Checking the plan** ",
+                    "summary_index": 2,
+                }
+            ),
+            {
+                "kind": "reasoning.delta",
+                "text": "**Checking the plan** ",
+                "part": 2,
+            },
+        )
+        self.assertIsNone(
+            public_assistant_event(
+                {
+                    "kind": "status",
+                    "title": "Chat status changed",
+                    "status": "thread_status",
+                }
+            )
+        )
+
     def test_tool_events_remove_arguments_tokens_and_internal_ids(self):
         mapped = public_assistant_event(
             {

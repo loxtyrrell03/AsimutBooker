@@ -480,6 +480,10 @@ python -m unittest discover -s tests
   room, health, receipt, and history fields. Credentials, cookies, browser
   storage, OTPs, bridge tokens, participant arrays, and arbitrary files are not
   read. Schedule and site text is untrusted data, never instructions.
+- Codex agent-message phases remain distinct end to end: commentary is transient
+  progress, while only `final_answer` content enters the assistant bubble and
+  durable transcript. Public SSE deltas preserve their boundary whitespace;
+  raw model reasoning is never exposed.
 - Future intentions become complete exact dated targets for every day in a
   1-92-day range, which the ordinary scheduled Booker then pursues subject to
   live availability and all existing quotas and safeguards. Materially vague
@@ -1151,6 +1155,29 @@ python -m unittest discover -s tests
   existing owner-only launcher. The sole-owner custom access policy remains the
   deployment authority; the launcher still has no Booker tunnel or mutation
   access and only directs the user to the functional private Tailnet PWA.
+
+## 2026-08-31 Assistant Progress Surface Stability Milestone
+
+- Codex `agentMessage` phase metadata is now retained across streamed and
+  completed protocol items. Commentary is emitted as a transient work update;
+  only final-answer deltas are rendered and persisted as assistant chat text.
+  This prevents mid-turn planning prose from becoming a large assistant answer.
+- Phone SSE sanitization preserves leading and trailing whitespace for streamed
+  fragments, fixing concatenated text such as `I'llcheck...` without weakening
+  control-character or sensitive-text filtering. Generic thread-status churn is
+  hidden, and indexed reasoning-summary parts remain separate and bounded.
+- The phone progress card has a 42dvh/300px outer ceiling and a 30dvh/220px
+  internally scrolling body. It keeps the newest four summary parts, six tool
+  updates, and a bounded commentary narrative; raw markdown markers are removed
+  for presentation. Its open state changes only at turn boundaries or by the
+  user, rather than being forced on every render.
+- Transcript scrolling no longer starts a new smooth-scroll animation for each
+  reasoning or tool delta. Progress updates follow the internal card viewport,
+  reduced-motion preferences disable decorative animations, and commentary
+  deltas are coalesced in the desktop UI event buffer as well.
+- The complete Python suite passes 660 tests. The phone state/UI suite passes 13
+  tests, the focused assistant/runtime/UI/API suite passes 77 tests, lint passes,
+  both production builds complete, and the offline phone-build verifier passes.
 
 ## Maintenance Notes
 

@@ -650,7 +650,12 @@ class AssistantRuntime:
         kind = event.get("kind")
         if kind == "assistant_delta":
             text = event.get("text")
-            if isinstance(text, str):
+            if event.get("phase") == "commentary":
+                # Codex commentary is a concise live work update, not the final
+                # assistant answer. Keep it in the progress surface and out of
+                # both the chat bubble stream and the durable transcript.
+                event = {**event, "kind": "commentary_delta"}
+            elif isinstance(text, str):
                 item_id = event.get("item_id")
                 if (
                     isinstance(item_id, str)

@@ -3,10 +3,13 @@ import test from 'node:test';
 
 import {
   cancellationInstruction,
+  compactProgressText,
   deliveryDisposition,
   isFreshSequence,
   nextReconnectDelay,
   reconcileStreamPosition,
+  updateProgressNarrative,
+  upsertReasoningPart,
 } from '../lib/phone_state.js';
 
 test('accepted-response loss remains ambiguous unless the stream confirmed it', () => {
@@ -56,4 +59,29 @@ test('cancellation prefill includes canonical date and exact interval', () => {
     }),
     'Cancel my reservation on 2026-09-01 from 16:00 to 17:30 in B0.14.',
   );
+});
+
+test('thinking summaries are compacted without raw markdown noise', () => {
+  assert.equal(
+    compactProgressText('**Evaluating booking request**\n\n### Checking agenda'),
+    'Evaluating booking request Checking agenda',
+  );
+  assert.equal(compactProgressText('a'.repeat(500), 24), `${'a'.repeat(23)}…`);
+});
+
+test('reasoning deltas update bounded indexed parts instead of one endless blob', () => {
+  let parts = [];
+  parts = upsertReasoningPart(parts, 0, '**Checking');
+  parts = upsertReasoningPart(parts, 0, ' agenda**');
+  for (let index = 1; index <= 6; index += 1) {
+    parts = upsertReasoningPart(parts, index, `Part ${index}`);
+  }
+  assert.equal(parts.length, 4);
+  assert.deepEqual(parts.map((part) => part.index), [3, 4, 5, 6]);
+});
+
+test('commentary progress replaces per update and remains bounded', () => {
+  assert.equal(updateProgressNarrative('old detail', 'new detail', true), 'new detail');
+  assert.equal(updateProgressNarrative('hello', ' world', false), 'hello world');
+  assert.equal(updateProgressNarrative('', 'x'.repeat(2_000), false).length, 1_600);
 });

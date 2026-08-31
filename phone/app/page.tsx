@@ -27,10 +27,13 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
   cancellationInstruction,
+  compactProgressText,
   deliveryDisposition,
   isFreshSequence,
   nextReconnectDelay,
   reconcileStreamPosition,
+  updateProgressNarrative,
+  upsertReasoningPart,
 } from '@/lib/phone_state';
 
 const PRIVATE_ORIGIN = 'https://lox-pc.tail89d19b.ts.net:10443';
@@ -157,6 +160,8 @@ type PublicEvent = {
   status?: string;
   title?: string;
   text?: string;
+  part?: number;
+  replace?: boolean;
   terminal?: boolean;
   client_message_id?: string;
   stream_generation: string;
@@ -166,6 +171,11 @@ type ToolUpdate = {
   title: string;
   text: string;
   status: string;
+};
+
+type ReasoningPart = {
+  index: number;
+  text: string;
 };
 
 const demoBooker: BookerSnapshot = {
@@ -474,34 +484,77 @@ function ContextPeek({ booker, onOpenSchedule }: { booker: BookerSnapshot; onOpe
 }
 
 function ProgressCard({
-  reasoning,
+  reasoningParts,
+  narrative,
   tools,
   busy,
 }: {
-  reasoning: string;
+  reasoningParts: ReasoningPart[];
+  narrative: string;
   tools: ToolUpdate[];
   busy: boolean;
 }) {
-  if (!reasoning && !tools.length && !busy) return null;
-  const latest = tools.at(-1);
+  const [expanded, setExpanded] = useState(busy);
+  const wasBusyRef = useRef(busy);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const summaries = reasoningParts
+    .map((part) => compactProgressText(part.text, 420))
+    .filter(Boolean);
+  const latestSummary = summaries.at(-1) || '';
+  const cleanNarrative = compactProgressText(narrative, 520);
+  const visibleTools = tools.slice(-6);
+  const latest = visibleTools.at(-1);
+  const latestDetail = compactProgressText(
+    latest?.text || cleanNarrative || latestSummary || 'Checking Booker context',
+    180,
+  );
+
+  useEffect(() => {
+    if (busy && !wasBusyRef.current) setExpanded(true);
+    if (!busy && wasBusyRef.current) setExpanded(false);
+    wasBusyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
+    if (!expanded || !bodyRef.current) return;
+    const body = bodyRef.current;
+    const frame = window.requestAnimationFrame(() => {
+      body.scrollTop = body.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [cleanNarrative, expanded, summaries, visibleTools]);
+
+  if (!cleanNarrative && !summaries.length && !visibleTools.length && !busy) return null;
   return (
-    <details className="progress-card" open={busy}>
+    <details
+      className="progress-card"
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      open={expanded}
+    >
       <summary>
         <span className={busy ? 'thinking-pulse' : 'finished-dot'} aria-hidden="true" />
         <span>
           <strong>{latest?.title || (busy ? 'Working on your request' : 'Work completed')}</strong>
-          <small>{latest?.text || reasoning || 'Checking Booker context'}</small>
+          <small aria-live="polite">{latestDetail}</small>
         </span>
         <ChevronDown aria-hidden="true" />
       </summary>
-      <div className="progress-body" aria-live="polite">
-        {reasoning && <p className="reasoning-summary">{reasoning}</p>}
-        {tools.map((tool, index) => (
+      <div className="progress-body" ref={bodyRef}>
+        {(cleanNarrative || summaries.length > 0) && (
+          <div className="thinking-summary">
+            <strong>Thinking</strong>
+            {cleanNarrative && <p>{cleanNarrative}</p>}
+            {summaries.slice(-3).map((summary, index) => (
+              <p key={`${index}-${summary.slice(0, 28)}`}>{summary}</p>
+            ))}
+          </div>
+        )}
+        {visibleTools.map((tool, index) => (
           <div className={`work-step ${tool.status}`} key={`${tool.title}-${index}`}>
             {tool.status === 'completed' || tool.status === 'success' ? <Check /> : <span />}
             <div>
               <strong>{tool.title}</strong>
-              {tool.text && <small>{tool.text}</small>}
+              {tool.text && <small>{compactProgressText(tool.text, 260)}</small>}
             </div>
           </div>
         ))}
@@ -513,20 +566,22 @@ function ProgressCard({
 function Transcript({
   messages,
   streamingText,
-  reasoning,
+  reasoningParts,
+  narrative,
   tools,
   busy,
 }: {
   messages: ChatMessage[];
   streamingText: string;
-  reasoning: string;
+  reasoningParts: ReasoningPart[];
+  narrative: string;
   tools: ToolUpdate[];
   busy: boolean;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: busy ? 'smooth' : 'auto', block: 'end' });
-  }, [messages, streamingText, reasoning, tools, busy]);
+    endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+  }, [messages, streamingText, busy]);
 
   return (
     <section className="transcript" aria-label="Conversation">
@@ -553,11 +608,16 @@ function Transcript({
           <div className="message-content">{messageParagraphs(message.text)}</div>
         </article>
       ))}
-      {(busy || reasoning || tools.length > 0) && (
+      {(busy || narrative || reasoningParts.length > 0 || tools.length > 0) && (
         <article className="message assistant-message activity-message">
           <div className="assistant-avatar active" aria-hidden="true"><Sparkles /></div>
           <div className="message-content">
-            <ProgressCard busy={busy} reasoning={reasoning} tools={tools} />
+            <ProgressCard
+              busy={busy}
+              narrative={narrative}
+              reasoningParts={reasoningParts}
+              tools={tools}
+            />
           </div>
         </article>
       )}
@@ -960,7 +1020,8 @@ export default function HomePage() {
   const [booker, setBooker] = useState<BookerSnapshot | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState('');
-  const [reasoning, setReasoning] = useState('');
+  const [reasoningParts, setReasoningParts] = useState<ReasoningPart[]>([]);
+  const [progressNarrative, setProgressNarrative] = useState('');
   const [tools, setTools] = useState<ToolUpdate[]>([]);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
@@ -1072,12 +1133,21 @@ export default function HomePage() {
       }
       streamingRef.current = '';
       setStreamingText('');
-      setReasoning('');
+      setReasoningParts([]);
+      setProgressNarrative('');
       setTools([]);
       return;
     }
     if (event.kind === 'reasoning.delta') {
-      setReasoning((current) => current + (event.text ?? ''));
+      setReasoningParts((current) => upsertReasoningPart(current, event.part, event.text));
+      return;
+    }
+    if (event.kind === 'progress.delta') {
+      setProgressNarrative((current) => updateProgressNarrative(
+        current,
+        event.text,
+        Boolean(event.replace),
+      ));
       return;
     }
     if (event.kind === 'tool.status' || event.kind === 'activity') {
@@ -1122,7 +1192,8 @@ export default function HomePage() {
       setMessages([]);
       streamingRef.current = '';
       setStreamingText('');
-      setReasoning('');
+      setReasoningParts([]);
+      setProgressNarrative('');
       setTools([]);
       return;
     }
@@ -1284,7 +1355,8 @@ export default function HomePage() {
     if (preview) {
       setMessages((current) => [...current, { role: 'user', text }]);
       setDraft('');
-      setReasoning('Reading the current phone preview.');
+      setReasoningParts([{ index: 0, text: 'Reading the current phone preview.' }]);
+      setProgressNarrative('');
       setTools([{ title: 'Preview mode', text: 'Live Booker actions are available on the private phone URL.', status: 'completed' }]);
       setStreamingText('This preview shows the finished phone experience. Open the private Booker URL to use live schedule data and actions.');
       return;
@@ -1394,7 +1466,8 @@ export default function HomePage() {
     if (preview) {
       setMessages([]);
       setStreamingText('');
-      setReasoning('');
+      setReasoningParts([]);
+      setProgressNarrative('');
       setTools([]);
       return;
     }
@@ -1411,7 +1484,8 @@ export default function HomePage() {
       setPendingDelivery(null);
       setMessages([]);
       setStreamingText('');
-      setReasoning('');
+      setReasoningParts([]);
+      setProgressNarrative('');
       setTools([]);
     } catch {
       setError('A new chat could not be started yet.');
@@ -1492,7 +1566,14 @@ export default function HomePage() {
       {tab === 'assistant' && (
         <div className="assistant-view">
           {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
-          <Transcript busy={busy} messages={messages} reasoning={reasoning} streamingText={streamingText} tools={tools} />
+          <Transcript
+            busy={busy}
+            messages={messages}
+            narrative={progressNarrative}
+            reasoningParts={reasoningParts}
+            streamingText={streamingText}
+            tools={tools}
+          />
           {!busy && messages.length < 4 && <StarterPrompts onPick={choosePrompt} />}
           <ChatComposer
             busy={busy}

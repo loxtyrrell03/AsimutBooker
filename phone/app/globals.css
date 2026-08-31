@@ -387,8 +387,11 @@ summary:focus-visible {
 .activity-message { margin-bottom: 13px; }
 
 .progress-card {
+  width: 100%;
   min-width: min(320px, calc(100vw - 68px));
+  max-height: min(300px, 42dvh);
   overflow: hidden;
+  contain: layout paint;
   border: 1px solid rgb(157 231 190 / 12%);
   border-radius: 14px;
   background: linear-gradient(145deg, rgb(27 52 42 / 88%), rgb(17 35 29 / 94%));
@@ -425,8 +428,37 @@ summary:focus-visible {
 }
 .finished-dot { animation: none; }
 
-.progress-body { padding: 0 12px 11px 29px; }
-.reasoning-summary { margin: 0 0 8px; color: #9cafA6; font-size: 11px; line-height: 1.45; }
+.progress-body {
+  max-height: min(220px, 30dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 11px 29px;
+  scrollbar-color: rgb(168 239 199 / 28%) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+.thinking-summary {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgb(7 20 15 / 38%);
+}
+.thinking-summary > strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #b8d0c4;
+  font-size: 9px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.thinking-summary p {
+  margin: 0;
+  color: #93a99f;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+}
+.thinking-summary p + p { margin-top: 5px; }
 .work-step { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; }
 .work-step > svg,
 .work-step > span { width: 13px; height: 13px; flex: 0 0 auto; margin-top: 2px; }
@@ -448,6 +480,12 @@ summary:focus-visible {
   background: var(--mint);
   vertical-align: -.12em;
   animation: blink 1s steps(2, start) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-pulse,
+  .streaming-caret { animation: none; }
+  .progress-card summary > svg { transition: none; }
 }
 
 .suggestion-strip {

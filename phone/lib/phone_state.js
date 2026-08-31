@@ -64,3 +64,49 @@ export function deliveryDisposition(status, confirmedByStream, errorCode = '') {
 export function cancellationInstruction(event) {
   return `Cancel my reservation on ${event.date} from ${event.start_time} to ${event.end_time} in ${event.room}.`;
 }
+
+/**
+ * Turn markdown-ish streamed summaries into one calm, bounded status line.
+ * This is presentation cleanup only; raw model reasoning is never received.
+ *
+ * @param {string} value
+ * @param {number} [maximum]
+ */
+export function compactProgressText(value, maximum = 360) {
+  if (typeof value !== 'string' || !value) return '';
+  const cleaned = value
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`#~]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length <= maximum) return cleaned;
+  return `${cleaned.slice(0, Math.max(0, maximum - 1)).trimEnd()}…`;
+}
+
+/**
+ * Keep only the newest bounded reasoning-summary parts while coalescing deltas.
+ *
+ * @param {Array<{index: number, text: string}>} current
+ * @param {number | undefined} index
+ * @param {string | undefined} delta
+ */
+export function upsertReasoningPart(current, index, delta) {
+  const safeIndex = typeof index === 'number' && Number.isInteger(index) && index >= 0
+    ? index
+    : 0;
+  const safeDelta = typeof delta === 'string' ? delta : '';
+  if (!safeDelta) return current;
+  const existing = current.find((item) => item.index === safeIndex);
+  const nextText = `${existing?.text ?? ''}${safeDelta}`.slice(-1_200);
+  return [
+    ...current.filter((item) => item.index !== safeIndex),
+    { index: safeIndex, text: nextText },
+  ].sort((left, right) => left.index - right.index).slice(-4);
+}
+
+/** @param {string} current @param {string | undefined} delta @param {boolean} replace */
+export function updateProgressNarrative(current, delta, replace) {
+  const safeDelta = typeof delta === 'string' ? delta : '';
+  if (!safeDelta) return current;
+  return `${replace ? '' : current}${safeDelta}`.slice(-1_600);
+}

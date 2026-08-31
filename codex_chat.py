@@ -207,6 +207,7 @@ class CodexChatController:
         self._completed_turn_ids: set[str] = set()
         self._streamed_agent_items: set[str] = set()
         self._streamed_reasoning_items: set[str] = set()
+        self._agent_message_phases: dict[str, str] = {}
         self._user_agent: str | None = None
 
     @property
@@ -1150,6 +1151,7 @@ class CodexChatController:
             # in, or be persisted as, the next user turn.
             return
         if method == "item/agentMessage/delta":
+            first_delta = isinstance(item_id, str) and item_id not in self._streamed_agent_items
             if isinstance(item_id, str):
                 self._streamed_agent_items.add(item_id)
             delta = str(params.get("delta") or "")
@@ -1158,6 +1160,8 @@ class CodexChatController:
                 thread_id=thread_id,
                 turn_id=turn_id,
                 item_id=item_id,
+                phase=self._agent_message_phases.get(str(item_id), "unknown"),
+                first_delta=first_delta,
                 text=delta,
                 delta=delta,
             )
@@ -1236,12 +1240,19 @@ class CodexChatController:
         if method in {"item/started", "item/completed"}:
             item = params.get("item")
             status = "started" if method.endswith("started") else "completed"
+            agent_item_id = item.get("id") if isinstance(item, Mapping) else None
+            if isinstance(item, Mapping) and item.get("type") == "agentMessage":
+                phase = item.get("phase")
+                if isinstance(agent_item_id, str) and isinstance(phase, str) and phase:
+                    self._agent_message_phases[agent_item_id] = phase
             await self._emit_item_lifecycle(
                 status=status,
                 thread_id=thread_id,
                 turn_id=turn_id,
                 item=item,
             )
+            if status == "completed" and isinstance(agent_item_id, str):
+                self._agent_message_phases.pop(agent_item_id, None)
             return
         if method == "item/commandExecution/outputDelta":
             # Shell access is disabled in thread configuration.  If an older
@@ -1333,8 +1344,12 @@ class CodexChatController:
             return
         item_type = item.get("type")
         item_id = item.get("id")
-        if status == "completed" and item_type == "agentMessage":
-            if isinstance(item_id, str) and item_id not in self._streamed_agent_items:
+        if item_type == "agentMessage":
+            if (
+                status == "completed"
+                and isinstance(item_id, str)
+                and item_id not in self._streamed_agent_items
+            ):
                 text = str(item.get("text") or "")
                 if text:
                     self._emit(
@@ -1342,6 +1357,8 @@ class CodexChatController:
                         thread_id=thread_id,
                         turn_id=turn_id,
                         item_id=item_id,
+                        phase=str(item.get("phase") or "unknown"),
+                        first_delta=True,
                         text=text,
                         delta=text,
                         final_snapshot=True,
@@ -1645,3 +1662,4 @@ class CodexChatController:
         self._completed_turn_ids.clear()
         self._streamed_agent_items.clear()
         self._streamed_reasoning_items.clear()
+        self._agent_message_phases.clear()

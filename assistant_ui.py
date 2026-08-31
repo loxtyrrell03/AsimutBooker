@@ -58,6 +58,7 @@ EventKind = Literal[
     "assistant_start",
     "assistant_delta",
     "assistant_message",
+    "commentary_delta",
     "reasoning_start",
     "reasoning_delta",
     "reasoning_summary",
@@ -77,6 +78,7 @@ SUPPORTED_EVENT_KINDS = frozenset(
         "assistant_start",
         "assistant_delta",
         "assistant_message",
+        "commentary_delta",
         "reasoning_start",
         "reasoning_delta",
         "reasoning_summary",
@@ -293,7 +295,9 @@ def estimate_text_rows(text: str, columns: int, *, maximum: int = 80) -> int:
 class AssistantEventBuffer:
     """Small locked buffer that coalesces adjacent streaming deltas."""
 
-    _DELTA_KINDS = frozenset({"assistant_delta", "reasoning_delta"})
+    _DELTA_KINDS = frozenset(
+        {"assistant_delta", "reasoning_delta", "commentary_delta"}
+    )
     _TERMINAL_KINDS = frozenset({"clear", "done", "error", "connection", "busy"})
 
     def __init__(self, capacity: int = 4096) -> None:
@@ -677,6 +681,7 @@ class AssistantPanel(ttk.Frame):
             "assistant_start": "assistant",
             "assistant_delta": "assistant",
             "assistant_message": "assistant",
+            "commentary_delta": "reasoning",
             "reasoning_start": "reasoning",
             "reasoning_delta": "reasoning",
             "reasoning_summary": "reasoning",
@@ -697,6 +702,9 @@ class AssistantPanel(ttk.Frame):
             return replace(event, event_id=self._next_event_id("assistant"))
         if event.kind in {"assistant_delta", "assistant_message"}:
             event_id = self._active_assistant_id or self._next_event_id("assistant")
+            return replace(event, event_id=event_id)
+        if event.kind == "commentary_delta":
+            event_id = self._active_reasoning_id or self._next_event_id("reasoning")
             return replace(event, event_id=event_id)
         if event.kind == "reasoning_start":
             return replace(event, event_id=self._next_event_id("reasoning"))
@@ -757,7 +765,12 @@ class AssistantPanel(ttk.Frame):
             self._hide_welcome()
             self._active_assistant_id = event.event_id
             self._upsert_message(event, role="assistant")
-        elif kind in {"reasoning_start", "reasoning_delta", "reasoning_summary"}:
+        elif kind in {
+            "reasoning_start",
+            "reasoning_delta",
+            "reasoning_summary",
+            "commentary_delta",
+        }:
             self._hide_welcome()
             self._active_reasoning_id = event.event_id
             self._upsert_progress(event, reasoning=True)
@@ -1029,7 +1042,7 @@ class AssistantPanel(ttk.Frame):
         if card is None or card.kind not in {"reasoning", "activity", "tool"}:
             card = self._create_progress_card(event, reasoning=reasoning)
         else:
-            if event.kind == "reasoning_delta" and not event.replace:
+            if event.kind in {"reasoning_delta", "commentary_delta"} and not event.replace:
                 text = card.text + event.text
             elif event.text:
                 text = event.text
@@ -1108,7 +1121,9 @@ class AssistantPanel(ttk.Frame):
             shell,
             text=event.title
             or (
-                "Reasoning summary"
+                "Work update"
+                if event.kind == "commentary_delta"
+                else "Reasoning summary"
                 if reasoning
                 else "Using booker tools"
                 if event.kind == "tool"

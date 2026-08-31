@@ -194,16 +194,40 @@ def _safe_public_text(value: Any, *, maximum: int = MAX_PUBLIC_TEXT) -> str:
     return cleaned[:maximum]
 
 
+def _safe_public_delta(value: Any, *, maximum: int = MAX_PUBLIC_TEXT) -> str:
+    """Sanitize one streamed fragment without destroying token boundaries."""
+
+    if not isinstance(value, str):
+        return ""
+    cleaned = _CONTROL_CHARACTERS.sub("", value)
+    if _SENSITIVE_TEXT.search(cleaned):
+        return "Sensitive information was withheld from the phone display."
+    return cleaned[:maximum]
+
+
 def public_assistant_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
     """Map one internal controller event onto the phone's strict public schema."""
 
     kind = event.get("kind")
     if kind == "assistant_delta":
-        text = _safe_public_text(event.get("text"))
+        text = _safe_public_delta(event.get("text"))
         return {"kind": "assistant.delta", "text": text} if text else None
+    if kind == "commentary_delta":
+        text = _safe_public_delta(event.get("text"))
+        if not text:
+            return None
+        return {
+            "kind": "progress.delta",
+            "text": text,
+            "replace": bool(event.get("first_delta")),
+        }
     if kind == "reasoning_summary_delta":
-        text = _safe_public_text(event.get("text"))
-        return {"kind": "reasoning.delta", "text": text} if text else None
+        text = _safe_public_delta(event.get("text"))
+        if not text:
+            return None
+        summary_index = event.get("summary_index")
+        part = summary_index if type(summary_index) is int and 0 <= summary_index <= 64 else 0
+        return {"kind": "reasoning.delta", "text": text, "part": part}
     if kind in {"reasoning_start", "reasoning_summary"}:
         return {
             "kind": "reasoning.status",
@@ -221,11 +245,20 @@ def public_assistant_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
             "text": _safe_public_text(event.get("text"), maximum=800),
         }
     if kind in {"activity", "status"}:
+        title = _safe_public_text(event.get("title"), maximum=140)
+        if title == "Chat status changed":
+            return None
+        if title == "Thinking" and type(event.get("summary_index")) is int:
+            return {
+                "kind": "reasoning.status",
+                "status": _safe_public_text(event.get("status"), maximum=40)
+                or "in_progress",
+                "part": max(0, min(64, event["summary_index"])),
+            }
         return {
             "kind": "activity",
             "status": _safe_public_text(event.get("status"), maximum=40) or "in_progress",
-            "title": _safe_public_text(event.get("title"), maximum=140)
-            or "Asimut Assistant",
+            "title": title or "Asimut Assistant",
             "text": _safe_public_text(event.get("text"), maximum=800),
         }
     if kind == "turn_started":

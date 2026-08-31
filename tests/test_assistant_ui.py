@@ -28,6 +28,14 @@ class AssistantEventNormalizationTests(unittest.TestCase):
             ),
             (
                 {
+                    "kind": "commentary_delta",
+                    "delta": "Checking tomorrow",
+                    "item_id": "commentary-1",
+                },
+                "commentary_delta",
+            ),
+            (
+                {
                     "kind": "tool_call",
                     "tool_name": "get_agenda",
                     "call_id": "call-1",
@@ -64,16 +72,16 @@ class AssistantEventNormalizationTests(unittest.TestCase):
         self.assertEqual(reasoning.text, "Checking tomorrow")
         self.assertEqual(reasoning.event_id, "reason-1")
 
-        tool = normalize_assistant_event(cases[2][0])
+        tool = normalize_assistant_event(cases[3][0])
         self.assertEqual(tool.title, "get_agenda")
         self.assertEqual(tool.status, "running")
         self.assertEqual(tool.event_id, "call-1")
 
-        clarification = normalize_assistant_event(cases[4][0])
+        clarification = normalize_assistant_event(cases[5][0])
         self.assertEqual(clarification.status, "attention")
         self.assertEqual(clarification.text, "Which 4pm booking do you mean?")
 
-        history = normalize_assistant_event(cases[5][0])
+        history = normalize_assistant_event(cases[6][0])
         self.assertEqual(history.title, "Previous chat loaded")
         self.assertEqual(history.status, "completed")
 
@@ -133,6 +141,15 @@ class AssistantEventBufferTests(unittest.TestCase):
         buffer.put(AssistantEvent("reasoning_delta", "Check", event_id="x"))
         buffer.put(AssistantEvent("assistant_delta", "Answer", event_id="x"))
         self.assertEqual(len(buffer), 2)
+
+    def test_adjacent_commentary_deltas_are_coalesced(self):
+        buffer = AssistantEventBuffer()
+        buffer.put(AssistantEvent("commentary_delta", "Checking ", event_id="x"))
+        buffer.put(AssistantEvent("commentary_delta", "agenda", event_id="x"))
+        self.assertEqual(
+            buffer.drain(),
+            [AssistantEvent("commentary_delta", "Checking agenda", event_id="x")],
+        )
 
     def test_terminal_update_survives_bounded_overflow(self):
         buffer = AssistantEventBuffer(capacity=8)

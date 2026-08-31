@@ -421,6 +421,9 @@ for raw in sys.stdin:
         send({"id": turn_request_id, "result": {"turn": turn_object(turn_id)}})
         send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "reasoning", "id": "reason-1", "summary": ["Checking the exact booking."], "content": ["PRIVATE RAW REASONING"]}, "completedAtMs": 2}})
         send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "agentMessage", "id": "agent-1", "text": "I’ll verify that booking first.", "phase": "commentary", "memoryCitation": None, "delivery": None}, "completedAtMs": 2}})
+        send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "agentMessage", "id": "agent-final", "text": "", "phase": "final_answer", "memoryCitation": None, "delivery": None}, "startedAtMs": 3}})
+        send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "agent-final", "delta": "The booking was cancelled."}})
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "agentMessage", "id": "agent-final", "text": "The booking was cancelled.", "phase": "final_answer", "memoryCitation": None, "delivery": None}, "completedAtMs": 4}})
         send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": turn_object(turn_id, "completed")}})
         waiting = None
         continue
@@ -620,6 +623,21 @@ class CodexChatProtocolTests(_FakeServerCase):
         self.assertIn("connection", kinds)
         self.assertIn("turn_started", kinds)
         self.assertIn("assistant_delta", kinds)
+        self.assertTrue(
+            any(
+                event.get("kind") == "assistant_delta"
+                and event.get("phase") == "commentary"
+                and event.get("first_delta") is True
+                for event in events
+            )
+        )
+        self.assertTrue(
+            any(
+                event.get("kind") == "assistant_delta"
+                and event.get("phase") == "final_answer"
+                for event in events
+            )
+        )
         self.assertIn("reasoning_summary_delta", kinds)
         self.assertIn("activity", kinds)
         self.assertIn("tool_call", kinds)
@@ -627,6 +645,7 @@ class CodexChatProtocolTests(_FakeServerCase):
         rendered_text = " ".join(str(event.get("text", "")) for event in events)
         self.assertIn("Checking the exact booking.", rendered_text)
         self.assertIn("I’ll verify that booking first.", rendered_text)
+        self.assertIn("The booking was cancelled.", rendered_text)
         self.assertNotIn("PRIVATE RAW REASONING", rendered_text)
         self.assertTrue(
             any(event.get("title") == "Rechecking the current reservation" for event in events)
