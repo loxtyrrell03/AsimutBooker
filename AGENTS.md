@@ -1348,7 +1348,12 @@ python -m unittest discover -s tests
   runtime-lock regressions; the focused final suite passes 133 tests,
   the phone suite passes 16 tests, TypeScript checking and lint pass, both phone
   production builds complete, and the offline phone-build verifier passes.
-  Runtime deployment is recorded separately after installation verification.
+- Commit `b5d5bfc1f9ee` is installed in the private phone task and independently
+  verified at `https://lox-pc.tail89d19b.ts.net:10443/`. The new live
+  agenda-only path surfaced current reservations absent from the prior stale
+  snapshot, and the following read-only plan run published a fresh eight-day
+  phone plan. The final reduced phone snapshot reported ready status, fresh
+  agenda and plan artifacts, and zero pending mutations; no booking was changed.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
