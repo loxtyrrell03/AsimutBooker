@@ -461,7 +461,7 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             "description": (
                 "Cancel one exact existing reservation after a prior find_reservations call. "
                 "The backend re-authenticates, refreshes the complete agenda, rechecks the exact "
-                "positive event ID and tuple, journals before confirmation, and proves absence "
+                "positive event ID and tuple, journals before the cancel click, and proves absence "
                 "afterward. Ambiguous, changed, or uncertain state fails closed."
             ),
             "inputSchema": candidate,
@@ -749,6 +749,11 @@ class BookerToolSurface:
     @property
     def tool_specs(self) -> list[dict[str, Any]]:
         return dynamic_tool_specs()
+
+    def current_mutation_context(self) -> dict[str, Any]:
+        """Return fresh host-built receipt state for mandatory per-turn grounding."""
+
+        return build_assistant_context(["mutations"], paths=self.paths)
 
     def cancel_active(self) -> None:
         with self._cancel_lock:
@@ -1387,7 +1392,7 @@ class BookerToolSurface:
         target = targets[0]
         progress(
             "Cancelling exact reservation",
-            f"Revalidating event {target['event_id']} in {target['room']} before confirmation",
+            f"Revalidating event {target['event_id']} in {target['room']} before cancellation",
         )
         command = self._run_booker_command(
             self._cancellation_flags(target),
@@ -1459,7 +1464,7 @@ class BookerToolSurface:
                 f"Cancelling reservation {index + 1} of {len(targets)}",
                 (
                     f"Revalidating event {target['event_id']} in {target['room']} "
-                    "before confirmation"
+                    "before cancellation"
                 ),
             )
             try:

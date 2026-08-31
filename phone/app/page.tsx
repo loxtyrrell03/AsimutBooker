@@ -270,7 +270,7 @@ const demoBooker: BookerSnapshot = {
 const demoMessages: ChatMessage[] = [
   {
     role: 'assistant',
-    text: 'Good morning. I can see your practice plan, confirmed bookings, current room plan and Booker health. Ask me a question or tell me what you want changed.',
+    text: 'Good morning. I can see your practice plan, current reservations, room plan and Booker health. Ask me a question or tell me what you want changed.',
   },
 ];
 
@@ -444,13 +444,13 @@ function ContextPeek({ booker, onOpenSchedule }: { booker: BookerSnapshot; onOpe
       <button className="peek-row" onClick={onOpenSchedule} type="button">
         <div className="peek-icon confirmed"><CalendarDays /></div>
         <div className="peek-copy">
-          <span>Next confirmed</span>
+          <span>Next booked</span>
           <strong>
             {next
               ? `${dateLabel(next.date)} · ${next.start_time} · ${next.room}`
               : !booker.agenda.available || booker.agenda.stale
                 ? 'Agenda needs refresh'
-                : 'No upcoming confirmed reservation'}
+                : 'No upcoming reservation'}
           </strong>
         </div>
         <ChevronDown />
@@ -683,7 +683,7 @@ function ScheduleView({
     <section className="view-page schedule-view" aria-labelledby="schedule-title">
       <div className="view-heading">
         <div>
-          <span className="eyebrow">Confirmed and planned</span>
+          <span className="eyebrow">Booked and planned</span>
           <h2 id="schedule-title">Your schedule</h2>
           <p>
             Updated {timeAgo(booker.agenda.observed_at)}
@@ -716,7 +716,7 @@ function ScheduleView({
       )}
 
       <div className="schedule-legend" aria-label="Schedule legend">
-        <span><i className="confirmed-key" /> Confirmed</span>
+        <span><i className="confirmed-key" /> Booked</span>
         <span><i className="potential-key" /> Potential—not booked</span>
       </div>
 
@@ -786,7 +786,7 @@ function ScheduleView({
             <article className="plan-day" key={day.date}>
               <div className="plan-date">
                 <strong>{dateLabel(day.date, true)}</strong>
-                <span>{Math.round(day.existing_minutes / 60 * 10) / 10}h confirmed · {Math.round(day.target_minutes / 60 * 10) / 10}h target</span>
+                <span>{Math.round(day.existing_minutes / 60 * 10) / 10}h booked · {Math.round(day.target_minutes / 60 * 10) / 10}h target</span>
               </div>
               {day.primary ? (
                 <div className="potential-card">

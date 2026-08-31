@@ -15,6 +15,8 @@ from assistant_runtime import (
     load_assistant_state,
     save_assistant_state,
 )
+from assistant_tools import AssistantToolError
+from codex_chat import CodexToolFailure
 
 
 class FakeSurface:
@@ -23,6 +25,14 @@ class FakeSurface:
         self.cancelled = False
         self.turns_started = 0
         self.cancellation_context_clears = 0
+        self.mutation_context_calls = 0
+        self.mutation_contexts = [
+            {
+                "local_now": "2026-08-31T16:00:00+01:00",
+                "sections": {"mutations": {"pending": []}},
+                "errors": {},
+            }
+        ]
         self.tool_specs = [
             {
                 "type": "function",
@@ -47,6 +57,11 @@ class FakeSurface:
     def clear_cancellation_context(self):
         self.cancellation_context_clears += 1
 
+    def current_mutation_context(self):
+        index = min(self.mutation_context_calls, len(self.mutation_contexts) - 1)
+        self.mutation_context_calls += 1
+        return json.loads(json.dumps(self.mutation_contexts[index]))
+
 
 class FakeController:
     instances = []
@@ -67,6 +82,7 @@ class FakeController:
         self.block_shutdown = False
         self.shutdown_entered = threading.Event()
         self.sent_messages = []
+        self.sent_message_kwargs = []
         self.user_input_answers = []
         type(self).instances.append(self)
 
@@ -87,6 +103,7 @@ class FakeController:
 
     async def send_message(self, text, **kwargs):
         self.sent_messages.append(text)
+        self.sent_message_kwargs.append(dict(kwargs))
         self.active_turn_id = "turn-1"
         self.event_handler({"kind": "turn_started", "turn_id": "turn-1"})
         self.event_handler(
@@ -168,6 +185,17 @@ class BookerDispatcherTests(unittest.TestCase):
         self.assertEqual(updates[0]["title"], "Reading context")
         self.assertEqual(updates[0]["text"], "Validated fixture state")
 
+    def test_tool_failures_use_action_language_not_booking_confirmation(self):
+        surface = FakeSurface()
+        surface.dispatch = mock.Mock(side_effect=AssistantToolError("fixture rejected"))
+        dispatcher = BookerCodexToolDispatcher(surface)
+
+        with self.assertRaises(CodexToolFailure) as failure:
+            dispatcher.dispatch(None, "fixture", {}, {})
+
+        self.assertEqual(failure.exception.code, "booker_action_rejected")
+        self.assertNotIn("confirm", failure.exception.code)
+
 
 class AssistantRuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -222,6 +250,96 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertIn("only authorized data and action surface", controller.kwargs["developer_instructions"])
         self.assertEqual(self.runtime.model_label, "GPT-5.6 Terra · medium")
         self.assertEqual(self.surface.turns_started, 1)
+
+    def test_fresh_mutation_state_is_rebuilt_and_injected_on_every_turn(self):
+        self.surface.mutation_contexts = [
+            {
+                "local_now": "2026-08-31T15:00:00+01:00",
+                "sections": {
+                    "mutations": {
+                        "pending": [
+                            {
+                                "id": "58c047cf-eff8-44ab-9e4d-1b1d115cfba0",
+                                "kind": "cancel",
+                                "status": "pending",
+                            }
+                        ]
+                    }
+                },
+                "errors": {},
+            },
+            {
+                "local_now": "2026-08-31T16:07:00+01:00",
+                "sections": {"mutations": {"pending": []}},
+                "errors": {},
+            },
+        ]
+        self.runtime.start()
+        self.wait_for(lambda: FakeController.instances and FakeController.instances[0].thread_id)
+
+        self.assertTrue(self.runtime.send("What is blocking changes?"))
+        self.wait_for(lambda: not self.runtime.is_busy)
+        self.assertTrue(self.runtime.send("Cancel my bookings tomorrow"))
+        self.wait_for(lambda: not self.runtime.is_busy)
+
+        controller = FakeController.instances[0]
+        contracts = [
+            json.loads(
+                item["additional_context"]["current_mutation_state"]["value"]
+            )
+            for item in controller.sent_message_kwargs
+        ]
+        self.assertEqual(
+            contracts[0]["snapshot"]["sections"]["mutations"]["pending"][0]["status"],
+            "pending",
+        )
+        self.assertEqual(
+            contracts[1]["snapshot"]["sections"]["mutations"]["pending"],
+            [],
+        )
+        self.assertIn("supersedes", contracts[1]["authority"])
+        self.assertTrue(contracts[1]["available"])
+        self.assertEqual(self.surface.mutation_context_calls, 2)
+
+    def test_unavailable_mutation_state_is_never_labelled_fresh(self):
+        self.surface.mutation_contexts = [
+            {
+                "local_now": "2026-08-31T16:07:00+01:00",
+                "sections": {},
+                "errors": {"mutations": "fixture receipt read failed"},
+            }
+        ]
+        self.runtime.start()
+        self.wait_for(lambda: FakeController.instances and FakeController.instances[0].thread_id)
+
+        self.assertTrue(self.runtime.send("Cancel my bookings tomorrow"))
+        self.wait_for(lambda: not self.runtime.is_busy)
+
+        controller = FakeController.instances[0]
+        contract = json.loads(
+            controller.sent_message_kwargs[0]["additional_context"][
+                "current_mutation_state"
+            ]["value"]
+        )
+        self.assertFalse(contract["available"])
+        self.assertIn("unavailable", contract["authority"])
+        self.assertNotIn("Fresh host-built state", contract["authority"])
+        self.assertIn("mutations", contract["snapshot"]["errors"])
+
+    def test_prompt_contract_separates_reconfirmation_from_every_supported_action(self):
+        normalized_instructions = " ".join(ASSISTANT_DEVELOPER_INSTRUCTIONS.split())
+        self.assertIn(
+            "never a prerequisite for cancellation, editing, extension",
+            normalized_instructions,
+        )
+        self.assertIn(
+            "supersedes claims in prior chat turns",
+            normalized_instructions,
+        )
+        self.assertIn(
+            "Never say a mutation is pending based only on conversation history",
+            normalized_instructions,
+        )
 
     def test_sensitive_prompt_is_not_duplicated_in_local_transcript(self):
         self.runtime.start()

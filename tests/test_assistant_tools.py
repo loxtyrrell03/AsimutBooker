@@ -210,6 +210,48 @@ class AssistantToolSurfaceTests(unittest.TestCase):
             bulk_spec["inputSchema"]["properties"]["reservations"]["maxItems"],
             12,
         )
+        cancellation_specs = [
+            item
+            for item in dynamic_tool_specs()
+            if item["name"] in {"cancel_reservation", "cancel_reservations"}
+        ]
+        self.assertTrue(cancellation_specs)
+        self.assertFalse(
+            any("confirmation" in item["description"].casefold() for item in cancellation_specs)
+        )
+
+    def test_current_mutation_context_is_fresh_and_file_backed(self):
+        first = self.surface.current_mutation_context()
+        self.assertEqual(first["sections"]["mutations"]["pending"], [])
+
+        receipt_id = "58c047cf-eff8-44ab-9e4d-1b1d115cfba0"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        atomic_write_json(
+            self.paths.receipts,
+            {
+                "schema_version": RECEIPT_SCHEMA_VERSION,
+                "receipts": {
+                    receipt_id: {
+                        "id": receipt_id,
+                        "kind": "cancel",
+                        "status": "pending",
+                        "created_at": timestamp,
+                        "updated_at": timestamp,
+                        "room": "B1.09",
+                        "date": "2026-09-01",
+                        "start": "11:00",
+                        "end": "11:30",
+                        "event_url": "https://rwcmd.asimut.net/arrangement?eventId=3580086",
+                    }
+                },
+            },
+        )
+
+        second = self.surface.current_mutation_context()
+        self.assertEqual(
+            second["sections"]["mutations"]["pending"][0]["id"],
+            receipt_id,
+        )
 
     def test_high_level_week_plan_is_resolved_and_saved_for_automation(self):
         request = "This week is busy: do two hours on weekdays and four on the weekend."

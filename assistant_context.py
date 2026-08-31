@@ -69,7 +69,11 @@ APP_CAPABILITIES = {
     "manual_or_gui_boundaries": [
         "Initial credential setup uses the masked private prompt and Windows Credential Manager, never chat",
         "Installing or removing the Windows recurring task remains an explicit control-panel operation",
-        "Student-booking reconfirmation remains manual on RWCMD Wi-Fi",
+        (
+            "Day-of student-booking reconfirmation remains manual on RWCMD Wi-Fi, "
+            "but it never gates cancellation, editing, extension, planning, booking, "
+            "or another supported assistant action"
+        ),
         "The assistant never edits classes, arbitrary Asimut events, advanced YAML, or ignored-event identities",
     ],
     "rules": {
@@ -78,14 +82,19 @@ APP_CAPABILITIES = {
         "booking_duration": "live site limits, currently 30-120 minutes",
         "same_room_gap": "the greater of the configured/default gap and the live site minimum",
         "manual_reconfirmation": (
-            "Student bookings must be reconfirmed manually on RWCMD Wi-Fi; the "
-            "assistant and autonomous runtime never attempt remote reconfirmation."
+            "This is a separate day-of attendance step on RWCMD Wi-Fi. The assistant "
+            "does not perform it, and its status never affects whether a reservation "
+            "can be cancelled, edited, extended, or otherwise managed."
         ),
     },
     "safety_boundaries": [
         "A stale display snapshot is never mutation authority.",
         "A mutation must be uniquely scoped and revalidated against fresh live state.",
         "Success is reported only after exact remote persistence or absence is proven.",
+        (
+            "Remote-write verification and receipt reconciliation prove what the app did; "
+            "they are not the user's separate day-of booking reconfirmation."
+        ),
         "Uncertain mutations remain journaled and block further mutations.",
         "Credentials, cookies, browser storage, OTPs, bridge tokens, and participant arrays are never exposed.",
     ],

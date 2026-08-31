@@ -91,7 +91,7 @@ RECURRING_DURATION_ISO = "PT14H46M"
 RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
 RECURRING_RESTART_INTERVAL_ISO = "PT1M"
 MANUAL_RECONFIRMATION_NOTICE = (
-    "Saved student bookings still need manual confirmation on RWCMD Wi-Fi."
+    "Day-of RWCMD Wi-Fi reconfirmation is separate and never blocks booking changes."
 )
 
 TIME_PREFERENCE_PRESET_KEYS = frozenset(
@@ -2823,7 +2823,7 @@ class AsimutBookerGUI:
         if confirmed_minutes:
             self.booking_plan_headline_var.set(
                 f"Extension progress: {day_label} {candidate.start_time}–{candidate.end_time} · "
-                f"{candidate.room} · {confirmed_minutes}/{candidate.potential_minutes} min confirmed"
+                f"{candidate.room} · {confirmed_minutes}/{candidate.potential_minutes} min booked"
             )
         else:
             self.booking_plan_headline_var.set(
@@ -2843,7 +2843,7 @@ class AsimutBookerGUI:
             f"of {next_day.peak_limit_minutes} min. {next_day.reason} "
             f"Generated {generated_local}; "
             + (
-                "the solid portion is confirmed and the hatched remainder is still potential."
+                "the solid portion is booked and the hatched remainder is still potential."
                 if confirmed_minutes
                 else "potential, not booked."
             )
@@ -5889,13 +5889,13 @@ class AsimutBookerGUI:
                 f"Expected booking edge: {unlock}\n"
                 f"Initial action: {candidate.initial_minutes} minutes\n"
                 f"Potential continuous session: {candidate.potential_minutes} minutes\n"
-                f"Confirmed so far: {confirmed_minutes} minutes\n"
+                f"Booked so far: {confirmed_minutes} minutes\n"
                 f"State: {candidate.state.replace('_', ' ')}\n\n"
                 f"Why: {candidate.reason}\n\n"
                 "This is a read-only progress view. The runtime will re-check the live "
                 "room, agenda, limits, time, and form before any further Save action.\n\n"
-                f"{MANUAL_RECONFIRMATION_NOTICE} Asimut only permits that action "
-                "from the College network, so the booker will not attempt it."
+                f"{MANUAL_RECONFIRMATION_NOTICE} Asimut only permits reconfirmation "
+                "from the College network; the Booker never treats it as a prerequisite."
             ),
             parent=getattr(self, "calendar_dialog", self.root),
         )
@@ -6095,7 +6095,7 @@ class AsimutBookerGUI:
                     text=(
                         f"{'Extension' if confirmed else 'Potential' if primary else 'Alternative'}"
                         + (
-                            f" · {confirmed}/{candidate.potential_minutes}m confirmed\n"
+                            f" · {confirmed}/{candidate.potential_minutes}m booked\n"
                             if confirmed
                             else " · not booked\n"
                         )

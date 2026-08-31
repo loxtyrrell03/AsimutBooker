@@ -10,7 +10,7 @@ from pathlib import Path
 
 from agenda_snapshot import publish_agenda_snapshot
 from app_settings import atomic_write_json
-from assistant_context import ContextPaths, build_assistant_context
+from assistant_context import APP_CAPABILITIES, ContextPaths, build_assistant_context
 from mutation_receipts import SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION
 
 
@@ -162,6 +162,13 @@ class AssistantContextTests(unittest.TestCase):
         self.assertIn("app", result["sections"])
         self.assertIn("preferences", result["errors"])
         self.assertNotIn("preferences", result["sections"])
+
+    def test_manual_reconfirmation_is_explicitly_not_an_action_gate(self):
+        encoded = json.dumps(APP_CAPABILITIES)
+
+        self.assertIn("never gates cancellation", encoded)
+        self.assertIn("separate day-of attendance step", encoded)
+        self.assertIn("they are not the user's separate day-of booking reconfirmation", encoded)
 
     def test_history_exposes_the_newest_runs_first(self):
         atomic_write_json(

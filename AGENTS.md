@@ -36,7 +36,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
 - **Booking Plan UI**: Explains ready, waiting, in-progress, and alternative sessions in the dashboard and calendar; hatched blocks are explicitly potential rather than booked
 - **Verified Mutations**: A booking or extension counts only after the positive event ID and exact persisted room/date/time survive a reload
-- **Manual Reconfirmation Boundary**: Student bookings remain provisional; the user reconfirms them on RWCMD Wi-Fi when Asimut enables the action, and this runtime never attempts remote reconfirmation
+- **Manual Reconfirmation Boundary**: Student bookings remain provisional; the user reconfirms them on RWCMD Wi-Fi when Asimut enables the action, and this separate attendance step never gates cancellation, editing, extension, planning, booking, or another supported action
 - **Crash Recovery**: Durable pre-Save receipts stop further mutations when a result is uncertain and force agenda reconciliation on the next run
 - **Booking History**: Tracks verified runs and bookings with locked, atomic persistence
 - **Push Notifications**: Optional ntfy.sh notifications for booking results
@@ -981,9 +981,9 @@ python -m unittest discover -s tests
 
 - `phone/` is an assistant-first installable PWA with three compact destinations:
   Assistant, Schedule, and Status. The first viewport keeps Booker health and
-  the next confirmed/potential sessions visible above a ChatGPT-style transcript,
+  the next booked/potential sessions visible above a ChatGPT-style transcript,
   concise reasoning summaries, typed-tool progress, Stop/New chat controls, and
-  a natural-language composer. Confirmed agenda events and potential plan blocks
+  a natural-language composer. Booked agenda events and potential plan blocks
   remain visually and semantically distinct; cancellation shortcuts only prefill
   an exact assistant request and never bypass current-message authorization.
 - The production companion is designed for one dedicated tailnet-only HTTPS
@@ -1114,6 +1114,30 @@ python -m unittest discover -s tests
   grid, completed the ordinary plan-driven scan, made two receipt-verified
   bookings, and exited 0. No cancellation command was repeated during this
   verification.
+
+## 2026-08-31 Fresh Assistant Mutation Grounding Milestone
+
+- The 16:07 phone refusal was stale conversation reasoning rather than a Booker
+  gate: the cited cancellation receipt had already been verified for 39 minutes,
+  the phone header's fresh snapshot reported zero pending mutations, and the
+  assistant turn made no Booker tool call before reusing the earlier failure text.
+- Every assistant turn now receives a newly built, file-backed mutation snapshot
+  as authoritative application context. It explicitly supersedes prior chat
+  claims; a pending receipt requires a current context read and read-only agenda
+  reconciliation before a decision. If the journal or provider cannot be read,
+  the payload is labelled unavailable rather than fresh and mutation decisions
+  remain fail closed.
+- Day-of RWCMD Wi-Fi reconfirmation is documented as a separate attendance step
+  that never gates cancellation, editing, extension, preferences, plans,
+  booking, or any other supported action. Exact identity, receipt reconciliation,
+  persisted-write proof, and verified absence remain automatic integrity checks
+  and must not be described as user booking confirmation.
+- Cancellation progress now says `before cancellation`, rejected typed actions
+  use `booker_action_rejected`, and desktop/phone user copy labels persisted
+  reservations as booked/current rather than confirmed.
+- The complete Python suite passes 656 tests. The focused assistant/context/tool
+  suite passes 49 tests, the phone state/copy suite passes 7 tests, lint passes,
+  and both the static PWA and Sites production builds complete successfully.
 
 ## Maintenance Notes
 
