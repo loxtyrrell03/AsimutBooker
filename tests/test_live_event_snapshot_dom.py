@@ -200,7 +200,7 @@ class CurrentArrangementDomTests(unittest.TestCase):
             }],
         )
 
-    def test_agenda_rejects_event_id_assigned_to_previous_split_header_date(self):
+    def test_agenda_binds_event_to_owning_split_header_date(self):
         today = date.today()
         window_dates = tuple(today + timedelta(days=offset) for offset in range(6))
         day_markup = []
@@ -245,17 +245,419 @@ class CurrentArrangementDomTests(unittest.TestCase):
                 ),
             ),
             contextlib.redirect_stdout(io.StringIO()),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "event-card ID/date associations",
-            ),
         ):
-            book_week.scan_agenda(
+            event_count, reservations = book_week.scan_agenda(
                 page,
                 book_week.BookingTracker(),
                 today,
                 ignored_events=[],
                 window_dates=window_dates,
+            )
+
+        self.assertEqual(event_count, 1)
+        self.assertEqual(
+            reservations,
+            [{
+                "date": (today + timedelta(days=1)).isoformat(),
+                "startTime": "11:00",
+                "endTime": "11:30",
+                "room": "B1.09",
+                "daysDiff": 1,
+                "eventId": 3580088,
+            }],
+        )
+
+    def test_descendant_only_cancellation_signals_use_one_shared_classifier(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(6))
+        cancellation_attributes = {
+            1: 'style="text-decoration: line-through"',
+            2: 'style="background-color: rgb(220, 20, 20)"',
+            3: 'class="event-datetime cancelled"',
+        }
+        day_markup = []
+        for offset, current in enumerate(window_dates):
+            header = current.strftime("%A %d %B %Y").replace(" 0", " ")
+            events = ""
+            if offset in cancellation_attributes:
+                events = f"""
+                    <div class="event-details-expanded" data-cy="event_{3580100 + offset}">
+                      <div data-cy="event-datetime" {cancellation_attributes[offset]}>
+                        11:00 - 11:30
+                      </div>
+                      <span data-cy="event-display-name">Reservation</span>
+                      <a data-cy="event-location-link">B1.09 (Practice: Grand Piano)</a>
+                    </div>
+                """
+            elif offset == 4:
+                events = """
+                    <div class="event-details-expanded" data-cy="event_3580104">
+                      <div data-cy="event-datetime">13:00 - 13:30</div>
+                      <span data-cy="event-display-name">Reservation</span>
+                      <a data-cy="event-location-link">B0.29 (Practice: Grand Piano)</a>
+                    </div>
+                """
+            rendered_header = header if events else f"{header} &middot; no events"
+            inherited_theme = (
+                " style='color: rgb(220, 20, 20)'" if offset == 4 else ""
+            )
+            day_markup.append(
+                f"<div><div class='day-header'>{rendered_header}</div>"
+                f"<div class='day-body'{inherited_theme}>{events}</div></div>"
+            )
+        html = "<!doctype html><html><body>" + "".join(day_markup) + "</body></html>"
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            event_count, reservations = book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                book_week.BookingTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+        self.assertEqual(event_count, 1)
+        self.assertEqual(len(reservations), 1)
+        self.assertEqual(reservations[0]["eventId"], 3580104)
+
+    def test_agenda_allows_identical_lazy_rendered_event_clones(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(2))
+        headers = [
+            current.strftime("%A %d %B %Y").replace(" 0", " ")
+            for current in window_dates
+        ]
+        event = """
+            <div class="event-details-expanded" data-cy="event_3580199">
+              <div data-cy="event-datetime">11:00 - 11:30</div>
+              <span data-cy="event-display-name">Reservation</span>
+              <a data-cy="event-location-link">B1.09 (Practice: Grand Piano)</a>
+            </div>
+        """
+        html = f"""
+            <!doctype html><html><body>
+              <div><div class="day-header">{headers[0]}</div>
+                <div class="day-body">{event}{event}</div></div>
+              <div><div class="day-header">{headers[1]} &middot; no events</div>
+                <div class="day-body"></div></div>
+            </body></html>
+        """
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            event_count, reservations = book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                book_week.BookingTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+        self.assertEqual(event_count, 1)
+        self.assertEqual(len(reservations), 1)
+        self.assertEqual(reservations[0]["eventId"], 3580199)
+
+    def test_agenda_rejects_conflicting_event_id_across_days(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(2))
+        day_markup = []
+        for current in window_dates:
+            header = current.strftime("%A %d %B %Y").replace(" 0", " ")
+            day_markup.append(
+                f"""
+                <div>
+                  <div class="day-header">{header}</div>
+                  <div class="day-body">
+                    <div class="event-details-expanded" data-cy="event_3580200">
+                      <div data-cy="event-datetime">11:00 - 11:30</div>
+                      <span data-cy="event-display-name">Reservation</span>
+                      <a data-cy="event-location-link">B1.09 (Practice: Grand Piano)</a>
+                    </div>
+                  </div>
+                </div>
+                """
+            )
+        html = "<!doctype html><html><body>" + "".join(day_markup) + "</body></html>"
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "conflicting active card copies"),
+        ):
+            book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                book_week.BookingTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+    def test_agenda_rejects_active_semantic_card_without_positive_id(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(2))
+        headers = [
+            current.strftime("%A %d %B %Y").replace(" 0", " ")
+            for current in window_dates
+        ]
+        html = f"""
+            <!doctype html><html><body>
+              <div><div class="day-header">{headers[0]}</div>
+                <div class="day-body">
+                  <div class="event-details-expanded">
+                    <div data-cy="event-datetime">11:00 - 11:30</div>
+                    <span data-cy="event-display-name">Reservation</span>
+                    <a data-cy="event-location-link">B1.09 (Practice: Grand Piano)</a>
+                  </div>
+                </div>
+              </div>
+              <div><div class="day-header">{headers[1]} &middot; no events</div>
+                <div class="day-body"></div></div>
+            </body></html>
+        """
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "ambiguous identity"),
+        ):
+            book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                book_week.BookingTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+    def test_agenda_requires_one_direct_header_per_day_body(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(2))
+        headers = [
+            current.strftime("%A %d %B %Y").replace(" 0", " ")
+            for current in window_dates
+        ]
+        html = f"""
+            <!doctype html><html><body>
+              <div>
+                <div class="day-header">{headers[0]}</div>
+                <div class="day-header">{headers[0]}</div>
+                <div class="day-body"></div>
+              </div>
+              <div><div class="day-header">{headers[1]} &middot; no events</div>
+                <div class="day-body"></div></div>
+            </body></html>
+        """
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "exactly once"),
+        ):
+            book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                book_week.BookingTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+    def test_agenda_rejects_active_card_under_unmapped_extra_header(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(2))
+        expected_days = "".join(
+            f"<div><div class='day-header'>"
+            f"{current.strftime('%A %d %B %Y').replace(' 0', ' ')} &middot; no events"
+            f"</div><div class='day-body'></div></div>"
+            for current in window_dates
+        )
+        html = f"""
+            <!doctype html><html><body>
+              {expected_days}
+              <div><div class="day-header">Unknown rendered day</div>
+                <div class="day-body">
+                  <div class="event-details-expanded" data-cy="event_3580300">
+                    <div data-cy="event-datetime">11:00 - 11:30</div>
+                    <span data-cy="event-display-name">Reservation</span>
+                    <a data-cy="event-location-link">B1.09 (Practice: Grand Piano)</a>
+                  </div>
+                </div>
+              </div>
+            </body></html>
+        """
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "owning day header"),
+        ):
+            book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                book_week.BookingTracker(),
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+    def test_out_of_window_active_id_remains_in_cancellation_proof(self):
+        today = date.today()
+        window_dates = tuple(today + timedelta(days=offset) for offset in range(2))
+        expected_days = "".join(
+            f"<div><div class='day-header'>"
+            f"{current.strftime('%A %d %B %Y').replace(' 0', ' ')} &middot; no events"
+            f"</div><div class='day-body'></div></div>"
+            for current in window_dates
+        )
+        extra_date = window_dates[-1] + timedelta(days=1)
+        extra_header = extra_date.strftime("%A %d %B %Y").replace(" 0", " ")
+        html = f"""
+            <!doctype html><html><body>
+              {expected_days}
+              <div><div class="day-header">{extra_header}</div>
+                <div class="day-body">
+                  <div class="event-details-expanded" data-cy="event_3580301">
+                    <div data-cy="event-datetime">11:00 - 11:30</div>
+                    <span data-cy="event-display-name">Reservation</span>
+                    <a data-cy="event-location-link">B1.09 (Practice: Grand Piano)</a>
+                  </div>
+                </div>
+              </div>
+            </body></html>
+        """
+        self.page.route(
+            book_week.ASIMUT_AGENDA_URL,
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=html,
+            ),
+        )
+        tracker = book_week.BookingTracker()
+
+        with (
+            mock.patch.object(
+                book_week,
+                "safe_goto",
+                side_effect=lambda target_page, url: target_page.goto(
+                    url, wait_until="domcontentloaded"
+                ),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            event_count, reservations = book_week.scan_agenda(
+                _NoWaitPage(self.page),
+                tracker,
+                today,
+                ignored_events=[],
+                window_dates=window_dates,
+            )
+
+        self.assertEqual((event_count, reservations), (0, []))
+        proof_records = book_week._agenda_records_for_mutation_proof(tracker)
+        self.assertEqual(proof_records, [{"eventId": 3580301}])
+        with self.assertRaisesRegex(
+            book_week.BookingVerificationError,
+            "tuple changed",
+        ):
+            book_week.classify_cancellation_agenda_outcome(
+                proof_records,
+                {
+                    "id": "pending-cancel",
+                    "room": "B1.09",
+                    "date": today.isoformat(),
+                    "start": "11:00",
+                    "end": "11:30",
+                    "event_url": (
+                        "https://rwcmd.asimut.net/arrangement?eventId=3580301"
+                    ),
+                },
             )
 
 

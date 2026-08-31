@@ -1038,15 +1038,21 @@ def wait_for_created_booking_outcome(
         ) from exc
 
 
-def reconcile_pending_mutation_receipts(page, reservations):
+def reconcile_pending_mutation_receipts(page, agenda_events):
     """Resolve crash leftovers against a complete agenda before new mutations."""
 
     pending = list_pending_mutation_receipts()
     if not pending:
         return
 
+    agenda_records = [
+        event for event in agenda_events if isinstance(event, dict)
+    ]
     reservation_records = [
-        reservation for reservation in reservations if reservation.get("room")
+        event
+        for event in agenda_records
+        if event.get("room")
+        and event.get("isReservation", True) is not False
     ]
 
     print(f"\nReconciling {len(pending)} interrupted booking mutation(s)...")
@@ -1076,7 +1082,7 @@ def reconcile_pending_mutation_receipts(page, reservations):
 
         if receipt.get("kind") == "cancel":
             outcome = classify_cancellation_agenda_outcome(
-                reservation_records,
+                agenda_records,
                 receipt,
             )
             event_id = parse_confirmed_event_id(receipt["event_url"])
@@ -1224,6 +1230,29 @@ def reconcile_pending_mutation_receipts(page, reservations):
             f"  Reconciled receipt {receipt['id']}: persisted event and exact "
             "agenda reservation verified"
         )
+
+
+def _agenda_records_for_mutation_proof(tracker):
+    """Include every observed active event ID in mutation reconciliation proof."""
+
+    records = [
+        dict(event)
+        for event in getattr(tracker, "agenda_events", [])
+        if isinstance(event, dict)
+    ]
+    represented_ids = {
+        event.get("eventId")
+        for event in records
+        if type(event.get("eventId")) is int and event.get("eventId") > 0
+    }
+    for event_id in getattr(tracker, "agenda_active_event_ids", []):
+        if type(event_id) is int and event_id > 0 and event_id not in represented_ids:
+            # Out-of-window cards are not planning input, but their IDs remain
+            # relevant to a pending cancellation. Without a trusted in-window
+            # tuple, their presence is ambiguous rather than verified absence.
+            records.append({"eventId": event_id})
+            represented_ids.add(event_id)
+    return records
 
 
 def validate_state_file():
@@ -3085,16 +3114,34 @@ def cancel_reservation_exact(
         ) from exc
 
     try:
-        proof_tracker = BookingTracker()
-        events_detected, post_reservations = scan_agenda(
-            page,
-            proof_tracker,
-            today,
-            ignored_events=ignored_events,
-            window_dates=live_dates,
-            snapshot_path=AGENDA_SNAPSHOT_FILE,
+        # The cancellation control is invoked exactly once above.  Asimut can
+        # briefly rerender the agenda card after that click, so retry only the
+        # read-only complete-agenda proof.  A retry must never revisit the menu
+        # or issue another destructive action.
+        for proof_attempt in range(2):
+            try:
+                proof_tracker = BookingTracker()
+                events_detected, post_reservations = scan_agenda(
+                    page,
+                    proof_tracker,
+                    today,
+                    ignored_events=ignored_events,
+                    window_dates=live_dates,
+                    snapshot_path=AGENDA_SNAPSHOT_FILE,
+                )
+                break
+            except Exception:
+                if proof_attempt >= 1:
+                    raise
+                print(
+                    "  Cancellation proof scan was temporarily inconsistent; "
+                    "retrying the read-only agenda proof once"
+                )
+                page.wait_for_timeout(750)
+        outcome = classify_cancellation_agenda_outcome(
+            _agenda_records_for_mutation_proof(proof_tracker),
+            receipt,
         )
-        outcome = classify_cancellation_agenda_outcome(post_reservations, receipt)
         if outcome == "not_applied":
             raise BookingVerificationError(
                 f"Cancellation event {event_id} still appears unchanged after the "
@@ -4134,6 +4181,7 @@ class BookingTracker:
     def __init__(self):
         self.bookings = []  # List of (room, date, start_hour, end_hour)
         self.agenda_events = []  # Complete validated events from the latest scan.
+        self.agenda_active_event_ids = []  # Includes valid out-of-window cards.
         self.conflict_ranges = {}  # Per-day conflict ranges: {date: [(start, end), ...]}
         self.reservation_ranges = {}  # Per-day reservation ranges (for same-room gap buffer): {date: [(start, end), ...]}
         self.peak_hours_by_day = {}  # Per-day peak minutes: {date_key: minutes}
@@ -7913,7 +7961,7 @@ def go_back(page, days_ahead=None):
     print("  [DEBUG] Back on verified practice-room calendar")
 
 
-def _assert_complete_agenda_extraction(page, window_dates, events_data):
+def _assert_complete_agenda_extraction(structure, window_dates, events_data):
     """Require exact live-window day coverage and event-card extraction."""
 
     window_dates = tuple(window_dates)
@@ -7923,84 +7971,6 @@ def _assert_complete_agenda_extraction(page, window_dates, events_data):
     ):
         raise RuntimeError("Agenda verification requires live booking-window dates")
 
-    structure = page.evaluate(r"""() => {
-        const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-        const isCancelled = (card) => {
-            let element = card;
-            while (element && !element.classList.contains('day-body')) {
-                const style = window.getComputedStyle(element);
-                if (
-                    style.textDecoration.includes('line-through')
-                    || style.textDecorationLine.includes('line-through')
-                ) return true;
-                const className = String(element.className || '').toLowerCase();
-                if (
-                    className.includes('cancelled')
-                    || className.includes('canceled')
-                    || className.includes('deleted')
-                    || className.includes('removed')
-                ) return true;
-                const color = style.backgroundColor || '';
-                const red = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-                if (
-                    red
-                    && Number(red[1]) > 180
-                    && Number(red[1]) > Number(red[2]) * 1.5
-                    && Number(red[1]) > Number(red[3]) * 1.5
-                ) return true;
-                element = element.parentElement;
-            }
-            return false;
-        };
-        const agendaDayStructure = [];
-        for (const dayBody of document.querySelectorAll('.day-body')) {
-            const container = dayBody.parentElement;
-            const header = container
-                ? Array.from(container.children).find(
-                    (child) => child.classList.contains('day-header')
-                )
-                : null;
-            const headerText = clean(header && header.textContent);
-            const entry = {
-                header: headerText.replace(/\s*·\s*no events$/i, ''),
-                eventIds: [],
-                invalidCards: [],
-            };
-            for (const card of dayBody.querySelectorAll('[data-cy^="event_"]')) {
-                if (isCancelled(card)) continue;
-                const dataCy = card.getAttribute('data-cy') || '';
-                const idMatch = dataCy.match(/^event_([1-9][0-9]*)$/);
-                const timeControls = card.querySelectorAll(
-                    '[data-cy="event-datetime"], .event-datetime'
-                );
-                const displayNames = card.querySelectorAll(
-                    '[data-cy="event-display-name"]'
-                );
-                const timeText = timeControls.length === 1
-                    ? clean(timeControls[0].textContent)
-                    : '';
-                const timeValid = /^([01][0-9]|2[0-3]):[0-5][0-9]\s*[-–]\s*([01][0-9]|2[0-3]):[0-5][0-9]$/.test(
-                    timeText
-                );
-                const titleValid = displayNames.length === 1
-                    && clean(displayNames[0].textContent).length > 0;
-                if (!idMatch || !timeValid || !titleValid) {
-                    entry.invalidCards.push({
-                        dataCy,
-                        timeControls: timeControls.length,
-                        displayNames: displayNames.length,
-                        timeValid,
-                        titleValid,
-                    });
-                    continue;
-                }
-                entry.eventIds.push(Number(idMatch[1]));
-            }
-            agendaDayStructure.push(entry);
-        }
-        return {agendaDayStructure};
-    }""")
-
     expected_headers = [
         value.strftime("%A %d %B %Y").replace(" 0", " ")
         for value in window_dates
@@ -8009,9 +7979,7 @@ def _assert_complete_agenda_extraction(page, window_dates, events_data):
         not isinstance(structure, dict)
         or not isinstance(structure.get("agendaDayStructure"), list)
     ):
-        raise RuntimeError(
-            "Agenda structure could not be verified; booking stopped before mutation"
-        )
+        raise RuntimeError("Agenda structure could not be verified safely")
     relevant_days = [
         entry
         for entry in structure["agendaDayStructure"]
@@ -8026,6 +7994,18 @@ def _assert_complete_agenda_extraction(page, window_dates, events_data):
             "Agenda extraction did not cover each live-window date "
             f"exactly once (missing or duplicated: {missing_or_duplicate})"
         )
+    unmapped_active_days = [
+        entry
+        for entry in structure["agendaDayStructure"]
+        if isinstance(entry, dict)
+        and entry.get("parsedDate") is None
+        and (entry.get("activeEventIds") or entry.get("invalidCards"))
+    ]
+    if unmapped_active_days:
+        raise RuntimeError(
+            "Agenda contained active event cards whose owning day header could "
+            "not be mapped exactly; agenda state cannot be trusted safely"
+        )
     invalid_cards = [
         invalid
         for entry in relevant_days
@@ -8034,7 +8014,7 @@ def _assert_complete_agenda_extraction(page, window_dates, events_data):
     if invalid_cards:
         raise RuntimeError(
             f"Agenda contained {len(invalid_cards)} event card(s) with ambiguous "
-            "identity, title, or time fields"
+            "identity, title, time, or reservation-location fields"
         )
     header_dates = {
         header: value.isoformat()
@@ -8058,8 +8038,31 @@ def _assert_complete_agenda_extraction(page, window_dates, events_data):
     if extracted_event_associations != dom_event_associations:
         raise RuntimeError(
             "Agenda event-card ID/date associations did not match the extracted "
-            "events; booking stopped before mutation"
+            "events; agenda state cannot be trusted safely"
         )
+
+    # Virtual scrolling may retain an exact duplicate of one card. Accept only
+    # byte-for-byte-equivalent semantic copies; a positive remote ID attached to
+    # different fields is ambiguous and must never be collapsed by deduplication.
+    event_id_signatures = {}
+    for event in events_data:
+        event_id = event.get("eventId") if isinstance(event, dict) else None
+        if type(event_id) is not int or event_id <= 0:
+            continue
+        signature = (
+            event.get("date"),
+            event.get("startTime"),
+            event.get("endTime"),
+            event.get("title"),
+            event.get("isReservation"),
+            event.get("room"),
+        )
+        previous = event_id_signatures.setdefault(event_id, signature)
+        if previous != signature:
+            raise RuntimeError(
+                f"Agenda event {event_id} had conflicting active card copies; "
+                "agenda state cannot be trusted safely"
+            )
 
 
 def scan_agenda(
@@ -8155,17 +8158,24 @@ def scan_agenda(
 
     page.wait_for_timeout(1000)
 
-    # Extract events using JavaScript to get structured data
-    # This version checks for cancelled events and also captures event titles to identify reservations
-    events_data = page.evaluate(r"""(scanPolicy) => {
+    # Capture the day/card topology and semantic event fields in one atomic DOM
+    # evaluation.  A newly cancelled Angular card can change between tasks; two
+    # independent walks previously disagreed about descendant-only cancellation
+    # styling and left a valid cancellation receipt permanently unreconciled.
+    agenda_dom = page.evaluate(r"""(scanPolicy) => {
         const events = [];
+        const agendaDayStructure = [];
         const configuredRooms = scanPolicy.configuredRooms;
         const allowedDateSet = new Set(scanPolicy.allowedDates);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const allowedDateIndex = new Map(
+            scanPolicy.allowedDates.map((value, index) => [value, index])
+        );
+        const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
         const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                           'July', 'August', 'September', 'October', 'November', 'December'];
+        const datePattern = /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})$/i;
+        const timePattern = /^((?:[01][0-9]|2[0-3]):[0-5][0-9])\s*[-–]\s*((?:[01][0-9]|2[0-3]):[0-5][0-9])$/;
 
         function configuredRoomFromText(text) {
             const matches = [];
@@ -8180,210 +8190,200 @@ def scan_agenda(
             return longestMatches.length === 1 ? longestMatches[0] : null;
         }
 
-        // Helper function to check if an element or its parents indicate a cancelled event
-        function isCancelled(element) {
-            let el = element;
-            while (el && el !== document.body) {
-                const style = window.getComputedStyle(el);
-                // Check for strikethrough text
-                if (style.textDecoration.includes('line-through') ||
-                    style.textDecorationLine.includes('line-through')) {
-                    return true;
-                }
-                // Check for cancelled class names
-                const className = el.className || '';
-                if (className.includes('cancelled') || className.includes('canceled') ||
-                    className.includes('deleted') || className.includes('removed')) {
-                    return true;
-                }
-                // Check for red background/color that might indicate cancellation
-                const bgColor = style.backgroundColor;
-                // Parse RGB values - look for predominantly red colors
-                const redBgMatch = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-                if (redBgMatch) {
-                    const r = parseInt(redBgMatch[1]);
-                    const g = parseInt(redBgMatch[2]);
-                    const b = parseInt(redBgMatch[3]);
-                    // If red is dominant and significantly higher than green/blue
-                    if (r > 180 && r > g * 1.5 && r > b * 1.5) {
-                        return true;
-                    }
-                }
-                el = el.parentElement;
+        function hasCancellationSignal(element) {
+            const style = window.getComputedStyle(element);
+            if (style.textDecoration.includes('line-through') ||
+                style.textDecorationLine.includes('line-through')) {
+                return true;
+            }
+            const className = String(element.className || '').toLowerCase();
+            if (className.includes('cancelled') || className.includes('canceled') ||
+                className.includes('deleted') || className.includes('removed')) {
+                return true;
+            }
+            // Background colour is non-inherited. Generic computed text colour
+            // is deliberately excluded: a red day/theme ancestor would otherwise
+            // make every active descendant look cancelled.
+            const red = (style.backgroundColor || '').match(
+                /rgba?\((\d+),\s*(\d+),\s*(\d+)/
+            );
+            if (red) {
+                const r = Number(red[1]);
+                const g = Number(red[2]);
+                const b = Number(red[3]);
+                if (r > 180 && r > g * 1.5 && r > b * 1.5) return true;
             }
             return false;
         }
 
-        // Helper to get the event title from the event container
-        // Asimut uses app-as-event components with specific data-cy attributes
-        function getEventTitle(element) {
-            // Find the closest app-as-event container (the event card)
-            let container = element;
-            for (let i = 0; i < 10 && container; i++) {
-                // Check if we found the event container
-                if (container.tagName === 'APP-AS-EVENT' ||
-                    container.classList.contains('as-event-panel') ||
-                    container.classList.contains('event-details-expanded')) {
-
-                    // Look for the event-display-name element
-                    const displayName = container.querySelector('[data-cy="event-display-name"]');
-                    if (displayName) {
-                        const nameText = (displayName.textContent || '').trim();
-                        if (nameText === 'Reservation' || nameText.includes('Reservation')) {
-                            return 'Reservation';
-                        }
-                        if (nameText) {
-                            return nameText;
-                        }
-                    }
-
-                    // Also check for any exact configured room, including A-wing rooms.
-                    const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
-                    if (locationLink) {
-                        const locText = locationLink.textContent || '';
-                        if (configuredRoomFromText(locText)) {
-                            // Has a practice room location - likely a reservation
-                            // But only if the event name suggests it's a booking
-                            const displayName = container.querySelector('[data-cy="event-display-name"]');
-                            if (displayName) {
-                                const nameText = (displayName.textContent || '').trim();
-                                // Only count as reservation if it's actually titled "Reservation"
-                                if (nameText === 'Reservation') {
-                                    return 'Reservation';
-                                }
-                            }
-                        }
-                    }
-
-                    // Found the container but no reservation indicators
-                    return 'Event';
-                }
-                container = container.parentElement;
-            }
-
-            // Fallback: check immediate parent context
-            const parent = element.parentElement;
-            if (parent) {
-                // Look for Reservation text in a span nearby
-                const spans = parent.querySelectorAll('span');
-                for (const span of spans) {
-                    const text = (span.textContent || '').trim();
-                    if (text === 'Reservation') {
-                        return 'Reservation';
-                    }
+        // Inspect the exact card plus the time/title descendants Asimut styles
+        // during cancellation. Ancestor traversal is bounded at the owning day
+        // so an unrelated page or day style cannot cancel every event.
+        function isCancelledCard(card, dayBody) {
+            const roots = [
+                card,
+                ...card.querySelectorAll(
+                    '[data-cy="event-datetime"], .event-datetime, '
+                    + '[data-cy="event-display-name"]'
+                ),
+            ];
+            for (const root of roots) {
+                let el = root;
+                while (el && el !== dayBody) {
+                    if (hasCancellationSignal(el)) return true;
+                    el = el.parentElement;
                 }
             }
-
-            return 'Event';
+            return false;
         }
 
-        // Helper to get the room name from the event container
-        function getEventRoom(element) {
-            // Find the closest app-as-event container
-            let container = element;
-            for (let i = 0; i < 10 && container; i++) {
-                if (container.tagName === 'APP-AS-EVENT' ||
-                    container.classList.contains('as-event-panel') ||
-                    container.classList.contains('event-details-expanded')) {
-
-                    // Look for an exact configured room.
-                    const locationLink = container.querySelector('.location-link, [data-cy="event-location-link"]');
-                    if (locationLink) {
-                        const locText = (locationLink.textContent || '').trim();
-                        return configuredRoomFromText(locText);
-                    }
-                    return null;
+        function canonicalEventRoot(timeControl, dayBody) {
+            let element = timeControl;
+            let semanticRoot = null;
+            while (element && element !== dayBody) {
+                const dataCy = element.getAttribute
+                    ? element.getAttribute('data-cy') || ''
+                    : '';
+                if (dataCy.startsWith('event_')) return element;
+                if (!semanticRoot && (
+                    element.tagName === 'APP-AS-EVENT'
+                    || element.classList.contains('as-event-panel')
+                    || element.classList.contains('event-details-expanded')
+                )) {
+                    semanticRoot = element;
                 }
-                container = container.parentElement;
+                element = element.parentElement;
             }
-            return null;
+            return semanticRoot || timeControl;
         }
 
-        function getEventId(element) {
-            const card = element.closest('[data-cy^="event_"]');
-            if (!card) return null;
-            const match = (card.getAttribute('data-cy') || '').match(/^event_([1-9][0-9]*)$/);
-            return match ? Number(match[1]) : null;
-        }
-
-        // Find all elements that contain time patterns
-        const allElements = document.querySelectorAll('*');
-        let currentDate = null;
-
-        for (const element of allElements) {
-            // Skip if element has children with text (we want leaf nodes)
-            if (element.children.length > 0) {
-                const hasTextChild = Array.from(element.children).some(child =>
-                    child.textContent.trim().length > 0
-                );
-                if (hasTextChild) continue;
-            }
-
-            const text = element.textContent.trim();
-
-            // Check for date headers
-            const dateMatch = text.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})$/i);
+        for (const dayBody of document.querySelectorAll('.day-body')) {
+            const container = dayBody.parentElement;
+            const headers = container
+                ? Array.from(container.children).filter(
+                    (child) => child.classList.contains('day-header')
+                  )
+                : [];
+            const header = headers.length === 1 ? headers[0] : null;
+            const headerText = clean(header && header.textContent)
+                .replace(/\s*·\s*no events$/i, '');
+            const dateMatch = headerText.match(datePattern);
+            let currentDate = null;
+            let localDate = null;
+            let daysDiff = null;
             if (dateMatch) {
-                const day = parseInt(dateMatch[2]);
+                const day = Number(dateMatch[2]);
                 const month = monthNames.indexOf(dateMatch[3]);
-                const year = parseInt(dateMatch[4]);
+                const year = Number(dateMatch[4]);
                 currentDate = new Date(year, month, day);
-                continue;
+                localDate = [
+                    currentDate.getFullYear().toString().padStart(4, '0'),
+                    (currentDate.getMonth() + 1).toString().padStart(2, '0'),
+                    currentDate.getDate().toString().padStart(2, '0'),
+                ].join('-');
+                daysDiff = allowedDateIndex.has(localDate)
+                    ? allowedDateIndex.get(localDate)
+                    : null;
             }
 
-            // Check for time ranges like "09:30 - 11:00"
-            const timeMatch = text.match(/^(\d{2}:\d{2})\s*[-–]\s*(\d{2}:\d{2})$/);
-            if (timeMatch && currentDate) {
-                // Check if this event is cancelled
-                if (isCancelled(element)) {
-                    console.log('Skipping cancelled event:', text);
+            const entry = {
+                header: headerText,
+                headerCount: headers.length,
+                parsedDate: localDate,
+                activeEventIds: [],
+                eventIds: [],
+                invalidCards: [],
+            };
+            const cards = new Set(
+                dayBody.querySelectorAll('[data-cy^="event_"]')
+            );
+            for (const timeControl of dayBody.querySelectorAll(
+                '[data-cy="event-datetime"], .event-datetime'
+            )) {
+                cards.add(canonicalEventRoot(timeControl, dayBody));
+            }
+            for (const card of cards) {
+                if (isCancelledCard(card, dayBody)) continue;
+                const dataCy = card.getAttribute('data-cy') || '';
+                const idMatch = dataCy.match(/^event_([1-9][0-9]*)$/);
+                if (idMatch) entry.activeEventIds.push(Number(idMatch[1]));
+                const timeControls = card.querySelectorAll(
+                    '[data-cy="event-datetime"], .event-datetime'
+                );
+                const displayNames = card.querySelectorAll(
+                    '[data-cy="event-display-name"]'
+                );
+                const locationLinks = card.querySelectorAll(
+                    '.location-link, [data-cy="event-location-link"]'
+                );
+                const timeText = timeControls.length === 1
+                    ? clean(timeControls[0].textContent)
+                    : '';
+                const timeMatch = timeText.match(timePattern);
+                const titleText = displayNames.length === 1
+                    ? clean(displayNames[0].textContent)
+                    : '';
+                const titleValid = titleText.length > 0;
+                const eventTitle = titleText === 'Reservation'
+                    || titleText.includes('Reservation')
+                    ? 'Reservation'
+                    : titleText;
+                const isReservation = eventTitle === 'Reservation';
+                const eventRoom = locationLinks.length === 1
+                    ? configuredRoomFromText(clean(locationLinks[0].textContent))
+                    : null;
+                const locationValid = !isReservation
+                    || (locationLinks.length === 1 && eventRoom !== null);
+                if (!idMatch || !timeMatch || !titleValid || !currentDate
+                    || !locationValid) {
+                    entry.invalidCards.push({
+                        dataCy,
+                        timeControls: timeControls.length,
+                        displayNames: displayNames.length,
+                        locationLinks: locationLinks.length,
+                        timeValid: Boolean(timeMatch),
+                        titleValid,
+                        dateValid: Boolean(currentDate),
+                        locationValid,
+                    });
                     continue;
                 }
 
-                const startTime = timeMatch[1];
-                const endTime = timeMatch[2];
-                const eventTitle = getEventTitle(element);
-                const eventRoom = getEventRoom(element);
-                const eventId = getEventId(element);
-
-                const currentOrdinal = Date.UTC(
-                    currentDate.getFullYear(),
-                    currentDate.getMonth(),
-                    currentDate.getDate()
-                );
-                const todayOrdinal = Date.UTC(
-                    today.getFullYear(),
-                    today.getMonth(),
-                    today.getDate()
-                );
-                const daysDiff = Math.round((currentOrdinal - todayOrdinal) / (1000 * 60 * 60 * 24));
-                const localDate = [
-                    currentDate.getFullYear().toString().padStart(4, '0'),
-                    (currentDate.getMonth() + 1).toString().padStart(2, '0'),
-                    currentDate.getDate().toString().padStart(2, '0')
-                ].join('-');
+                const eventId = Number(idMatch[1]);
+                entry.eventIds.push(eventId);
                 if (allowedDateSet.has(localDate)) {
                     events.push({
                         date: localDate,
-                        daysDiff: daysDiff,
-                        startTime: startTime,
-                        endTime: endTime,
+                        daysDiff,
+                        startTime: timeMatch[1],
+                        endTime: timeMatch[2],
                         title: eventTitle,
-                        isReservation: eventTitle === 'Reservation',
+                        isReservation,
                         room: eventRoom,
-                        eventId: eventId
+                        eventId,
                     });
                 }
             }
+            agendaDayStructure.push(entry);
         }
 
-        return events;
+        return {events, agendaDayStructure};
     }""", {
         "configuredRooms": LIVE_CATALOG_ROOM_NAMES,
         "allowedDates": [value.isoformat() for value in window_dates],
     })
 
-    _assert_complete_agenda_extraction(page, window_dates, events_data)
+    if not isinstance(agenda_dom, dict) or not isinstance(agenda_dom.get("events"), list):
+        raise RuntimeError("Agenda event snapshot could not be verified safely")
+    events_data = agenda_dom["events"]
+    _assert_complete_agenda_extraction(agenda_dom, window_dates, events_data)
+    tracker.agenda_active_event_ids = [
+        event_id
+        for entry in agenda_dom.get("agendaDayStructure", [])
+        if isinstance(entry, dict)
+        for event_id in entry.get("activeEventIds", [])
+        if type(event_id) is int and event_id > 0
+    ]
     unknown_reservation_rooms = [
         event
         for event in events_data
@@ -8394,7 +8394,7 @@ def scan_agenda(
     if unknown_reservation_rooms:
         raise RuntimeError(
             "Agenda contained a reservation whose room was not one exact live "
-            "catalog name; booking stopped before mutation"
+            "catalog name; agenda state cannot be trusted safely"
         )
     print(f"  [DEBUG] Raw events extracted: {len(events_data)}")
 
@@ -9341,7 +9341,10 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             window_dates=live_dates,
             snapshot_path=AGENDA_SNAPSHOT_FILE,
         )
-        reconcile_pending_mutation_receipts(page, all_reservations)
+        reconcile_pending_mutation_receipts(
+            page,
+            _agenda_records_for_mutation_proof(tracker),
+        )
 
         if _cancellation_requested(args):
             try:

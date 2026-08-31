@@ -228,23 +228,10 @@ class _AgendaPage:
             return 1000
         if expression.startswith("window.scroll"):
             return None
-        if "agendaDayStructure" in expression:
-            days = []
-            for current in self.window_dates:
-                event_ids = [
-                    event["eventId"]
-                    for event in self.raw_events
-                    if event.get("date") == current.isoformat()
-                    and isinstance(event.get("eventId"), int)
-                    and event["eventId"] > 0
-                ]
-                days.append({
-                    "header": current.strftime("%A %d %B %Y").replace(" 0", " "),
-                    "eventIds": event_ids,
-                    "invalidCards": [],
-                })
-            return {"agendaDayStructure": days}
-        if "function configuredRoomFromText" in expression:
+        if (
+            "agendaDayStructure" in expression
+            and "function configuredRoomFromText" in expression
+        ):
             scan_policy = args[0]
             configured_rooms = list(scan_policy["configuredRooms"])
             self.configured_rooms = configured_rooms
@@ -257,7 +244,23 @@ class _AgendaPage:
                 location = event.pop("location", "")
                 event["room"] = self._configured_room(location, configured_rooms)
                 events.append(event)
-            return events
+            days = []
+            for current in self.window_dates:
+                event_ids = [
+                    event["eventId"]
+                    for event in self.raw_events
+                    if event.get("date") == current.isoformat()
+                    and isinstance(event.get("eventId"), int)
+                    and event["eventId"] > 0
+                ]
+                days.append({
+                    "header": current.strftime("%A %d %B %Y").replace(" 0", " "),
+                    "parsedDate": current.isoformat(),
+                    "activeEventIds": event_ids,
+                    "eventIds": event_ids,
+                    "invalidCards": [],
+                })
+            return {"events": events, "agendaDayStructure": days}
         raise AssertionError(f"Unexpected page evaluation: {expression[:80]}")
 
 
@@ -350,7 +353,10 @@ class AgendaIdentityTests(unittest.TestCase):
             ["A3.39", "B0.29"],
         )
         self.assertIn("A3.39", page.configured_rooms)
-        self.assertIn("configuredRoomFromText(locText)", page.extraction_script)
+        self.assertIn(
+            "configuredRoomFromText(clean(locationLinks[0].textContent))",
+            page.extraction_script,
+        )
         self.assertNotIn("identityRoomFromText", page.extraction_script)
 
     def test_complete_agenda_scan_can_publish_display_snapshot(self):

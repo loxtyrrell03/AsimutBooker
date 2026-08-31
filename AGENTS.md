@@ -1061,6 +1061,31 @@ python -m unittest discover -s tests
   tool, booking, cancellation, settings write, or live Booker action ran. A
   physical iPhone Add-to-Home-Screen launch remains separate device evidence.
 
+## 2026-08-31 Cancellation Reconciliation Repair Milestone
+
+- Agenda verification now captures one atomic, day-scoped DOM snapshot for both
+  structural completeness and semantic events. Dates come from each card's one
+  direct day header, and one shared bounded classifier handles outer-card and
+  descendant cancellation markers. This removes the former race between two DOM
+  walks that could disagree immediately after an Asimut cancellation rerender.
+- Active semantic cards must expose one positive event ID, one canonical time,
+  one title, and, for reservations, one exact live-catalog location. Missing or
+  duplicate day headers, missing identities, ambiguous fields, and conflicting
+  copies of one event ID fail closed. Exact lazy-rendered card clones remain
+  supported and are deduplicated only after their complete fields agree.
+- Post-click verification may retry the read-only complete-agenda scan once, but
+  the cancellation control remains outside that loop and is invoked exactly
+  once. Both immediate proof and restart reconciliation compare the receipt with
+  every active validated event, so a same-ID card whose title changes cannot be
+  mistaken for a successful absence. Active IDs under valid extra dates remain
+  mutation-proof evidence, while active cards under unmappable headers stop the
+  scan rather than disappearing from cancellation reconciliation.
+- Regression coverage includes descendant-only cancellation signals, inherited
+  red theme styling, split and duplicate headers, missing IDs, exact and
+  conflicting virtualized clones, complete-event cancellation proof, one-click
+  retry behavior, and pending-receipt preservation. The complete offline suite
+  passes 648 tests.
+
 ## Maintenance Notes
 
 When modifying this codebase:

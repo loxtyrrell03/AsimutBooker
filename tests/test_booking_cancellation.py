@@ -125,7 +125,8 @@ class BookingCancellationContractTests(unittest.TestCase):
         return value
 
     def call_cancel(self, *, post_reservations=(), record_side_effect=None,
-                    cancel_side_effect=None, confirmation=True):
+                    cancel_side_effect=None, confirmation=True,
+                    scan_side_effects=None, post_agenda_events=None):
         page = mock.Mock()
         card = mock.Mock()
         more_button = mock.Mock()
@@ -154,9 +155,26 @@ class BookingCancellationContractTests(unittest.TestCase):
             self.assertEqual(kwargs["event_url"], self.EVENT_URL)
             return receipt
 
+        queued_scan_side_effects = list(scan_side_effects or ())
+
         def complete_scan(*args, **kwargs):
             timeline.append("complete_agenda")
             self.assertEqual(kwargs["snapshot_path"], book_week.AGENDA_SNAPSHOT_FILE)
+            if queued_scan_side_effects:
+                result = queued_scan_side_effects.pop(0)
+                if isinstance(result, BaseException):
+                    raise result
+                args[1].agenda_events = list(
+                    post_agenda_events
+                    if post_agenda_events is not None
+                    else result[1]
+                )
+                return result
+            args[1].agenda_events = list(
+                post_agenda_events
+                if post_agenda_events is not None
+                else post_reservations
+            )
             return 3, list(post_reservations)
 
         def verify_receipt(*args, **kwargs):
@@ -206,6 +224,7 @@ class BookingCancellationContractTests(unittest.TestCase):
         self.last_cancel_option = cancel_option
         self.last_scan = scan
         self.last_verify = verify
+        self.last_resolve = resolve
 
         try:
             result = book_week.cancel_reservation_exact(
@@ -264,6 +283,13 @@ class BookingCancellationContractTests(unittest.TestCase):
             book_week.classify_cancellation_agenda_outcome([], receipt),
             "cancelled",
         )
+        self.assertEqual(
+            book_week.classify_cancellation_agenda_outcome(
+                [self.reservation(title="Class", isReservation=False)],
+                receipt,
+            ),
+            "not_applied",
+        )
 
         ambiguous_outcomes = (
             [self.reservation(), self.reservation()],
@@ -300,6 +326,7 @@ class BookingCancellationContractTests(unittest.TestCase):
         self.last_cancel_option.click.assert_not_called()
         self.last_scan.assert_not_called()
         self.last_verify.assert_not_called()
+        self.last_resolve.assert_not_called()
 
     def test_click_failure_is_uncertain_and_never_scans_or_verifies(self):
         with self.assertRaisesRegex(
@@ -318,6 +345,58 @@ class BookingCancellationContractTests(unittest.TestCase):
                 confirmation=False,
             )
         self.assertIn("complete_agenda", self.last_timeline)
+        self.last_scan.assert_called_once()
+        self.last_verify.assert_not_called()
+
+    def test_transient_post_click_scan_retries_proof_without_repeating_click(self):
+        result, timeline, cancel, scan, verify, _resolve = self.call_cancel(
+            scan_side_effects=(
+                RuntimeError("agenda rerender in progress"),
+                (3, []),
+            )
+        )
+
+        self.assertEqual(result, (True, 3))
+        self.assertEqual(timeline.count("receipt"), 1)
+        self.assertEqual(timeline.count("cancel_click"), 1)
+        self.assertEqual(timeline.count("complete_agenda"), 2)
+        cancel.click.assert_called_once()
+        self.assertEqual(scan.call_count, 2)
+        verify.assert_called_once_with("cancel-receipt", event_url=self.EVENT_URL)
+
+    def test_repeated_post_click_scan_failure_keeps_receipt_pending(self):
+        with self.assertRaisesRegex(
+            book_week.BookingVerificationError,
+            "requires reconciliation",
+        ):
+            self.call_cancel(
+                scan_side_effects=(
+                    RuntimeError("first unstable snapshot"),
+                    RuntimeError("second unstable snapshot"),
+                )
+            )
+
+        self.assertEqual(self.last_timeline.count("receipt"), 1)
+        self.assertEqual(self.last_timeline.count("cancel_click"), 1)
+        self.assertEqual(self.last_timeline.count("complete_agenda"), 2)
+        self.last_cancel_option.click.assert_called_once()
+        self.assertEqual(self.last_scan.call_count, 2)
+        self.last_verify.assert_not_called()
+        self.last_resolve.assert_not_called()
+
+    def test_non_reservation_same_id_cannot_be_mistaken_for_absence(self):
+        with self.assertRaisesRegex(
+            book_week.BookingVerificationError,
+            "delayed cancellation",
+        ):
+            self.call_cancel(
+                post_reservations=(),
+                post_agenda_events=(
+                    self.reservation(title="Class", isReservation=False),
+                ),
+            )
+
+        self.last_cancel_option.click.assert_called_once()
         self.last_scan.assert_called_once()
         self.last_verify.assert_not_called()
 
