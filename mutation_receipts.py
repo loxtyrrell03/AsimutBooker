@@ -15,16 +15,17 @@ from typing import Any, Callable, Literal, TypeVar
 from uuid import UUID, uuid4
 
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
+from runtime_guard import parse_confirmed_event_id
 
 
 APP_DIR = Path(__file__).resolve().parent
 RECEIPTS_FILE = APP_DIR / "data" / "mutation_receipts.json"
 SCHEMA_VERSION = 1
 
-ReceiptKind = Literal["create", "extension", "uncertain"]
+ReceiptKind = Literal["create", "extension", "cancel", "uncertain"]
 ReceiptStatus = Literal["pending", "verified", "resolved"]
 
-_KINDS = {"create", "extension", "uncertain"}
+_KINDS = {"create", "extension", "cancel", "uncertain"}
 _STATUSES = {"pending", "verified", "resolved"}
 _DOCUMENT_KEYS = {"schema_version", "receipts"}
 _REQUIRED_RECEIPT_KEYS = {
@@ -147,6 +148,16 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
 
     for field in ("event_url", "resolution"):
         _validate_optional_text(receipt, field)
+    if receipt["kind"] == "cancel":
+        if "event_url" not in receipt:
+            raise MutationReceiptError(
+                f"Cancellation receipt {key!r} must contain the exact event URL"
+            )
+        if parse_confirmed_event_id(receipt["event_url"]) is None:
+            raise MutationReceiptError(
+                f"Cancellation receipt {key!r} event URL must be one exact "
+                "positive Asimut arrangement URL"
+            )
 
     status = receipt["status"]
     if status == "pending" and any(
@@ -236,7 +247,7 @@ def record_pending(
     event_url: str | None = None,
     path: Path = RECEIPTS_FILE,
 ) -> dict[str, Any]:
-    """Atomically append a pending create, extension, or uncertain receipt."""
+    """Atomically append one supported pending mutation receipt."""
 
     timestamp = _utc_timestamp()
 
@@ -274,6 +285,12 @@ def record_pending_extension(**kwargs: Any) -> dict[str, Any]:
     """Convenience wrapper for a pending reservation extension."""
 
     return record_pending("extension", **kwargs)
+
+
+def record_pending_cancel(**kwargs: Any) -> dict[str, Any]:
+    """Convenience wrapper for a pending reservation cancellation."""
+
+    return record_pending("cancel", **kwargs)
 
 
 def record_uncertain(**kwargs: Any) -> dict[str, Any]:

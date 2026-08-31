@@ -12,6 +12,7 @@ from mutation_receipts import (
     mark_resolved,
     mark_verified,
     record_pending,
+    record_pending_cancel,
     record_pending_create,
     record_pending_extension,
     record_uncertain,
@@ -43,21 +44,52 @@ class MutationReceiptTests(unittest.TestCase):
         self.assertEqual(list_pending(self.path), [])
         self.assertFalse(self.path.exists())
 
-    def test_records_all_three_pending_kinds_with_unique_ids(self):
+    def test_records_all_four_pending_kinds_with_unique_ids(self):
         created = record_pending_create(**self._details(0))
         extended = record_pending_extension(**self._details(1))
+        cancelled = record_pending_cancel(
+            **self._details(2),
+            event_url="https://rwcmd.asimut.net/arrangement?eventId=123",
+        )
         uncertain = record_uncertain(
-            **self._details(2), event_url="https://rwcmd.asimut.net/event?eventId=123"
+            **self._details(3), event_url="https://rwcmd.asimut.net/event?eventId=123"
         )
 
         self.assertEqual(created["kind"], "create")
         self.assertEqual(extended["kind"], "extension")
+        self.assertEqual(cancelled["kind"], "cancel")
         self.assertEqual(uncertain["kind"], "uncertain")
         self.assertEqual({receipt["status"] for receipt in list_pending(self.path)}, {"pending"})
-        self.assertEqual(len({created["id"], extended["id"], uncertain["id"]}), 3)
+        self.assertEqual(
+            len(
+                {
+                    created["id"],
+                    extended["id"],
+                    cancelled["id"],
+                    uncertain["id"],
+                }
+            ),
+            4,
+        )
+        self.assertEqual(
+            cancelled["event_url"],
+            "https://rwcmd.asimut.net/arrangement?eventId=123",
+        )
         self.assertEqual(
             uncertain["event_url"], "https://rwcmd.asimut.net/event?eventId=123"
         )
+
+    def test_cancellation_receipt_requires_event_url_before_write(self):
+        with self.assertRaisesRegex(MutationReceiptError, "exact event URL"):
+            record_pending_cancel(**self._details())
+        self.assertFalse(self.path.exists())
+
+        with self.assertRaisesRegex(MutationReceiptError, "positive Asimut"):
+            record_pending_cancel(
+                **self._details(),
+                event_url="https://rwcmd.asimut.net/event?eventId=123",
+            )
+        self.assertFalse(self.path.exists())
 
     def test_verified_receipt_leaves_pending_list_and_keeps_other_receipts(self):
         first = record_pending_create(**self._details(0))

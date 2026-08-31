@@ -833,6 +833,29 @@ python -m unittest discover -s tests
   that coverage and replans from fresh availability. The complete offline suite
   passes 471 tests.
 
+## 2026-08-31 Exact Reservation Cancellation Milestone
+
+- The runtime now has one isolated exact-cancellation CLI mode requiring a
+  positive agenda event ID plus the unchanged room, date, start, and end tuple.
+  It cannot be combined with booking, extension, check, plan, schedule, target,
+  or maintenance modes, so a missing or rejected target never falls through to
+  another action.
+- Cancellation re-authenticates, refreshes live policy, requires a complete
+  agenda, reload-proves the exact persisted event, and binds the visible
+  Reservation card and explicit cancellation controls to that ID and tuple. A
+  durable cancellation receipt is written before the first destructive click;
+  success requires a second complete agenda in which both the ID and exact
+  tuple are absent.
+- An unchanged immediate agenda remains pending for later reconciliation rather
+  than being reported as success. Reconciliation either proves the exact event
+  still exists and closes the action as not applied, or proves absence, removes
+  only extension state bound to that event ID, and finalizes the receipt. DOM,
+  identity, tuple, control, receipt, or post-action ambiguity fails closed.
+- The focused receipt/cancellation/save/runtime/overview regression slice passes
+  116 tests. The cancellation DOM contract has offline coverage but has not
+  been exercised against an authenticated live reservation; current Asimut
+  label or markup drift therefore stops safely or leaves reconciliation pending.
+
 ## Maintenance Notes
 
 When modifying this codebase:

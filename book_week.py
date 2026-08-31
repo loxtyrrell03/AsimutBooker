@@ -65,6 +65,7 @@ from booking_plan import (
     DayPlan,
     PlanCandidate,
     booking_plan_fingerprint,
+    clear_booking_plan,
     write_booking_plan,
 )
 from event_identity import (
@@ -87,6 +88,7 @@ from mutation_receipts import (
     list_pending as list_pending_mutation_receipts,
     mark_resolved as resolve_mutation_receipt,
     mark_verified as verify_mutation_receipt,
+    record_pending_cancel,
     record_pending_create,
     record_pending_extension,
 )
@@ -558,6 +560,10 @@ def safe_reload(page, *, attempts=3):
 
 class BookingVerificationError(RuntimeError):
     """A Save may have mutated Asimut, but the exact result was not provable."""
+
+
+class BookingCancellationError(RuntimeError):
+    """An exact cancellation target or safe cancellation control was not proven."""
 
 
 def page_booking_snapshot(page):
@@ -1067,6 +1073,77 @@ def reconcile_pending_mutation_receipts(page, reservations):
             )
             print(f"  Closed expired receipt {receipt['id']}: booking slot has ended")
             continue
+
+        if receipt.get("kind") == "cancel":
+            outcome = classify_cancellation_agenda_outcome(
+                reservation_records,
+                receipt,
+            )
+            event_id = parse_confirmed_event_id(receipt["event_url"])
+            if outcome == "not_applied":
+                try:
+                    safe_goto(page, receipt["event_url"])
+                    verify_persisted_booking_page(
+                        page,
+                        receipt["room"],
+                        receipt["date"],
+                        receipt["start"],
+                        receipt["end"],
+                    )
+                    resolve_mutation_receipt(
+                        receipt["id"],
+                        resolution=(
+                            "Interrupted cancellation was not applied; exact "
+                            "reservation remains"
+                        ),
+                        event_url=receipt["event_url"],
+                    )
+                except BookingVerificationError:
+                    raise
+                except Exception as exc:
+                    raise BookingVerificationError(
+                        f"Cancellation receipt {receipt['id']} still appears in the "
+                        f"agenda but could not be proved unchanged: {exc}; the receipt "
+                        "remains pending"
+                    ) from exc
+                print(
+                    f"  Reconciled cancellation receipt {receipt['id']}: exact "
+                    "reservation remains, so cancellation was not applied"
+                )
+                continue
+
+            try:
+                remove_extendable_booking_by_event_id(event_id)
+            except SettingsError as exc:
+                raise BookingVerificationError(
+                    f"Cancellation of event {event_id} is proven by the complete "
+                    f"agenda, but extension tracking could not be cleaned up: "
+                    f"{exc}; receipt {receipt['id']} remains pending"
+                ) from exc
+            try:
+                verify_mutation_receipt(
+                    receipt["id"],
+                    event_url=receipt["event_url"],
+                )
+            except Exception as exc:
+                raise BookingVerificationError(
+                    f"Cancellation of event {event_id} is proven by the complete "
+                    f"agenda, but receipt {receipt['id']} could not be finalized: "
+                    f"{exc}; the receipt remains pending"
+                ) from exc
+            try:
+                clear_booking_plan()
+            except BookingPlanError as exc:
+                print(
+                    "  WARNING: Reconciled cancellation, but the display-only "
+                    f"booking plan could not be cleared: {exc}"
+                )
+            print(
+                f"  Reconciled cancellation receipt {receipt['id']}: exact event "
+                f"{event_id} is absent from the complete agenda"
+            )
+            continue
+
         intended = (
             receipt["room"],
             receipt["date"],
@@ -2535,88 +2612,446 @@ def interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
 #     return swappable
 #
 #
-# # def cancel_reservation(page, reservation):
-#     """Cancel an existing reservation in Asimut.
-#
-#     Args:
-#         page: Playwright page object
-#         reservation: Dict with date, startTime, endTime, room
-#
-#     Returns:
-#         True if successfully cancelled, False otherwise
-#     """
-#     date_str = reservation['date']
-#     start_time = reservation['startTime']
-#     end_time = reservation['endTime']
-#     room = reservation.get('room', 'Unknown')
-#
-#     print(f"  Attempting to cancel: {room} on {date_str} at {start_time}-{end_time}")
-#
-#     try:
-#         # Navigate to agenda page
-#         page.goto("https://rwcmd.asimut.net/agenda", wait_until="networkidle")
-#         page.wait_for_timeout(2000)
-#
-#         # Scroll to find the event
-#         max_scrolls = 20
-#         event_found = False
-#
-#         for scroll in range(max_scrolls):
-#             time_text = f"{start_time} - {end_time}"
-#             event_cards = page.locator('.as-event-panel, app-as-event').all()
-#
-#             for card in event_cards:
-#                 try:
-#                     card_text = card.inner_text(timeout=1000)
-#                     if time_text in card_text and 'Reservation' in card_text:
-#                         if room and room in card_text:
-#                             event_found = True
-#                             print(f"  Found matching event card")
-#
-#                             more_btn = card.locator('button[data-cy="button_more"], .as-event-options-button').first
-#                             if more_btn.count() > 0:
-#                                 more_btn.click()
-#                                 page.wait_for_timeout(500)
-#
-#                                 cancel_option = page.locator('mat-list-item:has(mat-icon:has-text("cancel"))').first
-#                                 if cancel_option.count() == 0:
-#                                     cancel_option = page.locator('button:has-text("Cancel booking"), [role="menuitem"]:has-text("Cancel")').first
-#
-#                                 if cancel_option.count() > 0 and cancel_option.is_visible():
-#                                     cancel_option.click()
-#                                     page.wait_for_timeout(1000)
-#
-#                                     confirm_btn = page.locator('button:has-text("Confirm"), button:has-text("Yes"), button:has-text("OK"), button:has-text("Delete")').first
-#                                     if confirm_btn.count() > 0 and confirm_btn.is_visible():
-#                                         confirm_btn.click()
-#                                         page.wait_for_timeout(1000)
-#
-#                                     print(f"  Successfully cancelled reservation: {room} {date_str} {start_time}")
-#                                     return True
-#                                 else:
-#                                     print(f"  Could not find 'Cancel booking' option in menu")
-#                                     page.keyboard.press("Escape")
-#                             else:
-#                                 print(f"  Could not find more options button on event card")
-#                             break
-#                 except Exception as e:
-#                     continue
-#
-#             if event_found:
-#                 break
-#
-#             page.evaluate("window.scrollBy(0, 300)")
-#             page.wait_for_timeout(300)
-#
-#         if not event_found:
-#             print(f"  Could not find event card for {room} {date_str} {start_time}")
-#             return False
-#
-#     except Exception as e:
-#         print(f"  Error cancelling reservation: {e}")
-#         return False
-#
-#     return False
+def _expected_reservation_tuple(reservation):
+    """Return the exact tuple used for cancellation matching and proof."""
+
+    return (
+        reservation.get("room"),
+        reservation.get("date"),
+        reservation.get("startTime"),
+        reservation.get("endTime"),
+    )
+
+
+def resolve_exact_cancellation_target(
+    reservations,
+    *,
+    event_id,
+    room,
+    date_str,
+    start_time,
+    end_time,
+):
+    """Resolve one positive agenda event ID and require its complete tuple."""
+
+    if not isinstance(reservations, list):
+        raise BookingCancellationError(
+            "Cancellation requires a complete validated agenda reservation list"
+        )
+    if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id <= 0:
+        raise BookingCancellationError("Cancellation requires a positive event ID")
+
+    id_matches = [
+        reservation
+        for reservation in reservations
+        if isinstance(reservation, dict)
+        and type(reservation.get("eventId")) is int
+        and reservation.get("eventId") == event_id
+    ]
+    if len(id_matches) != 1:
+        raise BookingCancellationError(
+            f"Cancellation event {event_id} matched {len(id_matches)} current "
+            "agenda reservations; exactly one is required"
+        )
+
+    expected = (room, date_str, start_time, end_time)
+    actual = _expected_reservation_tuple(id_matches[0])
+    if actual != expected:
+        raise BookingCancellationError(
+            f"Cancellation event {event_id} no longer matches the expected "
+            f"reservation {room} {date_str} {start_time}-{end_time}"
+        )
+    return dict(id_matches[0])
+
+
+def _find_exact_cancellation_card(page, reservation):
+    """Return one current ID-bound reservation card after structured proof."""
+
+    event_id = reservation["eventId"]
+    selector = f"[data-cy='event_{event_id}'], #event_{event_id}"
+    exact_cards = page.locator(selector)
+    for attempt in range(11):
+        count = exact_cards.count()
+        if count > 1:
+            raise BookingCancellationError(
+                f"Agenda contains multiple DOM cards for event {event_id}"
+            )
+        if count == 1:
+            break
+        if attempt == 10:
+            raise BookingCancellationError(
+                f"Exact agenda card for event {event_id} is not available"
+            )
+        page.evaluate("window.scrollBy(0, 2000)")
+        page.wait_for_timeout(300)
+
+    exact_card = exact_cards.first
+    legacy_panel = exact_card.locator(
+        "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), "
+        "' as-event-panel ')][1]"
+    ).first
+    card = legacy_panel if legacy_panel.count() == 1 else exact_card
+    if card.count() != 1:
+        raise BookingCancellationError(
+            f"Exact agenda card for event {event_id} became ambiguous"
+        )
+
+    display_names = card.locator('[data-cy="event-display-name"]')
+    if (
+        display_names.count() != 1
+        or not display_names.first.is_visible()
+        or (display_names.first.text_content() or "").strip() != "Reservation"
+    ):
+        raise BookingCancellationError(
+            f"Event {event_id} is not one exact visible reservation card"
+        )
+
+    card_text = " ".join((card.inner_text() or "").split())
+    expected_range = f"{reservation['startTime']}-{reservation['endTime']}"
+    compact_text = re.sub(r"\s+", "", card_text).replace("–", "-")
+    if expected_range not in compact_text:
+        raise BookingCancellationError(
+            f"Event {event_id} card no longer shows the expected time range"
+        )
+    room_pattern = re.compile(
+        rf"(?<![A-Za-z0-9.]){re.escape(reservation['room'])}(?![A-Za-z0-9.])",
+        re.IGNORECASE,
+    )
+    if room_pattern.search(card_text) is None:
+        raise BookingCancellationError(
+            f"Event {event_id} card no longer shows the expected room"
+        )
+    return card
+
+
+def _unique_visible_control(parent, selectors, label):
+    """Resolve one visible enabled control through conservative fallbacks."""
+
+    for selector in selectors:
+        candidates = parent.locator(selector)
+        visible = []
+        for index in range(candidates.count()):
+            candidate = candidates.nth(index)
+            if candidate.is_visible():
+                visible.append(candidate)
+        if len(visible) > 1:
+            raise BookingCancellationError(f"Multiple visible {label} controls were found")
+        if len(visible) == 1:
+            try:
+                if not visible[0].is_enabled():
+                    raise BookingCancellationError(f"The {label} control is disabled")
+            except BookingCancellationError:
+                raise
+            except Exception as exc:
+                raise BookingCancellationError(
+                    f"The {label} control state could not be proven: {exc}"
+                ) from exc
+            return visible[0]
+    raise BookingCancellationError(f"No exact visible {label} control was found")
+
+
+def _cancel_menu_option(page):
+    """Return one explicit booking-cancellation menu item, never generic delete."""
+
+    candidates = []
+    for selector in (
+        "mat-list-item:has(mat-icon:has-text('cancel'))",
+        "[role='menuitem']:has-text('Cancel booking')",
+        "[role='menuitem']:has-text('Cancel reservation')",
+        "button:has-text('Cancel booking')",
+        "button:has-text('Cancel reservation')",
+    ):
+        locator = page.locator(selector)
+        for index in range(locator.count()):
+            option = locator.nth(index)
+            if not option.is_visible():
+                continue
+            text = " ".join((option.inner_text() or "").split()).casefold()
+            if "cancel booking" not in text and "cancel reservation" not in text:
+                continue
+            candidates.append(option)
+        if candidates:
+            break
+    if len(candidates) != 1:
+        raise BookingCancellationError(
+            f"Expected one explicit Cancel booking menu item; found {len(candidates)}"
+        )
+    try:
+        if not candidates[0].is_enabled():
+            raise BookingCancellationError("The Cancel booking menu item is disabled")
+    except BookingCancellationError:
+        raise
+    except Exception as exc:
+        raise BookingCancellationError(
+            f"The Cancel booking menu item state could not be proven: {exc}"
+        ) from exc
+    return candidates[0]
+
+
+def _optional_cancel_confirmation(page):
+    """Return a safe affirmative dialog button, or None when no dialog exists."""
+
+    dialogs = page.locator("mat-dialog-container:visible, [role='dialog']:visible")
+    if dialogs.count() == 0:
+        return None
+    if dialogs.count() != 1:
+        raise BookingCancellationError("Cancellation opened an ambiguous confirmation dialog")
+    dialog = dialogs.first
+    dialog_text = " ".join((dialog.inner_text() or "").split()).casefold()
+    if "cancel" not in dialog_text or not any(
+        noun in dialog_text for noun in ("booking", "reservation", "event")
+    ):
+        raise BookingCancellationError(
+            "Cancellation confirmation dialog did not explicitly identify the action"
+        )
+
+    allowed_labels = {
+        "confirm",
+        "yes",
+        "yes, cancel booking",
+        "cancel booking",
+        "cancel reservation",
+        "delete booking",
+    }
+    buttons = dialog.locator("button")
+    affirmative = []
+    for index in range(buttons.count()):
+        button = buttons.nth(index)
+        if not button.is_visible():
+            continue
+        label = " ".join((button.inner_text() or "").split()).casefold()
+        if label in allowed_labels:
+            affirmative.append(button)
+    if len(affirmative) != 1:
+        raise BookingCancellationError(
+            f"Expected one explicit cancellation confirmation; found {len(affirmative)}"
+        )
+    try:
+        if not affirmative[0].is_enabled():
+            raise BookingCancellationError("Cancellation confirmation is disabled")
+    except BookingCancellationError:
+        raise
+    except Exception as exc:
+        raise BookingCancellationError(
+            f"Cancellation confirmation state could not be proven: {exc}"
+        ) from exc
+    return affirmative[0]
+
+
+def classify_cancellation_agenda_outcome(reservations, receipt):
+    """Classify one complete post-action agenda without making assumptions."""
+
+    event_id = parse_confirmed_event_id(receipt.get("event_url", ""))
+    if event_id is None:
+        raise BookingVerificationError(
+            f"Cancellation receipt {receipt.get('id', 'unknown')} has no exact event ID"
+        )
+    expected = (
+        receipt["room"],
+        receipt["date"],
+        receipt["start"],
+        receipt["end"],
+    )
+    id_matches = [
+        reservation
+        for reservation in reservations
+        if isinstance(reservation, dict)
+        and type(reservation.get("eventId")) is int
+        and reservation.get("eventId") == event_id
+    ]
+    if len(id_matches) > 1:
+        raise BookingVerificationError(
+            f"Cancellation event {event_id} appeared multiple times in the complete agenda"
+        )
+    if len(id_matches) == 1:
+        if _expected_reservation_tuple(id_matches[0]) != expected:
+            raise BookingVerificationError(
+                f"Cancellation event {event_id} remains but its reservation tuple changed"
+            )
+        return "not_applied"
+
+    tuple_matches = [
+        reservation
+        for reservation in reservations
+        if isinstance(reservation, dict)
+        and _expected_reservation_tuple(reservation) == expected
+    ]
+    if tuple_matches:
+        raise BookingVerificationError(
+            f"Cancellation event {event_id} disappeared, but the exact reservation "
+            "tuple remains under a different or missing event ID"
+        )
+    return "cancelled"
+
+
+def remove_extendable_booking_by_event_id(event_id):
+    """Remove only extension state bound to one verified cancelled event ID."""
+
+    if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id <= 0:
+        raise SettingsError("Cancelled extension cleanup requires a positive event ID")
+
+    def mutate(settings):
+        entries = settings.get("extendable_bookings", [])
+        if not isinstance(entries, list):
+            raise SettingsError("extendable_bookings must be a JSON list")
+        matches = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("eventId") == event_id
+        ]
+        if len(matches) > 1:
+            raise SettingsError(
+                f"Multiple extension records are bound to cancelled event {event_id}"
+            )
+        settings["extendable_bookings"] = [
+            entry
+            for entry in entries
+            if not (isinstance(entry, dict) and entry.get("eventId") == event_id)
+        ]
+
+    update_settings(mutate, settings_file)
+
+
+def cancel_reservation_exact(
+    page,
+    reservations,
+    *,
+    event_id,
+    room,
+    date_str,
+    start_time,
+    end_time,
+    today,
+    live_dates,
+    ignored_events,
+):
+    """Cancel one exact reservation and prove its absence in a complete agenda."""
+
+    target = resolve_exact_cancellation_target(
+        reservations,
+        event_id=event_id,
+        room=room,
+        date_str=date_str,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    event_url = f"{ASIMUT_BASE_URL}/arrangement?eventId={event_id}"
+    if parse_confirmed_event_id(event_url) != event_id:
+        raise BookingCancellationError("Cancellation event URL could not be canonicalized")
+
+    # The complete agenda established the event ID/tuple association. Reload the
+    # exact persisted event as a second independent proof before opening its menu.
+    # Everything in this block is non-destructive; distinguish a failed target
+    # proof from uncertainty after a cancellation receipt has been written.
+    try:
+        safe_goto(page, event_url)
+        verify_persisted_booking_page(
+            page,
+            room,
+            date_str,
+            start_time,
+            end_time,
+        )
+        safe_goto(page, ASIMUT_AGENDA_URL)
+        page.wait_for_timeout(2000)
+        card = _find_exact_cancellation_card(page, target)
+        card.scroll_into_view_if_needed()
+        page.wait_for_timeout(300)
+        more_button = _unique_visible_control(
+            card,
+            (
+                "button[data-cy='button_more']",
+                ".as-event-options-button",
+                "button:has(mat-icon:has-text('more_vert'))",
+            ),
+            "reservation options",
+        )
+        more_button.click()
+        page.wait_for_timeout(500)
+        cancel_option = _cancel_menu_option(page)
+    except BookingCancellationError:
+        raise
+    except Exception as exc:
+        raise BookingCancellationError(
+            f"Cancellation stopped before its receipt because the exact target "
+            f"could not be proved: {exc}"
+        ) from exc
+
+    try:
+        receipt = record_pending_cancel(
+            room=room,
+            booking_date=date_str,
+            start=start_time,
+            end=end_time,
+            event_url=event_url,
+        )
+    except MutationReceiptError as exc:
+        raise BookingCancellationError(
+            f"Cancellation stopped before the destructive control because its "
+            f"receipt could not be written: {exc}"
+        ) from exc
+
+    print(
+        f"  Cancelling exact event {event_id}: {room} {date_str} "
+        f"{start_time}-{end_time} (receipt {receipt['id']})"
+    )
+    try:
+        cancel_option.click(no_wait_after=True, timeout=5000)
+        page.wait_for_timeout(750)
+        confirmation = _optional_cancel_confirmation(page)
+        if confirmation is not None:
+            confirmation.click(no_wait_after=True, timeout=5000)
+            page.wait_for_timeout(1000)
+    except BookingCancellationError as exc:
+        raise BookingVerificationError(
+            f"Cancellation outcome is uncertain (receipt {receipt['id']}): {exc}. "
+            "No further mutations will be attempted until reconciliation."
+        ) from exc
+    except Exception as exc:
+        raise BookingVerificationError(
+            f"Cancellation click outcome is uncertain (receipt {receipt['id']}): {exc}. "
+            "No further mutations will be attempted until reconciliation."
+        ) from exc
+
+    try:
+        proof_tracker = BookingTracker()
+        events_detected, post_reservations = scan_agenda(
+            page,
+            proof_tracker,
+            today,
+            ignored_events=ignored_events,
+            window_dates=live_dates,
+            snapshot_path=AGENDA_SNAPSHOT_FILE,
+        )
+        outcome = classify_cancellation_agenda_outcome(post_reservations, receipt)
+        if outcome == "not_applied":
+            raise BookingVerificationError(
+                f"Cancellation event {event_id} still appears unchanged after the "
+                f"click (receipt {receipt['id']}). The receipt remains pending so a "
+                "later complete-agenda run can distinguish a delayed cancellation "
+                "from an action that was not applied."
+            )
+        remove_extendable_booking_by_event_id(event_id)
+        verify_mutation_receipt(receipt["id"], event_url=event_url)
+    except BookingVerificationError:
+        raise
+    except Exception as exc:
+        raise BookingVerificationError(
+            f"Cancellation requires reconciliation (receipt {receipt['id']}): {exc}"
+        ) from exc
+
+    try:
+        clear_booking_plan()
+    except BookingPlanError as exc:
+        print(
+            f"  WARNING: Cancellation is verified, but the display-only booking "
+            f"plan could not be cleared: {exc}"
+        )
+    print(
+        f"CANCELLATION VERIFIED: event {event_id} {room} {date_str} "
+        f"{start_time}-{end_time}"
+    )
+    return True, events_detected
 # =============================================================================
 
 
@@ -8511,6 +8946,15 @@ def validate_live_scope(args, policy, *, today=None):
 
     today = today or datetime.now().date()
     live_dates = set(policy.booking_dates(today))
+    if _cancellation_requested(args):
+        selected_date = datetime.strptime(args.cancel_date, "%Y-%m-%d").date()
+        if selected_date not in live_dates:
+            first = min(live_dates).isoformat()
+            last = max(live_dates).isoformat()
+            raise LiveRoomPolicyError(
+                f"--cancel-date must be inside Asimut's current {first} to "
+                f"{last} window"
+            )
     if getattr(args, "only_room", None) and args.only_room not in policy.room_order:
         raise LiveRoomPolicyError(
             f"--only-room is not eligible in the current live room policy: {args.only_room}"
@@ -8817,15 +9261,42 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         print(f"Booking for: {live_dates[0]} to {live_dates[-1]}")
 
         # First, scan the agenda to learn about existing events
+        ignored_events = load_ignored_events(settings)
         events_detected, all_reservations = scan_agenda(
             page,
             tracker,
             today,
-            ignored_events=load_ignored_events(settings),
+            ignored_events=ignored_events,
             window_dates=live_dates,
             snapshot_path=AGENDA_SNAPSHOT_FILE,
         )
         reconcile_pending_mutation_receipts(page, all_reservations)
+
+        if _cancellation_requested(args):
+            try:
+                cancelled, events_detected = cancel_reservation_exact(
+                    page,
+                    all_reservations,
+                    event_id=args.cancel_event_id,
+                    room=args.cancel_room,
+                    date_str=args.cancel_date,
+                    start_time=args.cancel_start,
+                    end_time=args.cancel_end,
+                    today=today,
+                    live_dates=live_dates,
+                    ignored_events=ignored_events,
+                )
+            except BookingCancellationError as exc:
+                print(f"CANCELLATION NOT APPLIED: {exc}")
+                persist_storage_state(context)
+                context.close()
+                browser.close()
+                return 7
+
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0 if cancelled else 7
 
         if args.check_only:
             print(
@@ -10429,10 +10900,104 @@ def build_argument_parser():
             "--max-action-minutes cap"
         ),
     )
+    parser.add_argument(
+        "--cancel-event-id",
+        type=int,
+        metavar="N",
+        help=(
+            "Isolated cancellation: exact positive agenda event ID; requires "
+            "the complete expected reservation tuple"
+        ),
+    )
+    parser.add_argument(
+        "--cancel-date",
+        metavar="YYYY-MM-DD",
+        help="Isolated cancellation: exact expected reservation date",
+    )
+    parser.add_argument(
+        "--cancel-room",
+        metavar="ROOM",
+        help="Isolated cancellation: exact expected reservation room",
+    )
+    parser.add_argument(
+        "--cancel-start",
+        metavar="HH:MM",
+        help="Isolated cancellation: exact expected reservation start time",
+    )
+    parser.add_argument(
+        "--cancel-end",
+        metavar="HH:MM",
+        help="Isolated cancellation: exact expected reservation end time",
+    )
     return parser
 
 
+def _cancellation_requested(args):
+    """Return whether any exact-cancellation argument was supplied."""
+
+    return any(
+        getattr(args, field, None) is not None
+        for field in (
+            "cancel_event_id",
+            "cancel_date",
+            "cancel_room",
+            "cancel_start",
+            "cancel_end",
+        )
+    )
+
+
 def _validate_cli_args(parser, args):
+    cancellation_fields = {
+        "--cancel-event-id": args.cancel_event_id,
+        "--cancel-date": args.cancel_date,
+        "--cancel-room": args.cancel_room,
+        "--cancel-start": args.cancel_start,
+        "--cancel-end": args.cancel_end,
+    }
+    cancellation_requested = any(
+        value is not None for value in cancellation_fields.values()
+    )
+    if cancellation_requested:
+        missing = [
+            name for name, value in cancellation_fields.items() if value is None
+        ]
+        if missing:
+            parser.error(
+                "exact cancellation requires all of --cancel-event-id, "
+                "--cancel-date, --cancel-room, --cancel-start, and --cancel-end; "
+                f"missing: {', '.join(missing)}"
+            )
+        if args.cancel_event_id <= 0:
+            parser.error("--cancel-event-id must be a positive integer")
+        try:
+            validate_room_name(args.cancel_room, "--cancel-room")
+        except RoomPreferencesError as exc:
+            parser.error(str(exc))
+        try:
+            selected_date = datetime.strptime(args.cancel_date, "%Y-%m-%d").date()
+        except ValueError:
+            parser.error("--cancel-date must use a valid YYYY-MM-DD date")
+        if selected_date.isoformat() != args.cancel_date:
+            parser.error("--cancel-date must use zero-padded YYYY-MM-DD")
+
+        parsed_cancel_times = []
+        for name, value in (
+            ("--cancel-start", args.cancel_start),
+            ("--cancel-end", args.cancel_end),
+        ):
+            try:
+                parsed_time = datetime.strptime(value, "%H:%M")
+            except ValueError:
+                parser.error(f"{name} must use a valid 24-hour HH:MM value")
+            if parsed_time.strftime("%H:%M") != value:
+                parser.error(f"{name} must use zero-padded HH:MM")
+            if parsed_time.minute % 15:
+                parser.error(f"{name} must use a 15-minute boundary")
+            parsed_cancel_times.append(parsed_time.hour * 60 + parsed_time.minute)
+        if parsed_cancel_times[1] <= parsed_cancel_times[0]:
+            parser.error("--cancel-end must be after --cancel-start")
+
     maintenance_modes = sum(
         bool(value)
         for value in (
@@ -10446,14 +11011,36 @@ def _validate_cli_args(parser, args):
             "--setup-login, --configure-autonomous-login, and --login-only "
             "are mutually exclusive"
         )
+    if cancellation_requested and maintenance_modes:
+        parser.error("exact cancellation cannot be combined with a maintenance mode")
 
     isolated_modes = sum(
         bool(value)
-        for value in (args.horizon_only, args.extensions_only, args.plan_only)
+        for value in (
+            args.horizon_only,
+            args.extensions_only,
+            args.plan_only,
+            cancellation_requested,
+        )
     )
     if isolated_modes > 1:
         parser.error(
-            "--horizon-only, --extensions-only, and --plan-only are mutually exclusive"
+            "--horizon-only, --extensions-only, --plan-only, and exact "
+            "cancellation are mutually exclusive"
+        )
+
+    if cancellation_requested and (
+        args.check_only
+        or args.target_time
+        or args.scheduled
+        or args.only_date
+        or args.only_room
+        or args.max_actions is not None
+        or args.max_action_minutes is not None
+    ):
+        parser.error(
+            "exact cancellation is isolated and cannot be combined with check, "
+            "scheduling, target timing, or booking mutation limits"
         )
 
     if args.target_time:
