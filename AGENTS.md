@@ -1085,6 +1085,16 @@ python -m unittest discover -s tests
   conflicting virtualized clones, complete-event cancellation proof, one-click
   retry behavior, and pending-receipt preservation. The complete offline suite
   passes 648 tests.
+- Live receipt reconciliation proved the interrupted first cancellation was
+  applied remotely and preserved the untouched later batch target; no retrying
+  cancellation click was issued. A fresh `--headless --check-only` run then
+  passed authentication, the complete agenda, all 8 live-window dates, 31 room
+  rows per date, and 220 visible gaps with no pending receipts.
+- The latest ordinary scheduled run passed the repaired agenda/reconciliation
+  gate but later failed closed when a horizon refresh reset a day-7 overview to
+  today's date. The subsequent complete read-only traversal passed; treat that
+  separate planning-navigation reset as follow-up if it recurs, not as evidence
+  of another cancellation or receipt failure.
 
 ## Maintenance Notes
 
