@@ -1111,8 +1111,9 @@ python -m unittest discover -s tests
   The complete offline suite passes 650 tests.
 - A live 15:58 scheduled run crossed the former 16:00 failure point: after the
   canonical reload it re-walked seven verified dates, proved the day-7 complete
-  grid, and entered normal day-7 availability scanning. No cancellation command
-  was repeated during this verification.
+  grid, completed the ordinary plan-driven scan, made two receipt-verified
+  bookings, and exited 0. No cancellation command was repeated during this
+  verification.
 
 ## Maintenance Notes
 
