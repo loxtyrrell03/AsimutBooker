@@ -71,6 +71,8 @@ from room_preferences import (
     summarize_room_preferences,
 )
 from runtime_guard import SingleInstanceLock
+from assistant_runtime import AssistantRuntime
+from assistant_ui import AssistantEvent, AssistantPanel
 
 # Constants
 APP_DIR = Path(__file__).resolve().parent
@@ -1361,12 +1363,93 @@ class AsimutBookerGUI:
         self._health_refresh_after_id = None
         self._calendar_scan_generation = 0
         self._room_scan_generation = 0
+        self.assistant_runtime = None
+        self.assistant_panel = None
+        self._closing = False
 
         # Create UI
         self.create_menu()
         self.create_main_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self._close_application)
+        self._initialize_assistant()
         self._apply_settings_availability_state()
         self.refresh_status()
+
+    def _initialize_assistant(self):
+        """Start the isolated Codex bridge without blocking Tk's main thread."""
+
+        panel = self.assistant_panel
+        if panel is None:
+            return
+        try:
+            runtime = AssistantRuntime(panel.post_event)
+            self.assistant_runtime = runtime
+            for index, message in enumerate(runtime.restored_messages()):
+                event_kind = (
+                    "user_message" if message["role"] == "user" else "assistant_message"
+                )
+                panel.apply_event(
+                    AssistantEvent(
+                        event_kind,
+                        text=message["text"],
+                        event_id=f"restored-{index}",
+                        replace=True,
+                    )
+                )
+            runtime.start()
+        except Exception as exc:
+            self.assistant_runtime = None
+            panel.apply_event(
+                AssistantEvent(
+                    "connection",
+                    text="Codex unavailable",
+                    status="failed",
+                )
+            )
+            panel.apply_event(
+                AssistantEvent(
+                    "error",
+                    title="Asimut Assistant could not start",
+                    text=str(exc),
+                )
+            )
+
+    def _send_assistant_message(self, prompt):
+        runtime = self.assistant_runtime
+        return False if runtime is None else runtime.send(prompt)
+
+    def _stop_assistant(self):
+        runtime = self.assistant_runtime
+        return False if runtime is None else runtime.stop()
+
+    def _new_assistant_chat(self):
+        runtime = self.assistant_runtime
+        return False if runtime is None else runtime.new_chat()
+
+    def _close_application(self):
+        """Stop the owned assistant process and then close the control panel."""
+
+        if self._closing:
+            return
+        self._closing = True
+        if self.assistant_panel is not None:
+            try:
+                self.assistant_panel.close()
+            except Exception:
+                # A presentation-layer teardown failure must not strand the
+                # owned Codex process or prevent the application from closing.
+                pass
+        if self.assistant_runtime is not None:
+            try:
+                self.assistant_runtime.close()
+            except Exception:
+                # Runtime shutdown is best-effort here; root destruction still
+                # has to complete even if the helper has already failed.
+                pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _configure_visual_system(self):
         """Apply one readable visual language across the app and its dialogs."""
@@ -1658,7 +1741,7 @@ class AsimutBookerGUI:
         file_menu.add_command(label="Open Config", command=self.open_config)
         file_menu.add_command(label="Open Logs Folder", command=self.open_logs_folder)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
+        file_menu.add_command(label="Exit", command=self._close_application)
 
         # Tools menu
         tools_menu = tk.Menu(menubar, tearoff=0)
@@ -1694,6 +1777,11 @@ class AsimutBookerGUI:
 
         self.main_notebook = ttk.Notebook(main_frame, style="Navigation.TNotebook")
         self.main_notebook.pack(fill=tk.BOTH, expand=True)
+        assistant_tab = ttk.Frame(
+            self.main_notebook,
+            style="Page.TFrame",
+            padding=(2, 2, 2, 2),
+        )
         overview_tab = ttk.Frame(
             self.main_notebook,
             style="Page.TFrame",
@@ -1710,9 +1798,40 @@ class AsimutBookerGUI:
             padding=(2, 2, 2, 2),
         )
         self.activity_tab = activity_tab
+        self.main_notebook.add(assistant_tab, text="Assistant")
         self.main_notebook.add(overview_tab, text="Overview")
         self.main_notebook.add(preferences_page, text="Preferences")
         self.main_notebook.add(activity_tab, text="Activity")
+
+        self.assistant_panel = AssistantPanel(
+            assistant_tab,
+            on_send=self._send_assistant_message,
+            on_stop=self._stop_assistant,
+            on_new_chat=self._new_assistant_chat,
+            palette={
+                "page": UI_COLORS["page"],
+                "surface": UI_COLORS["surface"],
+                "surface_muted": UI_COLORS["surface_muted"],
+                "text": UI_COLORS["text"],
+                "secondary_text": UI_COLORS["secondary_text"],
+                "tertiary_text": UI_COLORS["tertiary_text"],
+                "border": UI_COLORS["border"],
+                "accent": UI_COLORS["accent"],
+                "accent_hover": UI_COLORS["accent_hover"],
+                "accent_pressed": UI_COLORS["accent_pressed"],
+                "selection": UI_COLORS["selection"],
+                "danger": UI_COLORS["danger"],
+            },
+            font_family=self.ui_font_family,
+            display_font_family=self.ui_display_font_family,
+            starter_prompts=(
+                "What bookings and events do I have tomorrow?",
+                "Explain why the next planned booking is waiting.",
+                "Help me make a future practice plan with more time on weekends.",
+                "Is the automatic booker healthy?",
+            ),
+        )
+        self.assistant_panel.pack(fill=tk.BOTH, expand=True)
 
         # Preferences use a quiet, vertically grouped settings layout. Scrolling
         # keeps the generous type and spacing usable on smaller displays.

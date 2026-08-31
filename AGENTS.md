@@ -30,6 +30,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
+- **In-App Assistant**: ChatGPT-style Codex chat pinned to `gpt-5.6-terra` with medium reasoning, sanitized Booker context, visible concise reasoning summaries, and typed application actions
 - **Health Dashboard**: Shows the last successful run, next scheduled run, saved-session evidence, auth cooldown, pending mutations, and physical wake-test evidence
 - **Practice Plan**: Set a default daily target from 0.5-12 hours, override individual dates, or turn dates off across Asimut's current live booking window
 - **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
@@ -67,6 +68,12 @@ AsimutBooker/
 ├── book_week.py          # Main booking script (entry point)
 ├── asimut_auth.py        # Deterministic Credential Manager + SMS sign-in recovery
 ├── gui.py                # Desktop control panel GUI
+├── assistant_ui.py       # Thread-safe ChatGPT-style Tk assistant surface
+├── assistant_runtime.py  # Conversation state and typed-tool orchestration
+├── codex_chat.py         # Long-lived Codex App Server stdio bridge
+├── assistant_context.py  # Sanitized validated Booker context
+├── assistant_tools.py    # Allow-listed read and mutation operations
+├── assistant_plans.py    # Exact dated future-intention persistence
 ├── app_settings.py       # Locked, atomic shared JSON persistence
 ├── event_identity.py     # Collision-safe shared agenda-event identity
 ├── practice_plan.py      # Strict daily-target schema and budget helpers
@@ -96,6 +103,7 @@ AsimutBooker/
 │   ├── room_catalog.json # Display-only live catalog cache (gitignored)
 │   ├── booking_plan.json # Display-only daily plan cache (gitignored)
 │   ├── agenda_snapshot.json # Display-only complete agenda cache (gitignored)
+│   ├── assistant_state.json # Local bounded chat transcript/thread pointer (gitignored)
 │   ├── physical_wake_test.json # Optional dedicated wake-test evidence (gitignored)
 │   └── mutation_receipts.json  # Runtime reconciliation journal (gitignored)
 ├── logs/                 # Booking logs
@@ -120,6 +128,8 @@ pythonw gui.py
 ```
 
 The GUI provides:
+- A first-tab conversational assistant for questions, status, preferences, future practice intentions, bounded booking, and exact reservation cancellation
+- Streaming answers, concise reasoning summaries, live tool progress, Stop/New chat controls, and a locally restored bounded transcript
 - A six-card health dashboard with independently sourced status and detail
 - Run booker manually (visible or headless)
 - View booking history
@@ -344,6 +354,12 @@ python -m unittest discover -s tests
 | `book_week.py` | Main booking script - scans agenda, navigates calendar, books slots |
 | `asimut_auth.py` | Deterministic Windows credential, Microsoft SSO, and SMS-bridge recovery |
 | `gui.py` | Tkinter GUI for monitoring and control |
+| `assistant_ui.py` | Responsive, thread-safe assistant transcript, progress cards, and composer |
+| `assistant_runtime.py` | Persistent Codex conversation host and typed Booker-tool adapter |
+| `codex_chat.py` | Exact-model Codex App Server protocol bridge and event stream |
+| `assistant_context.py` | Strict sanitized context from app, settings, agenda, plan, rooms, health, receipts, and history |
+| `assistant_tools.py` | Allow-listed question, refresh, preference, plan, booking, and cancellation tools |
+| `assistant_plans.py` | Complete-range dated practice-target validation and persistence |
 | `app_settings.py` | Strict, locked, atomic settings/history storage primitives |
 | `event_identity.py` | Deterministic v2 ignored-event identity and legacy-key resolution |
 | `practice_plan.py` | Daily-target validation and booking-budget helpers |
@@ -368,6 +384,7 @@ python -m unittest discover -s tests
 | `data/room_catalog.json` | Gitignored display-only cache of the last complete live room observation |
 | `data/booking_plan.json` | Gitignored expiring display-only plan; never booking authority |
 | `data/agenda_snapshot.json` | Gitignored display-only existing bookings/classes from the latest complete agenda scan |
+| `data/assistant_state.json` | Gitignored bounded local assistant transcript and Codex thread pointer |
 | `data/physical_wake_test.json` | Gitignored optional evidence from a dedicated physical wake test |
 | `data/mutation_receipts.json` | Gitignored crash-recovery journal for remote mutations |
 
@@ -445,6 +462,22 @@ python -m unittest discover -s tests
   validation, traverses the live date window, and replaces only the display
   snapshot. It never creates, edits, or deletes an Asimut event and cannot be
   combined with scheduling, target timing, or mutation limits.
+- The in-app assistant uses a long-lived hidden `codex app-server --stdio`
+  process and fails closed unless the server confirms exact model
+  `gpt-5.6-terra`, medium reasoning, no approvals, and a read-only/no-network
+  sandbox. Shell, filesystem, browser, web-search, and subagent tools are not
+  exposed; every state change must pass one typed Booker operation tied to an
+  exact contiguous quote from the active user message.
+- Assistant context explicitly allow-lists sanitized settings, agenda, plan,
+  room, health, receipt, and history fields. Credentials, cookies, browser
+  storage, OTPs, bridge tokens, participant arrays, and arbitrary files are not
+  read. Schedule and site text is untrusted data, never instructions.
+- Future intentions become complete exact dated targets for every day in a
+  1-92-day range, which the ordinary scheduled Booker then pursues subject to
+  live availability and all existing quotas and safeguards. Materially vague
+  quantities require one conversational clarification. The assistant's direct
+  Booker invocation is limited to one plan-selected action; it cannot promise
+  an exact start time unless preferences deliberately constrain the planner.
 
 ## 2026-08-30 GUI Restart-Loop and Single-Instance Milestone
 
@@ -855,6 +888,51 @@ python -m unittest discover -s tests
   116 tests. The cancellation DOM contract has offline coverage but has not
   been exercised against an authenticated live reservation; current Asimut
   label or markup drift therefore stops safely or leaves reconciliation pending.
+
+## 2026-08-31 Terra In-App Assistant Milestone
+
+- The control panel now opens on an Assistant tab with a centered responsive
+  conversation, starter prompts, Enter/Shift+Enter behavior, persistent local
+  history, streaming responses, collapsible concise reasoning/activity cards,
+  live tool progress, and Stop/New chat controls. Raw model reasoning is never
+  rendered, and GUI shutdown stops the owned App Server process.
+- A long-lived Codex App Server bridge is pinned to `gpt-5.6-terra` at medium
+  reasoning with no fallback. It validates that exact configuration on new and
+  resumed threads, disables shell, filesystem, web, network, approval, and
+  multi-agent routes, rejects stale cross-turn tool calls, and keeps delayed
+  workers cancelled after Stop.
+- The assistant can explain the app and read sanitized current preferences,
+  complete agenda, booking plan, live room cache, health, receipts, and recent
+  history. Its only actions are typed read-only refreshes, exact preference
+  patches, complete dated future practice plans, one plan-selected Booker
+  action, and positive-ID exact-tuple reservation cancellation. Every mutation
+  requires a verbatim authorization quote from the current user message;
+  negated, quoted, descriptive, informational, or ambiguous requests do not
+  authorize a change.
+- High-level plans are persisted as both an explainable intention and ordinary
+  per-date practice-plan targets, so scheduled automation pursues them when the
+  dates enter Asimut's live window. Each 1-92-day range must contain every date
+  exactly once with a numeric 0 or 0.5-12-hour target; overlapping revisions
+  must replace the complete prior range so they cannot leave orphan targets.
+- The complete offline regression suite passes 573 tests, static compilation
+  and diff checks pass, and a withdrawn real-Tk render smoke passes. The actual
+  Terra-medium bridge passed 6/6 synthetic, production-effect-blocked scenarios:
+  schedule Q&A, exact cancellation, ambiguous cancellation, explicit dated week
+  planning, vague weekend clarification, and prompt-injection/reconfirmation
+  refusal. No live booking, cancellation, settings change, or Asimut request was
+  made by those evaluations; authenticated cancellation markup remains limited
+  to the separately documented offline contract.
+- New chat and turn start share one serialized transition, so an immediate Send
+  cannot target the previous thread; Stop also waits for an in-flight turn ID.
+  Shutdown escalates from bounded graceful cleanup to an owned-process kill,
+  preventing a stalled App Server child from surviving GUI exit. Obvious
+  password, credential, passcode, OTP, and verification-code pastes are rejected
+  before they reach Codex or the visible/local transcript.
+- Assistant mutation authorization rejects leading negation, informational and
+  example text, quoted instructions, and terminal withdrawals such as “actually,
+  don't” or “never mind.” A duration-capped direct Booker run additionally
+  requires both an exact date and room. `tzdata` is an explicit dependency so
+  Europe/London resolution also works on clean Windows Python installations.
 
 ## Maintenance Notes
 

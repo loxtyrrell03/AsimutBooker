@@ -41,6 +41,9 @@ data/booking_plan.json.bak
 data/agenda_snapshot.json
 data/agenda_snapshot.json.lock
 data/agenda_snapshot.json.bak
+data/assistant_state.json
+data/assistant_state.json.lock
+data/assistant_state.json.bak
 
 # IDE
 .vscode/
