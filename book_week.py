@@ -5111,10 +5111,31 @@ def open_practice_room_overview(page, expected_date, *, attempts=2):
     ) from last_error
 
 
-def refresh_practice_room_overview(page, expected_date):
-    """Reload the fresh-catalog overview and verify its full grid before use."""
+def refresh_practice_room_overview(page, expected_date, *, base_date=None):
+    """Reload the overview, then restore and prove its selected calendar date.
+
+    Asimut keeps the selected overview day only in SPA state. Reloading the
+    otherwise canonical overview URL therefore returns to today, even when the
+    caller was viewing a later date. Treat today as the only trusted post-
+    reload position, prove that complete grid first, then walk back to the
+    requested live-window offset through the ordinary verified navigator.
+    """
+
+    expected_date = as_date(expected_date)
+    today = as_date(base_date) if base_date is not None else datetime.now().date()
+    days_ahead = (expected_date - today).days
+    if days_ahead < 0:
+        raise RuntimeError(
+            "Cannot restore a practice-room overview date before the run's "
+            f"base date ({expected_date} before {today})"
+        )
 
     safe_reload(page)
+    today_snapshot = wait_for_practice_room_grid(page, today)
+    if days_ahead == 0:
+        return today_snapshot
+
+    navigate_to_day(page, days_ahead, 0, base_date=today)
     return wait_for_practice_room_grid(page, expected_date)
 
 
@@ -9904,6 +9925,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             refresh_practice_room_overview(
                 page,
                 today + timedelta(days=current_calendar_day),
+                base_date=today,
             )
 
             post_refresh_time = datetime.now()

@@ -543,11 +543,48 @@ class OverviewRendererTests(unittest.TestCase):
         self.assertEqual(goto.call_count, 2)
         self.assertEqual(wait_grid.call_count, 2)
 
-    def test_overview_refresh_reloads_then_waits_for_verified_grid(self):
+    def test_overview_refresh_reloads_today_then_restores_future_date(self):
         page = object()
-        expected_date = datetime.now().date()
-        recovered = self.svg_snapshot()
+        today = datetime.now().date()
+        expected_date = today + timedelta(days=7)
+        today_snapshot = self.svg_snapshot()
+        recovered = copy.deepcopy(today_snapshot)
+        recovered["rooms"][0]["blockedRanges"][1]["startHour"] = 10.0
         call_order = mock.Mock()
+        with (
+            mock.patch.object(book_week, "safe_reload") as reload_page,
+            mock.patch.object(
+                book_week,
+                "wait_for_practice_room_grid",
+                side_effect=[today_snapshot, recovered],
+            ) as wait_grid,
+            mock.patch.object(book_week, "navigate_to_day", return_value=7) as navigate,
+        ):
+            call_order.attach_mock(reload_page, "reload")
+            call_order.attach_mock(wait_grid, "wait")
+            call_order.attach_mock(navigate, "navigate")
+
+            result = book_week.refresh_practice_room_overview(
+                page,
+                expected_date,
+                base_date=today,
+            )
+
+        self.assertEqual(result, recovered)
+        self.assertEqual(
+            call_order.mock_calls,
+            [
+                mock.call.reload(page),
+                mock.call.wait(page, today),
+                mock.call.navigate(page, 7, 0, base_date=today),
+                mock.call.wait(page, expected_date),
+            ],
+        )
+
+    def test_overview_refresh_today_needs_no_calendar_navigation(self):
+        page = object()
+        today = datetime.now().date()
+        recovered = self.svg_snapshot()
         with (
             mock.patch.object(book_week, "safe_reload") as reload_page,
             mock.patch.object(
@@ -555,17 +592,33 @@ class OverviewRendererTests(unittest.TestCase):
                 "wait_for_practice_room_grid",
                 return_value=recovered,
             ) as wait_grid,
+            mock.patch.object(book_week, "navigate_to_day") as navigate,
         ):
-            call_order.attach_mock(reload_page, "reload")
-            call_order.attach_mock(wait_grid, "wait")
-
-            result = book_week.refresh_practice_room_overview(page, expected_date)
+            result = book_week.refresh_practice_room_overview(
+                page,
+                today,
+                base_date=today,
+            )
 
         self.assertEqual(result, recovered)
-        self.assertEqual(
-            call_order.mock_calls,
-            [mock.call.reload(page), mock.call.wait(page, expected_date)],
-        )
+        reload_page.assert_called_once_with(page)
+        wait_grid.assert_called_once_with(page, today)
+        navigate.assert_not_called()
+
+    def test_overview_refresh_rejects_past_date_before_reload(self):
+        page = object()
+        today = datetime.now().date()
+        with (
+            mock.patch.object(book_week, "safe_reload") as reload_page,
+            self.assertRaisesRegex(RuntimeError, "before the run's base date"),
+        ):
+            book_week.refresh_practice_room_overview(
+                page,
+                today - timedelta(days=1),
+                base_date=today,
+            )
+
+        reload_page.assert_not_called()
 
     def test_delayed_booking_menu_and_aria_labelled_form_are_supported(self):
         option = mock.MagicMock()

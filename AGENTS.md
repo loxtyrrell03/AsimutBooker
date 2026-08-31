@@ -1090,11 +1090,29 @@ python -m unittest discover -s tests
   cancellation click was issued. A fresh `--headless --check-only` run then
   passed authentication, the complete agenda, all 8 live-window dates, 31 room
   rows per date, and 220 visible gaps with no pending receipts.
-- The latest ordinary scheduled run passed the repaired agenda/reconciliation
-  gate but later failed closed when a horizon refresh reset a day-7 overview to
-  today's date. The subsequent complete read-only traversal passed; treat that
-  separate planning-navigation reset as follow-up if it recurs, not as evidence
-  of another cancellation or receipt failure.
+- The ordinary scheduled run passed the repaired agenda/reconciliation gate but
+  then exposed a separate pre-existing overview refresh bug: Asimut reset the
+  SPA-only selected day from day 7 to today while the runtime still expected day
+  7. This was not another cancellation or receipt failure.
+
+## 2026-08-31 Overview Refresh Date Restoration Milestone
+
+- A normal-booking refresh now treats today's complete room grid as the only
+  trusted state after reloading Asimut's canonical overview URL. If the run was
+  viewing a later live-window day, it restores that exact offset through the
+  existing verified calendar navigator and proves the requested complete grid
+  again before availability can be read or any mutation can proceed.
+- The target-time path passes its frozen run date explicitly, preventing a
+  midnight rollover from changing offset interpretation. Past-date restoration
+  is rejected before reload; every navigation step retains the existing exact
+  date, complete-room-inventory, and authenticated-session checks.
+- Regression coverage proves exact reload/today/restoration/final-proof ordering
+  for day 7, the no-navigation path for today, and fail-closed past-date handling.
+  The complete offline suite passes 650 tests.
+- A live 15:58 scheduled run crossed the former 16:00 failure point: after the
+  canonical reload it re-walked seven verified dates, proved the day-7 complete
+  grid, and entered normal day-7 availability scanning. No cancellation command
+  was repeated during this verification.
 
 ## Maintenance Notes
 
