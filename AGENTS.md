@@ -1042,7 +1042,9 @@ python -m unittest discover -s tests
   `appgprj_6a95803dab688191a40ab5e49eaedb21`. Cloud-hosted builds intentionally
   render only the `RemoteGate` launcher into the private Tailscale origin; they
   never receive a tunnel binding or direct access to Booker state, assistant
-  messages, schedules, or mutations.
+  messages, schedules, or mutations. Clean pnpm installs explicitly allow build
+  scripts only for the pinned esbuild, Sharp, and workerd dependencies required
+  by the Vite/Vinext/Cloudflare toolchain.
 - A fresh live phone session confirmed `GPT-5.6 Terra · medium`, ready Booker
   context, zero unresolved request reservations, and 3/3 harmless assistant turns
   through the actual HTTPS/SSE boundary. It answered tomorrow's reservations,
