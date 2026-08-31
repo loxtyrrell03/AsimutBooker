@@ -1138,6 +1138,19 @@ python -m unittest discover -s tests
 - The complete Python suite passes 656 tests. The focused assistant/context/tool
   suite passes 49 tests, the phone state/copy suite passes 7 tests, lint passes,
   and both the static PWA and Sites production builds complete successfully.
+- Commit `f270dd2e2656` is installed in the private phone task; the deployment
+  verifier proves its exact task, fresh loopback process, static build version,
+  security boundary, and tailnet-only route. A harmless turn through the existing
+  durable Terra-medium chat correctly overrode its stale history, reported zero
+  pending receipts, and stated that manual day-of reconfirmation never blocks
+  cancellation or editing. It made no Booker mutation, left zero unresolved
+  phone requests, and the file-backed journal independently reported no pending
+  receipt.
+- Sites version 2 was saved from standalone phone-source commit
+  `be34952daaff70c12201f08c332dbd065b62907a` and successfully deployed to the
+  existing owner-only launcher. The sole-owner custom access policy remains the
+  deployment authority; the launcher still has no Booker tunnel or mutation
+  access and only directs the user to the functional private Tailnet PWA.
 
 ## Maintenance Notes
 
