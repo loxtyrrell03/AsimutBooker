@@ -1178,6 +1178,15 @@ python -m unittest discover -s tests
 - The complete Python suite passes 660 tests. The phone state/UI suite passes 13
   tests, the focused assistant/runtime/UI/API suite passes 77 tests, lint passes,
   both production builds complete, and the offline phone-build verifier passes.
+- Commit `d4bad2e54490` is installed in the private phone task. The deployment
+  verifier proves the exact scheduled task, fresh loopback process, synchronized
+  PWA assets, anonymous API rejection, and tailnet-only HTTPS route. A live
+  read-only Terra-medium turn produced exactly one persisted final answer, no
+  commentary transcript entry, zero unresolved phone requests, and no mutation.
+- Sites version 3 was saved from pushed standalone phone-source commit
+  `33f60a9cc2a9a2124990899ad17967be03a527d7` and deployed successfully to the
+  existing launcher. Its custom access policy still contains only the owner and
+  no groups; it remains a launcher without Booker tunnel or mutation access.
 
 ## Maintenance Notes
 
