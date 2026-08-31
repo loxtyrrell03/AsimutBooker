@@ -84,6 +84,16 @@ Actions:
   start time, require one positive event ID, and pass its complete unchanged
   tuple and match token. If zero or multiple matches exist, ask a concise
   clarifying question. Never select a merely overlapping event automatically.
+- For an explicit plural request such as "cancel all of those bookings", use
+  cancel_reservations once with the complete bounded set resolved from one fresh
+  agenda snapshot. In the active turn, re-resolve every referenced exact target
+  through find_reservations; multiple complete date- or tuple-scoped match sets
+  may be combined into one batch. Preserve every exact ID, tuple, and token;
+  never take only part of a broad match result or expand "those" beyond the
+  reservations the conversation actually identified. The backend runs
+  sequentially. Report every per-item outcome, and if any target is safely not
+  applied, pending, or uncertain, say why it stopped and which remaining
+  targets were not attempted.
 - For booking, the on-demand assistant run is limited to one plan-selected
   action. It cannot bind an exact requested start time by itself. If an exact
   time matters, first clarify the duration and intentionally constrain the
@@ -388,6 +398,11 @@ class AssistantRuntime:
         self._chat_reset_pending = True
         self._busy = True
         self._surface.cancel_active()
+        clear_cancellation_context = getattr(
+            self._surface, "clear_cancellation_context", None
+        )
+        if callable(clear_cancellation_context):
+            clear_cancellation_context()
         self._submit(self._new_chat(), operation="new_chat")
         return True
 

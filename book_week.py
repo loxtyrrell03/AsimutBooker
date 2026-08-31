@@ -2750,40 +2750,110 @@ def _unique_visible_control(parent, selectors, label):
     raise BookingCancellationError(f"No exact visible {label} control was found")
 
 
-def _cancel_menu_option(page):
-    """Return one explicit booking-cancellation menu item, never generic delete."""
+_CANCELLATION_ACTION_LABELS = frozenset(
+    {
+        "cancel booking",
+        "cancel reservation",
+        "cancel event",
+    }
+)
 
+
+def _normalized_control_label(value):
+    """Normalize one visible or accessible control label for exact comparison."""
+
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _cancellation_control_semantics(option):
+    """Return the exact visible label and Material icons for one menu control."""
+
+    raw_text = str(option.inner_text() or "").strip()
+    icon_labels = []
+    icons = option.locator("mat-icon")
+    for index in range(icons.count()):
+        icon_labels.append(
+            _normalized_control_label(icons.nth(index).text_content())
+        )
+
+    visible_label = _normalized_control_label(raw_text)
+    if len(icon_labels) == 1 and icon_labels[0]:
+        # Material ligature text participates in innerText. Remove it only when
+        # it is the exact leading child text; this handles both `cancel Cancel`
+        # and renderer output without an inserted whitespace boundary.
+        icon_text = str(icons.first.text_content() or "").strip()
+        if raw_text.casefold().startswith(icon_text.casefold()):
+            visible_label = _normalized_control_label(raw_text[len(icon_text) :])
+
+    accessible_labels = set()
+    if not visible_label:
+        for attribute in ("aria-label", "title"):
+            accessible_labels.add(
+                _normalized_control_label(option.get_attribute(attribute))
+            )
+        accessible_labels.discard("")
+    return visible_label, tuple(icon_labels), accessible_labels
+
+
+def _cancel_menu_option(page):
+    """Return one explicit Asimut cancellation action, never generic Cancel/Delete."""
+
+    # The event-options popup is a CDK overlay. Scope every candidate to exactly
+    # one visible overlay so unrelated page/dialog controls cannot authorize a
+    # cancellation. Multiple overlays are ambiguous and therefore fail closed.
+    overlays = page.locator(".cdk-overlay-pane:visible")
+    if overlays.count() != 1:
+        raise BookingCancellationError(
+            f"Expected one visible event-options overlay; found {overlays.count()}"
+        )
+    options = overlays.first.locator(
+        "[role='menuitem'], button[mat-menu-item], mat-list-item, "
+        ".mat-menu-item, .mat-mdc-menu-item"
+    )
     candidates = []
-    for selector in (
-        "mat-list-item:has(mat-icon:has-text('cancel'))",
-        "[role='menuitem']:has-text('Cancel booking')",
-        "[role='menuitem']:has-text('Cancel reservation')",
-        "button:has-text('Cancel booking')",
-        "button:has-text('Cancel reservation')",
-    ):
-        locator = page.locator(selector)
-        for index in range(locator.count()):
-            option = locator.nth(index)
-            if not option.is_visible():
-                continue
-            text = " ".join((option.inner_text() or "").split()).casefold()
-            if "cancel booking" not in text and "cancel reservation" not in text:
-                continue
-            candidates.append(option)
-        if candidates:
-            break
+    for index in range(options.count()):
+        option = options.nth(index)
+        if not option.is_visible():
+            continue
+        visible_label, icon_labels, accessible_labels = (
+            _cancellation_control_semantics(option)
+        )
+        explicit_label = (
+            visible_label in _CANCELLATION_ACTION_LABELS
+            or bool(accessible_labels & _CANCELLATION_ACTION_LABELS)
+        )
+        # Current Asimut renders the action as exactly:
+        #   <mat-list-item><mat-icon>cancel</mat-icon>Cancel</mat-list-item>
+        # Generic "Cancel" is accepted only with that one exact icon, element
+        # type, and overlay scope. It is never accepted by text alone.
+        try:
+            tag_name = str(
+                option.evaluate("element => element.tagName.toLowerCase()")
+            ).casefold()
+        except Exception as exc:
+            raise BookingCancellationError(
+                f"The cancellation menu item type could not be proven: {exc}"
+            ) from exc
+        native_cancel = (
+            tag_name == "mat-list-item"
+            and visible_label == "cancel"
+            and icon_labels == ("cancel",)
+        )
+        if not explicit_label and not native_cancel:
+            continue
+        candidates.append(option)
     if len(candidates) != 1:
         raise BookingCancellationError(
-            f"Expected one explicit Cancel booking menu item; found {len(candidates)}"
+            f"Expected one explicit cancellation menu item; found {len(candidates)}"
         )
     try:
         if not candidates[0].is_enabled():
-            raise BookingCancellationError("The Cancel booking menu item is disabled")
+            raise BookingCancellationError("The cancellation menu item is disabled")
     except BookingCancellationError:
         raise
     except Exception as exc:
         raise BookingCancellationError(
-            f"The Cancel booking menu item state could not be proven: {exc}"
+            f"The cancellation menu item state could not be proven: {exc}"
         ) from exc
     return candidates[0]
 
@@ -2811,6 +2881,7 @@ def _optional_cancel_confirmation(page):
         "yes, cancel booking",
         "cancel booking",
         "cancel reservation",
+        "cancel event",
         "delete booking",
     }
     buttons = dialog.locator("button")

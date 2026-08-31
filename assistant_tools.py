@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
@@ -41,6 +41,8 @@ APP_DIR = Path(__file__).resolve().parent
 DEFAULT_PYTHON = APP_DIR / ".venv" / "Scripts" / "python.exe"
 BOOKER_SCRIPT = APP_DIR / "book_week.py"
 ProgressCallback = Callable[[str, str], None]
+MAX_BULK_CANCELLATIONS = 12
+BULK_CANCELLATION_TIMEOUT_SECONDS = 20 * 60
 
 _SECRET_LINE = re.compile(
     r"(?i)(password|passcode|one[- ]?time|\botp\b|authorization:|cookie|credential|sms code|bridge token)"
@@ -105,23 +107,29 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
         "pattern": r"^(?:[01]\d|2[0-3]):(?:00|15|30|45)$",
         "description": "Canonical 24-hour clock time on a 15-minute boundary.",
     }
-    candidate = _object_schema(
-        {
-            "event_id": {"type": "integer", "minimum": 1},
-            "date": canonical_date,
-            "start_time": clock,
-            "end_time": clock,
-            "room": {"type": "string", "minLength": 1, "maxLength": 120},
-            "match_token": {"type": "string", "minLength": 20},
-            "request_quote": quote,
+    exact_reservation_properties = {
+        "event_id": {"type": "integer", "minimum": 1},
+        "date": canonical_date,
+        "start_time": clock,
+        "end_time": clock,
+        "room": {"type": "string", "minLength": 1, "maxLength": 120},
+        "match_token": {
+            "type": "string",
+            "pattern": r"^sha256:[0-9a-f]{64}$",
         },
+    }
+    exact_reservation_required = (
+        "event_id",
+        "date",
+        "start_time",
+        "end_time",
+        "room",
+        "match_token",
+    )
+    candidate = _object_schema(
+        {**exact_reservation_properties, "request_quote": quote},
         required=(
-            "event_id",
-            "date",
-            "start_time",
-            "end_time",
-            "room",
-            "match_token",
+            *exact_reservation_required,
             "request_quote",
         ),
     )
@@ -443,6 +451,33 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             ),
             "inputSchema": candidate,
         },
+        {
+            "type": "function",
+            "name": "cancel_reservations",
+            "description": (
+                "Cancel a bounded explicit set of exact existing reservations. Resolve every "
+                "target from one fresh agenda snapshot first and preserve each positive event "
+                "ID, date, start, end, room, and match token unchanged. The backend executes "
+                "them sequentially and stops immediately after any non-success outcome, "
+                "returning per-item outcomes plus targets that were not attempted. Never include "
+                "overlapping or inferred events."
+            ),
+            "inputSchema": _object_schema(
+                {
+                    "request_quote": quote,
+                    "reservations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_BULK_CANCELLATIONS,
+                        "items": _object_schema(
+                            exact_reservation_properties,
+                            required=exact_reservation_required,
+                        ),
+                    },
+                },
+                required=("request_quote", "reservations"),
+            ),
+        },
     ]
 
 
@@ -689,6 +724,12 @@ class BookerToolSurface:
         self._cancelled_generations: set[int] = set()
         self._active_cancel_events: dict[int, set[threading.Event]] = {}
         self._dispatch_generation = threading.local()
+        self._selection_lock = threading.Lock()
+        self._issued_cancellation_targets: dict[
+            str, tuple[int, tuple[Any, ...]]
+        ] = {}
+        self._issued_cancellation_batches: list[tuple[int, frozenset[str]]] = []
+        self._claimed_cancellation_generations: set[int] = set()
 
     @property
     def tool_specs(self) -> list[dict[str, Any]]:
@@ -707,6 +748,32 @@ class BookerToolSurface:
 
         with self._cancel_lock:
             self._turn_generation += 1
+            generation = self._turn_generation
+            self._claimed_cancellation_generations = {
+                claimed
+                for claimed in self._claimed_cancellation_generations
+                if claimed >= generation - 1
+            }
+        with self._selection_lock:
+            self._issued_cancellation_targets = {
+                token: issued
+                for token, issued in self._issued_cancellation_targets.items()
+                if issued[0] >= generation
+            }
+            self._issued_cancellation_batches = [
+                issued
+                for issued in self._issued_cancellation_batches
+                if issued[0] >= generation
+            ]
+
+    def clear_cancellation_context(self) -> None:
+        """Forget conversation-bound cancellation selections and operation claims."""
+
+        with self._selection_lock:
+            self._issued_cancellation_targets.clear()
+            self._issued_cancellation_batches.clear()
+        with self._cancel_lock:
+            self._claimed_cancellation_generations.clear()
 
     def dispatch(
         self,
@@ -726,6 +793,7 @@ class BookerToolSurface:
             "update_booker_preferences": self._update_preferences,
             "run_booker": self._run_booker,
             "cancel_reservation": self._cancel_reservation,
+            "cancel_reservations": self._cancel_reservations,
         }
         handler = handlers.get(tool)
         if handler is None:
@@ -884,14 +952,48 @@ class BookerToolSurface:
                 if event.start_time != start
                 and _clock_minutes(event.start_time) < target_minute < _clock_minutes(event.end_time)
             ]
+        match_payloads = [_event_payload(result.snapshot.observed_at, item) for item in exact]
+        self._remember_cancellation_selections(match_payloads)
         return {
             "fresh": True,
             "refresh_required": False,
             "observed_at": result.snapshot.observed_at.isoformat(),
-            "matches": [_event_payload(result.snapshot.observed_at, item) for item in exact],
+            "matches": match_payloads,
             "overlaps": [_event_payload(result.snapshot.observed_at, item) for item in overlaps],
             "match_rule": "exact start time; overlaps are never selected automatically",
         }
+
+    def _remember_cancellation_selections(
+        self, candidates: Sequence[Mapping[str, Any]]
+    ) -> None:
+        stack = getattr(self._dispatch_generation, "stack", ())
+        if not stack:
+            return
+        generation = stack[-1]
+        tokens: set[str] = set()
+        with self._cancel_lock:
+            if generation != self._turn_generation:
+                return
+            with self._selection_lock:
+                for candidate in candidates:
+                    token = candidate.get("match_token")
+                    if not isinstance(token, str):
+                        continue
+                    tokens.add(token)
+                    self._issued_cancellation_targets[token] = (
+                        generation,
+                        (
+                            candidate.get("event_id"),
+                            candidate.get("date"),
+                            candidate.get("start_time"),
+                            candidate.get("end_time"),
+                            candidate.get("room"),
+                        ),
+                    )
+                if tokens:
+                    issued_batch = (generation, frozenset(tokens))
+                    if issued_batch not in self._issued_cancellation_batches:
+                        self._issued_cancellation_batches.append(issued_batch)
 
     def _set_future_practice_plan(
         self,
@@ -1238,82 +1340,414 @@ class BookerToolSurface:
             ),
             imperative_pattern=r"\b(?:cancel|remove|delete)\b",
         )
-        required = {
-            "event_id",
-            "date",
-            "start_time",
-            "end_time",
-            "room",
-            "match_token",
-            "request_quote",
-        }
+        required = self._cancellation_target_fields() | {"request_quote"}
         if set(arguments) != required:
             raise AssistantToolError(
                 "cancel_reservation requires the exact event ID, tuple, match token, and request quote"
             )
-        event_id = arguments["event_id"]
-        if type(event_id) is not int or event_id <= 0:
-            raise AssistantToolError("event_id must be a positive integer")
-        expected = {
-            "date": _canonical_date(arguments["date"], "date"),
-            "start_time": _canonical_clock(arguments["start_time"], "start_time"),
-            "end_time": _canonical_clock(arguments["end_time"], "end_time"),
-            "room": arguments["room"],
+        targets, _observed_at = self._validate_cancellation_targets(
+            [{key: arguments[key] for key in self._cancellation_target_fields()}],
+            require_exact_batch=True,
+        )
+        target = targets[0]
+        progress(
+            "Cancelling exact reservation",
+            f"Revalidating event {target['event_id']} in {target['room']} before confirmation",
+        )
+        command = self._run_booker_command(
+            self._cancellation_flags(target),
+            progress=progress,
+            timeout=15 * 60,
+        )
+        return {
+            "cancelled": True,
+            "verified_absent": True,
+            "reservation": target,
+            "command": command,
         }
-        if _clock_minutes(expected["end_time"]) <= _clock_minutes(expected["start_time"]):
-            raise AssistantToolError("Cancellation end_time must be after start_time")
-        if not isinstance(expected["room"], str) or not expected["room"].strip():
-            raise AssistantToolError("room must be a non-empty exact room name")
+
+    def _cancel_reservations(
+        self,
+        arguments: dict[str, Any],
+        *,
+        user_request: str,
+        progress: ProgressCallback,
+    ) -> dict[str, Any]:
+        _authorize_mutation(
+            arguments,
+            user_request,
+            action_pattern=(
+                r"\b(?:cancel(?:s|l?ed|l?ing)?|"
+                r"remov(?:e|es|ed|ing)|delet(?:e|es|ed|ing))\b"
+            ),
+            imperative_pattern=r"\b(?:cancel|remove|delete)\b",
+        )
+        if set(arguments) != {"request_quote", "reservations"}:
+            raise AssistantToolError(
+                "cancel_reservations requires one request quote and an exact reservations list"
+            )
+        raw_targets = arguments["reservations"]
+        if (
+            not isinstance(raw_targets, list)
+            or not 1 <= len(raw_targets) <= MAX_BULK_CANCELLATIONS
+        ):
+            raise AssistantToolError(
+                f"reservations must contain 1-{MAX_BULK_CANCELLATIONS} exact targets"
+            )
+        if not all(isinstance(item, Mapping) for item in raw_targets):
+            raise AssistantToolError("Every bulk cancellation target must be an object")
+
+        # Validate every target and token against one complete fresh snapshot
+        # before the first remote mutation. No partially validated batch starts.
+        targets, trusted_observed_at = self._validate_cancellation_targets(
+            raw_targets,
+            require_exact_batch=True,
+        )
+        outcomes: list[dict[str, Any]] = []
+        deadline = time.monotonic() + BULK_CANCELLATION_TIMEOUT_SECONDS
+        stopped_early = False
+        reconciliation_required = False
+        remaining_targets: list[dict[str, Any]] = []
+        stop_reason: str | None = None
+
+        for index, target in enumerate(targets):
+            remaining_seconds = int(deadline - time.monotonic())
+            if remaining_seconds <= 0:
+                stopped_early = True
+                remaining_targets = targets[index:]
+                stop_reason = (
+                    "The bounded bulk-cancellation deadline elapsed before this target; "
+                    "it and every later target were not attempted."
+                )
+                break
+            progress(
+                f"Cancelling reservation {index + 1} of {len(targets)}",
+                (
+                    f"Revalidating event {target['event_id']} in {target['room']} "
+                    "before confirmation"
+                ),
+            )
+            try:
+                command = self._run_booker_command(
+                    self._cancellation_flags(target),
+                    progress=progress,
+                    timeout=min(15 * 60, remaining_seconds),
+                    allow_nonzero=True,
+                )
+            except AssistantToolCancelled:
+                raise
+            except AssistantToolError as exc:
+                outcomes.append(
+                    {
+                        "reservation": target,
+                        "status": "uncertain_pending",
+                        "verified_absent": False,
+                        "reconciliation_required": True,
+                        "message": str(exc),
+                    }
+                )
+                stopped_early = True
+                reconciliation_required = True
+                remaining_targets = targets[index + 1 :]
+                stop_reason = str(exc)
+                break
+
+            exit_code = command["exit_code"]
+            if exit_code == 0:
+                outcomes.append(
+                    {
+                        "reservation": target,
+                        "status": "verified_cancelled",
+                        "verified_absent": True,
+                        "reconciliation_required": False,
+                        "command": command,
+                    }
+                )
+                if index + 1 < len(targets):
+                    try:
+                        refreshed, trusted_observed_at = (
+                            self._refresh_cancellation_targets_after_success(
+                                targets[index + 1 :],
+                                after=trusted_observed_at,
+                            )
+                        )
+                    except AssistantToolError as exc:
+                        stopped_early = True
+                        remaining_targets = targets[index + 1 :]
+                        stop_reason = str(exc)
+                        break
+                    targets[index + 1 :] = refreshed
+                continue
+            # Exit 7 is the backend's explicit pre-receipt, safely-not-applied
+            # result. It still stops the batch because later targets must not
+            # run after any failed item. Exit 5 and every other nonzero result
+            # are uncertain/pending and require reconciliation.
+            not_applied = exit_code == 7
+            outcomes.append(
+                {
+                    "reservation": target,
+                    "status": (
+                        "not_applied_pre_receipt"
+                        if not_applied
+                        else "uncertain_pending"
+                    ),
+                    "verified_absent": False,
+                    "reconciliation_required": not not_applied,
+                    "command": command,
+                }
+            )
+            stopped_early = True
+            reconciliation_required = not not_applied
+            remaining_targets = targets[index + 1 :]
+            if not_applied:
+                stop_reason = (
+                    "Cancellation command exited 7 before any receipt or destructive click; "
+                    "the target was not applied and no later target was attempted."
+                )
+            else:
+                stop_reason = (
+                    f"Cancellation command exited {exit_code}; its remote outcome is "
+                    "uncertain/pending, so no later target was attempted."
+                )
+            break
+
+        per_target_outcomes = [
+            *outcomes,
+            *(
+                {
+                    "reservation": target,
+                    "status": "not_attempted",
+                    "verified_absent": False,
+                    "reconciliation_required": reconciliation_required,
+                }
+                for target in remaining_targets
+            ),
+        ]
+        return {
+            "requested_count": len(targets),
+            "cancelled_count": sum(
+                item["status"] == "verified_cancelled" for item in outcomes
+            ),
+            "outcomes": per_target_outcomes,
+            "remaining_targets": remaining_targets,
+            "stopped_early": stopped_early,
+            "reconciliation_required": reconciliation_required,
+            "stop_reason": stop_reason,
+            "result_note": (
+                "Only status=verified_cancelled with verified_absent=true is a completed "
+                "cancellation. Exit 7 is status=not_applied_pre_receipt; exit 5, other "
+                "nonzero exits, and command failures are status=uncertain_pending. Every "
+                "nonzero result stops the sequence, and remaining targets are not_attempted. "
+                "After each verified success, the host re-resolves all remaining exact tuples "
+                "in a newer complete snapshot."
+            ),
+        }
+
+    @staticmethod
+    def _cancellation_target_fields() -> set[str]:
+        return {"event_id", "date", "start_time", "end_time", "room", "match_token"}
+
+    @staticmethod
+    def _cancellation_flags(target: Mapping[str, Any]) -> list[str]:
+        return [
+            "--headless",
+            "--cancel-event-id",
+            str(target["event_id"]),
+            "--cancel-date",
+            str(target["date"]),
+            "--cancel-start",
+            str(target["start_time"]),
+            "--cancel-end",
+            str(target["end_time"]),
+            "--cancel-room",
+            str(target["room"]),
+        ]
+
+    def _validate_cancellation_targets(
+        self,
+        raw_targets: Sequence[Mapping[str, Any]],
+        *,
+        require_exact_batch: bool,
+    ) -> tuple[list[dict[str, Any]], datetime]:
+        required = self._cancellation_target_fields()
+        normalized: list[dict[str, Any]] = []
+        seen_event_ids: set[int] = set()
+        for index, raw in enumerate(raw_targets):
+            if set(raw) != required:
+                raise AssistantToolError(
+                    f"reservations[{index}] requires the exact event ID, tuple, and match token"
+                )
+            event_id = raw["event_id"]
+            if type(event_id) is not int or event_id <= 0:
+                raise AssistantToolError(
+                    f"reservations[{index}].event_id must be a positive integer"
+                )
+            if event_id in seen_event_ids:
+                raise AssistantToolError("Bulk cancellation event IDs must be unique")
+            seen_event_ids.add(event_id)
+            target = {
+                "event_id": event_id,
+                "date": _canonical_date(raw["date"], f"reservations[{index}].date"),
+                "start_time": _canonical_clock(
+                    raw["start_time"], f"reservations[{index}].start_time"
+                ),
+                "end_time": _canonical_clock(
+                    raw["end_time"], f"reservations[{index}].end_time"
+                ),
+                "room": raw["room"],
+                "match_token": raw["match_token"],
+            }
+            if _clock_minutes(target["end_time"]) <= _clock_minutes(target["start_time"]):
+                raise AssistantToolError("Cancellation end_time must be after start_time")
+            if not isinstance(target["room"], str) or not target["room"].strip():
+                raise AssistantToolError("room must be a non-empty exact room name")
+            if not isinstance(target["match_token"], str) or re.fullmatch(
+                r"sha256:[0-9a-f]{64}", target["match_token"]
+            ) is None:
+                raise AssistantToolError("match_token must be one exact fresh agenda token")
+            normalized.append(target)
 
         snapshot_result = read_agenda_snapshot(self.paths.agenda)
         if snapshot_result.snapshot is None or snapshot_result.stale:
             raise AssistantToolError(
                 "The cancellation match is stale; refresh the agenda and resolve it again."
             )
-        matching = [
-            event
-            for event in snapshot_result.snapshot.events
-            if event.is_reservation
-            and event.event_id == event_id
-            and event.date.isoformat() == expected["date"]
-            and event.start_time == expected["start_time"]
-            and event.end_time == expected["end_time"]
-            and event.room == expected["room"]
-        ]
-        if len(matching) != 1:
-            raise AssistantToolError(
-                "The selected reservation no longer has one exact match; resolve it again."
-            )
-        expected_token = _event_token(snapshot_result.snapshot.observed_at, matching[0])
-        if arguments["match_token"] != expected_token:
-            raise AssistantToolError(
-                "The reservation match token changed; refresh and resolve before cancelling."
-            )
-
-        flags = [
-            "--headless",
-            "--cancel-event-id",
-            str(event_id),
-            "--cancel-date",
-            expected["date"],
-            "--cancel-start",
-            expected["start_time"],
-            "--cancel-end",
-            expected["end_time"],
-            "--cancel-room",
-            expected["room"],
-        ]
-        progress(
-            "Cancelling exact reservation",
-            f"Revalidating event {event_id} in {expected['room']} before confirmation",
+        for target in normalized:
+            matching = [
+                event
+                for event in snapshot_result.snapshot.events
+                if event.is_reservation
+                and event.event_id == target["event_id"]
+                and event.date.isoformat() == target["date"]
+                and event.start_time == target["start_time"]
+                and event.end_time == target["end_time"]
+                and event.room == target["room"]
+            ]
+            if len(matching) != 1:
+                raise AssistantToolError(
+                    "A selected reservation no longer has one exact match; resolve the batch again."
+                )
+            expected_token = _event_token(snapshot_result.snapshot.observed_at, matching[0])
+            if target["match_token"] != expected_token:
+                raise AssistantToolError(
+                    "The reservation match token changed; refresh and resolve before cancelling."
+                )
+        self._claim_and_consume_cancellation_operation(
+            normalized,
+            require_exact_batch=require_exact_batch,
         )
-        command = self._run_booker_command(flags, progress=progress, timeout=15 * 60)
-        return {
-            "cancelled": True,
-            "verified_absent": True,
-            "reservation": {"event_id": event_id, **expected},
-            "command": command,
+        return normalized, snapshot_result.snapshot.observed_at
+
+    def _claim_and_consume_cancellation_operation(
+        self,
+        targets: Sequence[Mapping[str, Any]],
+        *,
+        require_exact_batch: bool,
+    ) -> None:
+        """Atomically bind one validated selection set to one user-turn operation."""
+
+        stack = getattr(self._dispatch_generation, "stack", ())
+        generation = stack[-1] if stack else self._turn_generation
+        tokens = frozenset(str(target["match_token"]) for target in targets)
+        identities = {
+            str(target["match_token"]): (
+                target["event_id"],
+                target["date"],
+                target["start_time"],
+                target["end_time"],
+                target["room"],
+            )
+            for target in targets
         }
+        with self._cancel_lock:
+            with self._selection_lock:
+                if generation != self._turn_generation:
+                    raise AssistantToolCancelled(
+                        "This cancellation request no longer belongs to the active user turn."
+                    )
+                if generation in self._cancelled_generations:
+                    raise AssistantToolCancelled("The Booker action was stopped.")
+                if generation in self._claimed_cancellation_generations:
+                    raise AssistantToolError(
+                        "A cancellation operation already started for this user turn; "
+                        "no second cancellation may queue or retry."
+                    )
+                for token, identity in identities.items():
+                    selection = self._issued_cancellation_targets.get(token)
+                    if (
+                        selection is None
+                        or selection[0] != generation
+                        or selection[1] != identity
+                    ):
+                        raise AssistantToolError(
+                            "Every cancellation target must come unchanged from a "
+                            "find_reservations result in the active user turn."
+                        )
+                if require_exact_batch:
+                    complete_batches = [
+                        issued_tokens
+                        for issued_generation, issued_tokens
+                        in self._issued_cancellation_batches
+                        if issued_generation == generation
+                        and issued_tokens.issubset(tokens)
+                    ]
+                    covered_tokens = frozenset().union(*complete_batches)
+                    if covered_tokens != tokens:
+                        raise AssistantToolError(
+                            "The cancellation targets must be the exact union of one or more "
+                            "complete unchanged find_reservations match sets; a partial broad "
+                            "result or an unissued addition is not authorized."
+                        )
+
+                self._claimed_cancellation_generations.add(generation)
+                for token in tokens:
+                    self._issued_cancellation_targets.pop(token, None)
+                self._issued_cancellation_batches = [
+                    issued
+                    for issued in self._issued_cancellation_batches
+                    if issued[1].isdisjoint(tokens)
+                ]
+
+    def _refresh_cancellation_targets_after_success(
+        self,
+        targets: Sequence[Mapping[str, Any]],
+        *,
+        after: datetime,
+    ) -> tuple[list[dict[str, Any]], datetime]:
+        """Rebind untouched exact tuples to the newer post-cancel agenda proof."""
+
+        snapshot_result = read_agenda_snapshot(self.paths.agenda)
+        snapshot = snapshot_result.snapshot
+        if (
+            snapshot is None
+            or snapshot_result.stale
+            or snapshot.observed_at <= after
+        ):
+            raise AssistantToolError(
+                "The verified cancellation did not publish a newer fresh agenda snapshot; "
+                "remaining targets were not attempted."
+            )
+        refreshed: list[dict[str, Any]] = []
+        for target in targets:
+            matching = [
+                event
+                for event in snapshot.events
+                if event.is_reservation
+                and event.event_id == target["event_id"]
+                and event.date.isoformat() == target["date"]
+                and event.start_time == target["start_time"]
+                and event.end_time == target["end_time"]
+                and event.room == target["room"]
+            ]
+            if len(matching) != 1:
+                raise AssistantToolError(
+                    "A remaining reservation was not one unchanged exact match in the newer "
+                    "agenda; no further targets were attempted."
+                )
+            rebound = dict(target)
+            rebound["match_token"] = _event_token(snapshot.observed_at, matching[0])
+            refreshed.append(rebound)
+        return refreshed, snapshot.observed_at
 
     def _run_booker_command(
         self,
@@ -1321,6 +1755,7 @@ class BookerToolSurface:
         *,
         progress: ProgressCallback,
         timeout: int,
+        allow_nonzero: bool = False,
     ) -> dict[str, Any]:
         generation, cancel_event = self._command_cancel_event()
         try:
@@ -1328,12 +1763,23 @@ class BookerToolSurface:
                 if cancel_event.is_set():
                     raise AssistantToolCancelled("The Booker action was stopped.")
                 if self._command_runner is not None:
-                    return self._command_runner(
+                    result = self._command_runner(
                         list(flags),
                         progress=progress,
                         cancel_event=cancel_event,
                         timeout=timeout,
                     )
+                    if not isinstance(result, Mapping) or type(result.get("exit_code")) is not int:
+                        raise AssistantToolError("The Booker command returned an invalid result")
+                    payload = dict(result)
+                    if payload["exit_code"] != 0 and not allow_nonzero:
+                        output = payload.get("output")
+                        detail = output[-1] if isinstance(output, list) and output else None
+                        raise AssistantToolError(
+                            "The Booker stopped without a verified result. "
+                            + (str(detail) if detail else f"Exit code {payload['exit_code']}.")
+                        )
+                    return payload
                 if not self.python_executable.is_file():
                     raise AssistantToolError(
                         f"The isolated Booker Python runtime is missing: {self.python_executable}"
@@ -1421,7 +1867,7 @@ class BookerToolSurface:
                     "output": safe_lines,
                     "completed": return_code == 0,
                 }
-                if return_code != 0:
+                if return_code != 0 and not allow_nonzero:
                     raise AssistantToolError(
                         "The Booker stopped without a verified result. "
                         + (safe_lines[-1] if safe_lines else f"Exit code {return_code}.")

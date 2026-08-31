@@ -885,9 +885,10 @@ python -m unittest discover -s tests
   only extension state bound to that event ID, and finalizes the receipt. DOM,
   identity, tuple, control, receipt, or post-action ambiguity fails closed.
 - The focused receipt/cancellation/save/runtime/overview regression slice passes
-  116 tests. The cancellation DOM contract has offline coverage but has not
-  been exercised against an authenticated live reservation; current Asimut
-  label or markup drift therefore stops safely or leaves reconciliation pending.
+  116 tests. A later authenticated read-only inspection opened one exact
+  reservation's options menu without selecting its cancellation action and
+  established the current Material control shape; no live cancellation has
+  been performed as validation.
 
 ## 2026-08-31 Terra In-App Assistant Milestone
 
@@ -905,10 +906,10 @@ python -m unittest discover -s tests
   complete agenda, booking plan, live room cache, health, receipts, and recent
   history. Its only actions are typed read-only refreshes, exact preference
   patches, complete dated future practice plans, one plan-selected Booker
-  action, and positive-ID exact-tuple reservation cancellation. Every mutation
-  requires a verbatim authorization quote from the current user message;
-  negated, quoted, descriptive, informational, or ambiguous requests do not
-  authorize a change.
+  action, and positive-ID exact-tuple single or bounded bulk reservation
+  cancellation. Every mutation requires a verbatim authorization quote from
+  the current user message; negated, quoted, descriptive, informational, or
+  ambiguous requests do not authorize a change.
 - High-level plans are persisted as both an explainable intention and ordinary
   per-date practice-plan targets, so scheduled automation pursues them when the
   dates enter Asimut's live window. Each 1-92-day range must contain every date
@@ -933,6 +934,40 @@ python -m unittest discover -s tests
   don't” or “never mind.” A duration-capped direct Booker run additionally
   requires both an exact date and room. `tzdata` is an explicit dependency so
   Europe/London resolution also works on clean Windows Python installations.
+
+## 2026-08-31 Assistant Bulk Cancellation Repair Milestone
+
+- The failed assistant request to cancel five previously listed reservations
+  stopped before its first destructive click and wrote no cancellation receipt.
+  Read-only authenticated inspection proved the current event-options action is
+  a `mat-list-item` whose Material icon is exactly `cancel` and whose visible
+  label is exactly `Cancel`; the prior resolver rejected it because it required
+  `Cancel booking` or `Cancel reservation` text.
+- Cancellation control resolution is now scoped to exactly one visible CDK
+  event-options overlay. Plain `Cancel` is accepted only for that exact
+  `mat-list-item` plus single `cancel` icon structure; iconless, wrong-icon,
+  multi-icon, button, disabled, outside-overlay, and ambiguous controls remain
+  fail closed. Explicit booking, reservation, and event cancellation labels
+  remain supported.
+- The assistant now exposes one typed `cancel_reservations` action for at most
+  12 exact reservations. Every target must be re-resolved through one or more
+  complete `find_reservations` match sets in the active user turn, carry its
+  unchanged positive event ID, tuple, and fresh token, and belong to the exact
+  union selected for the batch. Partial broad results, additions, duplicates,
+  stale or reused tokens, new-chat carryover, and a second concurrent
+  cancellation operation are rejected before a Booker command starts.
+- Bulk execution is sequential and fail-stop. Each verified cancellation must
+  publish a newer complete agenda in which all remaining IDs and tuples are
+  re-resolved before the next command. Exit 7 is reported as safely not applied
+  before receipt, exit 5 or another command failure is uncertain/pending, and
+  every untouched target is explicitly not attempted; no non-success advances
+  to a later reservation.
+- The complete offline suite passes 595 tests. The real Terra-medium synthetic
+  harness passes 7/7 guarded scenarios, including a same-thread two-turn list
+  followed by `Cancel all of those bookings.` It selected exactly the five
+  referenced IDs across four dates, excluded two unrelated reservations, used
+  the current message for authorization, and reached no production effect.
+  No live booking was cancelled during implementation or verification.
 
 ## Maintenance Notes
 

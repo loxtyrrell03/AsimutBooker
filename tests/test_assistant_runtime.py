@@ -22,6 +22,7 @@ class FakeSurface:
         self.calls = []
         self.cancelled = False
         self.turns_started = 0
+        self.cancellation_context_clears = 0
         self.tool_specs = [
             {
                 "type": "function",
@@ -42,6 +43,9 @@ class FakeSurface:
     def begin_turn(self):
         self.cancelled = False
         self.turns_started += 1
+
+    def clear_cancellation_context(self):
+        self.cancellation_context_clears += 1
 
 
 class FakeController:
@@ -272,6 +276,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.wait_for(
             lambda: load_assistant_state(Path(self.temp_dir.name) / "assistant.json")["messages"] == []
         )
+        self.assertEqual(self.surface.cancellation_context_clears, 1)
 
     def test_new_chat_stays_busy_and_rejects_send_until_thread_switch_finishes(self):
         self.runtime.start()

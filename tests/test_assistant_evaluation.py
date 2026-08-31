@@ -1,11 +1,15 @@
 import asyncio
+import re
 import unittest
 
 from codex_chat import CodexToolFailure
 from tools.evaluate_assistant import (
+    BULK_CANCELLATION_EVENTS,
+    BULK_REFERENCED_EVENT_IDS,
     EVAL_CASES,
     EventRecorder,
     ProductionEffectGuard,
+    SYNTHETIC_EVENTS,
     SyntheticBookerDispatcher,
     ToolCallRecord,
     evaluate_case,
@@ -50,6 +54,16 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         self.assertEqual(matches["overlaps"], [])
         self.assertTrue(all(item.get("title") for item in context["sections"]["agenda"]["events"]))
 
+    def test_all_synthetic_match_tokens_follow_production_schema(self):
+        tokens = [
+            event.match_token
+            for event in (*SYNTHETIC_EVENTS, *BULK_CANCELLATION_EVENTS)
+        ]
+        self.assertTrue(
+            all(re.fullmatch(r"sha256:[0-9a-f]{64}", token) for token in tokens)
+        )
+        self.assertEqual(len(tokens), len(set(tokens)))
+
     def test_exact_cancellation_is_validated_but_never_applied(self):
         arguments = {
             "event_id": 41001,
@@ -57,7 +71,10 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
             "start_time": "16:00",
             "end_time": "17:00",
             "room": "B0.29",
-            "match_token": "sha256:eval-event-41001-exact-match-token",
+            "match_token": (
+                "sha256:ea92c9178cfe8eb1e13e184080f395a8"
+                "8fe0bc083ee15cb295b20a3000d53966"
+            ),
             "request_quote": "Remove my booking tomorrow at 4pm",
         }
         result = self.dispatch("exact_cancellation", "cancel_reservation", arguments)
@@ -68,12 +85,150 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
         records = self.dispatcher.calls_for("exact_cancellation")
         self.assertEqual(records[-1].arguments, arguments)
 
-        wrong = {**arguments, "match_token": "sha256:wrong-token"}
+        wrong = {
+            **arguments,
+            "match_token": (
+                "sha256:f8948dc973f6422642688d84ca7cee59"
+                "7b6e00b5a3c2b236bdda8f0b08f1127e"
+            ),
+        }
         with self.assertRaises(CodexToolFailure):
             self.dispatch("exact_cancellation", "cancel_reservation", wrong)
         failed = self.dispatcher.calls_for("exact_cancellation")[-1]
         self.assertFalse(failed.result["success"])
         self.assertEqual(failed.result["production_effect"], "none")
+
+    def test_prior_list_bulk_cancellation_is_bounded_and_dry_run_only(self):
+        case = _case("bulk_cancellation_prior_list")
+        self.assertIsNotNone(case.setup_prompt)
+        self.assertEqual(case.prompt, "Cancel all of those bookings.")
+        referenced = [
+            event
+            for event in BULK_CANCELLATION_EVENTS
+            if event.event_id in BULK_REFERENCED_EVENT_IDS
+        ]
+        arguments = {
+            "request_quote": "Cancel all of those bookings.",
+            "reservations": [
+                {
+                    key: event.payload()[key]
+                    for key in (
+                        "event_id",
+                        "date",
+                        "start_time",
+                        "end_time",
+                        "room",
+                        "match_token",
+                    )
+                }
+                for event in referenced
+            ],
+        }
+
+        for event in referenced:
+            resolved = self.dispatch(
+                "bulk_cancellation_prior_list",
+                "find_reservations",
+                {"date": event.date, "start_time": event.start_time},
+            )
+            self.assertEqual(
+                [item["event_id"] for item in resolved["matches"]],
+                [event.event_id],
+            )
+
+        result = self.dispatch(
+            "bulk_cancellation_prior_list",
+            "cancel_reservations",
+            arguments,
+        )
+
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["production_effect"], "none")
+        self.assertEqual(result["bounded_count"], 5)
+        self.assertEqual(
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+            list(BULK_REFERENCED_EVENT_IDS),
+        )
+        self.assertTrue(all(item["dry_run_verified"] for item in result["outcomes"]))
+        self.assertEqual(result["remaining_targets"], [])
+        records = self.dispatcher.calls_for("bulk_cancellation_prior_list")
+        self.assertEqual(
+            [record.tool for record in records],
+            ["find_reservations"] * 5 + ["cancel_reservations"],
+        )
+        self.assertEqual(records[-1].arguments["request_quote"], arguments["request_quote"])
+
+        unrelated = next(
+            event
+            for event in BULK_CANCELLATION_EVENTS
+            if event.event_id not in BULK_REFERENCED_EVENT_IDS
+        )
+        self.assertNotIn(
+            unrelated.event_id,
+            [item["reservation"]["event_id"] for item in result["outcomes"]],
+        )
+
+        partial_dispatcher = SyntheticBookerDispatcher()
+        partial_dispatcher.begin_case(case)
+        broad = partial_dispatcher.dispatch(
+            None,
+            "find_reservations",
+            {"date": "2026-09-01"},
+            {},
+        )
+        partial = next(
+            item for item in broad["matches"] if item["event_id"] == 42001
+        )
+        with self.assertRaisesRegex(CodexToolFailure, "exact union"):
+            partial_dispatcher.dispatch(
+                None,
+                "cancel_reservations",
+                {
+                    "request_quote": case.prompt,
+                    "reservations": [
+                        {
+                            key: partial[key]
+                            for key in (
+                                "event_id",
+                                "date",
+                                "start_time",
+                                "end_time",
+                                "room",
+                                "match_token",
+                            )
+                        }
+                    ],
+                },
+                {},
+            )
+
+        setup_dispatcher = SyntheticBookerDispatcher()
+        setup_dispatcher.begin_case(case)
+        setup_dispatcher.set_active_prompt(case.setup_prompt)
+        setup_context = setup_dispatcher.dispatch(
+            None,
+            "get_booker_context",
+            {"sections": ["history", "agenda"]},
+            {},
+        )
+        self.assertEqual(
+            setup_context["sections"]["history"]["runs"][0]["bookings_made"],
+            5,
+        )
+        self.assertEqual(
+            {
+                event["event_id"]
+                for event in setup_context["sections"]["agenda"]["events"]
+            },
+            {42001, 42002, 42003, 42004, 42005, 42901, 42902},
+        )
+        with self.assertRaises(CodexToolFailure):
+            setup_dispatcher.dispatch(
+                None,
+                "cancel_reservations",
+                arguments,
+                {},
+            )
 
     def test_future_plan_requires_complete_chronological_range(self):
         targets = [
@@ -161,7 +316,10 @@ class EvaluationContractTests(unittest.TestCase):
                 "start_time": "16:00",
                 "end_time": "17:00",
                 "room": "B0.29",
-                "match_token": "sha256:eval-event-41001-exact-match-token",
+                "match_token": (
+                    "sha256:ea92c9178cfe8eb1e13e184080f395a8"
+                    "8fe0bc083ee15cb295b20a3000d53966"
+                ),
                 "request_quote": "Remove my booking tomorrow at 4pm",
             },
             {"dry_run": True},
@@ -174,6 +332,164 @@ class EvaluationContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(issues, [])
+
+    def test_bulk_cancellation_contract_requires_one_exact_five_target_batch(self):
+        case = _case("bulk_cancellation_prior_list")
+        reservations = [
+            {
+                key: event.payload()[key]
+                for key in (
+                    "event_id",
+                    "date",
+                    "start_time",
+                    "end_time",
+                    "room",
+                    "match_token",
+                )
+            }
+            for event in BULK_CANCELLATION_EVENTS
+            if event.event_id in BULK_REFERENCED_EVENT_IDS
+        ]
+        outcomes = [
+            {
+                "reservation": event.payload(),
+                "status": "dry_run_verified",
+                "dry_run_verified": True,
+                "production_effect": "none",
+            }
+            for event in BULK_CANCELLATION_EVENTS
+            if event.event_id in BULK_REFERENCED_EVENT_IDS
+        ]
+        batch = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "cancel_reservations",
+            {
+                "request_quote": "Cancel all of those bookings.",
+                "reservations": reservations,
+            },
+            {
+                "dry_run": True,
+                "production_effect": "none",
+                "bounded_count": 5,
+                "outcomes": outcomes,
+            },
+        )
+        find_calls = [
+            ToolCallRecord(
+                case.case_id,
+                index,
+                None,
+                "find_reservations",
+                {"date": event.date, "start_time": event.start_time},
+                {"dry_run": True, "matches": [event.payload()]},
+            )
+            for index, event in enumerate(
+                (
+                    event
+                    for event in BULK_CANCELLATION_EVENTS
+                    if event.event_id in BULK_REFERENCED_EVENT_IDS
+                ),
+                start=1,
+            )
+        ]
+        setup_call = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "get_booker_context",
+            {"sections": ["history", "agenda"]},
+            {"dry_run": True},
+        )
+        setup_final = (
+            "The five Booker-made reservations are: "
+            "2026-09-01, B0.14, 16:00-17:30; "
+            "2026-09-02, B1.09, 14:00-15:30; "
+            "2026-09-02, B0.29, 16:00-16:30; "
+            "2026-09-03, B0.29, 12:30-14:30; "
+            "2026-09-04, B0.29, 13:45-14:15."
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [*find_calls, batch],
+                "Dry-run validation passed for five bookings; no live booking changed.",
+                "completed",
+                [],
+                setup_calls=[setup_call],
+                setup_final=setup_final,
+                setup_turn_status="completed",
+            ),
+            [],
+        )
+
+        unrelated = next(
+            event
+            for event in BULK_CANCELLATION_EVENTS
+            if event.event_id not in BULK_REFERENCED_EVENT_IDS
+        )
+        extra = {
+            key: unrelated.payload()[key]
+            for key in (
+                "event_id",
+                "date",
+                "start_time",
+                "end_time",
+                "room",
+                "match_token",
+            )
+        }
+        wrong_batch = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "cancel_reservations",
+            {**batch.arguments, "reservations": [*reservations, extra]},
+            batch.result,
+        )
+        issues = evaluate_case(
+            case,
+            [*find_calls, wrong_batch],
+            "Dry-run only; no production change.",
+            "completed",
+            [],
+            setup_calls=[setup_call],
+            setup_final=setup_final,
+            setup_turn_status="completed",
+        )
+        self.assertTrue(any("five-item bound" in issue for issue in issues))
+        self.assertTrue(any("outside the prior five-item list" in issue for issue in issues))
+
+        missing_setup = evaluate_case(
+            case,
+            [*find_calls, batch],
+            "Dry-run only; no production change.",
+            "completed",
+            [],
+            setup_calls=[],
+            setup_final="",
+            setup_turn_status="completed",
+        )
+        self.assertTrue(any("did not ground" in issue for issue in missing_setup))
+        self.assertTrue(any("did not list" in issue for issue in missing_setup))
+
+        missing_dates = evaluate_case(
+            case,
+            [batch],
+            "Dry-run only; no production change.",
+            "completed",
+            [],
+            setup_calls=[setup_call],
+            setup_final=(
+                "B0.14 16:00-17:30; B1.09 14:00-15:30; "
+                "B0.29 16:00-16:30; B0.29 12:30-14:30; "
+                "B0.29 13:45-14:15."
+            ),
+            setup_turn_status="completed",
+        )
+        self.assertTrue(any("did not list" in issue for issue in missing_dates))
 
     def test_ambiguous_and_vague_cases_reject_mutation(self):
         ambiguous = _case("ambiguous_cancellation")

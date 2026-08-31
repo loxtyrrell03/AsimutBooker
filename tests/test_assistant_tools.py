@@ -1,7 +1,7 @@
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from agenda_snapshot import publish_agenda_snapshot
@@ -17,6 +17,10 @@ from mutation_receipts import SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION
 
 
 class AssistantToolSurfaceTests(unittest.TestCase):
+    @staticmethod
+    def _cancellation_fields():
+        return ("event_id", "date", "start_time", "end_time", "room", "match_token")
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
@@ -94,6 +98,77 @@ class AssistantToolSurfaceTests(unittest.TestCase):
         )
         return booking_date.isoformat()
 
+    def _publish_bulk_reservations(self, count=3):
+        observed = datetime.now(timezone.utc)
+        booking_date = observed.date()
+        events = []
+        for index in range(count):
+            start_hour = 14 + index
+            events.append(
+                {
+                    "date": booking_date.isoformat(),
+                    "startTime": f"{start_hour:02d}:00",
+                    "endTime": f"{start_hour + 1:02d}:00",
+                    "title": "Reservation",
+                    "isReservation": True,
+                    "room": f"B0.{29 + index}",
+                    "eventId": 4300 + index,
+                }
+            )
+        publish_agenda_snapshot(
+            events,
+            [booking_date],
+            observed_at=observed,
+            path=self.paths.agenda,
+        )
+        date_text = booking_date.isoformat()
+        matches = self.surface.dispatch(
+            "find_reservations",
+            {"date": date_text},
+        )["matches"]
+        fields = ("event_id", "date", "start_time", "end_time", "room", "match_token")
+        return date_text, [{key: item[key] for key in fields} for item in matches]
+
+    def _bulk_runner(self, targets, exit_codes):
+        commands = []
+        remaining = {item["event_id"]: dict(item) for item in targets}
+        observed = datetime.now(timezone.utc) + timedelta(seconds=1)
+        codes = iter(exit_codes)
+
+        def runner(flags, **_kwargs):
+            nonlocal observed
+            commands.append(flags)
+            exit_code = next(codes)
+            if exit_code == 0:
+                event_id = int(flags[flags.index("--cancel-event-id") + 1])
+                remaining.pop(event_id, None)
+                observed += timedelta(seconds=1)
+                events = [
+                    {
+                        "date": item["date"],
+                        "startTime": item["start_time"],
+                        "endTime": item["end_time"],
+                        "title": "Reservation",
+                        "isReservation": True,
+                        "room": item["room"],
+                        "eventId": item["event_id"],
+                    }
+                    for item in remaining.values()
+                ]
+                publish_agenda_snapshot(
+                    events,
+                    [datetime.fromisoformat(targets[0]["date"]).date()],
+                    observed_at=observed,
+                    path=self.paths.agenda,
+                )
+            return {
+                "exit_code": exit_code,
+                "completed": exit_code == 0,
+                "output": [f"Synthetic exit {exit_code}"],
+            }
+
+        return runner, commands
+
     def test_specs_expose_no_generic_shell_or_file_tool(self):
         names = {item["name"] for item in dynamic_tool_specs()}
         self.assertEqual(
@@ -106,6 +181,7 @@ class AssistantToolSurfaceTests(unittest.TestCase):
                 "update_booker_preferences",
                 "run_booker",
                 "cancel_reservation",
+                "cancel_reservations",
             },
         )
         self.assertFalse(any("shell" in name or "file" in name for name in names))
@@ -122,6 +198,17 @@ class AssistantToolSurfaceTests(unittest.TestCase):
                     "then": {"required": ["only_date", "only_room"]},
                 }
             ],
+        )
+        bulk_spec = next(
+            item for item in dynamic_tool_specs() if item["name"] == "cancel_reservations"
+        )
+        self.assertEqual(
+            bulk_spec["inputSchema"]["required"],
+            ["request_quote", "reservations"],
+        )
+        self.assertEqual(
+            bulk_spec["inputSchema"]["properties"]["reservations"]["maxItems"],
+            12,
         )
 
     def test_high_level_week_plan_is_resolved_and_saved_for_automation(self):
@@ -269,21 +356,6 @@ class AssistantToolSurfaceTests(unittest.TestCase):
 
     def test_direct_cancel_request_forms_authorize_the_exact_same_candidate(self):
         booking_date = self._publish_reservation()
-        candidate = self.surface.dispatch(
-            "find_reservations",
-            {"date": booking_date, "start_time": "16:00"},
-        )["matches"][0]
-        exact_target = {
-            key: candidate[key]
-            for key in (
-                "event_id",
-                "date",
-                "start_time",
-                "end_time",
-                "room",
-                "match_token",
-            )
-        }
         requests = (
             "Cancel my booking tomorrow at 4pm.",
             "Please remove my booking tomorrow at 4pm.",
@@ -296,6 +368,14 @@ class AssistantToolSurfaceTests(unittest.TestCase):
 
         for request in requests:
             with self.subTest(request=request):
+                self.surface.begin_turn()
+                candidate = self.surface.dispatch(
+                    "find_reservations",
+                    {"date": booking_date, "start_time": "16:00"},
+                )["matches"][0]
+                exact_target = {
+                    key: candidate[key] for key in self._cancellation_fields()
+                }
                 result = self.surface.dispatch(
                     "cancel_reservation",
                     {**exact_target, "request_quote": request},
@@ -375,7 +455,7 @@ class AssistantToolSurfaceTests(unittest.TestCase):
 
         bad = dict(cancel_arguments)
         bad["match_token"] = "sha256:" + "0" * 64
-        with self.assertRaisesRegex(AssistantToolError, "token changed"):
+        with self.assertRaisesRegex(AssistantToolError, "token changed|unchanged"):
             self.surface.dispatch(
                 "cancel_reservation",
                 {**bad, "request_quote": request},
@@ -399,6 +479,406 @@ class AssistantToolSurfaceTests(unittest.TestCase):
                 user_request=request,
             )
         self.assertEqual(self.commands, [])
+
+    def test_bulk_cancel_validates_one_fresh_exact_set_and_runs_sequentially(self):
+        booking_date, targets = self._publish_bulk_reservations(3)
+        runner, commands = self._bulk_runner(targets, (0, 0, 0))
+        surface = BookerToolSurface(paths=self.paths, command_runner=runner)
+        surface.dispatch("find_reservations", {"date": booking_date})
+        request = "Cancel all of those bookings."
+
+        result = surface.dispatch(
+            "cancel_reservations",
+            {"request_quote": request, "reservations": targets},
+            user_request=request,
+        )
+
+        self.assertEqual(result["requested_count"], 3)
+        self.assertEqual(result["cancelled_count"], 3)
+        self.assertEqual(
+            [item["status"] for item in result["outcomes"]],
+            ["verified_cancelled", "verified_cancelled", "verified_cancelled"],
+        )
+        self.assertEqual(result["remaining_targets"], [])
+        self.assertFalse(result["stopped_early"])
+        self.assertEqual(len(commands), 3)
+        self.assertEqual(
+            [command[command.index("--cancel-event-id") + 1] for command in commands],
+            ["4300", "4301", "4302"],
+        )
+        self.assertTrue(all("--max-actions" not in command for command in commands))
+        self.assertNotEqual(
+            result["outcomes"][1]["reservation"]["match_token"],
+            targets[1]["match_token"],
+        )
+
+    def test_bulk_cancel_prevalidates_every_token_before_first_command(self):
+        _booking_date, targets = self._publish_bulk_reservations(2)
+        targets[1]["match_token"] = "sha256:" + "0" * 64
+        request = "Cancel all of those bookings."
+
+        with self.assertRaisesRegex(AssistantToolError, "token changed|unchanged"):
+            self.surface.dispatch(
+                "cancel_reservations",
+                {"request_quote": request, "reservations": targets},
+                user_request=request,
+            )
+
+        self.assertEqual(self.commands, [])
+
+    def test_bulk_cancel_stops_if_verified_success_has_no_newer_snapshot(self):
+        _booking_date, targets = self._publish_bulk_reservations(2)
+        request = "Cancel all of those bookings."
+
+        result = self.surface.dispatch(
+            "cancel_reservations",
+            {"request_quote": request, "reservations": targets},
+            user_request=request,
+        )
+
+        self.assertEqual(
+            [item["status"] for item in result["outcomes"]],
+            ["verified_cancelled", "not_attempted"],
+        )
+        self.assertTrue(result["stopped_early"])
+        self.assertFalse(result["reconciliation_required"])
+        self.assertIn("newer fresh agenda snapshot", result["stop_reason"])
+        self.assertEqual(len(self.commands), 1)
+
+    def test_bulk_cancel_stops_on_pending_result_and_returns_unattempted_targets(self):
+        booking_date, targets = self._publish_bulk_reservations(3)
+        runner, commands = self._bulk_runner(targets, (0, 5, 0))
+        surface = BookerToolSurface(paths=self.paths, command_runner=runner)
+        surface.dispatch("find_reservations", {"date": booking_date})
+        request = "Cancel all of those bookings."
+        result = surface.dispatch(
+            "cancel_reservations",
+            {"request_quote": request, "reservations": targets},
+            user_request=request,
+        )
+
+        self.assertEqual(
+            [item["status"] for item in result["outcomes"]],
+            ["verified_cancelled", "uncertain_pending", "not_attempted"],
+        )
+        self.assertTrue(result["stopped_early"])
+        self.assertTrue(result["reconciliation_required"])
+        self.assertEqual([item["event_id"] for item in result["remaining_targets"]], [4302])
+        self.assertEqual(len(commands), 2)
+
+    def test_bulk_cancel_treats_exit_seven_as_uncertain_and_stops(self):
+        booking_date, targets = self._publish_bulk_reservations(2)
+        runner, commands = self._bulk_runner(targets, (7, 0))
+        surface = BookerToolSurface(paths=self.paths, command_runner=runner)
+        surface.dispatch("find_reservations", {"date": booking_date})
+        request = "Cancel all of those bookings."
+
+        result = surface.dispatch(
+            "cancel_reservations",
+            {"request_quote": request, "reservations": targets},
+            user_request=request,
+        )
+
+        self.assertEqual(
+            [item["status"] for item in result["outcomes"]],
+            ["not_applied_pre_receipt", "not_attempted"],
+        )
+        self.assertFalse(result["reconciliation_required"])
+        self.assertEqual(len(commands), 1)
+
+    def test_bulk_cancel_requires_host_issued_recent_find_results(self):
+        _booking_date, targets = self._publish_bulk_reservations(2)
+        commands = []
+        surface = BookerToolSurface(
+            paths=self.paths,
+            command_runner=lambda flags, **_kwargs: commands.append(flags),
+        )
+        request = "Cancel all of those bookings."
+
+        with self.assertRaisesRegex(AssistantToolError, "find_reservations"):
+            surface.dispatch(
+                "cancel_reservations",
+                {"request_quote": request, "reservations": targets},
+                user_request=request,
+            )
+
+        self.assertEqual(commands, [])
+
+    def test_bulk_cancel_rejects_duplicate_event_ids_before_any_command(self):
+        _booking_date, targets = self._publish_bulk_reservations(2)
+        request = "Cancel all of those bookings."
+        duplicate = [targets[0], dict(targets[0])]
+
+        with self.assertRaisesRegex(AssistantToolError, "must be unique"):
+            self.surface.dispatch(
+                "cancel_reservations",
+                {"request_quote": request, "reservations": duplicate},
+                user_request=request,
+            )
+
+        self.assertEqual(self.commands, [])
+
+    def test_bulk_cancel_rejects_partial_or_unissued_sets_and_accepts_complete_union(self):
+        booking_date, targets = self._publish_bulk_reservations(3)
+        request = "Cancel all of those bookings."
+
+        with self.assertRaisesRegex(AssistantToolError, "exact union"):
+            self.surface.dispatch(
+                "cancel_reservations",
+                {"request_quote": request, "reservations": targets[:2]},
+                user_request=request,
+            )
+
+        commands = []
+
+        def uncertain_runner(flags, **_kwargs):
+            commands.append(flags)
+            return {"exit_code": 7, "completed": False, "output": ["synthetic"]}
+
+        surface = BookerToolSurface(paths=self.paths, command_runner=uncertain_runner)
+        for target in targets[:2]:
+            surface.dispatch(
+                "find_reservations",
+                {"date": booking_date, "start_time": target["start_time"]},
+            )
+        with self.assertRaisesRegex(
+            AssistantToolError, "find_reservations|unissued addition"
+        ):
+            surface.dispatch(
+                "cancel_reservations",
+                {"request_quote": request, "reservations": targets},
+                user_request=request,
+            )
+
+        result = surface.dispatch(
+            "cancel_reservations",
+            {"request_quote": request, "reservations": targets[:2]},
+            user_request=request,
+        )
+        self.assertEqual(
+            [item["status"] for item in result["outcomes"]],
+            ["not_applied_pre_receipt", "not_attempted"],
+        )
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(self.commands, [])
+
+    def test_bulk_cancel_accepts_five_targets_from_four_complete_date_results(self):
+        observed = datetime.now(timezone.utc)
+        dates = [(observed + timedelta(days=offset)).date() for offset in range(4)]
+        events = []
+        for index, event_date in enumerate((dates[0], dates[0], dates[1], dates[2], dates[3])):
+            start_hour = 13 + index
+            events.append(
+                {
+                    "date": event_date.isoformat(),
+                    "startTime": f"{start_hour:02d}:00",
+                    "endTime": f"{start_hour + 1:02d}:00",
+                    "title": "Reservation",
+                    "isReservation": True,
+                    "room": f"B1.{10 + index}",
+                    "eventId": 4400 + index,
+                }
+            )
+        publish_agenda_snapshot(
+            events,
+            dates,
+            observed_at=observed,
+            path=self.paths.agenda,
+        )
+        commands = []
+        remaining = {event["eventId"]: event for event in events}
+        refreshed_at = observed
+
+        def runner(flags, **_kwargs):
+            nonlocal refreshed_at
+            commands.append(flags)
+            event_id = int(flags[flags.index("--cancel-event-id") + 1])
+            remaining.pop(event_id)
+            refreshed_at += timedelta(seconds=1)
+            publish_agenda_snapshot(
+                list(remaining.values()),
+                dates,
+                observed_at=refreshed_at,
+                path=self.paths.agenda,
+            )
+            return {"exit_code": 0, "completed": True, "output": ["synthetic"]}
+
+        surface = BookerToolSurface(paths=self.paths, command_runner=runner)
+        fields = self._cancellation_fields()
+        targets = []
+        for event_date in dates:
+            matches = surface.dispatch(
+                "find_reservations",
+                {"date": event_date.isoformat()},
+            )["matches"]
+            targets.extend({key: item[key] for key in fields} for item in matches)
+        request = "Cancel all five of those bookings."
+
+        result = surface.dispatch(
+            "cancel_reservations",
+            {"request_quote": request, "reservations": targets},
+            user_request=request,
+        )
+
+        self.assertEqual(result["cancelled_count"], 5)
+        self.assertEqual(
+            [item["status"] for item in result["outcomes"]],
+            ["verified_cancelled"] * 5,
+        )
+        self.assertEqual(len(commands), 5)
+
+    def test_cancellation_selections_clear_expire_and_cannot_be_reused(self):
+        booking_date = self._publish_reservation()
+        request = "Remove my booking today at 4pm."
+        candidate = self.surface.dispatch(
+            "find_reservations",
+            {"date": booking_date, "start_time": "16:00"},
+        )["matches"][0]
+        arguments = {
+            key: candidate[key]
+            for key in self._cancellation_fields()
+        }
+
+        self.surface.clear_cancellation_context()
+        with self.assertRaisesRegex(AssistantToolError, "find_reservations"):
+            self.surface.dispatch(
+                "cancel_reservation",
+                {**arguments, "request_quote": request},
+                user_request=request,
+            )
+
+        candidate = self.surface.dispatch(
+            "find_reservations",
+            {"date": booking_date, "start_time": "16:00"},
+        )["matches"][0]
+        arguments = {key: candidate[key] for key in self._cancellation_fields()}
+        self.surface.begin_turn()
+        with self.assertRaisesRegex(AssistantToolError, "find_reservations"):
+            self.surface.dispatch(
+                "cancel_reservation",
+                {**arguments, "request_quote": request},
+                user_request=request,
+            )
+
+        candidate = self.surface.dispatch(
+            "find_reservations",
+            {"date": booking_date, "start_time": "16:00"},
+        )["matches"][0]
+        arguments = {key: candidate[key] for key in self._cancellation_fields()}
+        self.surface.dispatch(
+            "cancel_reservation",
+            {**arguments, "request_quote": request},
+            user_request=request,
+        )
+        self.surface.dispatch(
+            "find_reservations",
+            {"date": booking_date, "start_time": "16:00"},
+        )
+        with self.assertRaisesRegex(AssistantToolError, "already started"):
+            self.surface.dispatch(
+                "cancel_reservation",
+                {**arguments, "request_quote": request},
+                user_request=request,
+            )
+
+    def test_concurrent_second_cancellation_cannot_queue_in_same_turn(self):
+        booking_date, targets = self._publish_bulk_reservations(2)
+        started = threading.Event()
+        release = threading.Event()
+        commands = []
+        errors = []
+
+        def runner(flags, **_kwargs):
+            commands.append(flags)
+            started.set()
+            release.wait(timeout=3)
+            return {"exit_code": 0, "completed": True, "output": []}
+
+        surface = BookerToolSurface(paths=self.paths, command_runner=runner)
+        for target in targets:
+            surface.dispatch(
+                "find_reservations",
+                {"date": booking_date, "start_time": target["start_time"]},
+            )
+        request = "Cancel both of those bookings."
+
+        def cancel_first():
+            try:
+                surface.dispatch(
+                    "cancel_reservation",
+                    {**targets[0], "request_quote": request},
+                    user_request=request,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=cancel_first)
+        worker.start()
+        self.assertTrue(started.wait(timeout=2))
+        with self.assertRaisesRegex(AssistantToolError, "already started"):
+            surface.dispatch(
+                "cancel_reservation",
+                {**targets[1], "request_quote": request},
+                user_request=request,
+            )
+        release.set()
+        worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(commands), 1)
+
+    def test_delayed_old_turn_cancellation_is_rejected_before_runner(self):
+        booking_date = self._publish_reservation()
+        entered = threading.Event()
+        release = threading.Event()
+        commands = []
+        errors = []
+
+        def runner(flags, **_kwargs):
+            commands.append(flags)
+            return {"exit_code": 0, "completed": True, "output": []}
+
+        class DelayedCancellationSurface(BookerToolSurface):
+            def _cancel_reservation(self, arguments, *, user_request, progress):
+                entered.set()
+                release.wait(timeout=3)
+                return super()._cancel_reservation(
+                    arguments,
+                    user_request=user_request,
+                    progress=progress,
+                )
+
+        surface = DelayedCancellationSurface(paths=self.paths, command_runner=runner)
+        surface.begin_turn()
+        candidate = surface.dispatch(
+            "find_reservations",
+            {"date": booking_date, "start_time": "16:00"},
+        )["matches"][0]
+        target = {key: candidate[key] for key in self._cancellation_fields()}
+        request = "Cancel my booking today at 4pm."
+
+        def cancel_old_turn():
+            try:
+                surface.dispatch(
+                    "cancel_reservation",
+                    {**target, "request_quote": request},
+                    user_request=request,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=cancel_old_turn)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=2))
+        surface.begin_turn()
+        release.set()
+        worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], AssistantToolCancelled)
+        self.assertEqual(commands, [])
 
     def test_refresh_modes_are_read_only_and_allow_listed(self):
         self.surface.dispatch("refresh_booker_data", {"scope": "agenda"})

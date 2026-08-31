@@ -55,7 +55,7 @@ APP_CAPABILITIES = {
         "Crash-safe mutation receipts and exact event-ID persistence checks",
         "Recurring 15-minute Windows schedule with health evidence",
         "Read-only login, agenda, availability, and planning refreshes",
-        "Exact-ID reservation cancellation through the assistant action surface",
+        "Exact-ID single or bounded bulk reservation cancellation through the assistant action surface",
     ],
     "assistant_actions": [
         "Answer questions from sanitized preferences, agenda, plan, room, health, receipt, and history context",
@@ -64,7 +64,7 @@ APP_CAPABILITIES = {
         "Set preferred-time, foresight, room-order, room-requirement, and session-shape preferences",
         "Save high-level future intentions only after resolving a numeric target for every date",
         "Run one plan-selected autonomous booking action under the ordinary live safeguards",
-        "Resolve and cancel one exact current reservation by positive event ID and complete tuple",
+        "Resolve and cancel one or a bounded explicit set of current reservations by positive event ID and complete tuple",
     ],
     "manual_or_gui_boundaries": [
         "Initial credential setup uses the masked private prompt and Windows Credential Manager, never chat",

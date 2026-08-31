@@ -7,6 +7,7 @@ from unittest import mock
 import book_week
 from app_settings import SettingsError
 from mutation_receipts import MutationReceiptError
+from playwright.sync_api import sync_playwright
 
 
 class _Locator:
@@ -25,10 +26,22 @@ class _Locator:
 
 
 class _MenuOption:
-    def __init__(self, text, *, visible=True, enabled=True):
+    def __init__(
+        self,
+        text,
+        *,
+        visible=True,
+        enabled=True,
+        attributes=None,
+        icons=(),
+        tag_name="mat-list-item",
+    ):
         self.text = text
         self.visible = visible
         self.enabled = enabled
+        self.attributes = attributes or {}
+        self.icons = tuple(_MenuOption(icon) for icon in icons)
+        self.tag_name = tag_name
 
     def is_visible(self):
         return self.visible
@@ -39,6 +52,20 @@ class _MenuOption:
     def inner_text(self):
         return self.text
 
+    def text_content(self):
+        return self.text
+
+    def get_attribute(self, name):
+        return self.attributes.get(name)
+
+    def locator(self, selector):
+        if selector == "mat-icon":
+            return _Locator(self.icons)
+        return _Locator()
+
+    def evaluate(self, _script):
+        return self.tag_name
+
 
 class _MenuPage:
     def __init__(self, mapping=None):
@@ -46,6 +73,21 @@ class _MenuPage:
 
     def locator(self, selector):
         return _Locator(self.mapping.get(selector, ()))
+
+
+_OVERLAY_SELECTOR = ".cdk-overlay-pane:visible"
+_CANCELLATION_OPTION_SELECTOR = (
+    "[role='menuitem'], button[mat-menu-item], mat-list-item, "
+    ".mat-menu-item, .mat-mdc-menu-item"
+)
+
+
+def _menu_page(*options, overlay_count=1):
+    overlays = tuple(
+        _MenuPage({_CANCELLATION_OPTION_SELECTOR: options})
+        for _index in range(overlay_count)
+    )
+    return _MenuPage({_OVERLAY_SELECTOR: overlays})
 
 
 class BookingCancellationContractTests(unittest.TestCase):
@@ -280,27 +322,88 @@ class BookingCancellationContractTests(unittest.TestCase):
         self.last_verify.assert_not_called()
 
     def test_menu_resolution_rejects_ambiguous_or_generic_controls(self):
-        selector = "[role='menuitem']:has-text('Cancel booking')"
-        ambiguous = _MenuPage(
-            {
-                selector: (
-                    _MenuOption("Cancel booking"),
-                    _MenuOption("Cancel booking"),
-                )
-            }
+        ambiguous = _menu_page(
+            _MenuOption("Cancel booking"),
+            _MenuOption("Cancel booking"),
         )
         with self.assertRaisesRegex(
             book_week.BookingCancellationError, "found 2"
         ):
             book_week._cancel_menu_option(ambiguous)
 
-        generic = _MenuPage(
-            {"button:has-text('Cancel')": (_MenuOption("Cancel"),)}
-        )
+        generic = _menu_page(_MenuOption("Cancel"))
         with self.assertRaisesRegex(
             book_week.BookingCancellationError, "found 0"
         ):
             book_week._cancel_menu_option(generic)
+
+    def test_menu_resolution_accepts_exact_event_and_accessible_labels(self):
+        native_event_item = _MenuOption(
+            "cancel\nCancel event",
+            icons=("cancel",),
+        )
+        page = _menu_page(native_event_item)
+        self.assertIs(book_week._cancel_menu_option(page), native_event_item)
+
+        accessible_item = _MenuOption(
+            "event_busy",
+            attributes={"aria-label": "Cancel reservation"},
+            icons=("event_busy",),
+            tag_name="button",
+        )
+        page = _menu_page(accessible_item)
+        self.assertIs(book_week._cancel_menu_option(page), accessible_item)
+
+        native_generic_item = _MenuOption(
+            "cancel Cancel",
+            icons=("cancel",),
+        )
+        page = _menu_page(native_generic_item)
+        self.assertIs(book_week._cancel_menu_option(page), native_generic_item)
+
+    def test_menu_resolution_rejects_elliptical_or_negated_event_text(self):
+        for label in (
+            "Cancel",
+            "Do not cancel event",
+            "Cancel event details",
+            "Cancellation policy",
+            "Delete event",
+        ):
+            with self.subTest(label=label), self.assertRaisesRegex(
+                book_week.BookingCancellationError, "found 0"
+            ):
+                book_week._cancel_menu_option(
+                    _menu_page(_MenuOption(label))
+                )
+
+    def test_generic_cancel_requires_exact_icon_item_and_unique_overlay(self):
+        rejected = (
+            _MenuOption("Cancel"),
+            _MenuOption("close Cancel", icons=("close",)),
+            _MenuOption("cancel Cancel", icons=("cancel", "warning")),
+            _MenuOption(
+                "cancel Cancel",
+                icons=("cancel",),
+                tag_name="button",
+            ),
+        )
+        for option in rejected:
+            with self.subTest(option=option), self.assertRaisesRegex(
+                book_week.BookingCancellationError, "found 0"
+            ):
+                book_week._cancel_menu_option(_menu_page(option))
+
+        for overlay_count in (0, 2):
+            with self.subTest(overlay_count=overlay_count), self.assertRaisesRegex(
+                book_week.BookingCancellationError,
+                "visible event-options overlay",
+            ):
+                book_week._cancel_menu_option(
+                    _menu_page(
+                        _MenuOption("cancel Cancel", icons=("cancel",)),
+                        overlay_count=overlay_count,
+                    )
+                )
 
     def test_reconciliation_proves_absent_or_unchanged_cancellation(self):
         future_date = (datetime.now() + timedelta(days=2)).date().isoformat()
@@ -380,6 +483,100 @@ class BookingCancellationContractTests(unittest.TestCase):
             self.assertRaisesRegex(SettingsError, "Multiple extension records"),
         ):
             book_week.remove_extendable_booking_by_event_id(self.EVENT_ID)
+
+
+class BookingCancellationControlDomTests(unittest.TestCase):
+    """Exercise the cancellation controls against representative Asimut markup."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.playwright = sync_playwright().start()
+        cls.browser = cls.playwright.chromium.launch(headless=True)
+        cls.page = cls.browser.new_page()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+
+    def test_legacy_asimut_cancel_event_item_is_resolved(self):
+        self.page.set_content(
+            """
+            <div class="cdk-overlay-pane">
+              <mat-nav-list>
+                <mat-list-item>
+                  <mat-icon>edit</mat-icon><span>Edit event</span>
+                </mat-list-item>
+                <mat-list-item id="cancel-event-action">
+                  <mat-icon>cancel</mat-icon><span>Cancel event</span>
+                </mat-list-item>
+              </mat-nav-list>
+            </div>
+            """
+        )
+
+        option = book_week._cancel_menu_option(self.page)
+
+        self.assertEqual(option.get_attribute("id"), "cancel-event-action")
+
+    def test_current_asimut_icon_plus_generic_cancel_item_is_resolved(self):
+        self.page.set_content(
+            """
+            <div class="cdk-overlay-pane mat-mdc-dialog-panel">
+              <mat-nav-list>
+                <mat-list-item>
+                  <mat-icon>edit</mat-icon><span>Edit</span>
+                </mat-list-item>
+                <mat-list-item id="cancel-action">
+                  <mat-icon>cancel</mat-icon><span>Cancel</span>
+                </mat-list-item>
+              </mat-nav-list>
+            </div>
+            """
+        )
+
+        option = book_week._cancel_menu_option(self.page)
+
+        self.assertEqual(option.get_attribute("id"), "cancel-action")
+
+    def test_modern_accessible_cancel_reservation_item_is_resolved(self):
+        self.page.set_content(
+            """
+            <div class="cdk-overlay-pane mat-mdc-dialog-panel">
+              <div class="mat-mdc-menu-panel">
+              <button mat-menu-item role="menuitem">
+                <mat-icon>edit</mat-icon><span>Edit event</span>
+              </button>
+              <button id="cancel-reservation-action" mat-menu-item
+                      role="menuitem" aria-label="Cancel reservation">
+                <mat-icon>event_busy</mat-icon>
+              </button>
+              </div>
+            </div>
+            """
+        )
+
+        option = book_week._cancel_menu_option(self.page)
+
+        self.assertEqual(option.get_attribute("id"), "cancel-reservation-action")
+
+    def test_cancel_event_confirmation_is_explicit_and_unique(self):
+        self.page.set_content(
+            """
+            <mat-dialog-container>
+              <p>Are you sure you want to cancel this event?</p>
+              <button>Go back</button>
+              <button id="confirm-cancel-event">Cancel event</button>
+            </mat-dialog-container>
+            """
+        )
+
+        confirmation = book_week._optional_cancel_confirmation(self.page)
+
+        self.assertEqual(
+            confirmation.get_attribute("id"),
+            "confirm-cancel-event",
+        )
 
 
 class BookingCancellationCliTests(unittest.TestCase):
