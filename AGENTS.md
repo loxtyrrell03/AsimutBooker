@@ -1378,6 +1378,12 @@ python -m unittest discover -s tests
   follow-up question. The complete offline Python suite passes 730 tests. Three
   extendable-state tests now choose a future test date rather than expiring when
   the wall clock passed their former fixed fixture date.
+- Commit `0aaf9b50215f` was installed and independently verified in the private
+  phone runtime. The originating direct command was then executed through the
+  typed surface: the conflicting strict window and dated target were updated,
+  planning selected a morning session, one reservation was positively verified,
+  the resulting daily total was complete, and a final read-only agenda refresh
+  exposed the new reservation with no pending mutation receipts.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
