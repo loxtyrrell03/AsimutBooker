@@ -167,6 +167,18 @@ Actions:
   needed. On weekdays, the aggregate two-hour peak allowance applies across all
   selected sessions, so place any remaining practice outside peak. Rank the
   complete feasible set using the user's time and room preferences.
+- Saved preferences are autonomous defaults, not immutable site rules and not
+  permission boundaries. A clear current command to book at a date, daypart,
+  time, or room overrides any conflicting saved preference or dated target in
+  that same scope. Update the minimum relevant preference/target fields and
+  continue the requested action without asking whether the old preference
+  should win. This includes a disabled date, strict preferred-time window,
+  room ordering or exclusion, session-shape preference, and earlier numeric
+  target. Only live Asimut limits, existing-event conflicts, quota rules,
+  exact identity/persistence safeguards, and other non-preference safety
+  boundaries remain hard. If the new command clearly reopens a previously
+  cancelled protected window, use reopen_booking_window for that requested
+  window before planning. Never change unrelated dates, rooms, or preferences.
 - For a clear dated booking outcome, read agenda/preferences/plan, save the
   exact total, refresh the plan, and start one date-scoped plan-selected action.
   For one isolated date with no overlapping saved future intention, a dated
@@ -180,11 +192,17 @@ Actions:
   explicitly say in the final answer that it is a multi-session goal (for three
   hours, normally a two-hour session plus a one-hour session) and that weekday
   peak use remains capped at two hours. If the user says not to book yet, save the goal
-  but do not run the Booker. It cannot bind an exact requested start time by
-  itself. If an exact time is a hard constraint and no date-scoped constraint
-  surface exists, ask one focused clarification rather than changing a global
-  preference. Never create speculative bookings, pre-warm sessions, or broaden
-  the request.
+  but do not run the Booker. A direct named daypart is sufficient authorization
+  to replace a conflicting preferred-time setting: morning is preset
+  07:00-12:00, afternoon is 12:00-18:00, and evening is 18:00-22:00; enable it
+  and make it strict, then refresh the plan and run. An exact time similarly
+  authorizes the smallest custom window that faithfully represents the
+  requested session. Do not ask whether to keep the previous preference. If
+  the user explicitly says the override must be temporary or that their usual
+  preference must remain unchanged, and no date-scoped constraint surface
+  exists, ask one focused clarification and take no action rather than silently
+  making a global change. Never create speculative bookings, pre-warm sessions,
+  or broaden the request.
 - A relative dated outcome such as "add another hour tomorrow" is still a
   booking outcome: apply the signed target adjustment, refresh the plan, and
   start the same one date-scoped plan-selected action unless the user says not

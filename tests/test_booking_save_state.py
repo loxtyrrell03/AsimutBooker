@@ -724,6 +724,7 @@ class BookingSaveStateTests(unittest.TestCase):
 
     def test_new_extendable_state_carries_verified_event_identity(self):
         settings_path = Path(self.temporary_directory.name) / "settings.json"
+        booking_date = date.today() + timedelta(days=1)
 
         with (
             mock.patch.object(book_week, "settings_file", settings_path),
@@ -731,7 +732,7 @@ class BookingSaveStateTests(unittest.TestCase):
         ):
             book_week.save_extendable_booking(
                 self.ROOM,
-                self.BOOKING_DATE,
+                booking_date,
                 9.5,
                 10.0,
                 11.0,
@@ -749,6 +750,7 @@ class BookingSaveStateTests(unittest.TestCase):
 
     def test_save_extendable_booking_rejects_duplicate_local_tuple(self):
         settings_path = Path(self.temporary_directory.name) / "settings.json"
+        booking_date = date.today() + timedelta(days=1)
 
         with (
             mock.patch.object(book_week, "settings_file", settings_path),
@@ -756,7 +758,7 @@ class BookingSaveStateTests(unittest.TestCase):
         ):
             book_week.save_extendable_booking(
                 self.ROOM,
-                self.BOOKING_DATE,
+                booking_date,
                 9.5,
                 10.0,
                 11.0,
@@ -775,7 +777,7 @@ class BookingSaveStateTests(unittest.TestCase):
             ):
                 book_week.save_extendable_booking(
                     self.ROOM,
-                    self.BOOKING_DATE,
+                    booking_date,
                     9.5,
                     10.0,
                     11.0,
@@ -791,6 +793,7 @@ class BookingSaveStateTests(unittest.TestCase):
     def test_save_extendable_booking_rejects_changed_event_identity(self):
         settings_path = Path(self.temporary_directory.name) / "settings.json"
         changed_url = "https://rwcmd.asimut.net/arrangement?eventId=4243"
+        booking_date = date.today() + timedelta(days=1)
 
         with (
             mock.patch.object(book_week, "settings_file", settings_path),
@@ -798,7 +801,7 @@ class BookingSaveStateTests(unittest.TestCase):
         ):
             book_week.save_extendable_booking(
                 self.ROOM,
-                self.BOOKING_DATE,
+                booking_date,
                 9.5,
                 10.0,
                 11.0,
@@ -811,7 +814,7 @@ class BookingSaveStateTests(unittest.TestCase):
             ):
                 book_week.save_extendable_booking(
                     self.ROOM,
-                    self.BOOKING_DATE,
+                    booking_date,
                     9.5,
                     10.0,
                     11.0,

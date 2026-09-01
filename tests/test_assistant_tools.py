@@ -395,6 +395,37 @@ class AssistantToolSurfaceTests(unittest.TestCase):
             )
         self.assertEqual(self.paths.settings.read_bytes(), before)
 
+    def test_direct_morning_command_atomically_replaces_conflicting_preference_and_target(self):
+        request = "Book 2 hours in the morning tomorrow."
+        result = self.surface.dispatch(
+            "update_booker_preferences",
+            {
+                "request_quote": request,
+                "practice_plan": {
+                    "date_overrides": [
+                        {"date": "2026-09-02", "hours": 2.0},
+                    ]
+                },
+                "time_preferences": {
+                    "enabled": True,
+                    "preset": "morning",
+                    "strict_mode": True,
+                },
+            },
+            user_request=request,
+        )
+
+        settings = load_settings(self.paths.settings)
+        self.assertEqual(
+            settings["practice_plan"]["date_overrides"]["2026-09-02"],
+            2.0,
+        )
+        self.assertEqual(settings["time_preferences"]["preset"], "morning")
+        self.assertTrue(settings["time_preferences"]["enabled"])
+        self.assertTrue(settings["time_preferences"]["strict_mode"])
+        self.assertEqual(result["changed"]["time_preferences"]["start_time"], "07:00")
+        self.assertEqual(result["changed"]["time_preferences"]["end_time"], "12:00")
+
     def test_relative_practice_adjustment_uses_saved_numeric_baseline(self):
         request = "Practice one hour more on September second."
         result = self.surface.dispatch(

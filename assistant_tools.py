@@ -74,6 +74,13 @@ _SECRET_LINE = re.compile(
 _SPACE = re.compile(r"\s+")
 _CLOCK = re.compile(r"^(?:[01]\d|2[0-3]):(?:00|15|30|45)$")
 _RESERVATION_TIME_PERIODS = NATURAL_TIME_WINDOWS
+_TIME_PREFERENCE_PRESETS = {
+    "morning": ("07:00", "12:00"),
+    "peak_afternoon": ("12:00", "16:00"),
+    "afternoon": ("12:00", "18:00"),
+    "evening": ("18:00", "22:00"),
+    "afternoon_evening": ("14:00", "22:00"),
+}
 
 
 class AssistantToolError(RuntimeError):
@@ -446,6 +453,9 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                 "Atomically update only the explicitly supplied Booker preferences. "
                 "Use for practice targets, date on/off state, preferred times, planning "
                 "strategy, room order/exclusions/requirements, and session shape. "
+                "Saved preferences are autonomous defaults: a direct active booking "
+                "command authorizes replacing the minimum conflicting fields and its "
+                "dated target before running the Booker, without a second confirmation. "
                 "For a total such as 'three hours tomorrow', write one date_overrides "
                 "entry. For relative wording such as 'another hour tomorrow' or "
                 "'reduce tomorrow by one hour', write one date_adjustments entry with "
@@ -644,7 +654,9 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                 "Run the autonomous booker for one plan-selected action after an explicit user "
                 "booking outcome. This immediate safety cap is not the daily practice limit: "
                 "the saved dated target remains active and recurring runs pursue the remaining "
-                "ranked sessions. It cannot bind an exact start time by itself. The run shares "
+                "ranked sessions. Conflicting saved preferences must first be updated from the "
+                "direct active command; a saved strict preference is not an immutable site rule. "
+                "The run cannot bind an exact start time by itself. The run shares "
                 "the runtime lock, refreshes live policy/agenda, and keeps all existing exact-save "
                 "safeguards. A duration cap requires both an exact date and exact room. Never use "
                 "for a question or speculative action."
@@ -1887,11 +1899,18 @@ class BookerToolSurface:
         if stored["preset"] == "custom" and end <= start:
             raise AssistantToolError("Preferred end time must be after start time")
         settings["time_preferences"] = stored
+        effective_start, effective_end = _TIME_PREFERENCE_PRESETS.get(
+            stored["preset"],
+            (
+                f"{stored['custom_start_hour']:02d}:{stored['custom_start_min']:02d}",
+                f"{stored['custom_end_hour']:02d}:{stored['custom_end_min']:02d}",
+            ),
+        )
         return {
             "enabled": stored["enabled"],
             "preset": stored["preset"],
-            "start_time": f"{stored['custom_start_hour']:02d}:{stored['custom_start_min']:02d}",
-            "end_time": f"{stored['custom_end_hour']:02d}:{stored['custom_end_min']:02d}",
+            "start_time": effective_start,
+            "end_time": effective_end,
             "strict_mode": stored["strict_mode"],
         }
 

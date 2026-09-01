@@ -399,6 +399,15 @@ EVAL_CASES = (
         ),
     ),
     EvalCase(
+        case_id="dated_time_override",
+        prompt="Book 2 hours in the morning tomorrow.",
+        description=(
+            "Override the saved strict afternoon preference, save tomorrow's two-hour "
+            "target, refresh the plan, and start one bounded date-scoped action without "
+            "asking the user to choose between the old preference and the command."
+        ),
+    ),
+    EvalCase(
         case_id="daily_total_concise",
         prompt="tmrw: 3h total pls",
         description="Resolve concise natural wording into the same dated total and bounded run.",
@@ -762,6 +771,19 @@ class SyntheticBookerDispatcher:
                         "date_overrides": {},
                     },
                     "future_practice_intentions": [],
+                    **(
+                        {
+                            "time_preferences": {
+                                "enabled": True,
+                                "preset": "custom",
+                                "start_time": "12:30",
+                                "end_time": "22:00",
+                                "strict_mode": True,
+                            }
+                        }
+                        if case_id == "dated_time_override"
+                        else {}
+                    ),
                 },
                 "agenda": {
                     "available": True,
@@ -1818,6 +1840,77 @@ def evaluate_case(
                 issues.append("future plan did not resolve the seven exact daily targets")
         if not re.search(r"dry.?run|simulat|would (?:set|save)|no (?:real|live|production)", lower):
             issues.append("future-plan final did not disclose the dry-run boundary")
+
+    elif case.case_id == "dated_time_override":
+        updates = [
+            record for record in calls if record.tool == "update_booker_preferences"
+        ]
+        valid_update = False
+        if len(updates) == 1:
+            update_arguments = updates[0].arguments
+            time_update = update_arguments.get("time_preferences")
+            valid_update = (
+                set(update_arguments)
+                == {"request_quote", "practice_plan", "time_preferences"}
+                and update_arguments.get("request_quote") == case.prompt
+                and update_arguments.get("practice_plan")
+                == {
+                    "date_overrides": [
+                        {"date": "2026-09-01", "hours": 2.0}
+                    ]
+                }
+                and isinstance(time_update, Mapping)
+                and not set(time_update)
+                - {"enabled", "preset", "strict_mode", "start_time", "end_time"}
+                and time_update.get("enabled") is True
+                and time_update.get("preset") == "morning"
+                and time_update.get("strict_mode") is True
+                and time_update.get("start_time", "07:00") == "07:00"
+                and time_update.get("end_time", "12:00") == "12:00"
+            )
+        if not valid_update:
+            issues.append(
+                "dated morning command did not atomically override time preference and target"
+            )
+        plan_refreshes = [
+            record
+            for record in calls
+            if record.tool == "refresh_booker_data"
+            and record.arguments == {"scope": "plan"}
+        ]
+        if len(plan_refreshes) != 1:
+            issues.append("dated morning command did not refresh the plan exactly once")
+        runs = [record for record in calls if record.tool == "run_booker"]
+        if len(runs) != 1 or runs[0].arguments != {
+            "request_quote": case.prompt,
+            "only_date": "2026-09-01",
+            "max_actions": 1,
+        }:
+            issues.append("dated morning command did not start one bounded tomorrow run")
+        if updates and plan_refreshes and calls.index(updates[0]) > calls.index(plan_refreshes[0]):
+            issues.append("dated morning plan refreshed before the preference override")
+        if plan_refreshes and runs and calls.index(plan_refreshes[0]) > calls.index(runs[0]):
+            issues.append("dated morning run started before the plan refresh")
+        if re.search(r"should i|would you like|which (?:option|one)|without changing", lower):
+            issues.append("dated morning command asked the old preference to win")
+        if not re.search(r"(?:2|two)[\s-]*hours?", lower):
+            issues.append("dated morning final omitted the two-hour target")
+        if "morning" not in lower:
+            issues.append("dated morning final omitted the requested daypart")
+        if not re.search(
+            r"overrid|replac|updated|changed|morning preference|"
+            r"(?:made|set|use).{0,50}(?:morning|07:00).{0,50}(?:strict|window)|"
+            r"(?:morning|07:00).{0,50}(?:made|set|use).{0,50}strict|"
+            r"(?:apply|set|made|use).{0,50}strict.{0,50}(?:morning|07:00)|"
+            r"strict.{0,50}(?:morning|07:00).{0,50}window",
+            lower,
+        ):
+            issues.append("dated morning final did not state the preference override")
+        if not re.search(
+            r"dry.?run|simulat|would (?:set|save|run|book)|no (?:real|live|production)",
+            lower,
+        ):
+            issues.append("dated morning final did not disclose the dry-run boundary")
 
     elif case.case_id in {
         "daily_total_booking",

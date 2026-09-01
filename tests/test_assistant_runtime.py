@@ -694,6 +694,14 @@ class AssistantRuntimeTests(unittest.TestCase):
             '"next week" means the next Monday-Sunday calendar week',
             normalized_instructions,
         )
+        self.assertIn(
+            "Saved preferences are autonomous defaults, not immutable site rules",
+            normalized_instructions,
+        )
+        self.assertIn(
+            "Do not ask whether to keep the previous preference",
+            normalized_instructions,
+        )
 
     def test_sensitive_prompt_is_not_duplicated_in_local_transcript(self):
         self.runtime.start()

@@ -1355,6 +1355,30 @@ python -m unittest discover -s tests
   phone plan. The final reduced phone snapshot reported ready status, fresh
   agenda and plan artifacts, and zero pending mutations; no booking was changed.
 
+## 2026-09-01 Direct Command Preference Precedence Milestone
+
+- Saved practice preferences are autonomous defaults, not permission boundaries.
+  A clear current booking command for a date, daypart, time, room, session shape,
+  or amount replaces only the conflicting user-controlled fields and continues
+  the requested action without asking whether the older preference should win.
+  Live Asimut limits, existing-event conflicts, quotas, identity proof, and
+  mutation receipts remain hard safeguards.
+- Named dayparts map to the existing strict presets (morning 07:00-12:00,
+  afternoon 12:00-18:00, evening 18:00-22:00). Terra atomically saves the dated
+  total and relevant preference override, refreshes the plan, and starts one
+  bounded date-scoped action. An explicit request to keep the usual preference
+  unchanged or make the override temporary still requires clarification because
+  no date-scoped time-preference surface exists.
+- Preference mutation results now report the effective preset times rather than
+  unrelated stored custom-clock values, so subsequent model reasoning and the UI
+  receive an accurate applied window.
+- Production `gpt-5.6-terra` medium evaluation proves that `Book 2 hours in the
+  morning tomorrow` overrides a conflicting strict afternoon window, saves the
+  two-hour total, refreshes planning, and invokes one bounded run without a
+  follow-up question. The complete offline Python suite passes 730 tests. Three
+  extendable-state tests now choose a future test date rather than expiring when
+  the wall clock passed their former fixed fixture date.
+
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions

@@ -586,6 +586,72 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
 
 
 class EvaluationContractTests(unittest.TestCase):
+    def test_dated_time_override_requires_preference_target_plan_and_run_sequence(self):
+        case = _case("dated_time_override")
+        update = ToolCallRecord(
+            case.case_id,
+            1,
+            None,
+            "update_booker_preferences",
+            {
+                "request_quote": case.prompt,
+                "practice_plan": {
+                    "date_overrides": [
+                        {"date": "2026-09-01", "hours": 2.0}
+                    ]
+                },
+                "time_preferences": {
+                    "enabled": True,
+                    "preset": "morning",
+                    "strict_mode": True,
+                },
+            },
+            {"dry_run": True},
+        )
+        refresh = ToolCallRecord(
+            case.case_id,
+            2,
+            None,
+            "refresh_booker_data",
+            {"scope": "plan"},
+            {"dry_run": True, "read_only": True},
+        )
+        run = ToolCallRecord(
+            case.case_id,
+            3,
+            None,
+            "run_booker",
+            {
+                "request_quote": case.prompt,
+                "only_date": "2026-09-01",
+                "max_actions": 1,
+            },
+            {"dry_run": True},
+        )
+
+        self.assertEqual(
+            evaluate_case(
+                case,
+                [update, refresh, run],
+                (
+                    "Dry run: I would replace the strict afternoon preference with "
+                    "morning, save the two-hour target, and run one bounded action."
+                ),
+                "completed",
+                [],
+            ),
+            [],
+        )
+        self.assertTrue(
+            evaluate_case(
+                case,
+                [],
+                "Should I change the preference or save two hours without booking?",
+                "completed",
+                [],
+            )
+        )
+
     def test_schedule_contract_accepts_read_only_agenda_refresh(self):
         case = _case("schedule_question")
         refresh = ToolCallRecord(
