@@ -579,6 +579,43 @@ class GuiPracticePlanHelpersTests(unittest.TestCase):
         )
         self.assertEqual(settings["cached_events"], [{"id": 1}])
 
+    def test_calendar_can_edit_future_dates_without_expanding_live_booking_dates(self):
+        class Variable:
+            def __init__(self, value=False):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        gui = object.__new__(AsimutBookerGUI)
+        today = datetime(2026, 9, 7).date()
+        live_date = today + timedelta(days=7)
+        planned_date = today + timedelta(days=45)
+        gui.booking_dates = (today, live_date)
+        gui.day_vars = {}
+        gui.disabled_dates = {planned_date.isoformat()}
+        gui.calendar_day_snapshot = {}
+
+        with patch("gui.tk.BooleanVar", side_effect=lambda value=False: Variable(value)):
+            planned_var = gui._ensure_calendar_day_var(planned_date, today=today)
+            past_var = gui._ensure_calendar_day_var(
+                today - timedelta(days=1),
+                today=today,
+            )
+
+        self.assertIsNone(past_var)
+        self.assertFalse(planned_var.get())
+        self.assertEqual(
+            gui.calendar_day_snapshot,
+            {planned_date.isoformat(): False},
+        )
+        planned_var.set(True)
+        self.assertNotIn(planned_date, gui.booking_dates)
+        self.assertEqual(gui.booking_dates, (today, live_date))
+
     def test_invalid_hours_restore_persisted_plan_toggle_and_widget_state(self):
         class Variable:
             def __init__(self, value):

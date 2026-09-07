@@ -4071,6 +4071,7 @@ class AsimutBookerGUI:
         except PracticePlanError as exc:
             self._set_settings_error(str(exc))
             disabled_dates = set()
+        self.disabled_dates = disabled_dates
 
         today = datetime.now().date()
         if not hasattr(self, "room_catalog"):
@@ -4089,6 +4090,30 @@ class AsimutBookerGUI:
             # Default to enabled unless in disabled list
             var = tk.BooleanVar(value=(date_str not in disabled_dates))
             self.day_vars[date_str] = var
+
+    def _ensure_calendar_day_var(self, target_date: date, *, today: date):
+        """Return editable state for any non-past planning date.
+
+        The live catalog still defines ``booking_dates`` and therefore the only
+        dates the runtime can scan or mutate.  Calendar state is deliberately
+        broader: it is a durable preference that may be prepared months before
+        a date enters that live window.
+        """
+
+        if target_date < today:
+            return None
+        date_key = target_date.isoformat()
+        existing = self.day_vars.get(date_key)
+        if existing is not None:
+            return existing
+
+        enabled = date_key not in getattr(self, "disabled_dates", set())
+        variable = tk.BooleanVar(value=enabled)
+        self.day_vars[date_key] = variable
+        snapshot = getattr(self, "calendar_day_snapshot", None)
+        if isinstance(snapshot, dict):
+            snapshot.setdefault(date_key, enabled)
+        return variable
 
     def save_booking_days(self, day_states: Mapping[str, bool]):
         """Save only dates edited in this dialog against the latest settings."""
@@ -5376,6 +5401,7 @@ class AsimutBookerGUI:
         dialog.transient(self.root)
         dialog.grab_set()
         day_snapshot = {date_key: var.get() for date_key, var in self.day_vars.items()}
+        self.calendar_day_snapshot = day_snapshot
 
         # Store dialog reference for updates
         self.calendar_dialog = dialog
@@ -5494,7 +5520,11 @@ class AsimutBookerGUI:
         )
         legend_selected.pack(side=tk.LEFT, padx=(0, 5))
         legend_selected.pack_propagate(False)
-        ttk.Label(legend_frame, text="= Selected for booking", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Label(
+            legend_frame,
+            text="= Selected; booking waits for the live window",
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=(0, 20))
 
         # White = deselected
         legend_deselected = tk.Frame(legend_frame, bg="white", width=20, height=20, highlightbackground="gray", highlightthickness=1)
@@ -5575,10 +5605,12 @@ class AsimutBookerGUI:
         self.calendar_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         def cancel_and_close():
-            # Calendar cells edit the live BooleanVars, so restore the opening snapshot.
-            for date_key, enabled in day_snapshot.items():
-                if date_key in self.day_vars:
-                    self.day_vars[date_key].set(enabled)
+            # Calendar navigation can create planning variables for dates well
+            # beyond the live window. Reloading discards all unsaved edits and
+            # restores the compact current-window controls in one step.
+            self.load_booking_days()
+            self._update_days_summary()
+            self._update_practice_plan_summary()
             self._calendar_scan_generation += 1
             self.calendar_canvas.unbind_all("<MouseWheel>")
             self.calendar_dialog = None
@@ -5715,9 +5747,9 @@ class AsimutBookerGUI:
             dates = [self.calendar_start_date + timedelta(days=i) for i in range(3)]
 
         for d in dates:
-            date_str = d.strftime('%Y-%m-%d')
-            if date_str in self.day_vars:
-                self.day_vars[date_str].set(select)
+            variable = self._ensure_calendar_day_var(d, today=today)
+            if variable is not None:
+                variable.set(select)
 
         self._refresh_calendar()
 
@@ -5990,7 +6022,8 @@ class AsimutBookerGUI:
             current = start_date + timedelta(days=index)
             date_key = current.isoformat()
             self.calendar_frame.columnconfigure(index + 1, weight=1, uniform="plan-day")
-            selected = date_key in self.day_vars and self.day_vars[date_key].get()
+            day_var = self._ensure_calendar_day_var(current, today=today)
+            selected = day_var is not None and day_var.get()
             heading_bg = "#e8f2ff" if selected else "#f0f0f0"
             heading = current.strftime("%a %d")
             if current == today:
@@ -6117,11 +6150,12 @@ class AsimutBookerGUI:
 
     def _render_day_cell(self, row, col, current_date, date_str, today, show_day_name=False, cell_height=100):
         """Render a single day cell."""
-        # Check if selected
-        is_available = date_str in self.day_vars
-        is_selected = is_available and self.day_vars[date_str].get()
         is_today = current_date == today
         is_past = current_date < today
+        day_var = self._ensure_calendar_day_var(current_date, today=today)
+        is_available = day_var is not None
+        is_selected = is_available and day_var.get()
+        is_in_live_window = current_date in set(getattr(self, "booking_dates", ()))
 
         # Get events for this day
         events = self.calendar_events.get(date_str, [])
@@ -6176,9 +6210,19 @@ class AsimutBookerGUI:
         )
         day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
 
+        if not is_past and not is_in_live_window:
+            tk.Label(
+                cell,
+                text="Waits for booking window",
+                font=("Segoe UI", 8),
+                bg=bg_color,
+                fg="#687381",
+                anchor="w",
+            ).pack(fill=tk.X, padx=5, pady=(0, 1))
+
         # Calculate how many events can fit based on cell height
         # Header takes ~25px, each event line ~18px, "+more" line ~16px
-        header_space = 30
+        header_space = 46 if not is_past and not is_in_live_window else 30
         event_line_height = 18
         available_for_events = cell_height - header_space
         max_events_to_show = max(1, (available_for_events - 16) // event_line_height)

@@ -1385,6 +1385,23 @@ python -m unittest discover -s tests
   the resulting daily total was complete, and a final read-only agenda refresh
   exposed the new reservation with no pending mutation receipts.
 
+## 2026-09-07 Advance Calendar Planning Milestone
+
+- The desktop Booking Calendar allows every non-past date to be selected or
+  deselected, including dates months beyond Asimut's current live cutoff.
+  Out-of-window cells are explicitly labelled `Waits for booking window`, and
+  bulk selection works across whichever future month or multi-day view is open.
+- Advance selections remain ordinary `disabled_dates` preferences. They do not
+  expand `booking_dates`: authenticated planning, scanning, and mutation still
+  derive their only actionable dates from the freshly observed
+  `LiveRoomPolicy.booking_dates(today)` window, so a selected future date is
+  ignored until it naturally enters Asimut's live booking horizon.
+- Calendar navigation lazily creates edit state and an opening snapshot for
+  each visited future date. Save merges only changed dates into the latest
+  settings, while Cancel reloads persisted settings and discards both current-
+  window and newly created future edits. The focused GUI suite passes 53 tests,
+  and the complete offline suite passes 731 tests.
+
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions
