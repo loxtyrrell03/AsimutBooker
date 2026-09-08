@@ -9,7 +9,7 @@ The server is intentionally narrow:
 * natural-language changes still pass through the existing AssistantRuntime and
   its exact Terra-medium typed Booker tools.
 
-There is no shell, generic file API, direct booking endpoint, or
+There is no shell, generic file API, arbitrary booking command, or
 credential/authentication form on this surface.
 """
 
@@ -46,6 +46,8 @@ from phone_preferences import (
     read_phone_preferences, save_phone_preferences, PreferenceConflict, AssistantToolError,
 )
 from runtime_guard import SingleInstanceLock
+from phone_operations import PhoneOperations
+from phone_system import VIEWS, SystemConflict, read_view
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -510,6 +512,7 @@ class PhoneAssistantService:
         self._workspace = Path(workspace)
         self._codex_executable = codex_executable
         self._runtime: Any | None = None
+        self.operations = PhoneOperations(self, state_dir=self._state_path.parent / "phone_operations")
 
     @property
     def runtime(self) -> Any:
@@ -616,7 +619,11 @@ class PhoneAssistantService:
             cancellation = dict(self._cancellation) if self._cancellation else None
             if cancellation and cancellation["active"]:
                 unresolved_reserved_count = max(0, unresolved_reserved_count - 1)
+        system_job = self.operations.snapshot()
+        if system_job and system_job.get("active"):
+            unresolved_reserved_count = max(0, unresolved_reserved_count - 1)
         return {
+            "system_job": system_job,
             "cancellation": cancellation,
             "model": model,
             "busy": busy,
@@ -713,7 +720,7 @@ class PhoneAssistantService:
 
     def acknowledge_uncertain(self) -> int:
         with self._request_lock:
-            if self._live_refresh_lock.locked() or (self._cancellation and self._cancellation["active"]):
+            if self.operations.active or self._live_refresh_lock.locked() or (self._cancellation and self._cancellation["active"]):
                 raise PhoneActiveTurnError("Wait for the current Booker operation to finish")
             busy = self.is_busy
             with self._active_lock:
@@ -725,7 +732,17 @@ class PhoneAssistantService:
                 raise PhoneActiveTurnError(
                     "An active assistant turn must finish before review"
                 )
-            return self.ledger.acknowledge_reserved()
+            if self.operations.job and self.operations.job.get('state') == 'uncertain':
+                # A host restart can leave its worker alive. Review cannot clear
+                # the durable gate while that process still owns the Booker.
+                lock = SingleInstanceLock(self.operations.root / 'data/booker-runtime.lock')
+                if not lock.acquire():
+                    raise PhoneActiveTurnError('Wait for the PC Booker operation to finish before reviewing its outcome.')
+                lock.release()
+            count = self.ledger.acknowledge_reserved()
+            if self.operations.job and self.operations.job.get('state') == 'uncertain':
+                self.operations._update(state='reviewed', text='Previous operation outcome reviewed. Reload its page before another action.')
+            return count
 
     def stop(self) -> bool:
         with self._runtime_lock:
@@ -791,7 +808,7 @@ class PhoneAssistantService:
         if scope not in {"agenda", "plan"}:
             raise ValueError("scope must be agenda or plan")
         with self._request_lock:
-            if self._cancellation and self._cancellation["active"]:
+            if self.operations.active or (self._cancellation and self._cancellation["active"]):
                 return self.snapshot()
             if not self._live_refresh_lock.acquire(blocking=False):
                 raise PhoneActiveTurnError("A live Booker refresh is already running")
@@ -1088,6 +1105,22 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path.startswith("/api/v1/system/"):
+            if self._authorized() is None:
+                return
+            view = path.removeprefix("/api/v1/system/")
+            try:
+                if view == "job":
+                    result = {"job": self.app.assistant.operations.snapshot()}
+                elif view in VIEWS:
+                    result = read_view(view)
+                else:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", "System page not found.")
+                    return
+                self._json(HTTPStatus.OK, result)
+            except Exception:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "system_unavailable", "This page could not be loaded. Refresh and try again.")
+            return
         if path == "/api/v1/preferences":
             if self._authorized() is None:
                 return
@@ -1170,6 +1203,18 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         if payload is None:
             return
+        if path in {"/api/v1/system/jobs", "/api/v1/system/stop"}:
+            try:
+                operations = self.app.assistant.operations
+                result = operations.stop(payload) if path.endswith("/stop") else operations.submit(payload)
+                self._json(HTTPStatus.ACCEPTED, result)
+            except SystemConflict as exc:
+                self._error(HTTPStatus.CONFLICT, "operation_conflict", str(exc))
+            except (ValueError, TypeError, AttributeError):
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_operation", "The operation is invalid. Reload and review its fields.")
+            except Exception:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "operation_unconfirmed", "The operation was not confirmed. Reload its status before trying again.")
+            return
         if path == "/api/v1/reservations/cancel":
             try:
                 result = self.app.assistant.cancel_reservation(payload)
@@ -1190,8 +1235,8 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/preferences":
             try:
                 with self.app.assistant._request_lock:
-                    if self.app.assistant.is_busy:
-                        self._error(HTTPStatus.CONFLICT, "assistant_busy", "Wait for the assistant to finish before saving settings.")
+                    if self.app.assistant.is_busy or self.app.assistant.operations.active:
+                        self._error(HTTPStatus.CONFLICT, "assistant_busy", "Wait for the current operation to finish before saving settings.")
                         return
                     saved = save_phone_preferences(payload)
                 self._json(HTTPStatus.OK, saved)

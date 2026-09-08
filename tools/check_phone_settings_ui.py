@@ -34,6 +34,8 @@ def check(dist):
 
             def intercept(route):
                 path = urlsplit(route.request.url).path
+                if path == '/api/v1/system/job':
+                    route.fulfill(content_type='application/json',body=json.dumps({'job': None})); return
                 if path == '/api/v1/assistant/events':
                     route.fulfill(content_type='text/event-stream', body=': connected\n\n')
                     return
@@ -62,7 +64,7 @@ def check(dist):
             page.route('**/*', intercept)
             page.goto(origin)
             page.get_by_role('button', name='Settings', exact=True).tap()
-            page.get_by_role('button', name='Edit daily target', exact=True).tap()
+            page.get_by_role('button', name='Daily goal', exact=True).tap()
             page.get_by_label('Use a daily practice goal').check()
             page.get_by_label('Hours per day', exact=True).fill('')
             expect(page.get_by_label('Hours per day', exact=True)).to_have_value('')
@@ -76,7 +78,7 @@ def check(dist):
             page.get_by_role('button', name='Cancel', exact=True).tap()
             assert len(writes) == 1
 
-            page.get_by_role('button', name='Edit preferred time', exact=True).tap()
+            page.get_by_role('button', name='Preferred times', exact=True).tap()
             page.get_by_label('Use preferred times', exact=True).check()
             page.get_by_label('Start time', exact=True).fill('12:30')
             page.get_by_label('End time', exact=True).fill('21:00')

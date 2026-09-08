@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Settings2, Pencil } from 'lucide-react';
+import { Settings2 } from 'lucide-react';
 import { requestJson } from '../lib/api';
 
 import type { Preferences, DailyPlanning } from '../lib/preferences';
@@ -11,10 +11,11 @@ type Section = 'goal' | 'days' | 'times' | 'rooms' | 'strategy' | 'requirements'
 
 const labels: Record<Section, string> = { goal: 'Daily goal', days: 'Practice days', times: 'Preferred times', rooms: 'Favourite rooms', all: 'Edit practice settings', strategy: 'Booking strategy', requirements: 'Room requirements' };
 
-export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabel }: { csrf: string; enabled: boolean; onSaved: () => void; targetLabel: string; timeLabel: string }) {
+export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabel, onEditing }: { onEditing?: (editing: boolean) => void; csrf: string; enabled: boolean; onSaved: () => void; targetLabel: string; timeLabel: string }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const [hours, setHours] = useState('');
-  const [section, setSection] = useState<Section | null>(null);
+  const [section, setSectionState] = useState<Section | null>(null);
+  function setSection(next: Section | null) { setSectionState(next); onEditing?.(next !== null); }
   const [values, setValues] = useState<Preferences | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
@@ -102,13 +103,9 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
 
   return <div className="practice-settings">
     <div className="section-heading"><h3>Your practice</h3><button type="button" className="quiet-icon" aria-label="Edit all practice settings" disabled={!enabled || section !== null} onClick={() => void open('all')}><Settings2 /></button></div>
-    {!section && <div className="metric-grid editable-metrics">
-      <button type="button" aria-label="Edit daily target" disabled={!enabled} onClick={() => void open('goal')}><span>Daily target <Pencil /></span><strong>{targetLabel}</strong></button>
-      <button type="button" aria-label="Edit preferred time" disabled={!enabled} onClick={() => void open('times')}><span>Preferred time <Pencil /></span><strong>{timeLabel}</strong></button>
-    </div>}
     {!section && <div className="preference-actions">{(['goal', 'days', 'times', 'rooms', 'requirements', 'strategy'] as Section[]).map(key =>
-      <button type="button" className="quiet-secondary" key={key} onClick={() => void open(key)} disabled={!enabled}>{labels[key]}</button>)}</div>}
-    {!enabled && <p className="quiet-muted">Connect to Booker and wait for the assistant to finish to edit preferences.</p>}
+      <button type="button" className="quiet-secondary" key={key} onClick={() => void open(key)} disabled={!enabled} aria-label={labels[key]}><span>{labels[key]}</span>{key === 'goal' ? <small>{targetLabel}</small> : key === 'times' ? <small>{timeLabel}</small> : <span aria-hidden="true">›</span>}</button>)}</div>}
+    {!enabled && <p className="quiet-muted">Connect to Booker and wait for the current operation to finish to edit preferences.</p>}
     {notice && <output className="quiet-notice">{notice}</output>}
     {section && <form className="preference-editor" onSubmit={event => void save(event)} aria-label={labels[section]}>
       <h4 ref={heading} tabIndex={-1}>{labels[section]}</h4>

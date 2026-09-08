@@ -120,6 +120,7 @@ class FakeRuntime:
 
 
 class FakeAssistant:
+    operations = mock.Mock(active=False)
     def __init__(self):
         self.runtime = type("Runtime", (), {"is_busy": False})()
         self.events = EventHub()

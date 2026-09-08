@@ -15,7 +15,6 @@ import {
   RefreshCw,
   Send,
   Settings2,
-  ShieldCheck,
   Sparkles,
   WifiOff,
   X,
@@ -35,6 +34,7 @@ import {
   upsertReasoningPart,
 } from '@/lib/phone_state';
 import { selectedPlanMinutes, selectedPlanSessions } from '@/lib/plan_state';
+import { SystemTools, type SystemJob } from '@/components/system-tools';
 import { PhoneCalendar } from '@/components/phone-calendar';
 import { PracticeSettings } from '@/components/practice-settings';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
@@ -158,6 +158,7 @@ type CancellationProgress = {
 };
 
 type Bootstrap = {
+  system_job?: SystemJob | null;
   cancellation?: CancellationProgress | null;
   model: string;
   busy: boolean;
@@ -377,12 +378,6 @@ function RemoteGate() {
       </div>
     </main>
   );
-}
-
-function StatusIcon({ state }: { state: BookerSnapshot['status']['state'] }) {
-  if (state === 'blocked' || state === 'attention') return <AlertTriangle />;
-  if (state === 'stale') return <RefreshCw />;
-  return <ShieldCheck />;
 }
 
 function AppHeader({
@@ -954,21 +949,27 @@ function ScheduleView({
 
 function StatusView({
   booker,
-  standalone,
   onRefresh,
   refreshing,
   csrf,
   editable,
   onSaved,
+  active,
+  systemJob,
+  onJob,
 }: {
+  active: boolean;
+  systemJob: SystemJob | null;
+  onJob: (job: SystemJob | null) => void;
   booker: BookerSnapshot;
-  standalone: boolean;
   onRefresh: () => void;
   refreshing: boolean;
   csrf: string;
   editable: boolean;
   onSaved: () => void;
 }) {
+  const [practiceDetail, setPracticeDetail] = useState(false);
+  const [systemDetail, setSystemDetail] = useState(false);
   const practice = booker.preferences.practice_plan;
   const time = booker.preferences.time_preferences;
   return (
@@ -983,18 +984,7 @@ function StatusView({
         </Button>
       </div>
 
-      <article className={`overview-card state-${booker.status.state}`}>
-        <div className="overview-icon"><StatusIcon state={booker.status.state} /></div>
-        <div>
-          <h3>{booker.status.label}</h3>
-          <p>
-            {booker.status.pending_mutations > 0
-              ? 'A recent booking needs checking. See System details below.'
-              : booker.agenda.stale ? 'Refresh to check your latest bookings.'
-              : 'Your practice preferences are shared with the PC app.'}
-          </p>
-        </div>
-      </article>
+      {booker.status.pending_mutations > 0 && <div className="system-warning" role="alert">{booker.status.pending_mutations} booking outcome{booker.status.pending_mutations === 1 ? '' : 's'} need checking. Open System details below.</div>}
 
       {booker.unavailable_sections.length > 0 && (
         <div className="attention-card" role="alert">
@@ -1006,18 +996,8 @@ function StatusView({
         </div>
       )}
 
-      {!standalone && (
-        <article className="install-card">
-          <div className="install-icon"><Home /></div>
-          <div>
-            <strong>Add Asimut to your Home Screen</strong>
-            <p>In Safari, tap Share, then “Add to Home Screen” for the full app view.</p>
-          </div>
-        </article>
-      )}
-
-      {!booker.unavailable_sections.includes('preferences') && <section className="preference-card">
-        <PracticeSettings csrf={csrf} enabled={editable} onSaved={onSaved}
+      {!booker.unavailable_sections.includes('preferences') && <section hidden={systemDetail} className="preference-card">
+        <PracticeSettings onEditing={setPracticeDetail} csrf={csrf} enabled={editable} onSaved={onSaved}
           targetLabel={practice.enabled && practice.default_hours ? `${practice.default_hours} hours` : 'Off'}
           timeLabel={time.enabled ? `${time.start_time}–${time.end_time}` : 'Any time'} />
         {booker.preferences.future_intentions.length > 0 && (
@@ -1031,20 +1011,12 @@ function StatusView({
             ))}
           </div>
         )}
-        {booker.preferences.rebooking_blackouts.length > 0 && (
-          <div className="intent-list" aria-label="Cancelled times kept free">
-            {booker.preferences.rebooking_blackouts.map((blackout) => (
-              <article key={`${blackout.date}-${blackout.start_time}-${blackout.end_time}`}>
-                <strong>Cancelled time kept free</strong>
-                <span>{dateLabel(blackout.date, true)} · {blackout.start_time}–{blackout.end_time}</span>
-                <p>The automatic Booker will not replace a booking in this window unless you change it.</p>
-              </article>
-            ))}
-          </div>
-        )}
+
       </section>}
 
-      <details className="health-list" aria-label="Detailed Booker health">
+      <div hidden={practiceDetail}><SystemTools onEditing={setSystemDetail} csrf={csrf} enabled={editable} active={active} job={systemJob} onJob={onJob} onSaved={onSaved} /></div>
+
+      <details hidden={practiceDetail || systemDetail} className="health-list" aria-label="Detailed Booker health">
         <summary className="settings-details-title">System details <ChevronDown /></summary>
         <div className="section-heading">
           <div>
@@ -1098,6 +1070,7 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
 
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('today');
+  const [systemJob, setSystemJob] = useState<SystemJob | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const cancellingRef = useRef(false);
   const [cancellationStatus, setCancellationStatus] = useState('');
@@ -1122,12 +1095,6 @@ export default function HomePage() {
   const preview = useMemo(
     () => typeof window !== 'undefined' && window.location.hostname === 'localhost' && window.location.port === '3000',
     [],
-  );
-  const standalone = useSyncExternalStore(
-    subscribeBrowserSnapshot,
-    () => window.matchMedia('(display-mode: standalone)').matches
-      || Boolean((navigator as Navigator & { standalone?: boolean }).standalone),
-    () => false,
   );
   const privateSurface = useSyncExternalStore<boolean | null>(
     subscribeBrowserSnapshot,
@@ -1168,6 +1135,10 @@ export default function HomePage() {
     if (operation.cancelled) setSelectedBooking(null);
   }, []);
 
+  const applySystemJob = useCallback((next: SystemJob | null) => {
+    setSystemJob(current => current?.updated_at && next?.updated_at && current.updated_at > next.updated_at ? current : next);
+  }, []);
+
   const applyBootstrap = useCallback((payload: Bootstrap) => {
     // A slower HTTP response must not undo a newer streamed turn/reset.
     if (payload.stream_generation === streamGenerationRef.current && payload.event_cursor < cursorRef.current) return;
@@ -1181,6 +1152,7 @@ export default function HomePage() {
     cursorRef.current = position.cursor;
     setBooker(payload.booker);
     if (payload.cancellation) applyCancellation(payload.cancellation);
+    if (payload.system_job !== undefined) applySystemJob(payload.system_job);
     setMessages(payload.messages);
     setBusy(payload.busy);
     settlePendingDelivery(payload.active_client_message_id ?? undefined);
@@ -1196,7 +1168,7 @@ export default function HomePage() {
     setUncertainOutcome(unresolved > 0
       ? `${unresolved} earlier command${unresolved === 1 ? ' has' : 's have'} an uncertain outcome after an interruption. Review Booker status before continuing.`
       : '');
-  }, [applyCancellation, settlePendingDelivery]);
+  }, [applyCancellation, applySystemJob, settlePendingDelivery]);
 
   const refreshSnapshot = useCallback(async () => {
     if (preview) return;
@@ -1747,6 +1719,7 @@ export default function HomePage() {
   return (
     <main className={`app-shell tab-${tab}`}>
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
+      {systemJob?.active && tab !== 'status' && <output className="system-job system-global"><strong>PC operation in progress</strong><p>{systemJob.text}</p><button type="button" onClick={() => setTab('status')}>View operation / Stop</button></output>}
       {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
         {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
         <div><strong>{cancelling ? 'Cancelling booking' : 'Cancellation update'}</strong>
@@ -1811,9 +1784,9 @@ export default function HomePage() {
       {tab === 'schedule' && booker && (
         <ScheduleView booker={booker} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
       )}
-      {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
+      {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
       {booker && <div hidden={tab !== 'status'}>
-        <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} csrf={csrf} editable={connection === 'online' && !busy && !preview} onSaved={() => void refreshSnapshot()} />
+        <StatusView booker={booker} active={tab === 'status'} systemJob={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} refreshing={refreshing} csrf={csrf} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={refreshSnapshot} />
       </div>}
       {tab !== 'assistant' && !booker && (
         <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>

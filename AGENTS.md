@@ -28,6 +28,44 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-09 Phone desktop tools and Settings parity
+
+- The chosen Desktop companion layout now includes grouped, dedicated Settings
+  pages for automatic scheduling, manual background/PC-browser runs, deterministic
+  login repair, agenda/plan refresh, availability scans with date/room/duration
+  filters and CSV, history, exact event conflict choices, protected-time reopening,
+  sanitized logs, supported advanced rules, old-log cleanup and setup information.
+  Practice editors and system detail pages hide unrelated groups while retaining
+  their drafts across navigation. Calendar timelines show potential sessions.
+- `phone_operations.py` reserves durable UUIDs before dispatch and persists job
+  state across phone reconnects. Jobs coordinate with the assistant/cancellation
+  refresh lock and each worker uses the global Booker runtime lock. Reused IDs
+  never dispatch twice; unconfirmed worker exits remain reserved for review.
+  The last successful scan survives subsequent runs and failed scans.
+- `operation_control.py` adds scoped progress and cooperative Stop hooks. Stop
+  prevents the next Save, while a Save already entered completes its verification.
+  Long runs request Stop after 20 minutes; the host retains ownership until the
+  worker exits and never force-kills during Save. Normal runtime contention now
+  returns exit code 6, consistent with scheduled/read-only modes.
+- All system routes retain private identity/session/CSRF checks and a fixed action
+  allow-list. No remote shell, arbitrary file path or credential form is exposed.
+  Schedule changes reuse the exact Agent UAC helpers and verify registered state.
+  Config uses the Booker's shared supported-schema validator. Event/config/history
+  writes check revisions under their document locks; cleanup is limited to listed
+  inactive dated Booker logs older than 48 hours. Logs expose known status
+  categories, not raw browser/server output. Credential setup stays PC-local.
+- Verified 871 Python tests before final retention hardening, then 78 focused host
+  regressions; 19 Node tests, TypeScript, lint and static build validation.
+  `tools/check_phone_system_ui.py` checks every tool page, confirmations, stale
+  saves, scan CSV, run reconnect, failed Stop, lost responses and 320/390/844px
+  geometry in Chromium/WebKit. Existing calendar/settings/interruption checks
+  also pass. Rendered Settings, scan, rules and confirmation pages were inspected.
+  Fixtures use temporary files and intercepted APIs; no live bookings, task
+  changes, cleanup, credentials or preference writes were used for testing.
+- Private publication is the remaining delivery step. Preserve existing hashed
+  phone assets and only restart the verified idle owned phone task. PC calendar
+  controls load on opening the desktop app; preserve already-open desktop drafts.
+
 ## 2026-09-08 Shared calendar dates, times and complete practice preferences
 
 - Phone Calendar is a persistent fifth destination with month, fortnight, week,
@@ -51,10 +89,9 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   mobile Chromium/WebKit day/bulk persistence and conflict checks at 320/390/844px,
   all five calendar modes, and complete room/strategy controls. Isolated calendar
   and help renders were visually inspected; no live preference/booking writes.
-- Remaining parity work: phone system jobs, scans, activity/history, maintenance,
-  final Settings organization and private deployment. These calendar changes are
-  not yet published to the phone. Preserve open desktop drafts; reopening will
-  be required for the new desktop controls.
+- The subsequent phone-tools milestone completes the remaining application
+  surfaces. Preserve open desktop drafts when loading these Calendar controls;
+  private publication status is recorded in that milestone.
 
 ## 2026-09-08 Phone capability parity design review
 

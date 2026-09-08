@@ -47,7 +47,9 @@ def check(dist):
 
             def intercept(route):
                 path = urlsplit(route.request.url).path
-                if path == '/api/v1/session':
+                if path == '/api/v1/system/job':
+                    reply(route, {'job': None})
+                elif path == '/api/v1/session':
                     reply(route, {'csrf_token': 'test', 'bootstrap': bootstrap()})
                 elif path == '/api/v1/preferences':
                     if route.request.method == 'GET':

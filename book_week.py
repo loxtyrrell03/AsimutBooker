@@ -13,6 +13,7 @@ Usage:
 """
 
 from date_time_preferences import with_date_overrides, resolve_time_preferences
+from operation_control import operation_stage, report_available_gaps
 
 import re
 import sys
@@ -184,9 +185,9 @@ def _config_number(value, label, *, minimum=None, maximum=None):
     return number
 
 
-def load_config():
+def load_config(config_file=None):
     """Load the supported YAML schema; an existing bad file never falls back."""
-    config_file = APP_DIR / "config" / "config.yaml"
+    config_file = Path(config_file) if config_file is not None else APP_DIR / "config" / "config.yaml"
 
     if not config_file.exists():
         return copy.deepcopy(_DEFAULT_CONFIG)
@@ -200,6 +201,10 @@ def load_config():
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ConfigError(f"Could not read config.yaml: {exc}") from exc
 
+    return validate_config_document(cfg)
+
+
+def validate_config_document(cfg):
     if not isinstance(cfg, dict):
         raise ConfigError("config.yaml must contain a YAML mapping")
     unknown_top = set(cfg) - {"rules"}
@@ -3864,6 +3869,7 @@ def try_extend_booking(
     Returns:
         Tuple of (success: bool, new_end_time: str or None, message: str)
     """
+    operation_stage('Checking a reservation for extension…')
     time_prefs = resolve_time_preferences(time_prefs, booking['date'])
     room = booking["room"]
     date_str = booking["date"]
@@ -5074,6 +5080,7 @@ def _practice_room_grid_content_signature(snapshot):
 
 def wait_for_practice_room_grid(page, expected_date, *, timeout_ms=20000):
     """Wait for a stable legacy or SVG practice-room overview."""
+    operation_stage('Reading room availability…')
 
     expected_date = as_date(expected_date)
     deadline = time.monotonic() + timeout_ms / 1000
@@ -5296,6 +5303,7 @@ def try_book_slot(
     time_prefs=None,
 ):
     """Attempt one slot and return its exact verified receipt, or False."""
+    operation_stage('Checking a booking opportunity…')
     time_prefs = resolve_time_preferences(time_prefs, target_date)
     room = slot['room']
     start_hour = slot['start_hour']
@@ -5870,6 +5878,7 @@ def navigate_to_day(page, target_day, current_day, *, base_date=None):
     Returns:
         The new current_day position
     """
+    operation_stage('Opening the selected date…')
     today = as_date(base_date) if base_date is not None else datetime.now().date()
     try:
         return _walk_calendar_days(
@@ -7749,6 +7758,7 @@ def try_horizon_snipe(
 
     Returns: True if successful, False otherwise.
     """
+    operation_stage('Preparing a horizon booking…')
     time_prefs = resolve_time_preferences(time_prefs, target_date)
     room = slot['room']
     start_hour = slot['start_hour']
@@ -8260,6 +8270,7 @@ def scan_agenda(
     snapshot_path=None,
 ):
     """Scan every date in the freshly observed live booking window."""
+    operation_stage('Checking the live agenda…')
     window_dates = tuple(window_dates or booking_window_dates(today))
     if not window_dates or window_dates[0] != today:
         raise RuntimeError("Agenda scan requires a current live booking window")
@@ -9635,6 +9646,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 seen_configured_rooms.update(configured_on_day)
 
                 available_data = get_available_slots(page)
+                report_available_gaps(target_date, available_data)
                 slot_count = sum(
                     len(room.get("slots", [])) for room in available_data
                 )
@@ -11599,7 +11611,7 @@ def main(argv=None):
                 settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
         if not acquired:
             print("Another AsimutBooker run is already active; this run did not refresh data.")
-            return 6 if (args.scheduled or args.agenda_only or args.check_only or args.plan_only) else 0
+            return 6
         with booking_preference_run(settings_file, settings):
             return run_booking(args, settings, practice_plan, room_preferences) or 0
     except KeyboardInterrupt:

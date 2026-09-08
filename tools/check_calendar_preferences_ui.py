@@ -35,6 +35,8 @@ def check(dist):
                         'stream_generation': 'calendar-test', 'active_client_message_id': None, 'unresolved_reserved_count': 0}
             def route(request):
                 path = urlsplit(request.request.url).path
+                if path == '/api/v1/system/job':
+                    request.fulfill(content_type='application/json',body=json.dumps({'job': None})); return
                 if path == '/api/v1/assistant/events':
                     request.fulfill(content_type='text/event-stream',body=': connected\n\n'); return
                 if path.startswith('/api/'):

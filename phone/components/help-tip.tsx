@@ -6,6 +6,8 @@ export function HelpTip({ children, label }: { children: React.ReactNode; label:
   const [position, setPosition] = useState({ left: 8, top: 8 });
   const root = useRef<HTMLSpanElement>(null);
   const id = useId();
+  const pointerFocus = useRef(false);
+  const touchInteraction = useRef(false);
   useEffect(() => {
     if (!open) return;
     const place = () => {
@@ -18,8 +20,8 @@ export function HelpTip({ children, label }: { children: React.ReactNode; label:
     window.addEventListener('resize', place); window.addEventListener('scroll', place, true);
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', key); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [open]);
-  return <span ref={root} className="help-tip" onMouseEnter={() => { if (window.matchMedia('(hover:hover)').matches) setOpen(true); }} onMouseLeave={() => { if (window.matchMedia('(hover:hover)').matches) setOpen(false); }}>
-    <button type="button" aria-label={`Help: ${label}`} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => setOpen(value => !value)} onFocus={event => { if (event.currentTarget.matches(':focus-visible')) setOpen(true); }} onBlur={event => { if (!root.current?.contains(event.relatedTarget as Node)) setOpen(false); }}>?</button>
+  return <span ref={root} className="help-tip" onPointerEnter={event => { touchInteraction.current = event.pointerType !== 'mouse'; }} onMouseEnter={() => { if (!touchInteraction.current && window.matchMedia('(hover:hover)').matches) setOpen(true); }} onMouseLeave={() => { if (!touchInteraction.current && window.matchMedia('(hover:hover)').matches) setOpen(false); }}>
+    <button type="button" aria-label={`Help: ${label}`} aria-expanded={open} aria-describedby={open ? id : undefined} onPointerDown={() => { pointerFocus.current = true; }} onKeyDown={() => { pointerFocus.current = false; }} onClick={() => setOpen(value => !value)} onFocus={event => { if (!pointerFocus.current && event.currentTarget.matches(':focus-visible')) setOpen(true); }} onBlur={event => { pointerFocus.current = false; if (!root.current?.contains(event.relatedTarget as Node)) setOpen(false); }}>?</button>
     {open && <span id={id} role="tooltip" className="help-popover" style={position}>{children}<button type="button" aria-label="Close help" onClick={() => setOpen(false)}>×</button></span>}
   </span>;
 }

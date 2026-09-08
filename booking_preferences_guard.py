@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from app_settings import InterProcessFileLock, SettingsError, load_settings
+from operation_control import check_operation_stop
 
 
 class BookingPreferencesChanged(SettingsError):
@@ -44,6 +45,7 @@ def booking_save_boundary():
     low-level fixture calls without a run context retain their isolated behavior.
     Remote verification and local post-Save updates happen after releasing it.
     """
+    check_operation_stop()
     active = _ACTIVE_RUN.get()
     if active is None:
         yield
@@ -62,6 +64,7 @@ def booking_save_boundary():
             raise BookingPreferencesChanged("Preferences could not be rechecked; stopping before Save") from exc
         if changed:
             raise BookingPreferencesChanged("Preferences changed during this run; stopping before Save to replan")
+        check_operation_stop()
         yield
     finally:
         lock.release()

@@ -1,9 +1,10 @@
 """Sanitized read-only state for the private Asimut phone companion.
 
 The phone surface deliberately receives much less than the Codex assistant.
-It never receives event IDs, cancellation match tokens, receipt bodies, command
-output, file paths, credentials, or browser state. Booking actions flow through
-the assistant's typed tools; explicit preference forms use phone_preferences.
+It receives exact public agenda IDs for verified cancellation, but never receipt
+bodies, raw command output, file paths, credentials or browser state. Booking
+requests use typed assistant actions or owned desktop runs; preference forms
+share the deterministic phone_preferences validators.
 """
 
 from __future__ import annotations

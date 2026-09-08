@@ -55,6 +55,9 @@ data/phone_request_ids.json.bak
 data/phone_assistant_state.json
 data/phone_assistant_state.json.lock
 data/phone_assistant_state.json.bak
+data/phone_operations/
+config/config.yaml.bak
+config/config.yaml.lock
 
 # IDE
 .vscode/

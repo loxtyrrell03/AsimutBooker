@@ -1,8 +1,9 @@
 # Desktop capabilities on the phone
 
-Design review, 8 September 2026. **Proposed, not implemented or deployed.** All
+Design review, 8 September 2026. **Option 1 selected and implemented.** All
 screen values, bookings, health readings and operation results are invented examples.
-The live application, preferences, reservations and running sessions are unchanged.
+The SVGs remain design examples. Implementation and private publication evidence
+is recorded in the repository AGENTS.md; the examples are not live account data.
 
 ## Three navigation choices
 
