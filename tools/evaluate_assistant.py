@@ -391,6 +391,16 @@ EVAL_CASES = (
         description="Resolve an explicit future range into every dated target.",
     ),
     EvalCase(
+        case_id="daily_total_default",
+        prompt="Can you book for tomorrow too?",
+        description="Use the saved three-hour default when the booking request omits duration.",
+    ),
+    EvalCase(
+        case_id="daily_total_saved_override",
+        prompt="Can you book for tomorrow too?",
+        description="Prefer the saved dated three-hour target over the two-hour default.",
+    ),
+    EvalCase(
         case_id="daily_total_booking",
         prompt="Book 3 hours of practice tomorrow.",
         description=(
@@ -723,6 +733,8 @@ class SyntheticBookerDispatcher:
             return DAILY_TOTAL_EXISTING_EVENTS
         if case_id in {
             "daily_total_booking",
+            "daily_total_default",
+            "daily_total_saved_override",
             "daily_total_concise",
             "daily_total_polite",
             "daily_total_deferred",
@@ -767,8 +779,11 @@ class SyntheticBookerDispatcher:
                 "preferences": {
                     "practice_plan": {
                         "enabled": True,
-                        "default_hours": 2.0,
-                        "date_overrides": {},
+                        "default_hours": 3.0 if case_id == "daily_total_default" else 2.0,
+                        "date_overrides": (
+                            {"2026-09-01": 3.0}
+                            if case_id == "daily_total_saved_override" else {}
+                        ),
                     },
                     "future_practice_intentions": [],
                     **(
@@ -1914,6 +1929,8 @@ def evaluate_case(
 
     elif case.case_id in {
         "daily_total_booking",
+        "daily_total_default",
+        "daily_total_saved_override",
         "daily_total_concise",
         "daily_total_polite",
         "daily_total_existing",
@@ -1930,7 +1947,11 @@ def evaluate_case(
         valid_preference_targets = []
         for record in preference_updates:
             args = record.arguments
-            if set(args) != {"request_quote", "practice_plan"}:
+            allowed_keys = {"request_quote", "practice_plan"}
+            if case.case_id in {"daily_total_default", "daily_total_saved_override"}:
+                if args.get("booking_days") == [{"date": "2026-09-01", "enabled": True}]:
+                    allowed_keys.add("booking_days")
+            if set(args) != allowed_keys:
                 continue
             practice = args.get("practice_plan")
             if not isinstance(practice, Mapping) or set(practice) != {"date_overrides"}:

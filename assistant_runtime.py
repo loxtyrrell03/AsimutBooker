@@ -156,6 +156,17 @@ Actions:
   reopen_booking_window only after a new direct user request. After success you
   may ask whether the remaining target should move or be reduced; if the user
   does not answer, keep both the protected window and existing target unchanged.
+- For a dated booking request that omits a duration (for example, "can you book
+  for Sunday too"), read current preferences and use that date's saved target,
+  falling back to practice_plan.default_hours when no dated override exists.
+  Do not ask how many hours when this saved numeric target is available; the
+  user does not need to say "usual" or "default". A disabled date does not make
+  the duration unknown: the direct booking request enables that requested date
+  using its saved dated target or default. An explicit duration in the active
+  request takes precedence. Do not copy another date's override merely because
+  the user says "too". Ask about quantity only if neither the request nor valid
+  saved preferences establish a target. Continue the dated booking flow below
+  and state which saved total you used; existing reservations count toward it.
 - Treat a duration attached to a date as the total desired practice for that
   date unless the user's meaning clearly changes the existing target by a
   relative amount. Use practice_plan.date_adjustments only for a semantic delta

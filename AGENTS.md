@@ -13,6 +13,19 @@
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Booking requests without a duration
+
+- The assistant resolves an omitted duration from the requested date's saved
+  target, then the saved default, without requiring the word "usual". Explicit
+  durations take precedence; "too" does not copy another date's override.
+  Existing reservations count toward the total, and only the requested date
+  is enabled when necessary. The existing bounded booking flow remains in use.
+- Verified 132 assistant tests and two real-model evaluations with synthetic
+  tools: omitted duration used the three-hour default, and a dated three-hour
+  override took precedence over a two-hour default. No live booking was made.
+  Reopen the desktop app to load the instructions; existing sessions were
+  preserved. The existing contract fingerprint refreshes stale model context.
+
 ## 2026-09-08 Compact desktop assistant progress
 
 - The Tk assistant shows one progress card per request with up to three curated
