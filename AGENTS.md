@@ -13,6 +13,21 @@
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Focused System details page
+
+- `system_details_ui.py` groups desktop operations into full-width Automation,
+  Run manually, and Health checks sections with collapsed Troubleshooting.
+  Calendar, Activity, and schedule-settings navigation are no longer duplicated
+  here. Plan refresh remains in Troubleshooting; shared plan display state is
+  retained for Today and Calendar. All actions use existing host callbacks.
+- `docs/design/2026-09-08-system-details.svg` is the visual reference with example
+  status values. Text wraps to available width and the page scrolls when needed.
+- Verified 100 focused desktop, plan, and health tests, including real Tk button
+  geometry at 1040x740 and 1200x820, long status text, expanded tools, manual-run
+  dispatch, and progress visibility. SVG preview was visually inspected; native
+  window capture was inconclusive. No live booking or settings writes were used
+  for verification. Existing desktop sessions must reopen to load the change.
+
 ## 2026-09-08 Unified deterministic desktop Settings
 
 - The desktop has one Settings page; the separate Advanced preferences page and

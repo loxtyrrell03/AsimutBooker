@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="760" viewBox="0 0 1000 760">
+<rect width="1000" height="760" fill="#f4f5f7"/>
+<style>text{font-family:Segoe UI,Arial;fill:#202938;font-size:15px}.muted{fill:#697586;font-size:13px}.title{font-size:26px;font-weight:700}.heading{font-size:18px;font-weight:600}.button{font-size:14px;font-weight:600}.eyebrow{font-size:12px;fill:#697586;font-weight:600}</style>
+<text x="32" y="46" class="title">System details</text><text x="32" y="72" class="muted">Automation, manual runs and connection health.</text>
+<rect x="32" y="96" width="936" height="182" rx="12" fill="white"/>
+<circle cx="61" cy="128" r="5" fill="#16835b"/><text x="78" y="135" class="heading">Automation is ready</text>
+<text x="56" y="164" class="muted">Automatic booking is scheduled and its safety checks are clear.</text>
+<path d="M56 184H944" stroke="#e9edf1"/>
+<text x="56" y="212" class="eyebrow">NEXT AUTOMATIC RUN</text><text x="56" y="241">Today at 19:13</text>
+<text x="514" y="212" class="eyebrow">LAST COMPLETED RUN</text><text x="514" y="241">Today at 18:30 · Successful</text>
+<rect x="32" y="294" width="936" height="136" rx="12" fill="white"/>
+<text x="56" y="327" class="heading">Run manually</text><text x="56" y="352" class="muted">Book rooms now using your saved preferences.</text>
+<rect x="56" y="369" width="184" height="40" rx="6" fill="#1769e0"/><text x="78" y="394" class="button" style="fill:white">Run in background</text>
+<rect x="252" y="369" width="178" height="40" rx="6" fill="#f1f4f8"/><text x="273" y="394" class="button">Run with browser</text>
+<rect x="442" y="369" width="80" height="40" rx="6" fill="#f1f4f8"/><text x="464" y="394" class="muted">Stop</text>
+<rect x="32" y="446" width="936" height="194" rx="12" fill="white"/>
+<text x="56" y="480" class="heading">Health checks</text><text x="672" y="480" class="muted">Updated 18:44</text><text x="796" y="480" class="button">Details</text><text x="876" y="480" class="button">Refresh</text>
+<circle cx="61" cy="520" r="4" fill="#16835b"/><text x="76" y="525">Last run</text><circle cx="366" cy="520" r="4" fill="#16835b"/><text x="381" y="525">Automatic schedule</text><circle cx="666" cy="520" r="4" fill="#16835b"/><text x="681" y="525">Saved session</text>
+<circle cx="61" cy="560" r="4" fill="#16835b"/><text x="76" y="565">Login recovery</text><circle cx="366" cy="560" r="4" fill="#16835b"/><text x="381" y="565">Booking safety</text><circle cx="666" cy="560" r="4" fill="#788494"/><text x="681" y="565">Wake from sleep</text>
+<text x="56" y="613" class="muted">Open Details for the evidence behind each check.</text>
+<rect x="32" y="656" width="936" height="56" rx="12" fill="white"/><text x="56" y="690" class="button">▸ Troubleshooting</text>
+<text x="32" y="742" class="muted">Design reference · example status values</text>
+</svg>
