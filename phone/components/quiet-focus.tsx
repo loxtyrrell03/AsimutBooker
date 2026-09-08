@@ -52,8 +52,8 @@ export function TodayView({ booker, refreshing, onRefresh, onWeek, onAsk, onDeta
   </section>;
 }
 
-export function BookingDetails({ event, stale, onClose, onAsk }: {
-  event: AgendaEvent; stale: boolean; onClose: () => void; onAsk: (prompt: string) => void;
+export function BookingDetails({ event, stale, onClose, onAsk, onCancel, cancelling }: {
+  event: AgendaEvent; stale: boolean; onCancel: () => void; cancelling: boolean; onClose: () => void; onAsk: (prompt: string) => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, []);
@@ -67,7 +67,7 @@ export function BookingDetails({ event, stale, onClose, onAsk }: {
     <div className="quiet-info"><strong>Before you practise</strong><p>Reconfirm in Asimut on college Wi-Fi when reconfirmation becomes available.</p></div>
     <a className="quiet-primary" href="https://rwcmd.asimut.net/" target="_blank" rel="noreferrer">Open in Asimut</a>
     <button className="quiet-secondary" onClick={() => onAsk(`I would like to change my booking in ${identity}. Ask what I want to change, then check the live agenda.`)}>Ask to change booking</button>
-    <button className="quiet-danger" onClick={() => onAsk(`Cancel my reservation in ${identity}. Check the live agenda and exact booking before acting.`)}>Ask to cancel booking</button>
-    <p className="quiet-muted">{stale ? 'This booking may have changed. ' : ''}The assistant checks the current booking before making changes.</p>
+    <button className="quiet-danger" disabled={cancelling || !event.event_id} onClick={onCancel}>{cancelling ? 'Cancelling…' : 'Cancel booking'}</button>
+    <p className="quiet-muted">{stale ? 'This booking may have changed. ' : ''}Cancellation checks the current booking and verifies removal in Asimut.</p>
   </section>;
 }

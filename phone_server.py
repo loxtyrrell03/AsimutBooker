@@ -9,7 +9,7 @@ The server is intentionally narrow:
 * natural-language changes still pass through the existing AssistantRuntime and
   its exact Terra-medium typed Booker tools.
 
-There is no shell, generic file API, direct booking/cancellation endpoint, or
+There is no shell, generic file API, direct booking endpoint, or
 credential/authentication form on this surface.
 """
 
@@ -41,6 +41,7 @@ from uuid import UUID
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
 from assistant_runtime import AssistantRuntime, AssistantRuntimeError, load_assistant_state
 from phone_api import build_phone_snapshot
+from phone_cancellation import CancellationNotStarted, cancel_phone_reservation, validate_target
 from phone_preferences import (
     read_phone_preferences, save_phone_preferences, PreferenceConflict, AssistantToolError,
 )
@@ -706,6 +707,8 @@ class PhoneAssistantService:
 
     def acknowledge_uncertain(self) -> int:
         with self._request_lock:
+            if self._live_refresh_lock.locked():
+                raise PhoneActiveTurnError("Wait for the current Booker operation to finish")
             busy = self.is_busy
             with self._active_lock:
                 if self._active_client_message_id is not None and not busy:
@@ -722,6 +725,36 @@ class PhoneAssistantService:
         with self._runtime_lock:
             runtime = self._runtime
         return False if runtime is None else bool(runtime.stop())
+
+    def cancel_reservation(self, payload: dict) -> dict:
+        if set(payload) != {"request_id", "reservation"}:
+            raise ValueError("Cancellation requires one reservation and request ID.")
+        request_id = str(UUID(payload["request_id"]))
+        target = validate_target(payload["reservation"])
+        with self._request_lock:
+            if self.is_busy or self.ledger.unresolved_reserved_count():
+                raise PhoneActiveTurnError("Wait for the current operation or review its outcome first.")
+            if self.ledger.lookup(request_id) is not None:
+                raise PhoneActiveTurnError("This cancellation was already submitted. Refresh the schedule.")
+            if not self._live_refresh_lock.acquire(blocking=False):
+                raise PhoneActiveTurnError("The Booker is checking Asimut. Try again when it finishes.")
+            try:
+                self.ledger.reserve(request_id)
+            except Exception:
+                self._live_refresh_lock.release()
+                raise
+        try:
+            result = cancel_phone_reservation(target)
+            if not result["reconciliation_required"]:
+                self.ledger.mark(request_id, "accepted")
+            return result
+        except CancellationNotStarted:
+            self.ledger.mark(request_id, "rejected")
+            raise
+        finally:
+            # An exception leaves the durable request unresolved. Disconnects
+            # never retry the mutation, and a restart cannot silently replay it.
+            self._live_refresh_lock.release()
 
     def refresh_live(self, scope: str, *, force: bool = False) -> dict[str, Any]:
         """Refresh Asimut-backed phone data once, never merely reread the cache."""
@@ -1104,6 +1137,23 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
             return
         payload = self._read_json()
         if payload is None:
+            return
+        if path == "/api/v1/reservations/cancel":
+            try:
+                result = self.app.assistant.cancel_reservation(payload)
+            except (ValueError, TypeError, AttributeError):
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_cancellation", "Choose one exact reservation and refresh if needed.")
+                return
+            except PhoneActiveTurnError as exc:
+                self._error(HTTPStatus.CONFLICT, "booker_busy", str(exc))
+                return
+            except CancellationNotStarted as exc:
+                self._error(HTTPStatus.CONFLICT, "booking_changed", str(exc))
+                return
+            except Exception:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "cancellation_unconfirmed", "Cancellation was not confirmed. Refresh the schedule and review the outcome before trying again.")
+                return
+            self._json(HTTPStatus.OK, result)
             return
         if path == "/api/v1/preferences":
             try:

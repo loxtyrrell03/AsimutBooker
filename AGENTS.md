@@ -13,6 +13,26 @@
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Direct phone cancellation
+
+- My Week and booking details offer a deterministic Cancel booking action.
+  The authenticated, CSRF-protected `/api/v1/reservations/cancel` route refreshes
+  the live agenda and requires the displayed positive event ID plus exact
+  room/date/start/end to match one reservation before dispatching cancellation.
+- `phone_cancellation.py` uses the existing typed cancellation engine directly,
+  without starting a model. Receipts, persisted absence verification and
+  no-rebook blackouts remain shared with assistant cancellations.
+- Request IDs are durably reserved before work; duplicate requests never replay.
+  Uncertain outcomes remain gated for review, while failed preflight checks
+  settle as rejected. Cancellation shares the live refresh lock, and review
+  cannot clear an in-progress operation. Client writes have no automatic retry.
+- Verified with 90 focused Python tests, mobile Chromium/WebKit direct-button
+  checks, TypeScript, lint, Node tests and static build validation. UI checks use
+  isolated intercepted requests; no real reservation was cancelled for testing.
+- Build test shells outside `phone/dist-phone`, which is served live. Coordinate
+  shared-file edits and deployment with concurrent agents; preserve old hashed
+  assets when publishing so already-open phone sessions can finish loading.
+
 ## 2026-09-08 UX audit: desktop draft preservation
 
 - `load_booking_days` merges refreshed settings into existing Calendar controls,

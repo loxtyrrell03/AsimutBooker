@@ -53,6 +53,7 @@ def _phone_event(raw: Any) -> dict[str, Any] | None:
     if not date or not start or not end:
         return None
     return {
+        "event_id": event.get("eventId") if type(event.get("eventId")) is int and event["eventId"] > 0 else None,
         "date": date,
         "start_time": start,
         "end_time": end,

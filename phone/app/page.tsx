@@ -26,7 +26,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
-  cancellationInstruction,
   compactProgressText,
   deliveryDisposition,
   isFreshSequence,
@@ -59,6 +58,7 @@ type PendingDelivery = {
 };
 
 export type AgendaEvent = {
+  event_id?: number | null;
   date: string;
   start_time: string;
   end_time: string;
@@ -729,12 +729,14 @@ function ChatComposer({
 
 function ScheduleView({
   booker,
-  onAskToCancel,
+  onCancelBooking,
+  cancelling,
   onRefresh,
   refreshing,
 }: {
   booker: BookerSnapshot;
-  onAskToCancel: (event: AgendaEvent) => void;
+  onCancelBooking: (event: AgendaEvent) => void;
+  cancelling: boolean;
   onRefresh: () => void;
   refreshing: boolean;
 }) {
@@ -855,9 +857,9 @@ function ScheduleView({
                     </Badge>
                     <h4>{event.room}</h4>
                     {!event.is_reservation && <p>{event.title}</p>}
-                    {event.is_reservation && !booker.agenda.stale && (
-                      <button onClick={() => onAskToCancel(event)} type="button">
-                        Ask assistant to cancel
+                    {event.is_reservation && (
+                      <button disabled={cancelling || !event.event_id} onClick={() => onCancelBooking(event)} type="button">
+                        Cancel booking
                       </button>
                     )}
                   </div>
@@ -1084,6 +1086,9 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
 
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('today');
+  const [cancelling, setCancelling] = useState(false);
+  const cancellingRef = useRef(false);
+  const [cancellationStatus, setCancellationStatus] = useState('');
   const [selectedBooking, setSelectedBooking] = useState<AgendaEvent | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [csrf, setCsrf] = useState('');
@@ -1675,8 +1680,32 @@ export default function HomePage() {
     window.setTimeout(() => inputRef.current?.focus(), 50);
   };
 
-  const askToCancel = (event: AgendaEvent) => {
-    choosePrompt(cancellationInstruction(event));
+  const cancelBooking = async (event: AgendaEvent) => {
+    if (cancellingRef.current || !csrf || preview) return;
+    cancellingRef.current = true;
+    setCancelling(true);
+    setCancellationStatus('Cancelling booking… Checking Asimut and verifying removal.');
+    try {
+      const { response, data } = await requestJson<{ cancelled?: boolean; message?: string }>(
+        '/api/v1/reservations/cancel', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
+          body: JSON.stringify({ request_id: crypto.randomUUID(), reservation: {
+            event_id: event.event_id, date: event.date, room: event.room,
+            start_time: event.start_time, end_time: event.end_time,
+          } }),
+        }, 31 * 60_000);
+      setCancellationStatus(data.message || (response.ok
+        ? 'Cancellation finished. Check the refreshed schedule.'
+        : 'Cancellation was not confirmed. Refresh the schedule before trying again.'));
+      if (data.cancelled) setSelectedBooking(null);
+      await refreshSnapshot();
+    } catch {
+      setCancellationStatus('Connection interrupted. Cancellation may still be running. Refresh the schedule to check the outcome before trying again.');
+    } finally {
+      cancellingRef.current = false;
+      setCancelling(false);
+    }
   };
 
   if (privateSurface === false) return <RemoteGate />;
@@ -1685,6 +1714,7 @@ export default function HomePage() {
   return (
     <main className={`app-shell tab-${tab}`}>
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
+      {cancellationStatus && <output className="quiet-info" style={{ position: 'fixed', bottom: 90, left: 16, right: 16, zIndex: 50, background: 'var(--background, white)' }} aria-live="polite">{cancellationStatus}</output>}
       <ConnectionBanner connection={connection} error={error} onRetry={retryConnection} />
       {uncertainOutcome && (
         <div className="uncertain-outcome" role="alert">
@@ -1709,7 +1739,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {tab === 'today' && booker && (selectedBooking ? <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} /> :
+      {tab === 'today' && booker && (selectedBooking ? <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} /> :
         <TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview} />)}
       {tab === 'assistant' && (
         <div className="assistant-view">
@@ -1740,7 +1770,7 @@ export default function HomePage() {
         </div>
       )}
       {tab === 'schedule' && booker && (
-        <ScheduleView booker={booker} onAskToCancel={askToCancel} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
+        <ScheduleView booker={booker} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
       )}
       {booker && <div hidden={tab !== 'status'}>
         <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} csrf={csrf} editable={connection === 'online' && !busy && !preview} onSaved={() => void refreshSnapshot()} />
