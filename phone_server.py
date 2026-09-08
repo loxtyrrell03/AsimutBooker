@@ -495,6 +495,7 @@ class PhoneAssistantService:
         self._request_lock = threading.RLock()
         self._runtime_lock = threading.Lock()
         self._live_refresh_lock = threading.Lock()
+        self._cancellation: dict[str, Any] | None = None
         self._last_live_refresh = {"agenda": 0.0, "plan": 0.0}
         self._active_lock = threading.Lock()
         self._active_client_message_id: str | None = None
@@ -611,7 +612,12 @@ class PhoneAssistantService:
                 # The one in-process request is already represented by the
                 # busy state. It becomes unresolved and visible after restart.
                 unresolved_reserved_count = max(0, unresolved_reserved_count - 1)
+        with self._request_lock:
+            cancellation = dict(self._cancellation) if self._cancellation else None
+            if cancellation and cancellation["active"]:
+                unresolved_reserved_count = max(0, unresolved_reserved_count - 1)
         return {
+            "cancellation": cancellation,
             "model": model,
             "busy": busy,
             "messages": messages,
@@ -707,7 +713,7 @@ class PhoneAssistantService:
 
     def acknowledge_uncertain(self) -> int:
         with self._request_lock:
-            if self._live_refresh_lock.locked():
+            if self._live_refresh_lock.locked() or (self._cancellation and self._cancellation["active"]):
                 raise PhoneActiveTurnError("Wait for the current Booker operation to finish")
             busy = self.is_busy
             with self._active_lock:
@@ -736,33 +742,59 @@ class PhoneAssistantService:
                 raise PhoneActiveTurnError("Wait for the current operation or review its outcome first.")
             if self.ledger.lookup(request_id) is not None:
                 raise PhoneActiveTurnError("This cancellation was already submitted. Refresh the schedule.")
-            if not self._live_refresh_lock.acquire(blocking=False):
-                raise PhoneActiveTurnError("The Booker is checking Asimut. Try again when it finishes.")
+            self.ledger.reserve(request_id)
+            self._cancellation = {"request_id": request_id, "reservation": target,
+                                  "active": True, "text": "Waiting for the current schedule check to finish…"}
+            self.events.publish({"kind": "cancellation.progress", "cancellation": dict(self._cancellation)})
+            worker = threading.Thread(target=self._run_cancellation, args=(request_id, target), daemon=True)
+            self._cancellation_thread = worker
             try:
-                self.ledger.reserve(request_id)
+                worker.start()
             except Exception:
-                self._live_refresh_lock.release()
+                self.ledger.mark(request_id, "rejected")
+                self._cancellation_progress("Cancellation could not start. Please try again.", active=False)
                 raise
+        return {"accepted": True, "request_id": request_id}
+
+    def _cancellation_progress(self, text: str, *, active: bool = True, cancelled: bool = False) -> None:
+        with self._request_lock:
+            self._cancellation = {**self._cancellation, "active": active,
+                                  "text": text, "cancelled": cancelled}
+            self.events.publish({"kind": "cancellation.progress", "cancellation": dict(self._cancellation)})
+
+    def _run_cancellation(self, request_id: str, target: dict) -> None:
+        acquired = False
         try:
-            result = cancel_phone_reservation(target)
-            if not result["reconciliation_required"]:
-                self.ledger.mark(request_id, "accepted")
-            return result
-        except CancellationNotStarted:
-            self.ledger.mark(request_id, "rejected")
-            raise
+            # The original click stays queued behind a read-only refresh. New
+            # refreshes yield to this operation; no second user tap is needed.
+            acquired = self._live_refresh_lock.acquire(timeout=16 * 60)
+            if not acquired:
+                raise CancellationNotStarted("The schedule check took too long. No cancellation was started.")
+            result = cancel_phone_reservation(target, progress=self._cancellation_progress)
+            with self._request_lock:
+                if not result["reconciliation_required"]:
+                    self.ledger.mark(request_id, "accepted")
+                self._cancellation_progress(result["message"], active=False, cancelled=result["cancelled"])
+        except CancellationNotStarted as exc:
+            with self._request_lock:
+                self.ledger.mark(request_id, "rejected")
+                self._cancellation_progress(str(exc), active=False)
+        except Exception:
+            self._cancellation_progress("Cancellation was not confirmed. Check the refreshed schedule before trying again.", active=False)
         finally:
-            # An exception leaves the durable request unresolved. Disconnects
-            # never retry the mutation, and a restart cannot silently replay it.
-            self._live_refresh_lock.release()
+            if acquired:
+                self._live_refresh_lock.release()
 
     def refresh_live(self, scope: str, *, force: bool = False) -> dict[str, Any]:
         """Refresh Asimut-backed phone data once, never merely reread the cache."""
 
         if scope not in {"agenda", "plan"}:
             raise ValueError("scope must be agenda or plan")
-        if not self._live_refresh_lock.acquire(blocking=False):
-            raise PhoneActiveTurnError("A live Booker refresh is already running")
+        with self._request_lock:
+            if self._cancellation and self._cancellation["active"]:
+                return self.snapshot()
+            if not self._live_refresh_lock.acquire(blocking=False):
+                raise PhoneActiveTurnError("A live Booker refresh is already running")
         try:
             with self._request_lock:
                 if self.is_busy:
@@ -1153,7 +1185,7 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 self._error(HTTPStatus.SERVICE_UNAVAILABLE, "cancellation_unconfirmed", "Cancellation was not confirmed. Refresh the schedule and review the outcome before trying again.")
                 return
-            self._json(HTTPStatus.OK, result)
+            self._json(HTTPStatus.ACCEPTED, result)
             return
         if path == "/api/v1/preferences":
             try:

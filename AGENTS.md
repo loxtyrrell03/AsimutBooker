@@ -23,15 +23,23 @@
   without starting a model. Receipts, persisted absence verification and
   no-rebook blackouts remain shared with assistant cancellations.
 - Request IDs are durably reserved before work; duplicate requests never replay.
+  The route returns 202 and runs an owned background job, waiting automatically
+  behind an existing refresh; new refreshes yield to the queued cancellation.
   Uncertain outcomes remain gated for review, while failed preflight checks
-  settle as rejected. Cancellation shares the live refresh lock, and review
-  cannot clear an in-progress operation. Client writes have no automatic retry.
-- Verified with 90 focused Python tests, mobile Chromium/WebKit direct-button
+  settle as rejected. Review cannot clear an active or queued operation.
+- `cancellation.progress` SSE events and bootstrap state carry the active job
+  and terminal result across reconnects. The phone shows a spinner and exact
+  booking details with curated opening/cancelling/verifying stages emitted by
+  the real engine; it never forwards raw logs or fabricates timed stages.
+  Closing the client does not cancel or replay its server-owned job.
+- Verified with 91 focused Python tests, mobile Chromium/WebKit direct-button
   checks, TypeScript, lint, Node tests and static build validation. UI checks use
   isolated intercepted requests; no real reservation was cancelled for testing.
 - Build test shells outside `phone/dist-phone`, which is served live. Coordinate
   shared-file edits and deployment with concurrent agents; preserve old hashed
   assets when publishing so already-open phone sessions can finish loading.
+- Intercepted browser tests must block service workers, especially for reload
+  coverage, so the worker cannot bypass test routes and load an older live shell.
 - Published `0af95ca-direct-cancel` after confirming the assistant was idle and
   no Booker process was running, then restarting only the owned phone task.
   `verify_phone_deployment.ps1` passed against private HTTPS; an authenticated

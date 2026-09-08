@@ -151,7 +151,12 @@ export type BookerSnapshot = {
   unavailable_sections: string[];
 };
 
+type CancellationProgress = {
+  request_id: string; reservation: AgendaEvent; active: boolean; text: string; cancelled?: boolean;
+};
+
 type Bootstrap = {
+  cancellation?: CancellationProgress | null;
   model: string;
   busy: boolean;
   messages: ChatMessage[];
@@ -163,6 +168,7 @@ type Bootstrap = {
 };
 
 type PublicEvent = {
+  cancellation?: CancellationProgress;
   seq: number;
   at: string;
   kind: string;
@@ -1089,6 +1095,7 @@ export default function HomePage() {
   const [cancelling, setCancelling] = useState(false);
   const cancellingRef = useRef(false);
   const [cancellationStatus, setCancellationStatus] = useState('');
+  const [cancellationBooking, setCancellationBooking] = useState<AgendaEvent | null>(null);
   const [selectedBooking, setSelectedBooking] = useState<AgendaEvent | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [csrf, setCsrf] = useState('');
@@ -1147,6 +1154,14 @@ export default function HomePage() {
     return true;
   }, []);
 
+  const applyCancellation = useCallback((operation: CancellationProgress) => {
+    cancellingRef.current = operation.active;
+    setCancelling(operation.active);
+    setCancellationStatus(operation.text);
+    setCancellationBooking(operation.reservation);
+    if (operation.cancelled) setSelectedBooking(null);
+  }, []);
+
   const applyBootstrap = useCallback((payload: Bootstrap) => {
     // A slower HTTP response must not undo a newer streamed turn/reset.
     if (payload.stream_generation === streamGenerationRef.current && payload.event_cursor < cursorRef.current) return;
@@ -1159,6 +1174,7 @@ export default function HomePage() {
     streamGenerationRef.current = position.generation;
     cursorRef.current = position.cursor;
     setBooker(payload.booker);
+    if (payload.cancellation) applyCancellation(payload.cancellation);
     setMessages(payload.messages);
     setBusy(payload.busy);
     settlePendingDelivery(payload.active_client_message_id ?? undefined);
@@ -1167,10 +1183,14 @@ export default function HomePage() {
       setStreamingText('');
     }
     const unresolved = payload.unresolved_reserved_count || 0;
+    if (unresolved && !payload.cancellation?.active) {
+      cancellingRef.current = false;
+      setCancelling(false);
+    }
     setUncertainOutcome(unresolved > 0
       ? `${unresolved} earlier command${unresolved === 1 ? ' has' : 's have'} an uncertain outcome after an interruption. Review Booker status before continuing.`
       : '');
-  }, [settlePendingDelivery]);
+  }, [applyCancellation, settlePendingDelivery]);
 
   const refreshSnapshot = useCallback(async () => {
     if (preview) return;
@@ -1196,7 +1216,7 @@ export default function HomePage() {
   }, [applyBootstrap, csrf, preview]);
 
   const refreshLiveSchedule = useCallback(async (force = false) => {
-    if (preview || !csrf || liveScheduleRunningRef.current) return;
+    if (preview || !csrf || liveScheduleRunningRef.current || cancellingRef.current) return;
     if (busy) {
       if (force) setError('Wait for the assistant to finish, then refresh your bookings.');
       return;
@@ -1241,6 +1261,11 @@ export default function HomePage() {
     }
     if (!isFreshSequence(cursorRef.current, event.seq)) return;
     cursorRef.current = Math.max(cursorRef.current, event.seq || 0);
+    if (event.kind === 'cancellation.progress' && event.cancellation) {
+      applyCancellation(event.cancellation);
+      if (!event.cancellation.active) void refreshSnapshot();
+      return;
+    }
     if (event.kind === 'turn.accepted' || event.kind === 'turn.started') {
       setBusy(true);
       if (settlePendingDelivery(event.client_message_id)) {
@@ -1342,7 +1367,7 @@ export default function HomePage() {
         window.setTimeout(() => void refreshSnapshot(), 120);
       }
     }
-  }, [refreshSnapshot, settlePendingDelivery]);
+  }, [applyCancellation, refreshSnapshot, settlePendingDelivery]);
 
   const openEventStream = useCallback(() => {
     if (preview || !csrf) return;
@@ -1684,9 +1709,10 @@ export default function HomePage() {
     if (cancellingRef.current || !csrf || preview) return;
     cancellingRef.current = true;
     setCancelling(true);
-    setCancellationStatus('Cancelling booking… Checking Asimut and verifying removal.');
+    setCancellationBooking(event);
+    setCancellationStatus('Starting cancellation…');
     try {
-      const { response, data } = await requestJson<{ cancelled?: boolean; message?: string }>(
+      const { response, data } = await requestJson<{ accepted?: boolean; message?: string }>(
         '/api/v1/reservations/cancel', {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
@@ -1694,17 +1720,18 @@ export default function HomePage() {
             event_id: event.event_id, date: event.date, room: event.room,
             start_time: event.start_time, end_time: event.end_time,
           } }),
-        }, 31 * 60_000);
-      setCancellationStatus(data.message || (response.ok
-        ? 'Cancellation finished. Check the refreshed schedule.'
-        : 'Cancellation was not confirmed. Refresh the schedule before trying again.'));
-      if (data.cancelled) setSelectedBooking(null);
+        });
+      if (!response.ok || !data.accepted) {
+        cancellingRef.current = false;
+        setCancelling(false);
+        setCancellationStatus(data.message || 'Cancellation could not start. Check the schedule.');
+      }
       await refreshSnapshot();
     } catch {
-      setCancellationStatus('Connection interrupted. Cancellation may still be running. Refresh the schedule to check the outcome before trying again.');
-    } finally {
-      cancellingRef.current = false;
-      setCancelling(false);
+      setCancellationStatus('Reconnecting to cancellation progress…');
+      // The server owns the accepted job. Reconnect only reads its progress;
+      // it never resubmits the click or treats a lost response as a failure.
+      await refreshSnapshot();
     }
   };
 
@@ -1714,7 +1741,13 @@ export default function HomePage() {
   return (
     <main className={`app-shell tab-${tab}`}>
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
-      {cancellationStatus && <output className="quiet-info" style={{ position: 'fixed', bottom: 90, left: 16, right: 16, zIndex: 50, background: 'var(--background, white)' }} aria-live="polite">{cancellationStatus}</output>}
+      {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
+        {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
+        <div><strong>{cancelling ? 'Cancelling booking' : 'Cancellation update'}</strong>
+          {cancellationBooking && <span>{cancellationBooking.room} · {cancellationBooking.start_time}–{cancellationBooking.end_time}</span>}
+          <p>{cancellationStatus}</p></div>
+        {!cancelling && <button type="button" aria-label="Dismiss cancellation update" onClick={() => setCancellationStatus('')}><X /></button>}
+      </output>}
       <ConnectionBanner connection={connection} error={error} onRetry={retryConnection} />
       {uncertainOutcome && (
         <div className="uncertain-outcome" role="alert">

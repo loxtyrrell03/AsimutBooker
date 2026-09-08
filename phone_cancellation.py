@@ -32,14 +32,26 @@ def validate_target(target: Any) -> dict:
     return dict(target)
 
 
-def cancel_phone_reservation(target: dict, *, surface=None) -> dict:
+def cancel_phone_reservation(target: dict, *, surface=None, progress=None) -> dict:
     target = validate_target(target)
     surface = surface or BookerToolSurface()
+    report = progress or (lambda _text: None)
+    def activity(title, detail):
+        stages = {
+            "Cancellation progress: opening booking": "Opening your booking…",
+            "Cancellation progress: cancelling booking": "Cancelling your booking…",
+            "Cancellation progress: verifying removal": "Checking that the booking was removed…",
+        }
+        if detail in stages:
+            report(stages[detail])
+        elif title == "Matching reservations":
+            report("Finding your exact booking…")
+    report("Connecting to Asimut and checking your bookings…")
     try:
-        surface.dispatch("refresh_booker_data", {"scope": "agenda"})
+        surface.dispatch("refresh_booker_data", {"scope": "agenda"}, progress=activity)
         selection = surface.dispatch("find_reservations", {
             key: target[key] for key in ("date", "room", "start_time", "end_time")
-        })
+        }, progress=activity)
     except AssistantToolError as exc:
         raise CancellationNotStarted("The live booking check failed. Refresh the schedule before trying again.") from exc
     matches = selection.get("matches", [])
@@ -51,9 +63,10 @@ def cancel_phone_reservation(target: dict, *, surface=None) -> dict:
     # natural-language interpretation is involved; the issued exact selection
     # retains the shared receipt, identity, verification and blackout guards.
     request = "Cancel this exact reservation."
+    report("Checking the booking in Asimut before cancellation…")
     result = surface.dispatch("cancel_reservations", {
         "selection_id": selection["selection_id"], "request_quote": request,
-    }, user_request=request)
+    }, user_request=request, progress=activity)
     cancelled = result.get("cancelled_count") == 1
     protected = result.get("protection_persisted") is True
     return {

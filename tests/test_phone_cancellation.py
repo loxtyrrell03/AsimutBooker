@@ -44,21 +44,22 @@ class DirectCancellationTests(unittest.TestCase):
     def test_duplicate_request_never_replays_and_no_model_starts(self):
         service = PhoneAssistantService(ledger=MemoryLedger(), runtime_factory=lambda *a, **k: self.fail("Model runtime started"))
         payload = {"request_id": str(uuid4()), "reservation": self.target}
-        with patch("phone_server.cancel_phone_reservation", return_value={"cancelled": True, "reconciliation_required": False}) as cancel:
+        with patch("phone_server.cancel_phone_reservation", return_value={"cancelled": True, "reconciliation_required": False, "message": "Cancelled"}) as cancel:
             service.cancel_reservation(payload)
+            service._cancellation_thread.join(3)
             with self.assertRaises(PhoneActiveTurnError):
                 service.cancel_reservation(payload)
             cancel.assert_called_once()
 
     def test_uncertain_failure_blocks_new_request_and_review_during_work(self):
         service = PhoneAssistantService(ledger=MemoryLedger())
-        def fail(_target):
+        def fail(_target, **_kwargs):
             with self.assertRaises(PhoneActiveTurnError):
                 service.acknowledge_uncertain()
             raise RuntimeError("Disconnected")
         with patch("phone_server.cancel_phone_reservation", side_effect=fail):
-            with self.assertRaises(RuntimeError):
-                service.cancel_reservation({"request_id": str(uuid4()), "reservation": self.target})
+            service.cancel_reservation({"request_id": str(uuid4()), "reservation": self.target})
+            service._cancellation_thread.join(3)
         with self.assertRaises(PhoneActiveTurnError):
             service.cancel_reservation({"request_id": str(uuid4()), "reservation": self.target})
         self.assertIsNone(service._runtime)
@@ -77,8 +78,30 @@ class DirectCancellationTests(unittest.TestCase):
         headers["X-Asimut-CSRF"] = csrf
         self.assertEqual(fixture.request("POST", endpoint, headers={**headers, "Origin": "https://evil.test"}, body=body)[0], 403)
         fixture.assistant.cancel_reservation.assert_not_called()
-        self.assertEqual(fixture.request("POST", endpoint, headers=headers, body=body)[0], 200)
+        self.assertEqual(fixture.request("POST", endpoint, headers=headers, body=body)[0], 202)
         fixture.assistant.cancel_reservation.assert_called_once()
+
+    def test_busy_refresh_queues_original_click_and_reconnect_restores_progress(self):
+        service = PhoneAssistantService(ledger=MemoryLedger())
+        service._live_refresh_lock.acquire()
+        payload = {"request_id": str(uuid4()), "reservation": self.target}
+        def cancel(_target, *, progress):
+            progress("Opening your booking…")
+            return {"cancelled": True, "reconciliation_required": False, "message": "Cancelled"}
+        with patch("phone_server.cancel_phone_reservation", side_effect=cancel) as operation:
+            self.assertTrue(service.cancel_reservation(payload)["accepted"])
+            operation.assert_not_called()
+            snapshot = service.snapshot()
+            self.assertTrue(snapshot["cancellation"]["active"])
+            self.assertEqual(snapshot["unresolved_reserved_count"], 0)
+            self.assertEqual(service.refresh_live("plan")["cancellation"], snapshot["cancellation"])
+            with self.assertRaises(PhoneActiveTurnError):
+                service.acknowledge_uncertain()
+            service._live_refresh_lock.release()
+            service._cancellation_thread.join(3)
+            operation.assert_called_once()
+            self.assertFalse(service.snapshot()["cancellation"]["active"])
+            self.assertTrue(service.snapshot()["cancellation"]["cancelled"])
 
 
 if __name__ == "__main__":

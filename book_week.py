@@ -3120,6 +3120,7 @@ def cancel_reservation_exact(
     # Everything in this block is non-destructive; distinguish a failed target
     # proof from uncertainty after a cancellation receipt has been written.
     try:
+        print("Cancellation progress: opening booking", flush=True)
         safe_goto(page, event_url)
         verify_persisted_booking_page(
             page,
@@ -3172,6 +3173,7 @@ def cancel_reservation_exact(
         f"{start_time}-{end_time} (receipt {receipt['id']})"
     )
     try:
+        print("Cancellation progress: cancelling booking", flush=True)
         cancel_option.click(no_wait_after=True, timeout=5000)
         page.wait_for_timeout(750)
         confirmation = _optional_cancel_confirmation(page)
@@ -3194,6 +3196,7 @@ def cancel_reservation_exact(
         # briefly rerender the agenda card after that click, so retry only the
         # read-only complete-agenda proof.  A retry must never revisit the menu
         # or issue another destructive action.
+        print("Cancellation progress: verifying removal", flush=True)
         for proof_attempt in range(2):
             try:
                 proof_tracker = BookingTracker()
