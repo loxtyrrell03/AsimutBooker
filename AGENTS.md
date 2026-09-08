@@ -1565,3 +1565,15 @@ When modifying this codebase:
   deployment verification passed. An authenticated HTTPS preferences read
   returned 200 with all four sections; no live preference save or booking action
   was performed. Existing phone pages need a reload to load the editors.
+
+## 2026-09-08 Practice Settings Tap Targets
+
+- Daily target and Preferred time summary cards are now real labelled edit
+  buttons. The Your practice sliders icon opens a combined editor for goal,
+  times, optional date overrides, and room preferences, with one atomic Save.
+- Editors focus and scroll their heading into view after loading. Save/Cancel
+  stay above the phone navigation while editing long room lists. Daily hours
+  retain the input string while typing so clearing does not force a zero.
+- Mobile Chromium and WebKit checks now tap both summary cards and the sliders
+  icon, clear/retype the daily goal, and save/reload combined goal/time edits.
+  All prior editor checks, TypeScript, lint, and the static build passed.

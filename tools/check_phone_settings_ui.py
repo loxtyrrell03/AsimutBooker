@@ -62,8 +62,10 @@ def check(dist):
             page.route('**/*', intercept)
             page.goto(origin)
             page.get_by_role('button', name='Settings', exact=True).tap()
-            page.get_by_role('button', name='Daily goal', exact=True).tap()
+            page.get_by_role('button', name='Edit daily target', exact=True).tap()
             page.get_by_label('Use a daily practice goal').check()
+            page.get_by_label('Hours per day', exact=True).fill('')
+            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('')
             page.get_by_label('Hours per day', exact=True).fill('3.5')
             page.get_by_role('button', name='Save changes', exact=True).tap()
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
@@ -74,7 +76,7 @@ def check(dist):
             page.get_by_role('button', name='Cancel', exact=True).tap()
             assert len(writes) == 1
 
-            page.get_by_role('button', name='Preferred times', exact=True).tap()
+            page.get_by_role('button', name='Edit preferred time', exact=True).tap()
             page.get_by_label('Use preferred times', exact=True).check()
             page.get_by_label('Start time', exact=True).fill('12:30')
             page.get_by_label('End time', exact=True).fill('21:00')
@@ -106,6 +108,15 @@ def check(dist):
             expect(page.get_by_text('Settings changed elsewhere.', exact=False)).to_be_visible()
             page.get_by_role('button', name='Reload settings', exact=True).tap()
             expect(page.get_by_label('Hours per day', exact=True)).to_have_value('4')
+            page.get_by_role('button', name='Cancel', exact=True).tap()
+            page.get_by_role('button', name='Edit all practice settings', exact=True).tap()
+            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('4')
+            page.get_by_label('Hours per day', exact=True).fill('2.5')
+            page.get_by_label('Start time', exact=True).fill('13:00')
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
+            assert read_phone_preferences(settings)['practice_plan']['default_hours'] == 2.5
+            assert read_phone_preferences(settings)['time_preferences']['start_time'] == '13:00'
             assert not errors, errors
             browser.close()
             print(f'PASS {engine}: all four editors, persistence, Cancel, stale-save rejection, reload; no live actions')

@@ -1003,23 +1003,9 @@ function StatusView({
       )}
 
       {!booker.unavailable_sections.includes('preferences') && <section className="preference-card">
-        <div className="section-heading">
-          <div>
-            <h3>Your practice</h3>
-          </div>
-          <Settings2 />
-        </div>
-        <div className="metric-grid">
-          <div>
-            <span>Daily target</span>
-            <strong>{practice.enabled && practice.default_hours ? `${practice.default_hours} hours` : 'Off'}</strong>
-          </div>
-          <div>
-            <span>Preferred time</span>
-            <strong>{time.enabled ? `${time.start_time}–${time.end_time}` : 'Any time'}</strong>
-          </div>
-        </div>
-        <PracticeSettings csrf={csrf} enabled={editable} onSaved={onSaved} />
+        <PracticeSettings csrf={csrf} enabled={editable} onSaved={onSaved}
+          targetLabel={practice.enabled && practice.default_hours ? `${practice.default_hours} hours` : 'Off'}
+          timeLabel={time.enabled ? `${time.start_time}–${time.end_time}` : 'Any time'} />
         {booker.preferences.future_intentions.length > 0 && (
           <div className="intent-list" aria-label="Saved future practice intentions">
             {booker.preferences.future_intentions.map((intention) => (
