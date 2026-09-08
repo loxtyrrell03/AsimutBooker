@@ -25,6 +25,25 @@
   focused desktop preference, Calendar, assistant integration, and plan tests
   passed. Existing GUI sessions require reopening to load the desktop fixes.
 
+## 2026-09-08 UX audit: phone edits and interrupted requests
+
+- Settings stays mounted across phone navigation. Date edits are staged per
+  date and saved together, so selecting another date does not discard a draft.
+  Loading can be cancelled; timed-out or uncertain saves require a fresh read
+  before another Save. Existing atomic revision checks remain in force.
+- JSON requests have finite deadlines covering response bodies. Quick operations
+  use 15 seconds; live planning allows 16 minutes for the backend's 15-minute
+  bound. Writes never retry automatically. Assistant delivery retries keep the
+  exact original ID/text and preserve a newer composer draft.
+- Stop checks HTTP acceptance; late reset replies and older same-generation
+  snapshots cannot overwrite newer streamed state. Action failures display once
+  without falsely reporting a connection failure.
+- `tools/check_phone_ux_ui.py` covers stalled loads, interrupted saves, delayed
+  delivery, exact-ID retry, rejected Stop, reset ordering, and stale snapshots.
+  Mobile Chromium and WebKit pass, along with the settings editor checks,
+  19 Node tests, TypeScript, lint, and static build validation. These are isolated
+  checks, not physical phone interaction or live booking mutations.
+
 
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.
 

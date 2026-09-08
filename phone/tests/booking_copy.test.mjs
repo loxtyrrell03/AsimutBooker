@@ -23,7 +23,7 @@ test('ordinary reservations use booked language rather than confirmation languag
 });
 
 test('schedule performs live refreshes and keeps last checked data visible', () => {
-  assert.match(pageSource, /fetch\('\/api\/v1\/live-refresh'/);
+  assert.match(pageSource, /requestJson<Bootstrap>\('\/api\/v1\/live-refresh'/);
   assert.match(pageSource, /scope: 'plan'/);
   assert.match(pageSource, /5 \* 60_000/);
   assert.match(pageSource, /Showing the last generated plan/);

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Settings2, Pencil } from 'lucide-react';
+import { requestJson } from '../lib/api';
 
 type Section = 'goal' | 'days' | 'times' | 'rooms' | 'all';
 type Preferences = {
@@ -23,53 +24,71 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [date, setDate] = useState('');
-  const [dateEnabled, setDateEnabled] = useState(true);
-  const [dateHours, setDateHours] = useState('');
+  const [dateEdits, setDateEdits] = useState<Record<string, { enabled: boolean; hours: string }>>({});
+  const [reloadRequired, setReloadRequired] = useState(false);
+  const loadRequest = useRef<AbortController | null>(null);
+  const dateEnabled = dateEdits[date]?.enabled ?? !values?.disabled_dates.includes(date);
+  const dateHours = dateEdits[date]?.hours ?? values?.practice_plan.date_overrides[date]?.toString() ?? '';
 
   const hasValues = values !== null;
   useEffect(() => {
     if (section && hasValues) { heading.current?.focus({ preventScroll: true }); heading.current?.scrollIntoView({ block: 'start' }); }
   }, [section, hasValues]);
+  useEffect(() => () => loadRequest.current?.abort(), []);
 
   async function open(next: Section) {
-    setSection(next); setValues(null); setError(''); setNotice(''); setWorking(true); setDate('');
+    loadRequest.current?.abort();
+    const request = new AbortController();
+    loadRequest.current = request;
+    setSection(next); setValues(null); setError(''); setNotice(''); setWorking(true); setDate(''); setDateEdits({}); setReloadRequired(false);
     try {
-      const response = await fetch('/api/v1/preferences', { credentials: 'include', cache: 'no-store' });
+      const { response, data: loaded } = await requestJson<Preferences>('/api/v1/preferences', { credentials: 'include', cache: 'no-store', signal: request.signal });
       if (!response.ok) throw new Error('Settings could not be loaded. Try again.');
-      const loaded = await response.json() as Preferences;
+      if (request.signal.aborted) return;
       setValues(loaded); setHours(String(loaded.practice_plan.default_hours));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Settings could not be loaded.'); }
-    finally { setWorking(false); }
+    } catch { if (!request.signal.aborted) setError('Settings could not be loaded. Try again.'); }
+    finally { if (!request.signal.aborted) setWorking(false); }
   }
 
   async function save(event: { preventDefault: () => void }) {
     event.preventDefault();
-    if (!values || !section || working) return;
+    if (!values || !section || working || !enabled || reloadRequired) return;
+    if ((section === 'times' || section === 'all') && values.time_preferences.start_time >= values.time_preferences.end_time) {
+      setError('End time must be later than start time.'); return;
+    }
+    const days = Object.entries(dateEdits);
+    const overrides = days.map(([date, edit]) => ({ date, hours: edit.hours === '' ? null : Number(edit.hours) }));
+    const bookingDays = days.map(([date, edit]) => ({ date, enabled: edit.enabled }));
     let changes: Record<string, unknown>;
     if (section === 'all') {
-      changes = { practice_plan: { enabled: values.practice_plan.enabled, default_hours: Number(hours), ...(date ? { date_overrides: [{ date, hours: dateHours === '' ? null : Number(dateHours) }] } : {}) }, time_preferences: values.time_preferences, room_preferences: { ordered_rooms: values.room_preferences.ordered_rooms, excluded_rooms: values.room_preferences.excluded_rooms } };
-      if (date) changes.booking_days = [{ date, enabled: dateEnabled }];
+      changes = { practice_plan: { enabled: values.practice_plan.enabled, default_hours: Number(hours), ...(days.length ? { date_overrides: overrides } : {}) }, time_preferences: values.time_preferences, room_preferences: { ordered_rooms: values.room_preferences.ordered_rooms, excluded_rooms: values.room_preferences.excluded_rooms } };
+      if (days.length) changes.booking_days = bookingDays;
     } else if (section === 'goal') changes = { practice_plan: { enabled: values.practice_plan.enabled, default_hours: Number(hours) } };
     else if (section === 'times') changes = { time_preferences: values.time_preferences };
     else if (section === 'rooms') changes = { room_preferences: { ordered_rooms: values.room_preferences.ordered_rooms, excluded_rooms: values.room_preferences.excluded_rooms } };
-    else changes = { booking_days: [{ date, enabled: dateEnabled }], practice_plan: { date_overrides: [{ date, hours: dateHours === '' ? null : Number(dateHours) }] } };
+    else {
+      if (!days.length) { setNotice('No date changes to save.'); return; }
+      changes = { booking_days: bookingDays, practice_plan: { date_overrides: overrides } };
+    }
     setWorking(true); setError(''); setNotice('');
     try {
-      const response = await fetch('/api/v1/preferences', {
+      const { response, data: result } = await requestJson<Preferences & { message?: string; detail?: string; error?: string }>('/api/v1/preferences', {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: JSON.stringify({ revision: values.revision, changes }),
       });
-      const result = await response.json() as Preferences & { message?: string; detail?: string };
-      if (!response.ok) throw new Error(result.message || result.detail || 'Settings could not be saved. Reload settings and try again.');
+      if (!response.ok) {
+        setReloadRequired(response.status >= 500 || result.error === 'preferences_changed' || response.status === 409 && !result.error);
+        setError(result.message || result.detail || 'Settings could not be saved. Reload settings and try again.'); return;
+      }
       setValues(result as Preferences); setSection(null); setNotice('Preferences saved. Future booking runs will use your changes.'); onSaved();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'The save result could not be checked. Reload settings before trying again.');
+    } catch {
+      setReloadRequired(true);
+      setError('The save result could not be checked. Reload settings before trying again.');
     } finally { setWorking(false); }
   }
 
-  function pickDate(day: string) {
-    setDate(day); setDateEnabled(!values?.disabled_dates.includes(day));
-    setDateHours(values?.practice_plan.date_overrides[day]?.toString() ?? '');
+  function editDate(patch: Partial<{ enabled: boolean; hours: string }>) {
+    setDateEdits(current => ({ ...current, [date]: { enabled: dateEnabled, hours: dateHours, ...patch } }));
   }
 
   function moveRoom(index: number, direction: number) {
@@ -99,9 +118,10 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
           <label>Hours per day<input type="number" required min="0.5" max="12" step="0.5" value={hours} onChange={event => setHours(event.target.value)} /></label>
         </>}
         {(section === 'days' || section === 'all') && <>
-          <label>Practice date<input type="date" required={section === 'days'} value={date} onChange={event => pickDate(event.target.value)} /></label>
-          {date && <><label><input type="checkbox" checked={dateEnabled} onChange={event => setDateEnabled(event.target.checked)} /> Allow automatic bookings on this date</label>
-            <label>Hours for this date (blank uses daily goal)<input type="number" min="0.5" max="12" step="0.5" value={dateHours} onChange={event => setDateHours(event.target.value)} /></label></>}
+          <label>Practice date<input type="date" required={section === 'days' && !Object.keys(dateEdits).length} value={date} onChange={event => setDate(event.target.value)} /></label>
+          {date && <><label><input type="checkbox" checked={dateEnabled} onChange={event => editDate({ enabled: event.target.checked })} /> Allow automatic bookings on this date</label>
+            <label>Hours for this date (blank uses daily goal)<input type="number" min="0.5" max="12" step="0.5" value={dateHours} onChange={event => editDate({ hours: event.target.value })} /></label></>}
+          {Object.keys(dateEdits).length > 0 && <p>Dates to save: {Object.keys(dateEdits).sort().join(', ')}</p>}
           {values.disabled_dates.length > 0 && <p>Dates off: {values.disabled_dates.join(', ')}</p>}
           <p>Turning a date off leaves existing reservations in place.</p>
           {!values.practice_plan.enabled && <p>Daily goals are off. Enable them under Daily goal to use date-specific hours.</p>}
@@ -120,8 +140,8 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
           </li>)}</ol></>}
       </fieldset>}
       <div className="preference-actions">
-        {values && <button className="quiet-primary" type="submit" disabled={working || !enabled}>Save changes</button>}
-        <button className="quiet-secondary" type="button" disabled={working} onClick={() => { setSection(null); setError(''); }}>Cancel</button>
+        {values && <button className="quiet-primary" type="submit" disabled={working || !enabled || reloadRequired}>Save changes</button>}
+        <button className="quiet-secondary" type="button" disabled={working && values !== null} onClick={() => { loadRequest.current?.abort(); setWorking(false); setSection(null); setError(''); }}>Cancel</button>
         {error && <button className="quiet-secondary" type="button" disabled={working} onClick={() => void open(section)}>Reload settings</button>}
       </div>
     </form>}

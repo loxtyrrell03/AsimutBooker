@@ -38,6 +38,7 @@ import {
 import { selectedPlanMinutes, selectedPlanSessions } from '@/lib/plan_state';
 import { PracticeSettings } from '@/components/practice-settings';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
+import { requestJson } from '@/lib/api';
 
 const PRIVATE_ORIGIN = process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || '';
 const subscribeBrowserSnapshot = () => () => undefined;
@@ -433,7 +434,7 @@ function ConnectionBanner({
   error: string;
   onRetry: () => void;
 }) {
-  if (connection === 'online' && !error) return null;
+  if (connection === 'online') return null;
   return (
     <div className={`connection-banner ${connection}`} role={error ? 'alert' : 'status'}>
       {connection === 'offline' ? <WifiOff /> : <RefreshCw className="spin-slow" />}
@@ -1125,6 +1126,8 @@ export default function HomePage() {
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const connectingRef = useRef(false);
+  const sendingRef = useRef(false);
+  const [stopping, setStopping] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const connectRef = useRef<() => Promise<boolean>>(async () => false);
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
@@ -1140,6 +1143,8 @@ export default function HomePage() {
   }, []);
 
   const applyBootstrap = useCallback((payload: Bootstrap) => {
+    // A slower HTTP response must not undo a newer streamed turn/reset.
+    if (payload.stream_generation === streamGenerationRef.current && payload.event_cursor < cursorRef.current) return;
     const position = reconcileStreamPosition(
       streamGenerationRef.current,
       cursorRef.current,
@@ -1167,14 +1172,14 @@ export default function HomePage() {
     if (!csrf) return;
     setRefreshing(true);
     try {
-      const response = await fetch('/api/v1/refresh', {
+      const { response, data } = await requestJson<Bootstrap>('/api/v1/refresh', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: '{}',
       });
       if (!response.ok) throw new Error('Booker refresh was not available');
-      applyBootstrap(await response.json() as Bootstrap);
+      applyBootstrap(data);
       setConnection('online');
       setError('');
     } catch {
@@ -1193,19 +1198,19 @@ export default function HomePage() {
     liveScheduleRunningRef.current = true;
     setRefreshing(true);
     try {
-      const response = await fetch('/api/v1/live-refresh', {
+      const { response, data } = await requestJson<Bootstrap>('/api/v1/live-refresh', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: JSON.stringify({ scope: 'plan', force }),
-      });
+      }, 16 * 60_000);
       if (response.status === 409) {
-        setError('The Booker is already checking Asimut. The schedule will update when it finishes.');
         await refreshSnapshot();
+        setError('The Booker is already checking Asimut. Try refresh again when it finishes.');
         return;
       }
       if (!response.ok) throw new Error('live_refresh_failed');
-      applyBootstrap(await response.json() as Bootstrap);
+      applyBootstrap(data);
       setConnection('online');
       setError('');
     } catch {
@@ -1298,6 +1303,7 @@ export default function HomePage() {
       setReasoningParts([]);
       setProgressNarrative('');
       setTools([]);
+      void refreshSnapshot();
       return;
     }
     if (event.kind === 'snapshot.required') {
@@ -1486,9 +1492,10 @@ export default function HomePage() {
     };
   }, [busy, connection, csrf, preview, refreshLiveSchedule, tab]);
 
-  const send = useCallback(async () => {
-    const text = draft.trim();
-    if (!text || busy || connection !== 'online') return;
+  const send = useCallback(async (retryPending = false) => {
+    const pending = pendingDeliveryRef.current;
+    const text = retryPending && pending ? pending.text : draft.trim();
+    if (!text || busy || sendingRef.current || uncertainOutcome || connection !== 'online') return;
     if (preview) {
       setMessages((current) => [...current, { role: 'user', text }]);
       setDraft('');
@@ -1498,32 +1505,31 @@ export default function HomePage() {
       setStreamingText('This preview shows the finished phone experience. Open the private Booker URL to use live schedule data and actions.');
       return;
     }
-    if (pendingDelivery && pendingDelivery.text !== text) {
-      setError('A previous message has uncertain delivery. Retry that exact message first.');
+    if (pending && pending.text !== text) {
+      setError('Use Retry previous message to check its delivery before sending your new draft.');
       return;
     }
-    const delivery = pendingDelivery ?? { id: crypto.randomUUID(), text };
+    const delivery = pending ?? { id: crypto.randomUUID(), text };
     const optimistic: ChatMessage = { role: 'user', text, optimistic: true };
-    if (!pendingDelivery) {
+    if (!pending) {
       setMessages((current) => [...current, optimistic]);
       pendingDeliveryRef.current = delivery;
       streamConfirmedDeliveryIdsRef.current.delete(delivery.id);
       setPendingDelivery(delivery);
     }
     setBusy(true);
+    sendingRef.current = true;
     setError('');
     try {
-      const response = await fetch('/api/v1/assistant/messages', {
+      const { response, data: payload } = await requestJson<{
+        error?: string; message?: string; duplicate?: boolean; outcome_uncertain?: boolean;
+      }>('/api/v1/assistant/messages', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: JSON.stringify({ client_message_id: delivery.id, text: delivery.text }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as {
-          error?: string;
-          message?: string;
-        };
         const disposition = deliveryDisposition(
           response.status,
           streamConfirmedDeliveryIdsRef.current.has(delivery.id),
@@ -1546,15 +1552,11 @@ export default function HomePage() {
         }
         throw new Error('ambiguous_delivery');
       }
-      const payload = await response.json() as {
-        duplicate?: boolean;
-        outcome_uncertain?: boolean;
-      };
       if (streamConfirmedDeliveryIdsRef.current.delete(delivery.id)) return;
       if (pendingDeliveryRef.current?.id !== delivery.id) return;
       pendingDeliveryRef.current = null;
       setPendingDelivery(null);
-      setDraft('');
+      setDraft(current => current.trim() === delivery.text ? '' : current);
       setMessages((current) => current.map((message) => (
         message.optimistic ? { ...message, optimistic: false } : message
       )));
@@ -1576,30 +1578,38 @@ export default function HomePage() {
       pendingDeliveryRef.current = delivery;
       setPendingDelivery(delivery);
       setBusy(false);
-      setError('Delivery is uncertain. Tap Send to safely retry this exact message.');
+      setError('Delivery is uncertain. Use Retry previous message to check it safely.');
+    } finally {
+      sendingRef.current = false;
     }
-  }, [busy, connection, csrf, draft, pendingDelivery, preview, refreshSnapshot]);
+  }, [busy, connection, csrf, draft, preview, refreshSnapshot, uncertainOutcome]);
 
   const stop = useCallback(async () => {
+    if (stopping) return;
     if (preview) {
       setBusy(false);
       setStreamingText('');
       return;
     }
+    setStopping(true);
     try {
-      await fetch('/api/v1/assistant/stop', {
+      const { response, data } = await requestJson<{ stopping: boolean }>('/api/v1/assistant/stop', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: '{}',
       });
+      if (!response.ok) throw new Error('stop_rejected');
+      if (!data.stopping) await refreshSnapshot();
     } catch {
-      setError('The stop request could not reach your PC.');
+      setError('The stop request was not confirmed. The assistant may still be working. Reconnect or try Stop again.');
+    } finally {
+      setStopping(false);
     }
-  }, [csrf, preview]);
+  }, [csrf, preview, refreshSnapshot, stopping]);
 
   const newChat = useCallback(async () => {
-    if (busy || uncertainOutcome) return;
+    if (busy || pendingDeliveryRef.current || uncertainOutcome || connection !== 'online') return;
     if (preview) {
       setMessages([]);
       setStreamingText('');
@@ -1608,26 +1618,23 @@ export default function HomePage() {
       setTools([]);
       return;
     }
+    setBusy(true);
     try {
-      const response = await fetch('/api/v1/assistant/new-chat', {
+      const { response } = await requestJson('/api/v1/assistant/new-chat', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: '{}',
       });
       if (!response.ok) throw new Error();
-      setBusy(true);
-      pendingDeliveryRef.current = null;
-      setPendingDelivery(null);
-      setMessages([]);
-      setStreamingText('');
-      setReasoningParts([]);
-      setProgressNarrative('');
-      setTools([]);
+      // The reset event owns clearing the transcript. A late HTTP reply must
+      // not erase a message sent after the stream already reported ready.
+      await refreshSnapshot();
     } catch {
+      await refreshSnapshot();
       setError('A new chat could not be started yet.');
     }
-  }, [busy, csrf, preview, uncertainOutcome]);
+  }, [busy, connection, csrf, preview, refreshSnapshot, uncertainOutcome]);
 
   const acknowledgeUncertain = useCallback(async () => {
     if (acknowledgingUncertain) return;
@@ -1638,14 +1645,13 @@ export default function HomePage() {
     setAcknowledgingUncertain(true);
     setError('');
     try {
-      const response = await fetch('/api/v1/assistant/uncertain/acknowledge', {
+      const { response, data: payload } = await requestJson<{ bootstrap: Bootstrap }>('/api/v1/assistant/uncertain/acknowledge', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
         body: JSON.stringify({ reviewed: true }),
       });
       if (!response.ok) throw new Error();
-      const payload = await response.json() as { bootstrap: Bootstrap };
       applyBootstrap(payload.bootstrap);
       if (payload.bootstrap.unresolved_reserved_count !== 0) throw new Error();
       pendingDeliveryRef.current = null;
@@ -1666,10 +1672,7 @@ export default function HomePage() {
   };
 
   const askToCancel = (event: AgendaEvent) => {
-    const prompt = cancellationInstruction(event);
-    setTab('assistant');
-    setDraft(prompt);
-    window.setTimeout(() => inputRef.current?.focus(), 50);
+    choosePrompt(cancellationInstruction(event));
   };
 
   if (privateSurface === false) return <RemoteGate />;
@@ -1707,6 +1710,11 @@ export default function HomePage() {
       {tab === 'assistant' && (
         <div className="assistant-view">
           {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
+          {pendingDelivery && !busy && <output className="quiet-notice">
+            <span>Check delivery of: {pendingDelivery.text}</span>
+            <button type="button" className="quiet-secondary" disabled={connection !== 'online' || Boolean(uncertainOutcome)} onClick={() => void send(true)}>Retry previous message</button>
+          </output>}
+          {stopping && <output className="quiet-notice">Requesting stop…</output>}
           <Transcript
             busy={busy}
             messages={messages}
@@ -1730,9 +1738,9 @@ export default function HomePage() {
       {tab === 'schedule' && booker && (
         <ScheduleView booker={booker} onAskToCancel={askToCancel} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
       )}
-      {tab === 'status' && booker && (
+      {booker && <div hidden={tab !== 'status'}>
         <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} csrf={csrf} editable={connection === 'online' && !busy && !preview} onSaved={() => void refreshSnapshot()} />
-      )}
+      </div>}
       {tab !== 'assistant' && !booker && (
         <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>
       )}

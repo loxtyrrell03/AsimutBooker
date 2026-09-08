@@ -117,6 +117,25 @@ def check(dist):
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
             assert read_phone_preferences(settings)['practice_plan']['default_hours'] == 2.5
             assert read_phone_preferences(settings)['time_preferences']['start_time'] == '13:00'
+            # Navigation must keep a draft; selecting another date must not
+            # silently throw away the previous date's pending edit.
+            page.get_by_role('button', name='Edit all practice settings', exact=True).tap()
+            page.get_by_label('Hours per day', exact=True).fill('6')
+            page.get_by_label('Practice date', exact=True).fill('2026-10-02')
+            page.get_by_label('Allow automatic bookings on this date').uncheck()
+            page.get_by_label('Practice date', exact=True).fill('2026-10-03')
+            page.get_by_label('Hours for this date', exact=False).fill('3')
+            page.get_by_role('button', name='Today', exact=True).tap()
+            page.get_by_role('button', name='Settings', exact=True).tap()
+            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('6')
+            page.get_by_label('Practice date', exact=True).fill('2026-10-02')
+            expect(page.get_by_label('Allow automatic bookings on this date')).not_to_be_checked()
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
+            saved = read_phone_preferences(settings)
+            assert saved['practice_plan']['default_hours'] == 6
+            assert saved['practice_plan']['date_overrides']['2026-10-03'] == 3
+            assert '2026-10-02' in saved['disabled_dates']
             assert not errors, errors
             browser.close()
             print(f'PASS {engine}: all four editors, persistence, Cancel, stale-save rejection, reload; no live actions')
