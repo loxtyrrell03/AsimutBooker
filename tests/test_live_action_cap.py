@@ -567,6 +567,12 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
         self.assertIn("Next: 2026-08-31 12:00-14:00", publish.call_args.kwargs["summary"])
 
     def test_disabled_daily_planning_preview_uses_legacy_gap_start_order(self):
+        self._check_disabled_planner_preview(soft_preferences=False)
+
+    def test_disabled_foresight_still_prefers_interior_afternoon_start(self):
+        self._check_disabled_planner_preview(soft_preferences=True)
+
+    def _check_disabled_planner_preview(self, *, soft_preferences):
         today = date(2026, 8, 31)
         frozen_now = datetime(2026, 8, 31, 13, 0)
 
@@ -632,7 +638,7 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
                 book_week.PracticePlan(enabled=True, default_hours=2.0),
                 tracker,
                 {
-                    "enabled": True,
+                    "enabled": soft_preferences,
                     "strict_mode": False,
                     "start_hour": 12.0,
                     "end_hour": 16.0,
@@ -644,8 +650,9 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
             )
 
         day = publish.call_args.args[0][0]
-        self.assertEqual(day.primary.start_time, "09:00")
-        self.assertIn("foresight is disabled", day.reason)
+        self.assertEqual(day.primary.start_time, "12:00" if soft_preferences else "09:00")
+        if not soft_preferences:
+            self.assertIn("foresight is disabled", day.reason)
         self.assertEqual(
             build.call_args.args[4].desired_peak_block_minutes,
             int(book_week.MAX_BOOKING_HOURS * 60),

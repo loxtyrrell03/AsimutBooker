@@ -1663,3 +1663,25 @@ When modifying this codebase:
   A completed live `--plan-only` refresh verified the new readiness wording in
   the published plan. No test reservations were created; existing automatic
   scheduling remains enabled and loads these changes on its next pass.
+
+## 2026-09-08 Soft Preferred-Time Distance
+
+- Soft preferences now apply the deterministic start-time weight
+  `2 ** -(hours_outside_window ** 2)`. A session needs at least 15 weighted
+  minutes to justify booking; the planner can leave the daily target unfilled.
+  With a noon start, 11:00 retains half weight and a 30-minute fallback remains
+  eligible; 08:00 retains only 1/65536 and even a two-hour session is rejected.
+  These are suitability scores, never random chances retried by the scheduler.
+- The defect was target maximization accepting an early non-peak fragment after
+  foresight had held capacity for later sessions. Opportunity enumeration,
+  portfolio truncation, actual unlocked duration, normal and horizon creates,
+  same-time fallback, extensions, and extension capacity now share the policy.
+  Time-weighted quality precedes room priority, including cross-date horizon
+  ordering; early discovery stops only when an untested room cannot improve it.
+- Soft preference selection still enumerates interior gap starts when foresight
+  is disabled. Strict windows and disabled time preferences retain their separate
+  meanings. Saved preferences and existing reservations were not changed.
+- All 773 offline tests passed using `.venv/Scripts/python.exe`. The scheduled
+  task and batch launcher were verified to load this canonical checkout; new
+  scheduled or read-only refresh processes receive the fix without a server
+  restart or phone build. This milestone did not create or cancel reservations.

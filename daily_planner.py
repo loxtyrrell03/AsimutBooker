@@ -20,6 +20,27 @@ DEFAULT_PEAK_START_MINUTES = 9 * 60
 DEFAULT_PEAK_END_MINUTES = 16 * 60
 
 
+def soft_time_weight(start_minutes: float, window: tuple[int, int] | None) -> float:
+    """Deterministic preference weight, not a probability redrawn each run.
+
+    A start one hour outside the window has half weight; two hours has 1/16,
+    four hours 1/65536. Both sides of the user's window behave identically.
+    """
+    if window is None:
+        return 1.0
+    distance_hours = max(window[0] - start_minutes, start_minutes - window[1], 0) / 60
+    return 2.0 ** -(distance_hours ** 2)
+
+
+def soft_time_is_worth_booking(start_minutes, duration_minutes, window) -> bool:
+    """Leave capacity unused unless a session offers 15 weighted minutes.
+
+    This reservation cost prevents a terrible time winning just because it is
+    the only free slot. Longer useful fallbacks can still justify more distance.
+    """
+    return window is None or duration_minutes * soft_time_weight(start_minutes, window) >= 15
+
+
 def _require_quarter_minutes(value: int, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{label} must be an integer")
@@ -116,6 +137,7 @@ class BookingOpportunity:
     peak_window_end_minutes: int
     source_gap_start_minutes: int
     source_gap_end_minutes: int
+    soft_preferred_window: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.room, str) or not self.room.strip():
@@ -298,6 +320,9 @@ def enumerate_gap_opportunities(
         if end - start < minimum:
             continue
 
+        if not soft_time_is_worth_booking(start, end - start, soft_preferred_window):
+            continue
+
         start_datetime = datetime.combine(
             target_date,
             time(start // 60, start % 60),
@@ -335,6 +360,7 @@ def enumerate_gap_opportunities(
                 peak_window_end_minutes=peak_end_minutes,
                 source_gap_start_minutes=gap_start,
                 source_gap_end_minutes=gap_end,
+                soft_preferred_window=soft_preferred_window if strict_window is None else None,
             )
         )
     return opportunities
@@ -396,9 +422,15 @@ def opportunity_rank(opportunity: BookingOpportunity, planning, *, now: datetime
             opportunity.start_minutes,
         )
     quality = (*quality, wait_seconds)
+    # Time suitability must not disappear behind room priority or peak groups.
+    soft_quality = (
+        (-opportunity.potential_minutes * soft_time_weight(
+            opportunity.start_minutes, opportunity.soft_preferred_window),)
+        if opportunity.soft_preferred_window is not None else ()
+    )
     if getattr(planning, "priority_mode") == "room_first":
-        return (opportunity.room_priority, group, *quality)
-    return (group, *quality, opportunity.room_priority)
+        return (*soft_quality, opportunity.room_priority, group, *quality)
+    return (*soft_quality, group, *quality, opportunity.room_priority)
 def choose_horizon_opportunity(
     current: Sequence[BookingOpportunity],
     future: Sequence[BookingOpportunity],
@@ -593,6 +625,10 @@ def select_day_plan(
             maximum + 1,
             QUARTER_MINUTES,
         ):
+            if not soft_time_is_worth_booking(
+                item.start_minutes, duration, item.soft_preferred_window
+            ):
+                continue
             planned_end = item.start_minutes + duration
             planned_peak = interval_overlap_minutes(
                 item.start_minutes,

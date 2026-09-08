@@ -58,6 +58,8 @@ from daily_planner import (
     interval_overlap_minutes,
     opportunity_rank,
     select_day_plan,
+    soft_time_weight,
+    soft_time_is_worth_booking,
 )
 from booking_plan import (
     BookingPlanError,
@@ -2631,6 +2633,23 @@ def is_preferred_time(start_hour, time_prefs):
     return time_prefs["start_hour"] <= start_hour < time_prefs["end_hour"]
 
 
+def _soft_time_window(time_prefs):
+    if not time_prefs or not time_prefs.get("enabled") or time_prefs.get("strict_mode"):
+        return None
+    return (round(time_prefs["start_hour"] * 60), round(time_prefs["end_hour"] * 60))
+
+
+def uses_time_aware_planner(daily_planning, time_prefs):
+    """Keep soft time selection active even when horizon foresight is disabled."""
+    return daily_planning.enabled or _soft_time_window(time_prefs) is not None
+
+
+def soft_time_allows_booking(start_hour, duration_minutes, time_prefs):
+    return soft_time_is_worth_booking(
+        start_hour * 60, duration_minutes, _soft_time_window(time_prefs)
+    )
+
+
 def trim_to_strict_time_window(start_hour, end_hour, time_prefs):
     """Trim a slot to the full preferred interval when strict mode is enabled."""
 
@@ -3788,6 +3807,11 @@ def try_extend_booking(
 
     target_parts = target_end.split(':')
     target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
+
+    if not soft_time_allows_booking(
+        start_hour, min((target_end_hour - start_hour) * 60, MAX_BOOKING_HOURS * 60), time_prefs
+    ):
+        return False, None, "Extension time is too far from the preferred window"
 
     # A practice-plan target is authoritative.  If existing reservations have
     # already filled it (including after the user lowers a date override), this
@@ -5189,6 +5213,7 @@ def try_book_slot(
     days_ahead,
     remaining_daily_hours=None,
     max_action_minutes=None,
+    time_prefs=None,
 ):
     """Attempt one slot and return its exact verified receipt, or False."""
     room = slot['room']
@@ -5263,6 +5288,10 @@ def try_book_slot(
         return False
 
     end_hour = start_hour + booking_duration / 60
+
+    if not soft_time_allows_booking(start_hour, booking_duration, time_prefs):
+        print("  Skipping: this time is too far from the preferred window for this duration")
+        return False
 
     # Format times
     start_h = int(start_hour)
@@ -6044,6 +6073,16 @@ def build_day_booking_opportunities(
                 ):
                     if target_date == now.date() and opportunity.start_minutes <= today_minutes:
                         continue
+                    if opportunity.unlock_at <= now:
+                        unlocked_minutes = MINIMUM_BLOCK_MINUTES + int(
+                            (now - opportunity.unlock_at).total_seconds() // 900
+                        ) * 15
+                        if not soft_time_allows_booking(
+                            opportunity.start_hour,
+                            min(opportunity.potential_minutes, unlocked_minutes),
+                            time_prefs,
+                        ):
+                            continue
                     key = (
                         opportunity.room,
                         opportunity.start_minutes,
@@ -6143,6 +6182,16 @@ def _opportunity_to_horizon_candidate(opportunity, *, target_boundary):
     }
 
 
+def horizon_candidate_rank(candidate, time_prefs):
+    window = _soft_time_window(time_prefs)
+    quality = (
+        -min(candidate["duration"], MAX_BOOKING_HOURS * 60)
+        * soft_time_weight(candidate["start_hour"] * 60, window)
+        if window is not None else 0
+    )
+    return (candidate["bookable_from"], quality, candidate["room_priority"], candidate["days_ahead"])
+
+
 def _opportunity_to_normal_slot(opportunity):
     return {
         "room": opportunity.room,
@@ -6214,7 +6263,7 @@ def attempt_booking_with_room_fallback(
                                          days_ahead, time_prefs=time_prefs, **kwargs)
             else:
                 result = try_book_slot(page, candidate, target_date, tracker,
-                                       days_ahead, **kwargs)
+                                       days_ahead, time_prefs=time_prefs, **kwargs)
         except BookingVerificationError:
             raise
         except Exception as exc:
@@ -6709,6 +6758,9 @@ def _legacy_opportunity_rank(opportunity, time_prefs):
     """Mirror the established non-foresight booking order for display."""
 
     return (
+        -opportunity.potential_minutes * soft_time_weight(
+            opportunity.start_minutes, _soft_time_window(time_prefs)
+        ) if _soft_time_window(time_prefs) is not None else 0,
         0 if is_preferred_time(opportunity.start_hour, time_prefs) else 1,
         opportunity.potential_minutes < max(MINIMUM_BLOCK_MINUTES, 60),
         opportunity.start_minutes,
@@ -7137,6 +7189,8 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
             continue
         start_hour = candidate["start_hour"]
         end_hour = start_hour + MINIMUM_BLOCK_MINUTES / 60
+        if not soft_time_allows_booking(start_hour, MINIMUM_BLOCK_MINUTES, time_prefs):
+            continue
         if time_prefs["enabled"] and time_prefs["strict_mode"]:
             if not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
                 continue
@@ -7309,7 +7363,7 @@ def find_all_snipe_candidates_multi_day(
             else 0
         )
 
-        if daily_planning.enabled:
+        if uses_time_aware_planner(daily_planning, time_prefs):
             cross_date_foresight_minutes = (
                 sum(
                     minutes
@@ -7406,7 +7460,12 @@ def find_all_snipe_candidates_multi_day(
                         target_boundary=target_boundary,
                     )
                 )
-                if candidate_limit == 1:
+                if candidate_limit == 1 and (
+                    _soft_time_window(time_prefs) is None
+                    or decision.selected.potential_minutes * soft_time_weight(
+                        decision.selected.start_minutes, _soft_time_window(time_prefs)
+                    ) >= MAX_BOOKING_HOURS * 60
+                ):
                     selected_priority = decision.selected.room_priority
                     remaining_priorities = [
                         plan["room_priority"]
@@ -7435,6 +7494,8 @@ def find_all_snipe_candidates_multi_day(
                 continue
             start_hour = candidate["start_hour"]
             end_hour = start_hour + MINIMUM_BLOCK_MINUTES / 60
+            if not soft_time_allows_booking(start_hour, MINIMUM_BLOCK_MINUTES, time_prefs):
+                continue
             target_date_str = target_date.isoformat()
             if (target_date_str, room_name, start_hour) in extension_keys:
                 print(
@@ -7515,11 +7576,11 @@ def find_all_snipe_candidates_multi_day(
                 )
                 break
 
-    if daily_planning.enabled:
+    if uses_time_aware_planner(daily_planning, time_prefs):
         if candidates:
             best_candidate = min(
                 candidates,
-                key=lambda item: (item["room_priority"], item["days_ahead"]),
+                key=lambda item: horizon_candidate_rank(item, time_prefs),
             )
             best_opportunity = best_candidate["planning_opportunity"]
             decision = next(
@@ -7560,15 +7621,9 @@ def find_all_snipe_candidates_multi_day(
             )
         print(f"\n  Daily planner result: {decision.reason}")
 
-    # A common boundary is attempted in the user's GUI room order.  Date
-    # distance is only a deterministic tiebreaker, never a reason to demote a
-    # preferred room.
+    # At a common boundary, soft time suitability precedes GUI room order.
     candidates.sort(
-        key=lambda item: (
-            item["bookable_from"],
-            item["room_priority"],
-            item["days_ahead"],
-        )
+        key=lambda item: horizon_candidate_rank(item, time_prefs)
     )
     if candidate_limit is not None:
         candidates = candidates[:candidate_limit]
@@ -7611,6 +7666,9 @@ def try_horizon_snipe(
         return False
     if booking_minutes != MINIMUM_BLOCK_MINUTES:
         print("  [SNIPE] Candidate minimum block is stale; aborting")
+        return False
+    if not soft_time_allows_booking(start_hour, booking_minutes, time_prefs):
+        print("  [SNIPE] This time is too far from the preferred window for the initial block")
         return False
     if booking_minutes > _action_maximum_minutes(max_action_minutes):
         print("  [SNIPE] Controlled action ceiling is below the chosen minimum block")
@@ -8791,6 +8849,10 @@ def calculate_extension_capacity_holds(
         target_end = clock_minutes(booking["target_end"])
         start_hour = start_time / 60
         current_end_hour = current_end / 60
+        if not soft_time_allows_booking(
+            start_hour, min(target_end - start_time, MAX_BOOKING_HOURS * 60), time_prefs
+        ):
+            continue
         if not interval_is_strictly_preferred(
             start_hour,
             current_end_hour,
@@ -9262,7 +9324,7 @@ def generate_read_only_booking_plan(
             - total_extension_minutes
             - planned_weekly_minutes,
         )
-        if daily_planning.enabled:
+        if uses_time_aware_planner(daily_planning, time_prefs):
             day_plan = build_display_day_plan(
                 target_date,
                 opportunities,
@@ -9767,7 +9829,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 planning_context=planning_context,
             )
 
-            if daily_planning.enabled:
+            if uses_time_aware_planner(daily_planning, time_prefs):
                 opportunities_by_date = planning_context.get(
                     "opportunities_by_date", {}
                 )
@@ -10368,7 +10430,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
             all_slots = adjusted_slots
 
-            if daily_planning.enabled:
+            if uses_time_aware_planner(daily_planning, time_prefs):
                 planning_remaining = remaining_run_daily_budget(
                     practice_plan,
                     target_date,
@@ -10517,7 +10579,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 if filtered_count > 0:
                     print(f"  [DEBUG] Strict mode: Filtered out {filtered_count} non-preferred slots")
 
-            if not daily_planning.enabled:
+            if not uses_time_aware_planner(daily_planning, time_prefs):
                 all_slots.sort(key=lambda s: (
                     0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
                     not s.get('is_good', False),
@@ -10750,7 +10812,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                                     "click_y": slot_data["clickY"]
                                 })
 
-                    if daily_planning.enabled:
+                    if uses_time_aware_planner(daily_planning, time_prefs):
                         refreshed_now = datetime.now()
                         planning_remaining = remaining_run_daily_budget(
                             practice_plan,
@@ -10906,7 +10968,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                             )
                         ]
 
-                    if not daily_planning.enabled:
+                    if not uses_time_aware_planner(daily_planning, time_prefs):
                         all_slots.sort(key=lambda s: (
                             0 if is_preferred_time(s['start_hour'], time_prefs) else 1,
                             not s['is_good'],
