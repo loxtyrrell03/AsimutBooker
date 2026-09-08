@@ -134,6 +134,22 @@ class DesktopSettingsTests(unittest.TestCase):
                     self.assertLessEqual(right, self.root.winfo_rootx() + width)
                 canvas = self.app.settings_scroll.canvas
                 canvas.yview_moveto(0)
+                # All six settings groups fit at both supported window sizes.
+                self.assertEqual(canvas.yview(), (0.0, 1.0))
+                for card in self.app.settings_sections.values():
+                    self.assertLessEqual(card.winfo_rooty() + card.winfo_height(),
+                                         canvas.winfo_rooty() + canvas.winfo_height())
+                self.app.time_prefs_enabled.set(True)
+                self.app.time_prefs_dropdown.set('Custom...')
+                self.app._update_time_prefs_ui_state()
+                self.root.update()
+                self.assertEqual(canvas.yview(), (0.0, 1.0))
+                for entry in (self.app.custom_start_hour_entry, self.app.custom_end_min_entry):
+                    self.assertGreaterEqual(entry.winfo_width(), entry.winfo_reqwidth() - 1)
+                # Extra error/detail content may still need the scroll fallback.
+                overflow = tk.Frame(self.app.settings_scroll.content, height=800)
+                overflow.pack(fill=tk.X)
+                self.root.update()
                 before = self.settings.read_bytes()
                 target = self.app.practice_default_hours.get()
                 self.app.practice_default_spin.event_generate('<MouseWheel>', delta=-120)
@@ -144,6 +160,11 @@ class DesktopSettingsTests(unittest.TestCase):
                 canvas.yview_moveto(1)
                 self.root.update()
                 self.assertAlmostEqual(canvas.yview()[1], 1.0)
+                overflow.destroy()
+                self.app.time_prefs_enabled.set(False)
+                self.app._update_time_prefs_ui_state()
+                canvas.yview_moveto(0)
+                self.root.update()
 
 
 if __name__ == '__main__':

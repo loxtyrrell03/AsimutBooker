@@ -81,28 +81,39 @@ class QuietFocusGUI:
         style = ttk.Style(self.root)
         for base in ('Title.TLabel', 'Subtitle.TLabel'):
             style.configure('Settings.' + base, background='#FFFFFF')
+        style.configure('Settings.Title.TLabel', font=(self.ui_font_family, -23, 'bold'))
+        style.configure('Settings.Subtitle.TLabel', font=(self.ui_font_family, -12))
         self.settings_scroll = ScrollPage(self.preferences_page)
         self.settings_scroll.pack(fill=tk.BOTH, expand=True)
         self.settings_sections = {}
-        body = tk.Frame(self.settings_scroll.content, bg='#FFFFFF', padx=34, pady=30)
+        body = tk.Frame(self.settings_scroll.content, bg='#FFFFFF', padx=16, pady=12)
         body.pack(fill=tk.BOTH, expand=True)
         return body
 
-    def _create_settings_section(self, parent, title, *, before=None):
-        card = RoundedCard(parent, fill='#F7F9FC', padding=22)
-        options = {'before': self.settings_sections[before]} if before else {}
-        card.pack(fill=tk.X, pady=(0, 18), **options)
+    def _create_settings_section(self, parent, title):
+        if not self.settings_sections:
+            self.settings_grid = tk.Frame(parent, bg='#FFFFFF')
+            self.settings_grid.pack(fill=tk.X)
+            for column in (0, 1):
+                self.settings_grid.columnconfigure(column, weight=1, uniform='settings')
+        positions = {'Practice target': (0, 0), 'Preferred time': (0, 1),
+                     'Booking days': (1, 0), 'Rooms': (1, 1),
+                     'Booking strategy': (2, 0), 'Automatic booking': (2, 1)}
+        row, column = positions[title]
+        card = RoundedCard(self.settings_grid, fill='#F7F9FC', padding=12, width=1)
+        card.grid(row=row, column=column, sticky='new',
+                  padx=(0, 5) if column == 0 else (5, 0), pady=(0, 10))
         self.settings_sections[title] = card
-        label(card.content, title, size=19, bold=True).pack(anchor=tk.W, pady=(0, 16))
+        label(card.content, title, size=15, bold=True).pack(anchor=tk.W, pady=(0, 7))
         content = ttk.Frame(card.content)
         content.pack(fill=tk.X)
         return content
 
     def _finish_quiet_layout(self, preferences):
         automatic = self._create_settings_section(preferences, 'Automatic booking')
-        ttk.Button(automatic, text='Manage schedule', command=self.view_scheduled_tasks).pack(side=tk.RIGHT)
-        ttk.Label(automatic, text='View, install or repair the automatic schedule.',
-                  wraplength=430).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
+        ttk.Label(automatic, text='View, install or repair the schedule.',
+                  wraplength=300).pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(automatic, text='Manage schedule', command=self.view_scheduled_tasks).pack(anchor=tk.W)
         links = tk.Frame(preferences, bg='#FFFFFF')
         links.pack(fill=tk.X, pady=(6, 0))
         for text, command in (
@@ -115,11 +126,22 @@ class QuietFocusGUI:
         # Scope the card surface styles to Settings; dialogs keep their own styles.
         style = ttk.Style(self.root)
         def style_section(widget):
-            if isinstance(widget, (ttk.Frame, ttk.Label, ttk.Checkbutton)):
+            if isinstance(widget, (ttk.Frame, ttk.Label, ttk.Checkbutton, ttk.Button,
+                                   ttk.Entry, ttk.Combobox, ttk.Spinbox)):
                 base = widget.cget('style') or widget.winfo_class()
                 name = 'Settings.' + base
-                style.configure(name, background='#F7F9FC')
+                if isinstance(widget, (ttk.Frame, ttk.Label, ttk.Checkbutton)):
+                    style.configure(name, background='#F7F9FC')
+                if not isinstance(widget, ttk.Frame):
+                    style.configure(name, font=(self.ui_font_family, -13))
+                if isinstance(widget, (ttk.Button, ttk.Entry, ttk.Combobox, ttk.Spinbox)):
+                    style.configure(name, padding=(7, 4))
+                if isinstance(widget, ttk.Button):
+                    widget.configure(width=0)
+                if isinstance(widget, (ttk.Label, ttk.Entry, ttk.Combobox, ttk.Spinbox)):
+                    widget.configure(font=(self.ui_font_family, -13))
                 if isinstance(widget, ttk.Checkbutton):
+                    style.configure(name, padding=(0, 2))
                     style.map(name, background=[('active', '#F7F9FC')])
                 widget.configure(style=name)
             if isinstance(widget, ttk.Label) and widget.cget('wraplength'):

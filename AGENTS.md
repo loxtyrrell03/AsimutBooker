@@ -20,13 +20,16 @@
   times use their existing validated direct-save controls. Dates, rooms, strategy
   and automatic scheduling open deterministic editors; support links remain on
   the same page. Settings never opens or prefills the assistant.
-- The design reference is `docs/design/2026-09-08-unified-settings.svg` (example
-  values). Rounded sections share one scroll surface, with stacked time controls
-  and wrapping summaries at the minimum window size. Wheel scrolling consumes
-  the event so spinboxes and comboboxes cannot also change their values.
+- The current design reference is `docs/design/2026-09-08-compact-settings.svg`
+  (example values), superseding the original tall unified-settings design.
+  Six sections use a compact two-column grid, 13px controls and 12px card padding.
+  All groups fit without scrolling at 1040x740 and 1200x820, including expanded
+  custom times in the isolated checks. Long content/errors retain scroll fallback.
+  Settings errors occupy space only when present. Wheel scrolling consumes the
+  event so spinboxes and comboboxes cannot also change their values.
 - Verified 85 focused desktop tests, including real controls writing to temporary
   settings, editor cancellation, support navigation, assistant-draft preservation,
-  and rendered geometry at 1040x740 and 1200x820. Isolated window captures were
+  and no-scroll geometry at 1040x740 and 1200x820. Isolated window captures were
   visually checked. No live preferences or bookings were changed for testing.
   Reopen the desktop app to load the change; existing sessions were preserved.
 

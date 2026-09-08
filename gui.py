@@ -1829,8 +1829,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         self.assistant_panel.pack(fill=tk.BOTH, expand=True)
 
-        # Preferences use a quiet, vertically grouped settings layout. Scrolling
-        # keeps the generous type and spacing usable on smaller displays.
+        # A compact two-column layout keeps routine settings visible together.
         preferences_tab = self._create_quiet_settings_body()
 
         ttk.Label(preferences_tab, text="Settings", style="Settings.Title.TLabel").pack(
@@ -1839,14 +1838,9 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         ttk.Label(
             preferences_tab,
-            text="Your practice routine, all in one place.",
-            style="Settings.Subtitle.TLabel",
-        ).pack(anchor=tk.W, pady=(8, 8))
-        ttk.Label(
-            preferences_tab,
             text="Quick changes save automatically. Editors have their own Save button.",
             style="Settings.Subtitle.TLabel",
-        ).pack(anchor=tk.W, pady=(0, 24))
+        ).pack(anchor=tk.W, pady=(2, 10))
 
         self.health_updated_var = tk.StringVar(value="Checking…")
         self.health_headline_vars = {
@@ -2179,7 +2173,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Summary label showing selected days count
         self.days_summary_var = tk.StringVar(value="Loading...")
-        ttk.Label(days_inner, textvariable=self.days_summary_var, font=("Segoe UI", 12)).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Label(days_inner, textvariable=self.days_summary_var, wraplength=220).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
         # Open calendar button
         self.calendar_btn = ttk.Button(
@@ -2189,7 +2183,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             width=18,
             style="Primary.TButton",
         )
-        self.calendar_btn.pack(side=tk.RIGHT)
+        self.calendar_btn.pack(side=tk.RIGHT, before=days_inner.winfo_children()[0])
         self._settings_controls.append(self.calendar_btn)
 
         # Initialize day vars (will be populated by load_booking_days)
@@ -2229,15 +2223,15 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.practice_default_spin.bind("<FocusOut>", lambda _event: self.on_practice_plan_changed())
         self.practice_default_spin.bind("<Return>", lambda _event: self.on_practice_plan_changed())
 
-        ttk.Label(practice_inner, text="hours on each enabled day").pack(side=tk.LEFT, padx=(8, 20))
+        ttk.Label(practice_inner, text="hours / enabled day").pack(side=tk.LEFT, padx=(8, 0))
 
         self.practice_plan_customize_btn = ttk.Button(
-            practice_inner,
+            practice_frame,
             text="Customize by Day",
             command=self.show_practice_plan_dialog,
             width=24,
         )
-        self.practice_plan_customize_btn.pack(side=tk.RIGHT)
+        self.practice_plan_customize_btn.pack(anchor=tk.W, pady=(6, 0))
 
         self.practice_plan_summary_var = tk.StringVar(value="Loading…")
         ttk.Label(
@@ -2246,7 +2240,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             foreground="#555555",
             font=(self.ui_font_family, 12),
             wraplength=700,
-        ).pack(fill=tk.X, pady=(12, 0))
+        ).pack(fill=tk.X, pady=(6, 0))
 
         self.settings_status_var = tk.StringVar(value="")
         self.settings_status_label = ttk.Label(
@@ -2256,7 +2250,12 @@ class AsimutBookerGUI(QuietFocusGUI):
             font=(self.ui_font_family, 11),
             wraplength=1150,
         )
-        self.settings_status_label.pack(fill=tk.X, pady=(6, 0))
+        def show_settings_error(*_args):
+            if self.settings_status_var.get():
+                self.settings_status_label.pack(fill=tk.X, pady=(6, 0))
+            else:
+                self.settings_status_label.pack_forget()
+        self.settings_status_var.trace_add('write', show_settings_error)
 
         self._settings_controls.extend(
             [self.practice_plan_enable_cb, self.practice_default_spin, self.practice_plan_customize_btn]
@@ -2283,7 +2282,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             command=self.show_room_preferences_dialog,
             width=24,
         )
-        self.room_preferences_btn.pack(side=tk.RIGHT)
+        self.room_preferences_btn.pack(side=tk.RIGHT, before=rooms_inner.winfo_children()[0])
         self._settings_controls.append(self.room_preferences_btn)
         self.room_catalog_status_var = tk.StringVar(value="")
         ttk.Label(
@@ -2302,11 +2301,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.load_room_preferences_settings()
 
         # Time Preferences section
-        time_prefs_frame = self._create_settings_section(preferences_tab, "Preferred time", before="Rooms")
+        time_prefs_frame = self._create_settings_section(preferences_tab, "Preferred time")
 
         # Row 1: Enable checkbox and preset dropdown
         time_prefs_row1 = ttk.Frame(time_prefs_frame)
-        time_prefs_row1.pack(fill=tk.X, pady=(0, 10))
+        time_prefs_row1.pack(fill=tk.X)
 
         # Enable checkbox
         self.time_prefs_enabled = tk.BooleanVar(value=False)
@@ -2336,7 +2335,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             font=("Segoe UI", 13)
         )
         self.time_prefs_dropdown.set("Afternoon/Evening (14:00-22:00)")
-        self.time_prefs_dropdown.pack(anchor=tk.W, pady=(8, 4))
+        self.time_prefs_dropdown.pack(anchor=tk.W, pady=(4, 2))
         self.time_prefs_dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_time_prefs_changed())
 
         # Strict mode checkbox (on same row)
@@ -2348,7 +2347,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             command=self.on_time_prefs_changed,
             state=tk.DISABLED
         )
-        self.time_prefs_strict_cb.pack(anchor=tk.W, pady=(8, 0))
+        self.time_prefs_strict_cb.pack(anchor=tk.W, pady=(4, 0))
 
         # Row 2: Custom time range (hidden by default)
         self.custom_time_frame = ttk.Frame(time_prefs_frame)
@@ -2442,14 +2441,14 @@ class AsimutBookerGUI(QuietFocusGUI):
             font=(self.ui_font_family, 12),
             wraplength=820,
             justify=tk.LEFT,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
+        ).pack(fill=tk.X)
         self.booking_strategy_btn = ttk.Button(
             strategy_inner,
             text="Customize Strategy",
             command=self.show_booking_strategy_dialog,
             width=22,
         )
-        self.booking_strategy_btn.pack(side=tk.RIGHT)
+        self.booking_strategy_btn.pack(anchor=tk.W, pady=(6, 0))
         self._settings_controls.append(self.booking_strategy_btn)
 
         # Row 1: Reverse date order toggle
@@ -2465,15 +2464,6 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         self.reverse_date_order_cb.pack(anchor=tk.W)
         self._settings_controls.append(self.reverse_date_order_cb)
-
-        # Explanation label
-        ttk.Label(
-            strategy_row1,
-            text="Date order only; the day planner still ranks useful session times and rooms.",
-            foreground="gray",
-            font=("Segoe UI", 11),
-            wraplength=680,
-        ).pack(anchor=tk.W, pady=(4, 0))
 
         # Row 2: Smart swap toggle
         # Smart swap feature (disabled for now - kept for future use)
@@ -4995,19 +4985,17 @@ class AsimutBookerGUI(QuietFocusGUI):
             return
         daily = self.booking_strategy.daily_planning
         if not daily.enabled:
-            summary = "Daily foresight is off; free slots use the legacy booking order."
+            summary = "Daily foresight off"
         else:
             hold = (
-                f"holds early peak edges when {daily.minimum_later_options} better "
-                "later room options are visible"
+                f"Wait for {daily.minimum_later_options}+ better options"
                 if daily.hold_early_peak_edges
-                else "does not hold early peak edges"
+                else "No peak hold"
             )
             summary = (
-                f"Prefer one {daily.desired_peak_block_minutes / 60:g}h peak session "
-                f"between {daily.preferred_peak_start} and {daily.preferred_peak_end}; "
-                f"{hold}. Look ahead {daily.foresight_minutes / 60:g}h; "
-                f"after the live peak window use {daily.after_peak_mode.replace('_', ' ')}."
+                f"{daily.desired_peak_block_minutes / 60:g}h peak target · "
+                f"{daily.preferred_peak_start}–{daily.preferred_peak_end}\n"
+                f"{hold} · {daily.foresight_minutes / 60:g}h lookahead"
             )
         self.booking_strategy_summary_var.set(summary)
 

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="820" viewBox="0 0 1200 820">
+  <title>Asimut Booker — compact desktop Settings</title>
+  <desc>Six deterministic settings groups in a two-column layout. Example values. Supersedes the tall unified-settings design.</desc>
+  <style>
+    text {font-family:Segoe UI,Arial,sans-serif;font-size:13px;fill:#1D2430}
+    .heading {font-size:15px;font-weight:700} .muted {fill:#667080;font-size:12px}
+    .link {fill:#0868D9} .card {fill:#F7F9FC} .input {fill:white;stroke:#BAC6D6}
+  </style>
+  <rect width="1200" height="820" fill="white"/><rect width="210" height="820" fill="#F4F5F7"/>
+  <text x="28" y="60" font-size="23" font-weight="700">Asimut Booker</text>
+  <text x="32" y="130">Today</text><text x="32" y="184">My Week</text>
+  <text x="32" y="238">Calendar</text><text x="32" y="292">Assistant</text>
+  <rect x="14" y="726" width="182" height="44" rx="7" fill="#EAF3FF"/><text x="32" y="753" class="link">Settings</text>
+  <text x="228" y="38" font-size="23" font-weight="700">Settings</text>
+  <text x="228" y="62" class="muted">Quick changes save automatically. Editors have their own Save button.</text>
+
+  <rect x="226" y="82" width="466" height="152" rx="12" class="card"/>
+  <text x="240" y="107" class="heading">Practice target</text>
+  <text x="240" y="142">☑ Aim for</text><rect x="315" y="122" width="65" height="28" rx="4" class="input"/>
+  <text x="335" y="141">3</text><text x="390" y="141">hours / enabled day</text>
+  <text x="247" y="177" class="link">Customize by Day</text><text x="240" y="209" class="muted">3 hours per enabled day</text>
+
+  <rect x="702" y="82" width="466" height="152" rx="12" class="card"/>
+  <text x="716" y="107" class="heading">Preferred time</text><text x="716" y="138">☑ Prefer a time of day</text>
+  <rect x="716" y="149" width="274" height="28" rx="4" class="input"/><text x="724" y="168">Afternoon (12:00–18:00)              ⌄</text>
+  <text x="716" y="207">☐ Only book inside this time range</text>
+
+  <rect x="226" y="244" width="466" height="100" rx="12" class="card"/>
+  <text x="240" y="269" class="heading">Booking days</text><text x="240" y="307">All enabled days</text>
+  <rect x="567" y="287" width="111" height="30" rx="5" fill="#0868D9"/><text x="584" y="307" style="fill:white">Choose Days</text>
+
+  <rect x="702" y="244" width="466" height="120" rx="12" class="card"/>
+  <text x="716" y="269" class="heading">Rooms</text><text x="716" y="298">Room order, instruments and session length</text>
+  <text x="1052" y="326" class="link">Choose Rooms</text><text x="716" y="346" class="muted">Current room catalog status</text>
+
+  <rect x="226" y="374" width="466" height="166" rx="12" class="card"/>
+  <text x="240" y="399" class="heading">Booking strategy</text><text x="240" y="428">2h peak target · 12:00–16:00</text>
+  <text x="240" y="448">Wait for 2+ better options · 7h lookahead</text>
+  <text x="247" y="481" class="link">Customize Strategy</text><text x="240" y="515">☐ Book furthest dates first</text>
+
+  <rect x="702" y="374" width="466" height="114" rx="12" class="card"/>
+  <text x="716" y="399" class="heading">Automatic booking</text><text x="716" y="428">View, install or repair the schedule.</text>
+  <text x="723" y="464" class="link">Manage schedule</text>
+  <text x="235" y="576" class="link">System details</text><text x="370" y="576" class="link">Activity and history</text><text x="535" y="576" class="link">Refresh bookings</text>
+  <text x="228" y="782" class="muted">Compact layout reference · Example values · All groups visible together</text>
+</svg>
