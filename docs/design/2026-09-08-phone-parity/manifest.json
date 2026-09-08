@@ -1,0 +1,542 @@
+[
+  {
+    "path": "screens/option-1-01.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 1
+  },
+  {
+    "path": "screens/option-1-02.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 2
+  },
+  {
+    "path": "screens/option-1-03.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 3
+  },
+  {
+    "path": "screens/option-1-04.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 4
+  },
+  {
+    "path": "screens/option-1-05.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 5
+  },
+  {
+    "path": "screens/option-1-06.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 6
+  },
+  {
+    "path": "screens/option-1-07.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 7
+  },
+  {
+    "path": "screens/option-1-08.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 8
+  },
+  {
+    "path": "screens/option-1-09.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 9
+  },
+  {
+    "path": "screens/option-1-10.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 10
+  },
+  {
+    "path": "screens/option-1-11.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 11
+  },
+  {
+    "path": "screens/option-1-12.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 12
+  },
+  {
+    "path": "screens/option-1-13.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 13
+  },
+  {
+    "path": "screens/option-1-14.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 14
+  },
+  {
+    "path": "screens/option-1-15.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 15
+  },
+  {
+    "path": "screens/option-1-16.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 16
+  },
+  {
+    "path": "screens/option-1-17.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 17
+  },
+  {
+    "path": "screens/option-1-18.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 18
+  },
+  {
+    "path": "screens/option-1-19.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 19
+  },
+  {
+    "path": "screens/option-1-20.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 20
+  },
+  {
+    "path": "screens/option-1-21.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 21
+  },
+  {
+    "path": "screens/option-1-22.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 22
+  },
+  {
+    "path": "screens/option-1-23.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 23
+  },
+  {
+    "path": "screens/option-1-24.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 24
+  },
+  {
+    "path": "screens/option-1-25.svg",
+    "width": 320,
+    "height": 844,
+    "screen": 25
+  },
+  {
+    "path": "screens/option-1-26.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 26
+  },
+  {
+    "path": "screens/option-1-27.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 27
+  },
+  {
+    "path": "screens/option-1-28.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 28
+  },
+  {
+    "path": "screens/option-1-29.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 29
+  },
+  {
+    "path": "screens/option-1-30.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 30
+  },
+  {
+    "path": "screens/option-2-01.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 1
+  },
+  {
+    "path": "screens/option-2-02.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 2
+  },
+  {
+    "path": "screens/option-2-03.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 3
+  },
+  {
+    "path": "screens/option-2-04.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 4
+  },
+  {
+    "path": "screens/option-2-05.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 5
+  },
+  {
+    "path": "screens/option-2-06.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 6
+  },
+  {
+    "path": "screens/option-2-07.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 7
+  },
+  {
+    "path": "screens/option-2-08.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 8
+  },
+  {
+    "path": "screens/option-2-09.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 9
+  },
+  {
+    "path": "screens/option-2-10.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 10
+  },
+  {
+    "path": "screens/option-2-11.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 11
+  },
+  {
+    "path": "screens/option-2-12.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 12
+  },
+  {
+    "path": "screens/option-2-13.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 13
+  },
+  {
+    "path": "screens/option-2-14.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 14
+  },
+  {
+    "path": "screens/option-2-15.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 15
+  },
+  {
+    "path": "screens/option-2-16.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 16
+  },
+  {
+    "path": "screens/option-2-17.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 17
+  },
+  {
+    "path": "screens/option-2-18.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 18
+  },
+  {
+    "path": "screens/option-2-19.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 19
+  },
+  {
+    "path": "screens/option-2-20.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 20
+  },
+  {
+    "path": "screens/option-2-21.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 21
+  },
+  {
+    "path": "screens/option-2-22.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 22
+  },
+  {
+    "path": "screens/option-2-23.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 23
+  },
+  {
+    "path": "screens/option-2-24.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 24
+  },
+  {
+    "path": "screens/option-2-25.svg",
+    "width": 320,
+    "height": 844,
+    "screen": 25
+  },
+  {
+    "path": "screens/option-2-26.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 26
+  },
+  {
+    "path": "screens/option-2-27.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 27
+  },
+  {
+    "path": "screens/option-2-28.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 28
+  },
+  {
+    "path": "screens/option-2-29.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 29
+  },
+  {
+    "path": "screens/option-2-30.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 30
+  },
+  {
+    "path": "screens/option-3-01.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 1
+  },
+  {
+    "path": "screens/option-3-02.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 2
+  },
+  {
+    "path": "screens/option-3-03.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 3
+  },
+  {
+    "path": "screens/option-3-04.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 4
+  },
+  {
+    "path": "screens/option-3-05.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 5
+  },
+  {
+    "path": "screens/option-3-06.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 6
+  },
+  {
+    "path": "screens/option-3-07.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 7
+  },
+  {
+    "path": "screens/option-3-08.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 8
+  },
+  {
+    "path": "screens/option-3-09.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 9
+  },
+  {
+    "path": "screens/option-3-10.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 10
+  },
+  {
+    "path": "screens/option-3-11.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 11
+  },
+  {
+    "path": "screens/option-3-12.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 12
+  },
+  {
+    "path": "screens/option-3-13.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 13
+  },
+  {
+    "path": "screens/option-3-14.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 14
+  },
+  {
+    "path": "screens/option-3-15.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 15
+  },
+  {
+    "path": "screens/option-3-16.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 16
+  },
+  {
+    "path": "screens/option-3-17.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 17
+  },
+  {
+    "path": "screens/option-3-18.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 18
+  },
+  {
+    "path": "screens/option-3-19.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 19
+  },
+  {
+    "path": "screens/option-3-20.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 20
+  },
+  {
+    "path": "screens/option-3-21.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 21
+  },
+  {
+    "path": "screens/option-3-22.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 22
+  },
+  {
+    "path": "screens/option-3-23.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 23
+  },
+  {
+    "path": "screens/option-3-24.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 24
+  },
+  {
+    "path": "screens/option-3-25.svg",
+    "width": 320,
+    "height": 844,
+    "screen": 25
+  },
+  {
+    "path": "screens/option-3-26.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 26
+  },
+  {
+    "path": "screens/option-3-27.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 27
+  },
+  {
+    "path": "screens/option-3-28.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 28
+  },
+  {
+    "path": "screens/option-3-29.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 29
+  },
+  {
+    "path": "screens/option-3-30.svg",
+    "width": 390,
+    "height": 844,
+    "screen": 30
+  }
+]

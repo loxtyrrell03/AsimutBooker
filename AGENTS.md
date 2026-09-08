@@ -28,6 +28,26 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Phone capability parity design review
+
+- `docs/design/2026-09-08-phone-parity/README.md` maps the desktop controls to
+  current phone support and proposed phone equivalents, including Calendar,
+  complete preferences, system jobs, scans, events, activity and maintenance.
+- Three editable SVG proposals retain Quiet Focus: Desktop companion (separate
+  My Week/Calendar), Combined calendar (agenda inside Calendar), and Calendar
+  home (Calendar/Assistant/Manage). Each has 30 example screens with setup,
+  editing, loading, empty, error, progress, cancellation and confirmation states.
+  Navigation choice is pending; these artifacts do not implement phone parity.
+- The static generator and isolated renderer check all 90 individual screens
+  for text bounds/overlap and produce overview/narrow-help PNGs. Checks passed;
+  overview and narrow-help renders were visually inspected. This is design
+  evidence only; no app source, live settings, bookings or deployment changed.
+- Full delivery needs shared revision-checked preference validators and scoped
+  authenticated host jobs, preserving runtime locks and durable request IDs.
+  Maintenance needs explicit sanitized file/config schemas before exposure.
+  Secure credential changes remain in the masked PC setup; reconfirmation still
+  uses Asimut on RWCMD Wi-Fi. Future calendar dates never widen live eligibility.
+
 ## 2026-09-08 Focused System details page
 
 - `system_details_ui.py` groups desktop operations into full-width Automation,
