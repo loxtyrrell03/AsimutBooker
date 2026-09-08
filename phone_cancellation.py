@@ -4,6 +4,8 @@ from datetime import date, time
 from typing import Any
 
 from assistant_tools import AssistantToolError, BookerToolSurface
+from app_settings import SettingsError
+from booking_blackouts import load_rebooking_blackouts, make_rebooking_blackout
 
 
 class CancellationNotStarted(AssistantToolError):
@@ -69,6 +71,19 @@ def cancel_phone_reservation(target: dict, *, surface=None, progress=None) -> di
     }, user_request=request, progress=activity)
     cancelled = result.get("cancelled_count") == 1
     protected = result.get("protection_persisted") is True
+    if cancelled:
+        # The subprocess already saves protection before confirming success.
+        # A redundant host save can fail even though the exact window is safely
+        # present. Report the persisted state rather than that redundant write.
+        try:
+            expected = make_rebooking_blackout(target["date"], target["start_time"], target["end_time"])
+            protected = any(
+                item.date == expected.date and item.start_minutes <= expected.start_minutes
+                and item.end_minutes >= expected.end_minutes
+                for item in load_rebooking_blackouts(path=surface.paths.settings)
+            )
+        except SettingsError:
+            protected = False
     return {
         "cancelled": cancelled,
         "reconciliation_required": bool(result.get("reconciliation_required")),

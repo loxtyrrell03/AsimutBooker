@@ -36,6 +36,17 @@ class DirectCancellationTests(unittest.TestCase):
                     cancel_phone_reservation({**self.target, **change}, surface=self.fixture.surface)
                 self.assertEqual(len(self.fixture.commands), 1)
 
+    def test_verified_persisted_blackout_overrides_redundant_host_save_warning(self):
+        dispatch = self.fixture.surface.dispatch
+        def wrapped(tool, *args, **kwargs):
+            result = dispatch(tool, *args, **kwargs)
+            if tool == "cancel_reservations":
+                result["protection_persisted"] = False
+            return result
+        with patch.object(self.fixture.surface, "dispatch", side_effect=wrapped):
+            result = cancel_phone_reservation(self.target, surface=self.fixture.surface)
+        self.assertEqual(result["message"], "Booking cancelled. This time will stay free.")
+
     def test_invalid_identity_rejected(self):
         for value in (None, True, 0, -1, "101"):
             with self.assertRaises(ValueError):

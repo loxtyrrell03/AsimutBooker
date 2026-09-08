@@ -32,7 +32,7 @@
   booking details with curated opening/cancelling/verifying stages emitted by
   the real engine; it never forwards raw logs or fabricates timed stages.
   Closing the client does not cancel or replay its server-owned job.
-- Verified with 91 focused Python tests, mobile Chromium/WebKit direct-button
+- Verified with 92 focused Python tests plus 24 cancellation-engine tests, mobile Chromium/WebKit direct-button
   checks, TypeScript, lint, Node tests and static build validation. UI checks use
   isolated intercepted requests; no real reservation was cancelled for testing.
 - Build test shells outside `phone/dist-phone`, which is served live. Coordinate
@@ -40,11 +40,14 @@
   assets when publishing so already-open phone sessions can finish loading.
 - Intercepted browser tests must block service workers, especially for reload
   coverage, so the worker cannot bypass test routes and load an older live shell.
-- Published `0af95ca-direct-cancel` after confirming the assistant was idle and
+- Published the queued progress UI as `45cc2c8-cancel-progress` after confirming the assistant was idle and
   no Booker process was running, then restarting only the owned phone task.
-  `verify_phone_deployment.ps1` passed against private HTTPS; an authenticated
-  invalid cancellation request returned the new route's expected 400 response
-  without starting booking work. Physical phone tapping remains user-side proof.
+  `verify_phone_deployment.ps1` passed against private HTTPS. A subsequent
+  explicitly requested live cancellation completed through the phone endpoint;
+  absence and persisted no-rebook protection were checked. A redundant host
+  blackout write reported a warning despite the subprocess having saved it;
+  phone success reporting now rereads exact persisted blackout coverage.
+  Physical phone tapping remains user-side proof.
 
 ## 2026-09-08 UX audit: desktop draft preservation
 
