@@ -1709,6 +1709,8 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         style.map(
             "TNotebook.Tab",
+            # Clam otherwise replaces our padding with its tiny selected inset.
+            padding=[("selected", (16, 10))],
             background=[("selected", UI_COLORS["surface"]), ("active", "#E2E2E6")],
             foreground=[("selected", UI_COLORS["text"])],
         )
@@ -1728,6 +1730,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         style.map(
             "Navigation.TNotebook.Tab",
+            padding=[("selected", (22, 12))],
             background=[("selected", UI_COLORS["surface"]), ("active", "#ECECEF")],
             foreground=[("selected", UI_COLORS["text"])],
         )

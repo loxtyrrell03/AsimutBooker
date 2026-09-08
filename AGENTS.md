@@ -1464,6 +1464,9 @@ python -m unittest discover -s tests
   and reloaded only the verified idle phone task. Origin and login were preserved.
 
 When modifying this codebase:
+- Notebook tab styles explicitly map selected padding to their normal padding;
+  Clam's inherited selected inset otherwise shrinks the active tab. Verified
+  both styles through isolated Tk style lookups, including focus and hover.
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions
 - Document any new booking rules or constraints
