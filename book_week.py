@@ -41,6 +41,9 @@ from app_settings import (
     load_settings as load_settings_document,
     update_settings,
 )
+from booking_preferences_guard import (
+    BookingPreferencesChanged, booking_preference_run, booking_save_boundary,
+)
 from agenda_snapshot import (
     AGENDA_SNAPSHOT_FILE,
     AgendaSnapshotError,
@@ -3660,27 +3663,28 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                     )
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
-                try:
-                    receipt = record_pending_extension(
-                        room=room,
-                        booking_date=date_str,
-                        start=start_time,
-                        end=new_end_time,
-                        event_url=event_url,
-                    )
-                    save_receipt_id = receipt["id"]
-                except MutationReceiptError as exc:
-                    raise BookingVerificationError(
-                        f"Could not create an extension receipt before Save: {exc}"
-                    ) from exc
+                with booking_save_boundary():
+                    try:
+                        receipt = record_pending_extension(
+                            room=room,
+                            booking_date=date_str,
+                            start=start_time,
+                            end=new_end_time,
+                            event_url=event_url,
+                        )
+                        save_receipt_id = receipt["id"]
+                    except MutationReceiptError as exc:
+                        raise BookingVerificationError(
+                            f"Could not create an extension receipt before Save: {exc}"
+                        ) from exc
 
-                try:
-                    save_btn.click(no_wait_after=True, timeout=5000)
-                    save_clicked = True
-                except Exception as exc:
-                    raise BookingVerificationError(
-                        f"Extension Save outcome is uncertain (receipt {receipt['id']}): {exc}"
-                    ) from exc
+                    try:
+                        save_btn.click(no_wait_after=True, timeout=5000)
+                        save_clicked = True
+                    except Exception as exc:
+                        raise BookingVerificationError(
+                            f"Extension Save outcome is uncertain (receipt {receipt['id']}): {exc}"
+                        ) from exc
 
                 deadline = time.monotonic() + 30
                 editor_closed = False
@@ -3752,7 +3756,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
             safe_goto(page, ASIMUT_AGENDA_URL)
             return False
 
-    except BookingVerificationError:
+    except (BookingVerificationError, BookingPreferencesChanged):
         raise
     except Exception as e:
         if save_clicked:
@@ -5591,25 +5595,26 @@ def try_book_slot(
         btn_box = save_btn.bounding_box()
         print(f"  [DEBUG] Save button at: x={btn_box['x']:.0f}, y={btn_box['y']:.0f}" if btn_box else "  [DEBUG] Save button box: None")
 
-        try:
-            receipt = record_pending_create(
-                room=room,
-                booking_date=as_date(target_date).isoformat(),
-                start=book_start,
-                end=book_end,
-            )
-        except MutationReceiptError as exc:
-            raise BookingVerificationError(
-                f"Could not create a crash-recovery receipt before Save: {exc}"
-            ) from exc
+        with booking_save_boundary():
+            try:
+                receipt = record_pending_create(
+                    room=room,
+                    booking_date=as_date(target_date).isoformat(),
+                    start=book_start,
+                    end=book_end,
+                )
+            except MutationReceiptError as exc:
+                raise BookingVerificationError(
+                    f"Could not create a crash-recovery receipt before Save: {exc}"
+                ) from exc
 
-        print(f"  Clicking Save (receipt {receipt['id']})...")
-        try:
-            save_btn.click(no_wait_after=True, timeout=5000)
-        except Exception as exc:
-            raise BookingVerificationError(
-                f"Save click outcome is uncertain (receipt {receipt['id']}): {exc}"
-            ) from exc
+            print(f"  Clicking Save (receipt {receipt['id']})...")
+            try:
+                save_btn.click(no_wait_after=True, timeout=5000)
+            except Exception as exc:
+                raise BookingVerificationError(
+                    f"Save click outcome is uncertain (receipt {receipt['id']}): {exc}"
+                ) from exc
 
         if not wait_for_created_booking_outcome(
             page,
@@ -6278,7 +6283,7 @@ def attempt_booking_with_room_fallback(
             else:
                 result = try_book_slot(page, candidate, target_date, tracker,
                                        days_ahead, time_prefs=time_prefs, **kwargs)
-        except BookingVerificationError:
+        except (BookingVerificationError, BookingPreferencesChanged):
             raise
         except Exception as exc:
             # A pre-Save interaction error can be retried only after the same
@@ -6292,7 +6297,7 @@ def attempt_booking_with_room_fallback(
                 raise BookingVerificationError(
                     'A booking result is uncertain. Room fallback is blocked until reconciliation.'
                 )
-        except BookingVerificationError:
+        except (BookingVerificationError, BookingPreferencesChanged):
             raise
         except Exception as exc:
             raise BookingVerificationError(
@@ -7951,37 +7956,38 @@ def try_horizon_snipe(
     save_x = save_box["x"] + save_box["width"] / 2
     save_y = save_box["y"] + save_box["height"] / 2
 
-    try:
-        receipt = record_pending_create(
-            room=room,
-            booking_date=as_date(target_date).isoformat(),
-            start=book_start,
-            end=book_end,
+    with booking_save_boundary():
+        try:
+            receipt = record_pending_create(
+                room=room,
+                booking_date=as_date(target_date).isoformat(),
+                start=book_start,
+                end=book_end,
+            )
+        except MutationReceiptError as exc:
+            raise BookingVerificationError(
+                f"Could not create a crash-recovery receipt before snipe Save: {exc}"
+            ) from exc
+
+        # Click Save only after the durable receipt exists.  Record the actual
+        # click time separately from the later reload/persistence confirmation.
+        click_time = datetime.now()
+        click_latency_low, click_latency_high = estimated_site_latency_bounds(
+            click_time,
+            bookable_from,
         )
-    except MutationReceiptError as exc:
-        raise BookingVerificationError(
-            f"Could not create a crash-recovery receipt before snipe Save: {exc}"
-        ) from exc
+        print(f"\n  >>> CLICKING SAVE NOW: {click_time.strftime('%H:%M:%S.%f')[:-3]} <<<")
+        print(
+            "  [SNIPE] Estimated Save-click latency vs Asimut edge: "
+            f"{click_latency_low * 1000:.0f}ms to {click_latency_high * 1000:.0f}ms"
+        )
 
-    # Click Save only after the durable receipt exists.  Record the actual
-    # click time separately from the later reload/persistence confirmation.
-    click_time = datetime.now()
-    click_latency_low, click_latency_high = estimated_site_latency_bounds(
-        click_time,
-        bookable_from,
-    )
-    print(f"\n  >>> CLICKING SAVE NOW: {click_time.strftime('%H:%M:%S.%f')[:-3]} <<<")
-    print(
-        "  [SNIPE] Estimated Save-click latency vs Asimut edge: "
-        f"{click_latency_low * 1000:.0f}ms to {click_latency_high * 1000:.0f}ms"
-    )
-
-    try:
-        page.mouse.click(save_x, save_y)
-    except Exception as exc:
-        raise BookingVerificationError(
-            f"Snipe Save outcome is uncertain (receipt {receipt['id']}): {exc}"
-        ) from exc
+        try:
+            page.mouse.click(save_x, save_y)
+        except Exception as exc:
+            raise BookingVerificationError(
+                f"Snipe Save outcome is uncertain (receipt {receipt['id']}): {exc}"
+            ) from exc
 
     if not wait_for_created_booking_outcome(
         page,
@@ -10661,7 +10667,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         planning_context=planning_context,
                         only_room=args.only_room,
                     )
-                except BookingVerificationError:
+                except (BookingVerificationError, BookingPreferencesChanged):
                     raise
                 except Exception as e:
                     try:
@@ -11487,7 +11493,8 @@ def main(argv=None):
         if not acquired:
             print("Another AsimutBooker run is already active; this run did not refresh data.")
             return 6 if (args.agenda_only or args.check_only or args.plan_only) else 0
-        return run_booking(args, settings, practice_plan, room_preferences) or 0
+        with booking_preference_run(settings_file, settings):
+            return run_booking(args, settings, practice_plan, room_preferences) or 0
     except KeyboardInterrupt:
         print("Booking run cancelled.")
         return 130
@@ -11498,6 +11505,9 @@ def main(argv=None):
         print(f"ERROR: Live room policy could not be verified: {exc}")
         print("Autonomous booking stopped before any room mutation.")
         return 4
+    except BookingPreferencesChanged as exc:
+        print(f"Booking stopped: {exc}")
+        return 3
     except BookingVerificationError as exc:
         message = f"RECONCILIATION REQUIRED: {exc}"
         print(f"ERROR: {message}")

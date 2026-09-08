@@ -1750,3 +1750,20 @@ When modifying this codebase:
   A 990-opportunity grid selected a valid three-hour plan in 0.183 seconds.
   No reservations or preferences were changed by the audit; new runtime
   processes load these backend changes from the canonical checkout.
+
+## 2026-09-08 Preference Changes During Prepared Bookings
+
+- `booking_preferences_guard.py` snapshots user controls for the production CLI
+  run. Normal creates, horizon creates, and extensions re-read them under the
+  same interprocess settings lock used by preference editors, holding that lock
+  only across receipt creation and the Save click. Remote verification and
+  runtime progress updates happen after releasing it.
+- Changed, removed, or unreadable controls stop before the next Save and return
+  exit code 3. This pre-Save stop propagates through room fallback and extension
+  handling; it is not labelled as an uncertain remote mutation. Runtime-owned
+  extension progress and display-cache updates do not invalidate the snapshot.
+  Successful saves preceding a preference edit remain real reservations.
+- All 798 offline tests passed, including a preference change after horizon
+  form preparation, blocked stale-room fallback, and a concurrent preference
+  writer waiting until the Save boundary releases the shared lock. No live
+  booking, cancellation, preference write, or service restart was used to test it.
