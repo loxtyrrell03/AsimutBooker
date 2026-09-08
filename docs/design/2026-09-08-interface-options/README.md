@@ -16,8 +16,9 @@ The six paired review boards are 1720 × 1080. All booking content is fictional.
 | 3. Personal Assistant | Conversation, actionable plan card, next booking | Completed preference change | Natural-language control |
 
 Recommendation for selection: Quiet Focus as the visual foundation; the calendar
-and assistant concepts can also serve as its other tabs. This is a proposal,
-not an approved implementation decision.
+and assistant concepts can also serve as its other tabs. The user selected Option 1, Quiet Focus, for implementation on 8 September 2026.
+The boards remain fictional design references; the implemented UI uses checked
+agenda data and retains the existing booking safeguards.
 
 ## Figma status
 

@@ -1404,12 +1404,12 @@ python -m unittest discover -s tests
 
 ## 2026-09-08 Desktop and Phone Design Exploration
 
-- `docs/design/2026-09-08-interface-options/` contains three unimplemented visual
+- `docs/design/2026-09-08-interface-options/` contains three explored visual
   directions: Today-first Quiet Focus, calendar-first Week at a Glance, and
   Personal Assistant. Each has desktop/phone main and follow-up screens, SVG
   sources, rendered PNG review boards, and a local comparison gallery.
-- The mockups use fictional bookings. No direction is approved for implementation;
-  preserve existing runtime behavior until the user selects one. Planned time
+- The mockups use fictional bookings. The user selected Option 1, Quiet Focus,
+  for desktop and phone implementation on 2026-09-08. Planned time
   must remain distinct from persisted bookings, and technical controls remain
   accessible through Settings rather than disappearing.
 - Figma file `T00qfnzqnYqRhI88VUUuBT` was created but remains blank: the first
@@ -1417,6 +1417,25 @@ python -m unittest discover -s tests
   importable artwork, not verified native Figma components or prototypes.
 - All six paired boards were visually reviewed; the gallery's selection and
   narrow-screen fit were checked. No application code or deployment changed.
+
+## 2026-09-08 Quiet Focus Phone Interface
+
+- The phone opens on Today with the next practice booking, other remaining events,
+  and checked-agenda weekly hours. Bottom navigation is Today, My Week, Assistant,
+  and Settings. Settings keeps technical health evidence inside System details.
+- Booking details retain the college Wi-Fi reconfirmation reminder. Change,
+  cancellation, and preference shortcuts prepare exact-context assistant drafts;
+  they do not submit requests automatically or overwrite an existing draft.
+- `phone/lib/today_state.js` calculates display summaries in Europe/London,
+  includes in-progress reservations, and excludes classes from practice totals.
+  Stale/unavailable agendas stay labelled; planned sessions remain unbooked.
+- Both Today and My Week use the existing guarded agenda/plan refresh. The API,
+  authentication, mutation verification, and private-origin boundaries are unchanged.
+- `ASIMUT_PHONE_OUT_DIR` supports isolated static builds before promotion into the
+  existing private runtime. Keep old hashed assets during promotion for open clients.
+- Validation: phone TypeScript, lint, 19 unit tests, static/offline-shell checks,
+  vinext build, and isolated browser navigation at 320/390/1024px passed. Sample
+  screens were visually reviewed; this does not establish physical-phone behavior.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture

@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 const projectRoot = __dirname;
-const outputDirectory = resolve(projectRoot, 'dist-phone');
+const outputDirectory = resolve(projectRoot, process.env.ASIMUT_PHONE_OUT_DIR || 'dist-phone');
 const version = process.env.ASIMUT_PHONE_VERSION || 'development';
 
 function filesUnder(directory: string, prefix = ''): string[] {

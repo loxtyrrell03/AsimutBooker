@@ -16,15 +16,15 @@ OUTPUT = ROOT / "phone" / "public"
 
 
 def draw_icon(size: int, *, maskable: bool) -> Image.Image:
-    image = Image.new("RGB", (size, size), "#0b1512")
+    image = Image.new("RGB", (size, size), "#0868d9")
     draw = ImageDraw.Draw(image)
     inset = int(size * (0.10 if maskable else 0.055))
     radius = int(size * 0.22)
     draw.rounded_rectangle(
         (inset, inset, size - inset, size - inset),
         radius=radius,
-        fill="#14271f",
-        outline="#315342",
+        fill="#0868d9",
+        outline="#0868d9",
         width=max(1, size // 128),
     )
     bar_width = max(8, int(size * 0.075))
@@ -38,7 +38,7 @@ def draw_icon(size: int, *, maskable: bool) -> Image.Image:
         draw.rounded_rectangle(
             (left, baseline - height, left + bar_width, baseline),
             radius=bar_width // 2,
-            fill="#a8efc7",
+            fill="#ffffff",
         )
     return image
 

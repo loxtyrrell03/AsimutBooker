@@ -1,14 +1,14 @@
 {
   "id": "/",
-  "name": "Asimut Assistant",
+  "name": "Asimut Booker",
   "short_name": "Asimut",
   "description": "A private conversational control panel for practice plans and RWCMD room bookings.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0b1512",
-  "theme_color": "#0c1714",
+  "background_color": "#f8fafc",
+  "theme_color": "#f8fafc",
   "categories": ["productivity", "utilities"],
   "icons": [
     {

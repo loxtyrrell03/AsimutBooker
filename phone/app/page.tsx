@@ -36,11 +36,12 @@ import {
   upsertReasoningPart,
 } from '@/lib/phone_state';
 import { selectedPlanMinutes, selectedPlanSessions } from '@/lib/plan_state';
+import { BookingDetails, TodayView } from '@/components/quiet-focus';
 
 const PRIVATE_ORIGIN = 'https://lox-pc.tail89d19b.ts.net:10443';
 const subscribeBrowserSnapshot = () => () => undefined;
 
-type Tab = 'assistant' | 'schedule' | 'status';
+type Tab = 'today' | 'assistant' | 'schedule' | 'status';
 type ConnectionState = 'connecting' | 'online' | 'offline';
 
 type ChatMessage = {
@@ -55,7 +56,7 @@ type PendingDelivery = {
   text: string;
 };
 
-type AgendaEvent = {
+export type AgendaEvent = {
   date: string;
   start_time: string;
   end_time: string;
@@ -96,7 +97,7 @@ type HealthItem = {
   observed_at: string;
 };
 
-type BookerSnapshot = {
+export type BookerSnapshot = {
   version: number;
   generated_at: string;
   timezone: string;
@@ -186,33 +187,33 @@ type ReasoningPart = {
 
 const demoBooker: BookerSnapshot = {
   version: 1,
-  generated_at: '2026-08-31T11:43:00+01:00',
+  generated_at: '2026-09-08T09:41:00+01:00',
   timezone: 'Europe/London',
   status: { state: 'ready', label: 'Booker ready', pending_mutations: 0 },
   agenda: {
     available: true,
     stale: false,
-    observed_at: '2026-08-31T10:43:30Z',
+    observed_at: '2026-09-08T08:41:00Z',
     freshness_reason: '',
     next_event: {
-      date: '2026-09-01',
+      date: '2026-09-08',
       start_time: '11:00',
       end_time: '11:30',
       title: 'Reservation',
       is_reservation: true,
-      room: 'B1.09',
+      room: 'B0.29',
     },
     events: [
       {
-        date: '2026-09-01',
+        date: '2026-09-08',
         start_time: '11:00',
         end_time: '11:30',
         title: 'Reservation',
         is_reservation: true,
-        room: 'B1.09',
+        room: 'B0.29',
       },
       {
-        date: '2026-09-01',
+        date: '2026-09-08',
         start_time: '16:00',
         end_time: '17:30',
         title: 'Reservation',
@@ -261,7 +262,7 @@ const demoBooker: BookerSnapshot = {
     rebooking_blackouts: [],
   },
   health: {
-    collected_at: '2026-08-31T11:43:00+01:00',
+    collected_at: '2026-09-08T09:41:00+01:00',
     items: [
       {
         key: 'last_success',
@@ -379,11 +380,13 @@ function AppHeader({
   connection,
   onNewChat,
   newChatDisabled,
+  tab,
 }: {
   booker: BookerSnapshot | null;
   connection: ConnectionState;
   onNewChat: () => void;
   newChatDisabled: boolean;
+  tab: Tab;
 }) {
   const state = booker?.status.state ?? 'stale';
   const label =
@@ -398,18 +401,15 @@ function AppHeader({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em]">
-            Asimut Assistant
+            Asimut Booker
           </h1>
-          <Badge className="model-badge" variant="outline">
-            Terra · medium
-          </Badge>
         </div>
         <p className={`app-status state-${connection === 'offline' ? 'offline' : state}`}>
           <span className="status-dot" aria-hidden="true" />
           {label}
         </p>
       </div>
-      <Button
+      {tab === 'assistant' && <Button
         aria-label="Start a new chat"
         className="round-control"
         disabled={newChatDisabled}
@@ -418,7 +418,7 @@ function AppHeader({
         variant="ghost"
       >
         <MessageSquarePlus />
-      </Button>
+      </Button>}
     </header>
   );
 }
@@ -510,7 +510,7 @@ function ProgressCard({
   const visibleTools = tools.slice(-6);
   const latest = visibleTools.at(-1);
   const latestDetail = compactProgressText(
-    latest?.text || cleanNarrative || latestSummary || 'Checking Booker context',
+    latest?.text || cleanNarrative || latestSummary || 'Checking your practice plans',
     180,
   );
 
@@ -596,8 +596,7 @@ function Transcript({
           <div>
             <h2>What would you like to do?</h2>
             <p>
-              Ask about your schedule, change a practice plan, run one bounded
-              booking action, or cancel an exact reservation in natural language.
+              Find a room, change your practice plans, or see what’s coming up.
             </p>
           </div>
         </div>
@@ -720,7 +719,7 @@ function ChatComposer({
         </div>
       </form>
       <p className="safety-note">
-        Clear instructions only. Booker checks live identity and persistence before success.
+        Your bookings are checked before changes are made.
       </p>
     </div>
   );
@@ -763,7 +762,7 @@ function ScheduleView({
       <div className="view-heading">
         <div>
           <span className="eyebrow">Booked and planned</span>
-          <h2 id="schedule-title">Your schedule</h2>
+          <h2 id="schedule-title">My Week</h2>
           <p>
             Live agenda checked {timeAgo(booker.agenda.observed_at)}
             {booker.agenda.stale ? ' · updating recommended' : ''}
@@ -779,7 +778,7 @@ function ScheduleView({
           <AlertTriangle />
           <div>
             <strong>Booking changes are paused</strong>
-            <p>A pending result must be reconciled before another mutation.</p>
+            <p>We need to check the last booking result before making another change.</p>
           </div>
         </div>
       )}
@@ -794,7 +793,7 @@ function ScheduleView({
           <strong>{Math.round(bookedMinutes / 6) / 10}h</strong>
         </div>
         <div>
-          <span>Potential sessions</span>
+          <span>Planned sessions</span>
           <strong>{plannedSessions.length}</strong>
         </div>
       </div>
@@ -822,7 +821,7 @@ function ScheduleView({
 
       <div className="schedule-legend" aria-label="Schedule legend">
         <span><i className="confirmed-key" /> Booked</span>
-        <span><i className="potential-key" /> Potential—not booked</span>
+        <span><i className="potential-key" /> Planned · not booked yet</span>
       </div>
 
       {!booker.agenda.available ? (
@@ -871,7 +870,7 @@ function ScheduleView({
         <div className="section-heading">
           <div>
             <span className="eyebrow">Automatic Booker</span>
-            <h3>Potential plan</h3>
+            <h3>Planned practice</h3>
           </div>
           <Badge variant="outline">
             {refreshing ? 'Updating' : booker.plan.stale ? 'Last checked plan' : 'Not booked yet'}
@@ -917,7 +916,7 @@ function ScheduleView({
                         <div><Clock3 /></div>
                         <div>
                           <Badge variant="outline">
-                            {sessions.length > 1 ? `Session ${index + 1} · ` : ''}{candidate.state}
+                            {sessions.length > 1 ? `Session ${index + 1} · ` : ''}Not booked yet
                           </Badge>
                           <h4>{candidate.start_time}–{candidate.end_time}</h4>
                           <p>{candidate.room}</p>
@@ -943,11 +942,13 @@ function StatusView({
   standalone,
   onRefresh,
   refreshing,
+  onAsk,
 }: {
   booker: BookerSnapshot;
   standalone: boolean;
   onRefresh: () => void;
   refreshing: boolean;
+  onAsk: (prompt: string) => void;
 }) {
   const practice = booker.preferences.practice_plan;
   const time = booker.preferences.time_preferences;
@@ -955,8 +956,7 @@ function StatusView({
     <section className="view-page status-view" aria-labelledby="status-title">
       <div className="view-heading">
         <div>
-          <span className="eyebrow">Automation and preferences</span>
-          <h2 id="status-title">Booker status</h2>
+          <h2 id="status-title">Settings</h2>
           <p>Checked {timeAgo(booker.health.collected_at)}</p>
         </div>
         <Button aria-label="Refresh status" disabled={refreshing} onClick={onRefresh} size="icon-lg" variant="outline">
@@ -967,12 +967,12 @@ function StatusView({
       <article className={`overview-card state-${booker.status.state}`}>
         <div className="overview-icon"><StatusIcon state={booker.status.state} /></div>
         <div>
-          <Badge variant="outline">{booker.status.state.replace('_', ' ')}</Badge>
           <h3>{booker.status.label}</h3>
           <p>
-            {booker.plan.available && !booker.plan.stale
-              ? booker.plan.summary
-              : 'Current automatic plan needs a refresh.'}
+            {booker.status.pending_mutations > 0
+              ? 'A recent booking needs checking. See System details below.'
+              : booker.agenda.stale ? 'Refresh to check your latest bookings.'
+              : 'Your practice preferences are shared with the PC app.'}
           </p>
         </div>
       </article>
@@ -1000,8 +1000,7 @@ function StatusView({
       {!booker.unavailable_sections.includes('preferences') && <section className="preference-card">
         <div className="section-heading">
           <div>
-            <span className="eyebrow">Current intent</span>
-            <h3>Practice settings</h3>
+            <h3>Your practice</h3>
           </div>
           <Settings2 />
         </div>
@@ -1015,10 +1014,12 @@ function StatusView({
             <strong>{time.enabled ? `${time.start_time}–${time.end_time}` : 'Any time'}</strong>
           </div>
         </div>
-        <p>
-          Tell the assistant about a busy week, a future goal, preferred rooms,
-          or a date you want switched off. It will resolve exact dated settings.
-        </p>
+        <div className="preference-actions">
+          <button className="quiet-secondary" onClick={() => onAsk('Help me change my daily practice goal. Ask how many hours I want.')}>Daily goal</button>
+          <button className="quiet-secondary" onClick={() => onAsk('Help me choose my practice days and dates.')}>Practice days</button>
+          <button className="quiet-secondary" onClick={() => onAsk('Help me change my preferred practice times.')}>Preferred times</button>
+          <button className="quiet-secondary" onClick={() => onAsk('Help me choose and rank my favourite practice rooms.')}>Favourite rooms</button>
+        </div>
         {booker.preferences.future_intentions.length > 0 && (
           <div className="intent-list" aria-label="Saved future practice intentions">
             {booker.preferences.future_intentions.map((intention) => (
@@ -1043,10 +1044,10 @@ function StatusView({
         )}
       </section>}
 
-      <section className="health-list" aria-label="Detailed Booker health">
+      <details className="health-list" aria-label="Detailed Booker health">
+        <summary className="settings-details-title">System details <ChevronDown /></summary>
         <div className="section-heading">
           <div>
-            <span className="eyebrow">Evidence</span>
             <h3>System health</h3>
           </div>
           <HeartPulse />
@@ -1061,16 +1062,17 @@ function StatusView({
             <p>{item.detail}</p>
           </details>
         ))}
-      </section>
+      </details>
     </section>
   );
 }
 
 function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
   const items: Array<{ id: Tab; label: string; icon: typeof MessageCircle }> = [
+    { id: 'today', label: 'Today', icon: Home },
+    { id: 'schedule', label: 'My Week', icon: CalendarDays },
     { id: 'assistant', label: 'Assistant', icon: MessageCircle },
-    { id: 'schedule', label: 'Schedule', icon: CalendarDays },
-    { id: 'status', label: 'Status', icon: HeartPulse },
+    { id: 'status', label: 'Settings', icon: Settings2 },
   ];
   return (
     <nav className="bottom-nav" aria-label="Main navigation">
@@ -1094,7 +1096,8 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
 }
 
 export default function HomePage() {
-  const [tab, setTab] = useState<Tab>('assistant');
+  const [tab, setTab] = useState<Tab>('today');
+  const [selectedBooking, setSelectedBooking] = useState<AgendaEvent | null>(null);
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [csrf, setCsrf] = useState('');
   const [booker, setBooker] = useState<BookerSnapshot | null>(null);
@@ -1463,7 +1466,7 @@ export default function HomePage() {
   }, [tab]);
 
   useEffect(() => {
-    if (tab !== 'schedule' || connection !== 'online' || preview || !csrf || busy) return;
+    if ((tab !== 'schedule' && tab !== 'today') || connection !== 'online' || preview || !csrf || busy) return;
     const initial = window.setTimeout(() => void refreshLiveSchedule(false), 0);
     const timer = window.setInterval(() => void refreshLiveSchedule(false), 5 * 60_000);
     return () => {
@@ -1645,8 +1648,10 @@ export default function HomePage() {
   }, [acknowledgingUncertain, applyBootstrap, csrf, preview]);
 
   const choosePrompt = (prompt: string) => {
-    setDraft(prompt);
-    inputRef.current?.focus();
+    setSelectedBooking(null);
+    setTab('assistant');
+    setDraft(current => current.trim() ? current : prompt);
+    window.setTimeout(() => inputRef.current?.focus(), 50);
   };
 
   const askToCancel = (event: AgendaEvent) => {
@@ -1661,7 +1666,7 @@ export default function HomePage() {
 
   return (
     <main className={`app-shell tab-${tab}`}>
-      <AppHeader booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />
+      {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
       <ConnectionBanner connection={connection} error={error} onRetry={retryConnection} />
       {uncertainOutcome && (
         <div className="uncertain-outcome" role="alert">
@@ -1686,6 +1691,8 @@ export default function HomePage() {
         </div>
       )}
 
+      {tab === 'today' && booker && (selectedBooking ? <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} /> :
+        <TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview} />)}
       {tab === 'assistant' && (
         <div className="assistant-view">
           {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
@@ -1713,12 +1720,12 @@ export default function HomePage() {
         <ScheduleView booker={booker} onAskToCancel={askToCancel} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
       )}
       {tab === 'status' && booker && (
-        <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} />
+        <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} onAsk={choosePrompt} />
       )}
       {tab !== 'assistant' && !booker && (
         <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>
       )}
-      <BottomNavigation onChange={setTab} tab={tab} />
+      <BottomNavigation onChange={(next) => { setSelectedBooking(null); setTab(next); }} tab={tab} />
     </main>
   );
 }

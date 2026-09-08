@@ -15,10 +15,10 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://lox-pc.tail89d19b.ts.net:10443'),
-  title: 'Asimut Assistant',
+  title: 'Asimut Booker',
   description:
     'A private, conversational control panel for practice plans and RWCMD room bookings.',
-  applicationName: 'Asimut Assistant',
+  applicationName: 'Asimut Booker',
   manifest: '/manifest.webmanifest',
   icons: {
     icon: [
@@ -29,13 +29,13 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: 'website',
-    title: 'Asimut Assistant',
+    title: 'Asimut Booker',
     description: 'Your practice week, handled.',
-    images: [{ url: '/og.png', width: 1792, height: 936, alt: 'Asimut Assistant — Your practice week, handled.' }],
+    images: [{ url: '/og.png', width: 1792, height: 936, alt: 'Asimut Booker — Your practice week, handled.' }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Asimut Assistant',
+    title: 'Asimut Booker',
     description: 'Your practice week, handled.',
     images: ['/og.png'],
   },
@@ -50,7 +50,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
-  themeColor: '#0c1714',
+  themeColor: '#f8fafc',
 };
 
 export default function RootLayout({
