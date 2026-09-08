@@ -60,6 +60,13 @@ class QuietFocusGUI:
         if page in ('today', 'week'):
             self._refresh_quiet_views()
 
+    def _on_quiet_page_changed(self, _event=None):
+        """Initialize pages for every notebook selection, including native tabs."""
+        self._sync_quiet_navigation()
+        if (self.main_notebook.select() == str(self.calendar_tab)
+                and getattr(self, 'calendar_dialog', None) is None):
+            self.show_calendar_dialog()
+
     def _sync_quiet_navigation(self, _event=None):
         selected = self.main_notebook.select()
         for key, target in (('today', self.today_tab), ('week', self.week_tab), ('calendar', self.calendar_tab), ('assistant', self.assistant_tab), ('settings', self.preferences_page)):
@@ -110,7 +117,7 @@ class QuietFocusGUI:
             ('Refresh bookings', self._refresh_quiet_agenda),
         ):
             ttk.Button(support, text=text, command=command).pack(fill=tk.X, pady=4)
-        self.main_notebook.bind('<<NotebookTabChanged>>', self._sync_quiet_navigation)
+        self.main_notebook.bind('<<NotebookTabChanged>>', self._on_quiet_page_changed)
         self._sync_quiet_navigation()
 
     def _refresh_quiet_views(self):

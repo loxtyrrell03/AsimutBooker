@@ -1516,3 +1516,15 @@ When modifying this codebase:
   passed. Focused GUI checks cover navigation, absence of a modal grab, retaining
   edits across tabs, and saving without destroying the page. These checks do not
   constitute physical desktop interaction or phone deployment.
+
+## 2026-09-08 Calendar Tab Selection Repair
+
+- Lazy Calendar construction is handled by `<<NotebookTabChanged>>`, so native
+  tabs and keyboard selection initialize the same editor as sidebar shortcuts.
+  Sidebar-only initialization previously left the native Calendar tab empty.
+- The isolated Tk regression selects the notebook directly, drains the event
+  loop, asserts populated calendar content, and verifies revisiting the tab
+  does not rebuild it or start a duplicate initial agenda scan.
+- Validation: all ten focused Quiet Focus/assistant integration tests passed.
+  Full-suite verification was incomplete: a bounded diagnostic run timed out
+  after 60 seconds in a Playwright agenda DOM test, outside this UI change.

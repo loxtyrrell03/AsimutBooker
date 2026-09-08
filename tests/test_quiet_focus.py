@@ -43,8 +43,19 @@ class QuietFocusTests(unittest.TestCase):
                 self.assertEqual(app.main_notebook.select(), str(app.today_tab))
                 with patch.object(app, '_refresh_quiet_views'), \
                      patch.object(app, '_send_assistant_message') as send:
-                    with patch.object(app, '_scan_calendar_events'):
-                        app._select_quiet_page('calendar')
+                    with patch.object(app, '_scan_calendar_events') as scan:
+                        # Native tab clicks and keyboard navigation select the
+                        # notebook directly; they bypass the sidebar command.
+                        app.main_notebook.select(app.calendar_tab)
+                        root.update()
+                        self.assertGreater(len(app.calendar_frame.winfo_children()), 0)
+                        self.assertEqual(app.calendar_canvas.winfo_manager(), 'pack')
+                        scan.assert_called_once()
+                        app.main_notebook.select(app.today_tab)
+                        root.update()
+                        app.main_notebook.select(app.calendar_tab)
+                        root.update()
+                        scan.assert_called_once()
                     self.assertEqual(app.main_notebook.select(), str(app.calendar_tab))
                     self.assertIs(app.calendar_dialog, app.calendar_tab)
                     self.assertIsNone(root.grab_current())
