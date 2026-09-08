@@ -82,14 +82,21 @@ class ScrollPage(tk.Frame):
         self.window = self.canvas.create_window(0, 0, window=self.content, anchor='nw')
         self.canvas.bind('<Configure>', lambda e: self.canvas.itemconfigure(self.window, width=e.width))
         self.content.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
+        self.canvas.bind('<MouseWheel>', self._scroll_wheel)
         # Bind only to descendants of this page, never steal scrolling from other dialogs.
         self.bind('<Enter>', self._bind_wheel)
 
     def _bind_wheel(self, _event=None):
         def visit(widget):
-            widget.bind('<MouseWheel>', lambda e: self.canvas.yview_scroll(-int(e.delta / 120), 'units'))
+            widget.bind('<MouseWheel>', self._scroll_wheel)
             for child in widget.winfo_children(): visit(child)
         visit(self.content)
+
+    def _scroll_wheel(self, event):
+        self.canvas.yview_scroll(-int(event.delta / 120), 'units')
+        # A wheel gesture scrolls the page without also changing a spinbox or
+        # combobox value through its class binding.
+        return 'break'
 
 
 class TodayPanel(ScrollPage):

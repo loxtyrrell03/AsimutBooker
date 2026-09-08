@@ -70,35 +70,67 @@ class QuietFocusGUI:
     def _sync_quiet_navigation(self, _event=None):
         selected = self.main_notebook.select()
         for key, target in (('today', self.today_tab), ('week', self.week_tab), ('calendar', self.calendar_tab), ('assistant', self.assistant_tab), ('settings', self.preferences_page)):
-            active = selected == str(target) or key == 'settings' and selected in (str(self.system_tab), str(self.activity_tab), str(self.advanced_preferences_page))
+            active = selected == str(target) or key == 'settings' and selected in (str(self.system_tab), str(self.activity_tab))
             self.quiet_nav[key].state(['selected'] if active else ['!selected'])
 
     def _quiet_ask(self, prompt):
         self._select_quiet_page('assistant')
         self.assistant_panel.prefill_prompt(prompt)
 
-    def _finish_quiet_layout(self, preferences):
-        settings = ScrollPage(self.preferences_page)
-        settings.pack(fill=tk.BOTH, expand=True)
-        body = tk.Frame(settings.content, bg='#FFFFFF', padx=34, pady=30)
+    def _create_quiet_settings_body(self):
+        style = ttk.Style(self.root)
+        for base in ('Title.TLabel', 'Subtitle.TLabel'):
+            style.configure('Settings.' + base, background='#FFFFFF')
+        self.settings_scroll = ScrollPage(self.preferences_page)
+        self.settings_scroll.pack(fill=tk.BOTH, expand=True)
+        self.settings_sections = {}
+        body = tk.Frame(self.settings_scroll.content, bg='#FFFFFF', padx=34, pady=30)
         body.pack(fill=tk.BOTH, expand=True)
-        label(body, 'Settings', size=32, bold=True).pack(anchor=tk.W)
-        label(body, 'Make practice fit your day.', size=15, color='#667080').pack(anchor=tk.W, pady=(10, 28))
-        for title, detail, action in (
-            ('Practice goal', 'Choose how much time you want to practise.', lambda:self._quiet_ask('Help me change my daily practice goal.')),
-            ('Preferred times', 'Choose the times of day that suit you.', lambda:self._quiet_ask('Help me change my preferred practice times.')),
-            ('Favourite rooms', 'Choose the rooms and instruments you prefer.', self.show_room_preferences_dialog),
-            ('Automatic booking', 'View your automatic schedule and manage it.', self.view_scheduled_tasks),
+        return body
+
+    def _create_settings_section(self, parent, title, *, before=None):
+        card = RoundedCard(parent, fill='#F7F9FC', padding=22)
+        options = {'before': self.settings_sections[before]} if before else {}
+        card.pack(fill=tk.X, pady=(0, 18), **options)
+        self.settings_sections[title] = card
+        label(card.content, title, size=19, bold=True).pack(anchor=tk.W, pady=(0, 16))
+        content = ttk.Frame(card.content)
+        content.pack(fill=tk.X)
+        return content
+
+    def _finish_quiet_layout(self, preferences):
+        automatic = self._create_settings_section(preferences, 'Automatic booking')
+        ttk.Button(automatic, text='Manage schedule', command=self.view_scheduled_tasks).pack(side=tk.RIGHT)
+        ttk.Label(automatic, text='View, install or repair the automatic schedule.',
+                  wraplength=430).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
+        links = tk.Frame(preferences, bg='#FFFFFF')
+        links.pack(fill=tk.X, pady=(6, 0))
+        for text, command in (
+            ('System details', lambda:self.main_notebook.select(self.system_tab)),
+            ('Activity and history', lambda:self.main_notebook.select(self.activity_tab)),
+            ('Refresh bookings', self._refresh_quiet_agenda),
         ):
-            card = RoundedCard(body, fill='#F7F9FC', padding=18)
-            card.pack(fill=tk.X, pady=7)
-            ttk.Button(card.content, text='Edit', command=action, style='QuietLink.TButton').pack(side=tk.RIGHT)
-            label(card.content, title, size=18, bold=True).pack(anchor=tk.W)
-            label(card.content, detail, size=14, color='#667080', wraplength=590).pack(anchor=tk.W, pady=(6, 0))
-        links = tk.Frame(body, bg='#FFFFFF')
-        links.pack(fill=tk.X, pady=24)
-        for title, target in (('All preferences', self.advanced_preferences_page), ('System details', self.system_tab), ('Activity', self.activity_tab)):
-            ttk.Button(links, text=title, command=lambda page=target:self.main_notebook.select(page), style='QuietLink.TButton').pack(side=tk.LEFT, padx=(0, 16))
+            ttk.Button(links, text=text, command=command, style='QuietLink.TButton').pack(side=tk.LEFT, padx=(0, 16))
+
+        # Scope the card surface styles to Settings; dialogs keep their own styles.
+        style = ttk.Style(self.root)
+        def style_section(widget):
+            if isinstance(widget, (ttk.Frame, ttk.Label, ttk.Checkbutton)):
+                base = widget.cget('style') or widget.winfo_class()
+                name = 'Settings.' + base
+                style.configure(name, background='#F7F9FC')
+                if isinstance(widget, ttk.Checkbutton):
+                    style.map(name, background=[('active', '#F7F9FC')])
+                widget.configure(style=name)
+            if isinstance(widget, ttk.Label) and widget.cget('wraplength'):
+                # Summary text must fit alongside its editor button at minimum size.
+                widget.bind('<Configure>', lambda e, w=widget: w.configure(wraplength=max(40, e.width)))
+            for child in widget.winfo_children():
+                style_section(child)
+        for card in self.settings_sections.values():
+            style_section(card.content)
+        self.settings_scroll._bind_wheel()
+
         self.today_panel = TodayPanel(self.today_tab,
             on_find=lambda:self._quiet_ask('Help me find a practice room. Ask which date and time I want.'),
             on_week=lambda:self._select_quiet_page('week'), on_ask=self._quiet_ask,
@@ -107,16 +139,6 @@ class QuietFocusGUI:
         self.week_panel = WeekPanel(self.week_tab, on_calendar=lambda:self.show_calendar_dialog(initial_view='week'),
             on_refresh=self._refresh_quiet_agenda, on_details=self._show_quiet_booking)
         self.week_panel.pack(fill=tk.BOTH, expand=True)
-        support = ttk.Frame(preferences, style='Card.TFrame', padding=20)
-        support.pack(fill=tk.X, pady=12)
-        ttk.Label(support, text='More settings', style='CardSection.TLabel').pack(anchor=tk.W, pady=(0, 12))
-        for text, command in (
-            ('System details', lambda:self.main_notebook.select(self.system_tab)),
-            ('Automatic schedule', self.view_scheduled_tasks),
-            ('Activity and history', lambda:self.main_notebook.select(self.activity_tab)),
-            ('Refresh bookings', self._refresh_quiet_agenda),
-        ):
-            ttk.Button(support, text=text, command=command).pack(fill=tk.X, pady=4)
         self.main_notebook.bind('<<NotebookTabChanged>>', self._on_quiet_page_changed)
         self._sync_quiet_navigation()
 

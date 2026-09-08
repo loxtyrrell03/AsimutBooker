@@ -13,6 +13,23 @@
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Unified deterministic desktop Settings
+
+- The desktop has one Settings page; the separate Advanced preferences page and
+  assistant-backed preference shortcuts are removed. Daily targets and preferred
+  times use their existing validated direct-save controls. Dates, rooms, strategy
+  and automatic scheduling open deterministic editors; support links remain on
+  the same page. Settings never opens or prefills the assistant.
+- The design reference is `docs/design/2026-09-08-unified-settings.svg` (example
+  values). Rounded sections share one scroll surface, with stacked time controls
+  and wrapping summaries at the minimum window size. Wheel scrolling consumes
+  the event so spinboxes and comboboxes cannot also change their values.
+- Verified 85 focused desktop tests, including real controls writing to temporary
+  settings, editor cancellation, support navigation, assistant-draft preservation,
+  and rendered geometry at 1040x740 and 1200x820. Isolated window captures were
+  visually checked. No live preferences or bookings were changed for testing.
+  Reopen the desktop app to load the change; existing sessions were preserved.
+
 ## 2026-09-08 Booking requests without a duration
 
 - The assistant resolves an omitted duration from the requested date's saved

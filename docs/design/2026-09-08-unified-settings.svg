@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1280" viewBox="0 0 1200 1280">
+  <title>Asimut Booker — unified desktop Settings</title>
+  <desc>One scrollable Settings page. Real controls edit the practice target and preferred times directly. Dates, rooms, strategy and automatic scheduling open deterministic editors. Example values only.</desc>
+  <style>
+    text {font-family:Segoe UI,Arial,sans-serif; fill:#1D2430; font-size:15px}
+    .muted {fill:#667080;font-size:14px} .title {font-size:32px;font-weight:700}
+    .section {font-size:19px;font-weight:600} .blue {fill:#0868D9}
+    .button {fill:#FFFFFF;stroke:#D6DEE9;stroke-width:1} .card {fill:#F7F9FC;stroke:#E1E6EE;stroke-width:1}
+    .input {fill:#FFFFFF;stroke:#BAC6D6;stroke-width:1} .small {font-size:12px;fill:#667080}
+  </style>
+  <rect width="1200" height="1280" fill="#FFFFFF"/>
+  <rect width="210" height="1280" fill="#F4F5F7"/>
+  <rect x="26" y="34" width="36" height="36" rx="8" fill="#0868D9"/>
+  <path d="M36 60V48 M44 60V42 M52 60V46" stroke="white" stroke-width="4"/>
+  <text x="74" y="52" class="section">Asimut</text><text x="74" y="70" class="small">BOOKER</text>
+  <text x="32" y="128" class="muted">Today</text><text x="32" y="180" class="muted">My Week</text>
+  <text x="32" y="232" class="muted">Calendar</text><text x="32" y="284" class="muted">Assistant</text>
+  <text x="26" y="368" class="small">YOUR PRACTICE</text><text x="26" y="400" class="section">3 hours</text>
+  <text x="32" y="442" class="blue">Edit preferences</text>
+  <rect x="14" y="1176" width="182" height="48" rx="9" fill="#EAF3FF"/>
+  <text x="32" y="1206" class="blue">Settings</text>
+  <text x="244" y="64" class="title">Settings</text>
+  <text x="244" y="94" class="muted">Your practice routine, all in one place.</text>
+  <text x="244" y="118" class="small">Quick changes save automatically. Editors have their own Save button.</text>
+
+  <rect x="244" y="144" width="902" height="116" rx="14" class="card"/>
+  <text x="266" y="178" class="section">Booking days</text>
+  <text x="266" y="220" class="muted">Choose which days to practise.</text>
+  <rect x="964" y="198" width="160" height="38" rx="7" class="button"/><text x="988" y="222" class="blue">Choose days</text>
+
+  <rect x="244" y="278" width="902" height="154" rx="14" class="card"/>
+  <text x="266" y="312" class="section">Practice target</text>
+  <rect x="266" y="338" width="18" height="18" rx="4" fill="#0868D9"/><path d="m270 347 4 4 7-9" fill="none" stroke="white" stroke-width="2"/>
+  <text x="296" y="353">Aim for</text><rect x="355" y="330" width="70" height="36" rx="6" class="input"/>
+  <text x="376" y="353">3</text><text x="408" y="353" class="small">↕</text><text x="438" y="353">hours on each enabled day</text>
+  <rect x="936" y="330" width="188" height="38" rx="7" class="button"/><text x="957" y="354" class="blue">Customize by day</text>
+  <text x="266" y="404" class="muted">Daily target and any date overrides appear here.</text>
+
+  <rect x="244" y="450" width="902" height="216" rx="14" class="card"/>
+  <text x="266" y="484" class="section">Preferred time</text>
+  <rect x="266" y="510" width="18" height="18" rx="4" fill="#0868D9"/><path d="m270 519 4 4 7-9" fill="none" stroke="white" stroke-width="2"/>
+  <text x="296" y="525">Prefer a time of day</text>
+  <rect x="266" y="544" width="330" height="38" rx="6" class="input"/><text x="280" y="569">Afternoon (12:00–18:00)</text><text x="570" y="569">⌄</text>
+  <rect x="266" y="608" width="18" height="18" rx="4" class="input"/><text x="296" y="623">Only book inside this time range</text>
+
+  <rect x="244" y="684" width="902" height="128" rx="14" class="card"/>
+  <text x="266" y="718" class="section">Rooms</text>
+  <text x="266" y="758" class="muted">Room order, instruments, exclusions and session length.</text>
+  <rect x="964" y="736" width="160" height="38" rx="7" class="button"/><text x="982" y="760" class="blue">Choose rooms</text>
+
+  <rect x="244" y="830" width="902" height="176" rx="14" class="card"/>
+  <text x="266" y="864" class="section">Booking strategy</text>
+  <text x="266" y="904" class="muted">Waiting, fallback and room/time priorities.</text>
+  <rect x="936" y="881" width="188" height="38" rx="7" class="button"/><text x="953" y="905" class="blue">Customize strategy</text>
+  <rect x="266" y="947" width="18" height="18" rx="4" class="input"/><text x="296" y="962">Book furthest dates first</text>
+
+  <rect x="244" y="1024" width="902" height="124" rx="14" class="card"/>
+  <text x="266" y="1058" class="section">Automatic booking</text>
+  <text x="266" y="1100" class="muted">View, install or repair the automatic schedule.</text>
+  <rect x="936" y="1076" width="188" height="38" rx="7" class="button"/><text x="954" y="1100" class="blue">Manage schedule</text>
+
+  <text x="254" y="1188" class="blue">System details</text><text x="430" y="1188" class="blue">Activity and history</text>
+  <text x="658" y="1188" class="blue">Refresh bookings</text>
+  <rect x="1177" y="144" width="5" height="420" rx="3" fill="#CED5DF"/>
+  <text x="244" y="1250" class="small">Design reference · Full scroll content · Example values</text>
+</svg>

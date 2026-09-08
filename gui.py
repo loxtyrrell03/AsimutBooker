@@ -1789,15 +1789,13 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.week_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.calendar_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.assistant_tab = assistant_tab
-        self.advanced_preferences_page = preferences_page
-        self.preferences_page = ttk.Frame(self.main_notebook, style="Page.TFrame")
+        self.preferences_page = preferences_page
         self.system_tab = overview_tab
         self.main_notebook.add(self.today_tab, text="Today")
         self.main_notebook.add(self.week_tab, text="My Week")
         self.main_notebook.add(self.calendar_tab, text="Calendar")
         self.main_notebook.add(assistant_tab, text="Assistant")
         self.main_notebook.add(self.preferences_page, text="Settings")
-        self.main_notebook.add(preferences_page, text="Advanced preferences")
         self.main_notebook.add(overview_tab, text="System details")
         self.main_notebook.add(activity_tab, text="Activity")
 
@@ -1833,53 +1831,22 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Preferences use a quiet, vertically grouped settings layout. Scrolling
         # keeps the generous type and spacing usable on smaller displays.
-        preferences_canvas = tk.Canvas(
-            preferences_page,
-            background=UI_COLORS["page"],
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        preferences_scrollbar = ttk.Scrollbar(
-            preferences_page,
-            orient=tk.VERTICAL,
-            command=preferences_canvas.yview,
-        )
-        preferences_canvas.configure(yscrollcommand=preferences_scrollbar.set)
-        preferences_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        preferences_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        preferences_tab = ttk.Frame(
-            preferences_canvas,
-            style="Page.TFrame",
-            padding=(4, 2, 16, 24),
-        )
-        preferences_window = preferences_canvas.create_window(
-            (0, 0),
-            window=preferences_tab,
-            anchor="nw",
-        )
-        preferences_tab.bind(
-            "<Configure>",
-            lambda _event: preferences_canvas.configure(
-                scrollregion=preferences_canvas.bbox("all")
-            ),
-        )
-        preferences_canvas.bind(
-            "<Configure>",
-            lambda event: preferences_canvas.itemconfigure(
-                preferences_window,
-                width=event.width,
-            ),
-        )
+        preferences_tab = self._create_quiet_settings_body()
 
-        ttk.Label(preferences_tab, text="Settings", style="Title.TLabel").pack(
+        ttk.Label(preferences_tab, text="Settings", style="Settings.Title.TLabel").pack(
             anchor=tk.W,
             pady=(2, 2),
         )
         ttk.Label(
             preferences_tab,
-            text="Make your practice routine work for you.",
-            style="Subtitle.TLabel",
-        ).pack(anchor=tk.W, pady=(0, 18))
+            text="Your practice routine, all in one place.",
+            style="Settings.Subtitle.TLabel",
+        ).pack(anchor=tk.W, pady=(8, 8))
+        ttk.Label(
+            preferences_tab,
+            text="Quick changes save automatically. Editors have their own Save button.",
+            style="Settings.Subtitle.TLabel",
+        ).pack(anchor=tk.W, pady=(0, 24))
 
         self.health_updated_var = tk.StringVar(value="Checking…")
         self.health_headline_vars = {
@@ -2205,8 +2172,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         ).pack(side=tk.RIGHT)
 
         # Booking Days section - collapsible calendar
-        days_frame = ttk.LabelFrame(preferences_tab, text="Booking days", padding="20")
-        days_frame.pack(fill=tk.X, pady=(0, 14))
+        days_frame = self._create_settings_section(preferences_tab, "Booking days")
 
         days_inner = ttk.Frame(days_frame)
         days_inner.pack(fill=tk.X)
@@ -2223,7 +2189,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             width=18,
             style="Primary.TButton",
         )
-        self.calendar_btn.pack(side=tk.LEFT, padx=5)
+        self.calendar_btn.pack(side=tk.RIGHT)
         self._settings_controls.append(self.calendar_btn)
 
         # Initialize day vars (will be populated by load_booking_days)
@@ -2234,8 +2200,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         self._update_days_summary()
 
         # Practice Plan section - a default target with optional per-date overrides.
-        practice_frame = ttk.LabelFrame(preferences_tab, text="Practice target", padding="20")
-        practice_frame.pack(fill=tk.X, pady=(0, 14))
+        practice_frame = self._create_settings_section(preferences_tab, "Practice target")
 
         practice_inner = ttk.Frame(practice_frame)
         practice_inner.pack(fill=tk.X)
@@ -2272,15 +2237,16 @@ class AsimutBookerGUI(QuietFocusGUI):
             command=self.show_practice_plan_dialog,
             width=24,
         )
-        self.practice_plan_customize_btn.pack(side=tk.LEFT, padx=(0, 18))
+        self.practice_plan_customize_btn.pack(side=tk.RIGHT)
 
         self.practice_plan_summary_var = tk.StringVar(value="Loading…")
         ttk.Label(
-            practice_inner,
+            practice_frame,
             textvariable=self.practice_plan_summary_var,
             foreground="#555555",
             font=(self.ui_font_family, 12),
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            wraplength=700,
+        ).pack(fill=tk.X, pady=(12, 0))
 
         self.settings_status_var = tk.StringVar(value="")
         self.settings_status_label = ttk.Label(
@@ -2300,8 +2266,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Room preferences are edited in a focused dialog because ordering and
         # site-derived metadata need more space than a single settings row.
-        rooms_frame = ttk.LabelFrame(preferences_tab, text="Rooms", padding="20")
-        rooms_frame.pack(fill=tk.X, pady=(0, 14))
+        rooms_frame = self._create_settings_section(preferences_tab, "Rooms")
         rooms_inner = ttk.Frame(rooms_frame)
         rooms_inner.pack(fill=tk.X)
         self.room_preferences_summary_var = tk.StringVar(value="Loading…")
@@ -2337,8 +2302,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.load_room_preferences_settings()
 
         # Time Preferences section
-        time_prefs_frame = ttk.LabelFrame(preferences_tab, text="Preferred time", padding="20")
-        time_prefs_frame.pack(fill=tk.X, pady=(0, 14))
+        time_prefs_frame = self._create_settings_section(preferences_tab, "Preferred time", before="Rooms")
 
         # Row 1: Enable checkbox and preset dropdown
         time_prefs_row1 = ttk.Frame(time_prefs_frame)
@@ -2352,10 +2316,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             variable=self.time_prefs_enabled,
             command=self.on_time_prefs_changed
         )
-        self.time_prefs_enable_cb.pack(side=tk.LEFT, padx=(0, 30))
-
-        # Preset dropdown
-        ttk.Label(time_prefs_row1, text="Prefer:").pack(side=tk.LEFT, padx=(0, 10))
+        self.time_prefs_enable_cb.pack(anchor=tk.W)
 
         self.time_prefs_preset = tk.StringVar(value="afternoon_evening")
         self.time_prefs_presets = {
@@ -2375,7 +2336,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             font=("Segoe UI", 13)
         )
         self.time_prefs_dropdown.set("Afternoon/Evening (14:00-22:00)")
-        self.time_prefs_dropdown.pack(side=tk.LEFT, padx=(0, 30))
+        self.time_prefs_dropdown.pack(anchor=tk.W, pady=(8, 4))
         self.time_prefs_dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_time_prefs_changed())
 
         # Strict mode checkbox (on same row)
@@ -2387,7 +2348,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             command=self.on_time_prefs_changed,
             state=tk.DISABLED
         )
-        self.time_prefs_strict_cb.pack(side=tk.LEFT)
+        self.time_prefs_strict_cb.pack(anchor=tk.W, pady=(8, 0))
 
         # Row 2: Custom time range (hidden by default)
         self.custom_time_frame = ttk.Frame(time_prefs_frame)
@@ -2469,8 +2430,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Daily strategy is edited in a focused dialog so the everyday page
         # stays readable while still exposing every planning trade-off.
-        strategy_frame = ttk.LabelFrame(preferences_tab, text="Booking strategy", padding="20")
-        strategy_frame.pack(fill=tk.X, pady=(0, 14))
+        strategy_frame = self._create_settings_section(preferences_tab, "Booking strategy")
 
         strategy_inner = ttk.Frame(strategy_frame)
         strategy_inner.pack(fill=tk.X)
@@ -2499,11 +2459,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.reverse_date_order = tk.BooleanVar(value=False)
         self.reverse_date_order_cb = ttk.Checkbutton(
             strategy_row1,
-            text="Book furthest dates first (prioritize newly available rooms)",
+            text="Book furthest dates first",
             variable=self.reverse_date_order,
             command=self.on_strategy_changed
         )
-        self.reverse_date_order_cb.pack(side=tk.LEFT, padx=(0, 20))
+        self.reverse_date_order_cb.pack(anchor=tk.W)
         self._settings_controls.append(self.reverse_date_order_cb)
 
         # Explanation label
@@ -2511,8 +2471,9 @@ class AsimutBookerGUI(QuietFocusGUI):
             strategy_row1,
             text="Date order only; the day planner still ranks useful session times and rooms.",
             foreground="gray",
-            font=("Segoe UI", 11)
-        ).pack(side=tk.LEFT)
+            font=("Segoe UI", 11),
+            wraplength=680,
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         # Row 2: Smart swap toggle
         # Smart swap feature (disabled for now - kept for future use)
