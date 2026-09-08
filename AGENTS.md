@@ -1402,6 +1402,22 @@ python -m unittest discover -s tests
   window and newly created future edits. The focused GUI suite passes 53 tests,
   and the complete offline suite passes 731 tests.
 
+## 2026-09-08 Desktop and Phone Design Exploration
+
+- `docs/design/2026-09-08-interface-options/` contains three unimplemented visual
+  directions: Today-first Quiet Focus, calendar-first Week at a Glance, and
+  Personal Assistant. Each has desktop/phone main and follow-up screens, SVG
+  sources, rendered PNG review boards, and a local comparison gallery.
+- The mockups use fictional bookings. No direction is approved for implementation;
+  preserve existing runtime behavior until the user selects one. Planned time
+  must remain distinct from persisted bookings, and technical controls remain
+  accessible through Settings rather than disappearing.
+- Figma file `T00qfnzqnYqRhI88VUUuBT` was created but remains blank: the first
+  design access was blocked by the Starter-plan connector quota. Local SVGs are
+  importable artwork, not verified native Figma components or prototypes.
+- All six paired boards were visually reviewed; the gallery's selection and
+  narrow-screen fit were checked. No application code or deployment changed.
+
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture
 - Keep the "Key Functions" sections current with new/changed functions

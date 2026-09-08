@@ -1,0 +1,29 @@
+[
+  {
+    "name": "Quiet Focus",
+    "accent": "#0868d9",
+    "tint": "#eaf3ff",
+    "board": "#edf1f6",
+    "bg": "#f8fafc",
+    "desc": "Your next session. Everything else, one tap away.",
+    "active": 0
+  },
+  {
+    "name": "Week at a Glance",
+    "accent": "#23705d",
+    "tint": "#e7f2ec",
+    "board": "#f0f1ec",
+    "bg": "#fafbf8",
+    "desc": "See your time. Shape your week.",
+    "active": 1
+  },
+  {
+    "name": "Personal Assistant",
+    "accent": "#6b4cce",
+    "tint": "#f0ebfc",
+    "board": "#f0edf7",
+    "bg": "#fbfaff",
+    "desc": "Ask naturally. See exactly what happens.",
+    "active": 2
+  }
+]
