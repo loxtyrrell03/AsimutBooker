@@ -1463,7 +1463,7 @@ python -m unittest discover -s tests
   Deployment also refreshed a removed Codex executable path in the private config
   and reloaded only the verified idle phone task. Origin and login were preserved.
 
-## 2026-09-09 Private Phone Address Recovery
+## 2026-09-08 Private Phone Address Recovery
 
 - The formerly configured `lox-pc.tail89d19b.ts.net` stopped resolving. Verify
   Tailscale's live `Self.DNSName` before relying on a saved hostname; the local
@@ -1483,6 +1483,12 @@ python -m unittest discover -s tests
   isolated built-UI checks pass. `tools/check_phone_connection_ui.py --dist ...`
   checks wrong-origin rejection, four bounded session attempts, access errors,
   and network recovery without contacting live APIs.
+- Build `6aad895fab8d` is deployed at
+  `https://windows-t8v5137.tail89d19b.ts.net:10443/`. Verification passed the
+  current DNS/config/build match, TLS health, loopback ownership, static assets,
+  anonymous API rejection, and Tailnet-only route. A real HTTPS session request
+  through Tailscale returned 200 and Booker bootstrap data without any booking
+  request. Both deployment scripts also passed PowerShell parser checks.
 - An installed shortcut on a hostname that no longer resolves cannot be updated
   by that server. Open the current private URL in Safari and replace the old
   home-screen shortcut; do not claim this migration was performed on the phone.

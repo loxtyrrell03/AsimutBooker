@@ -42,7 +42,7 @@ $PublicHost = $Origin.Authority
 $Tailnet = (& $TailscalePath status --json | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0 -or $Tailnet.BackendState -ne 'Running' -or
     ([string]$Tailnet.Self.DNSName).TrimEnd('.') -ine $Origin.Host) {
-    throw 'The configured phone address does not match this PC’s current Tailscale hostname. Rerun phone setup.'
+    throw 'The configured phone address does not match the current Tailscale hostname. Rerun phone setup.'
 }
 
 $BuildInfo = Get-Content -LiteralPath (Join-Path $BuildDir "build-info.json") -Raw | ConvertFrom-Json
