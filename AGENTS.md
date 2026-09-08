@@ -1782,3 +1782,17 @@ When modifying this codebase:
   All 804 offline tests passed, including delayed enable, stale response, timeout,
   failed response body, and no-receipt failure regressions. New CLI processes
   load the fix from this checkout without restarting the phone companion.
+
+## 2026-09-08 Extension Recovery and Contention
+
+- Scheduled runs wait up to 180 seconds for an occupied runtime, retaining the
+  single-instance lock. After acquiring it they reload and validate preferences
+  before fresh site discovery. An exhausted queue returns exit code 6 instead
+  of reporting success; invalid settings after waiting return exit code 3.
+- Modern and legacy day selection reserve pending extensions' daily and peak
+  minutes before selecting new sessions, across horizon, read-only, and normal
+  runtime planning. Attaching extension progress therefore does not spend those
+  minutes twice or invalidate the display plan by exceeding its daily target.
+- All 809 offline tests passed. A bounded extension-only recovery reached the
+  existing two-hour target and verified the persisted event before removing its
+  completed extension intent. No new reservation was created by that recovery.

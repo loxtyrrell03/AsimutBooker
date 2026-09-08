@@ -18,7 +18,6 @@ class ExtensionValidationTests(unittest.TestCase):
         )
         self.response.request.method = "PATCH"
         self.response.request.post_data_json = self.data
-        self.response.finished.return_value = None
         self.page.expect_response.return_value.__enter__.return_value.value = self.response
         self.save = self.page.locator.return_value.first
         self.save.count.return_value = 1
@@ -34,7 +33,7 @@ class ExtensionValidationTests(unittest.TestCase):
         self.assertEqual(self.page.wait_for_timeout.call_count, 2)
         self.end.fill.assert_called_once_with("14:15")
         self.end.press.assert_called_once_with("Tab")
-        self.response.finished.assert_called_once()
+        self.response.body.assert_called_once()
         self.save.click.assert_not_called()
 
     def test_ignores_initial_stale_and_unrelated_validation_responses(self):
@@ -70,7 +69,7 @@ class ExtensionValidationTests(unittest.TestCase):
         self.save.is_enabled.assert_not_called()
 
     def test_incomplete_response_body_stops(self):
-        self.response.finished.return_value = "network failure"
+        self.response.body.side_effect = RuntimeError("network failure")
         self.assertFalse(self.validate()[0])
         self.save.is_enabled.assert_not_called()
 

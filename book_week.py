@@ -971,8 +971,7 @@ def refresh_extension_validation(page, end_input, booking, expected_end_time):
         response = pending.value
         if not matches_check(response) or not response.ok:
             return False, "exact extension validation did not return HTTP success"
-        if response.finished() is not None:
-            return False, "extension validation response did not finish"
+        response.body()
         # HTTP headers can arrive before Angular has applied the response and
         # enabled Save. Poll the real control; never force a disabled click.
         deadline = time.monotonic() + 5
@@ -6629,6 +6628,8 @@ def build_display_day_plan(
     now,
     target_minutes,
     remaining_weekly_minutes=None,
+    reserved_daily_minutes=0,
+    reserved_peak_minutes=0,
 ):
     """Convert fresh opportunities into one clear display-only day plan."""
 
@@ -6638,7 +6639,7 @@ def build_display_day_plan(
         1440,
         max(existing_minutes, int(target_minutes // 15) * 15),
     )
-    remaining_minutes = max(0, target_minutes - existing_minutes)
+    remaining_minutes = max(0, target_minutes - existing_minutes - reserved_daily_minutes)
     latest_useful_unlock = now + timedelta(
         minutes=daily_planning.foresight_minutes
     )
@@ -6662,7 +6663,9 @@ def build_display_day_plan(
         now=now,
         target_minutes=selection_minutes,
         allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
-        remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
+        remaining_peak_minutes=max(
+            0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
+        ),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
     )
     # The planner returns members in desirability order. Runtime can act only
@@ -6697,7 +6700,9 @@ def build_display_day_plan(
             now=now,
             target_minutes=selection_minutes,
             allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
-            remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
+            remaining_peak_minutes=max(
+                0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
+            ),
             same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
             required_opportunity=decision.selected,
         )
@@ -6870,6 +6875,8 @@ def build_legacy_display_day_plan(
     now,
     target_minutes,
     remaining_weekly_minutes=None,
+    reserved_daily_minutes=0,
+    reserved_peak_minutes=0,
 ):
     """Build a display plan that exactly follows disabled-planner ordering."""
 
@@ -6882,7 +6889,7 @@ def build_legacy_display_day_plan(
         max(existing_minutes, int(target_minutes // 15) * 15),
     )
     selection_minutes = min(
-        max(0, target_minutes - existing_minutes),
+        max(0, target_minutes - existing_minutes - reserved_daily_minutes),
         _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0,
     )
     if remaining_weekly_minutes is not None:
@@ -6898,7 +6905,9 @@ def build_legacy_display_day_plan(
         now=now,
         target_minutes=selection_minutes,
         allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
-        remaining_peak_minutes=tracker.get_remaining_peak_minutes(target_date),
+        remaining_peak_minutes=max(
+            0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
+        ),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
         rank_key=rank_key,
     )
@@ -7206,6 +7215,8 @@ def build_horizon_display_days(
             now=now,
             target_minutes=target_minutes,
             remaining_weekly_minutes=available_weekly_for_new,
+            reserved_daily_minutes=extension_targets.get(date_key, 0),
+            reserved_peak_minutes=planning_context.get("extension_peak_by_date", {}).get(date_key, 0),
         )
         selected = (
             (() if display_day.primary is None else (display_day.primary,))
@@ -9410,6 +9421,8 @@ def generate_read_only_booking_plan(
                 now=now,
                 target_minutes=target_minutes,
                 remaining_weekly_minutes=available_weekly_for_new,
+                reserved_daily_minutes=extension_target_minutes,
+                reserved_peak_minutes=extension_peak_minutes,
             )
         else:
             day_plan = build_legacy_display_day_plan(
@@ -9421,6 +9434,8 @@ def generate_read_only_booking_plan(
                 now=now,
                 target_minutes=target_minutes,
                 remaining_weekly_minutes=available_weekly_for_new,
+                reserved_daily_minutes=extension_target_minutes,
+                reserved_peak_minutes=extension_peak_minutes,
             )
         newly_selected = (() if day_plan.primary is None else (day_plan.primary,)) + day_plan.additional
         planned_weekly_minutes += sum(
@@ -10573,6 +10588,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     tracker,
                     daily_planning,
                     now=scan_time,
+                    reserved_daily_minutes=extension_target_minutes,
+                    reserved_peak_minutes=planning_context.get("extension_peak_by_date", {}).get(date_key, 0),
                     target_minutes=int(
                         (current_day_hours + target_hours) * 4 + 1e-9
                     )
@@ -10962,6 +10979,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                             tracker,
                             daily_planning,
                             now=refreshed_now,
+                            reserved_daily_minutes=extension_target_minutes,
+                            reserved_peak_minutes=planning_context.get("extension_peak_by_date", {}).get(date_key, 0),
                             target_minutes=int(
                                 (current_day_hours + target_hours) * 4 + 1e-9
                             )
@@ -11543,19 +11562,26 @@ def main(argv=None):
     runtime_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
     try:
         acquired = runtime_lock.acquire()
-        wait_seconds = int(getattr(args, "wait_for_runtime_seconds", 0) or 0)
+        wait_seconds = (
+            180 if args.scheduled
+            else int(getattr(args, "wait_for_runtime_seconds", 0) or 0)
+        )
         if not acquired and wait_seconds:
             print(
                 "Another AsimutBooker run is active; waiting for a fresh "
-                f"read-only refresh slot for up to {wait_seconds} seconds."
+                f"runtime slot for up to {wait_seconds} seconds."
             )
             deadline = time.monotonic() + wait_seconds
             while not acquired and time.monotonic() < deadline:
                 time.sleep(0.25)
                 acquired = runtime_lock.acquire()
+            if acquired:
+                # Preferences may have changed while another operation owned
+                # the runtime. Start from fresh controls after the queue wait.
+                settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
         if not acquired:
             print("Another AsimutBooker run is already active; this run did not refresh data.")
-            return 6 if (args.agenda_only or args.check_only or args.plan_only) else 0
+            return 6 if (args.scheduled or args.agenda_only or args.check_only or args.plan_only) else 0
         with booking_preference_run(settings_file, settings):
             return run_booking(args, settings, practice_plan, room_preferences) or 0
     except KeyboardInterrupt:
@@ -11568,7 +11594,7 @@ def main(argv=None):
         print(f"ERROR: Live room policy could not be verified: {exc}")
         print("Autonomous booking stopped before any room mutation.")
         return 4
-    except BookingPreferencesChanged as exc:
+    except SettingsError as exc:
         print(f"Booking stopped: {exc}")
         return 3
     except BookingVerificationError as exc:
