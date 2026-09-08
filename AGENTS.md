@@ -1528,3 +1528,16 @@ When modifying this codebase:
 - Validation: all ten focused Quiet Focus/assistant integration tests passed.
   Full-suite verification was incomplete: a bounded diagnostic run timed out
   after 60 seconds in a Playwright agenda DOM test, outside this UI change.
+
+## 2026-09-08 Assistant Codex Discovery
+
+- The assistant preserves explicit executable/command overrides and PATH
+  precedence, then checks `%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe` on
+  Windows. Desktop-launched Python may lack the Codex app's injected PATH.
+  Discovery selects the newest executable by modification time, ignores
+  incomplete releases, and resolves afresh without pinning a release hash.
+- All 15 discovery and protocol tests passed. A live controller started with
+  only System32 on PATH and passed the handshake and Terra/medium catalog
+  verification without sending a prompt or invoking booking tools.
+- Existing desktop/server processes need reopening to load this source change;
+  the active GUI was preserved to avoid losing unsaved calendar edits.

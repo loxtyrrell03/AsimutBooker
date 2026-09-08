@@ -110,6 +110,30 @@ class ToolDispatcher(Protocol):
 EventHandler = Callable[[dict[str, Any]], Any]
 
 
+def resolve_codex_executable() -> str:
+    """Find Codex even when Explorer did not inherit the desktop app's PATH."""
+    executable = shutil.which("codex")
+    if executable:
+        return executable
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        # Desktop releases use hash directories, not sortable version numbers.
+        # Resolve on each controller creation instead of pinning an update hash.
+        root = Path(os.environ["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin"
+        candidates = []
+        for candidate in root.glob("*/codex.exe"):
+            try:
+                if candidate.is_file():
+                    candidates.append((candidate.stat().st_mtime_ns, str(candidate)))
+            except OSError:
+                continue  # An update may remove an old release during discovery.
+        if candidates:
+            return max(candidates)[1]
+    raise CodexConfigurationError(
+        "Codex CLI was not found on PATH or in the Codex desktop installation. "
+        "Install Codex or add its executable folder to PATH, then reopen Asimut Booker."
+    )
+
+
 @dataclass
 class _PendingRequest:
     method: str
@@ -169,9 +193,7 @@ class CodexChatController:
             if not command:
                 raise ValueError("process_command cannot be empty")
         else:
-            executable = str(codex_executable) if codex_executable else shutil.which("codex")
-            if not executable:
-                raise CodexConfigurationError("Codex CLI was not found on PATH")
+            executable = str(codex_executable) if codex_executable else resolve_codex_executable()
             command = (executable, "app-server", "--stdio")
 
         self._tool_dispatcher = tool_dispatcher
