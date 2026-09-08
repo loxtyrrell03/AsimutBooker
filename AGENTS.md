@@ -1426,8 +1426,8 @@ python -m unittest discover -s tests
 - The phone opens on Today with the next practice booking, other remaining events,
   and checked-agenda weekly hours. Bottom navigation is Today, My Week, Assistant,
   and Settings. Settings keeps technical health evidence inside System details.
-- Booking details retain the college Wi-Fi reconfirmation reminder. Change,
-  cancellation, and preference shortcuts prepare exact-context assistant drafts;
+- Booking details retain the college Wi-Fi reconfirmation reminder. Change and
+  cancellation shortcuts prepare exact-context assistant drafts;
   they do not submit requests automatically or overwrite an existing draft.
 - `phone/lib/today_state.js` calculates display summaries in Europe/London,
   includes in-progress reservations, and excludes classes from practice totals.
@@ -1541,3 +1541,24 @@ When modifying this codebase:
   verification without sending a prompt or invoking booking tools.
 - Existing desktop/server processes need reopening to load this source change;
   the active GUI was preserved to avoid losing unsaved calendar edits.
+
+## 2026-09-08 Direct Phone Practice Settings
+
+- Your practice now opens inline editors for the daily goal, exact practice dates
+  and date targets, preferred times/strict mode, and room order/exclusions. These
+  controls previously only prepared Assistant drafts. Save and Cancel remain in
+  Settings; a successful save refreshes the displayed preference summary.
+- `phone_preferences.py` reuses the existing BookerToolSurface preference
+  validators and atomic settings update. GET/POST `/api/v1/preferences` retains
+  the private identity/session boundary and requires CSRF for saves. Saves are
+  serialized against phone assistant submissions and rejected while it is busy.
+  Revision comparison occurs under the settings file lock, rejecting stale forms
+  without overwriting PC edits. Unrelated settings are preserved; validation
+  errors roll back the entire update. No booking/cancellation is invoked.
+- `tools/check_phone_settings_ui.py` exercises all four editors, saved-value
+  reloads, Cancel, and stale-save recovery using temporary files and intercepted
+  APIs in mobile Chromium and WebKit. Both passed; 119 focused Python tests,
+  19 phone state tests, TypeScript, lint, and the private static build passed.
+  This is isolated browser proof, not physical iPhone interaction.
+- This source milestone requires the rebuilt phone shell and an idle phone
+  service reload to expose the new preference endpoint.

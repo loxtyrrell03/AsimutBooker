@@ -41,6 +41,9 @@ from uuid import UUID
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
 from assistant_runtime import AssistantRuntime, AssistantRuntimeError, load_assistant_state
 from phone_api import build_phone_snapshot
+from phone_preferences import (
+    read_phone_preferences, save_phone_preferences, PreferenceConflict, AssistantToolError,
+)
 from runtime_guard import SingleInstanceLock
 
 
@@ -1020,6 +1023,14 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == "/api/v1/preferences":
+            if self._authorized() is None:
+                return
+            try:
+                self._json(HTTPStatus.OK, read_phone_preferences())
+            except (ValueError, SettingsError, AssistantToolError):
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "preferences_unavailable", "Settings could not be loaded.")
+            return
         if path == "/healthz":
             self._json(
                 HTTPStatus.OK,
@@ -1093,6 +1104,21 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
             return
         payload = self._read_json()
         if payload is None:
+            return
+        if path == "/api/v1/preferences":
+            try:
+                with self.app.assistant._request_lock:
+                    if self.app.assistant.is_busy:
+                        self._error(HTTPStatus.CONFLICT, "assistant_busy", "Wait for the assistant to finish before saving settings.")
+                        return
+                    saved = save_phone_preferences(payload)
+                self._json(HTTPStatus.OK, saved)
+            except PreferenceConflict as exc:
+                self._error(HTTPStatus.CONFLICT, "preferences_changed", str(exc))
+            except (ValueError, AssistantToolError) as exc:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_preferences", str(exc))
+            except SettingsError:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "preferences_unavailable", "Settings could not be saved. Reload to check the saved values.")
             return
         if path == "/api/v1/assistant/messages":
             if set(payload) != {"client_message_id", "text"}:

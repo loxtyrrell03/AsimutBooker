@@ -2,8 +2,8 @@
 
 The phone surface deliberately receives much less than the Codex assistant.
 It never receives event IDs, cancellation match tokens, receipt bodies, command
-output, file paths, credentials, or browser state.  All state changes continue
-to flow through :class:`assistant_runtime.AssistantRuntime` and its typed tools.
+output, file paths, credentials, or browser state. Booking actions flow through
+the assistant's typed tools; explicit preference forms use phone_preferences.
 """
 
 from __future__ import annotations

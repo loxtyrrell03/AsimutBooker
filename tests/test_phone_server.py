@@ -840,6 +840,28 @@ class HTTPBoundaryTests(unittest.TestCase):
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         return cookie, payload["csrf_token"]
 
+    def test_preference_reads_and_saves_require_session_csrf_and_idle_assistant(self):
+        from phone_preferences import read_phone_preferences, save_phone_preferences
+        path = Path(self.temp_dir.name) / 'settings.json'
+        path.write_text('{}')
+        self.assistant._request_lock = threading.RLock()
+        with mock.patch('phone_server.read_phone_preferences', side_effect=lambda: read_phone_preferences(path)), mock.patch('phone_server.save_phone_preferences', side_effect=lambda payload: save_phone_preferences(payload, path)):
+            self.assertEqual(self.request('GET', '/api/v1/preferences')[0], 401)
+            cookie, csrf = self.open_session()
+            status, _, body = self.request('GET', '/api/v1/preferences', headers={'Cookie': cookie})
+            self.assertEqual(status, 200)
+            payload = json.dumps({'revision': json.loads(body)['revision'], 'changes': {'practice_plan': {'enabled': True, 'default_hours': 3}}})
+            headers = {'Cookie': cookie, 'Content-Type': 'application/json'}
+            self.assertEqual(self.request('POST', '/api/v1/preferences', headers=headers, body=payload)[0], 403)
+            self.assertEqual(path.read_text(), '{}')
+            headers['X-Asimut-CSRF'] = csrf
+            self.assistant.runtime.is_busy = True
+            self.assertEqual(self.request('POST', '/api/v1/preferences', headers=headers, body=payload)[0], 409)
+            self.assistant.runtime.is_busy = False
+            self.assertEqual(self.request('POST', '/api/v1/preferences', headers=headers, body=payload)[0], 200)
+            self.assertEqual(read_phone_preferences(path)['practice_plan']['default_hours'], 3)
+            self.assertEqual(self.request('POST', '/api/v1/preferences', headers=headers, body=payload)[0], 409)
+
     def test_session_bootstrap_and_message_require_full_boundary(self):
         cookie, csrf = self.open_session()
         status, headers, body = self.request(

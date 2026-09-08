@@ -36,6 +36,7 @@ import {
   upsertReasoningPart,
 } from '@/lib/phone_state';
 import { selectedPlanMinutes, selectedPlanSessions } from '@/lib/plan_state';
+import { PracticeSettings } from '@/components/practice-settings';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
 
 const PRIVATE_ORIGIN = process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || '';
@@ -942,13 +943,17 @@ function StatusView({
   standalone,
   onRefresh,
   refreshing,
-  onAsk,
+  csrf,
+  editable,
+  onSaved,
 }: {
   booker: BookerSnapshot;
   standalone: boolean;
   onRefresh: () => void;
   refreshing: boolean;
-  onAsk: (prompt: string) => void;
+  csrf: string;
+  editable: boolean;
+  onSaved: () => void;
 }) {
   const practice = booker.preferences.practice_plan;
   const time = booker.preferences.time_preferences;
@@ -1014,12 +1019,7 @@ function StatusView({
             <strong>{time.enabled ? `${time.start_time}–${time.end_time}` : 'Any time'}</strong>
           </div>
         </div>
-        <div className="preference-actions">
-          <button className="quiet-secondary" onClick={() => onAsk('Help me change my daily practice goal. Ask how many hours I want.')}>Daily goal</button>
-          <button className="quiet-secondary" onClick={() => onAsk('Help me choose my practice days and dates.')}>Practice days</button>
-          <button className="quiet-secondary" onClick={() => onAsk('Help me change my preferred practice times.')}>Preferred times</button>
-          <button className="quiet-secondary" onClick={() => onAsk('Help me choose and rank my favourite practice rooms.')}>Favourite rooms</button>
-        </div>
+        <PracticeSettings csrf={csrf} enabled={editable} onSaved={onSaved} />
         {booker.preferences.future_intentions.length > 0 && (
           <div className="intent-list" aria-label="Saved future practice intentions">
             {booker.preferences.future_intentions.map((intention) => (
@@ -1745,7 +1745,7 @@ export default function HomePage() {
         <ScheduleView booker={booker} onAskToCancel={askToCancel} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
       )}
       {tab === 'status' && booker && (
-        <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} onAsk={choosePrompt} />
+        <StatusView booker={booker} onRefresh={() => void refreshSnapshot()} refreshing={refreshing} standalone={standalone} csrf={csrf} editable={connection === 'online' && !busy && !preview} onSaved={() => void refreshSnapshot()} />
       )}
       {tab !== 'assistant' && !booker && (
         <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>
