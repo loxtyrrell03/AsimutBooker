@@ -13,6 +13,18 @@
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 UX audit: desktop draft preservation
+
+- `load_booking_days` merges refreshed settings into existing Calendar controls,
+  retaining edited current and future dates and updating untouched dates and
+  their comparison baseline. Save and Discard explicitly reload saved values;
+  display refreshes do not expand the live booking window or write preferences.
+- A failed Booker process launch now captures its error before the delayed Tk
+  callback runs, so the actual failure is shown instead of a callback NameError.
+- Both failures were reproduced in isolated regressions before patching. All 77
+  focused desktop preference, Calendar, assistant integration, and plan tests
+  passed. Existing GUI sessions require reopening to load the desktop fixes.
+
 
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.
 

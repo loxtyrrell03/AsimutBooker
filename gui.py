@@ -3196,7 +3196,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         except Exception as e:
             self.root.after(
                 0,
-                lambda: self.log(f"Error running {operation_name.lower()}: {e}", "error"),
+                lambda message=f"Error running {operation_name.lower()}: {e}": self.log(message, "error"),
             )
         finally:
             self.root.after(0, self._on_booker_finished)
@@ -4059,8 +4059,8 @@ class AsimutBookerGUI(QuietFocusGUI):
         if hasattr(self, "time_prefs_enabled"):
             self._update_time_prefs_ui_state()
 
-    def load_booking_days(self):
-        """Load enabled booking days from settings."""
+    def load_booking_days(self, *, preserve_calendar_edits=True):
+        """Merge saved dates into controls without losing an open calendar draft."""
         settings = self.load_settings()
         disabled_raw = settings.get("disabled_dates", [])
         if not isinstance(disabled_raw, list) or not all(isinstance(item, str) for item in disabled_raw):
@@ -4086,12 +4086,32 @@ class AsimutBookerGUI(QuietFocusGUI):
             current_dates = ()
             self.room_catalog_load_error = f"Room booking window is unavailable: {exc}"
         self.booking_dates = current_dates
-        self.day_vars = {}
-        for target_date in current_dates:
-            date_str = target_date.strftime('%Y-%m-%d')
-            # Default to enabled unless in disabled list
-            var = tk.BooleanVar(value=(date_str not in disabled_dates))
-            self.day_vars[date_str] = var
+        baseline = getattr(self, "calendar_day_snapshot", None)
+        previous = getattr(self, "day_vars", {})
+        keep_draft = preserve_calendar_edits and isinstance(baseline, dict)
+        keys = {target_date.isoformat() for target_date in current_dates}
+        if keep_draft:
+            keys.update(key for key in previous if key >= today.isoformat())
+        variables = {}
+        for key in sorted(keys):
+            saved = key not in disabled_dates
+            variable = previous.get(key) if keep_draft else None
+            edited = variable is not None and key in baseline and variable.get() != baseline[key]
+            if variable is None:
+                variable = tk.BooleanVar(value=saved)
+            elif not edited:
+                variable.set(saved)
+            variables[key] = variable
+            if keep_draft and not edited:
+                baseline[key] = saved
+        self.day_vars = variables
+        if isinstance(baseline, dict):
+            if not keep_draft:
+                baseline.clear()
+                baseline.update({key: var.get() for key, var in variables.items()})
+            else:
+                for key in set(baseline) - keys:
+                    del baseline[key]
 
     def _ensure_calendar_day_var(self, target_date: date, *, today: date):
         """Return editable state for any non-past planning date.
@@ -4121,7 +4141,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         """Save only dates edited in this dialog against the latest settings."""
 
         if not day_states:
-            self.load_booking_days()
+            self.load_booking_days(preserve_calendar_edits=False)
             self._update_days_summary()
             self._update_practice_plan_summary()
             return True
@@ -4131,7 +4151,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         ):
             # Refresh every displayed date from the merged document so a
             # concurrent out-of-scope edit is immediately visible in this GUI.
-            self.load_booking_days()
+            self.load_booking_days(preserve_calendar_edits=False)
             self._update_days_summary()
             self._update_practice_plan_summary()
             return True
@@ -5621,7 +5641,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             # Calendar navigation can create planning variables for dates well
             # beyond the live window. Reloading discards all unsaved edits and
             # restores the compact current-window controls in one step.
-            self.load_booking_days()
+            self.load_booking_days(preserve_calendar_edits=False)
             self._update_days_summary()
             self._update_practice_plan_summary()
             day_snapshot.clear()

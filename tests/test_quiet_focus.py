@@ -1,5 +1,5 @@
 """Quiet Focus display semantics and isolated desktop navigation."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -14,6 +14,52 @@ def event(day, start, end, reservation=True):
 
 
 class QuietFocusTests(unittest.TestCase):
+    def test_status_reload_preserves_calendar_edits_and_merges_unedited_dates(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = object.__new__(gui.AsimutBookerGUI)
+            today = datetime.now().date()
+            live = today.isoformat()
+            other = (today + timedelta(days=1)).isoformat()
+            future = (today + timedelta(days=45)).isoformat()
+            app.room_catalog = None
+            app.day_vars = {key: tk.BooleanVar(value=True) for key in (live, other, future)}
+            original_variables = dict(app.day_vars)
+            app.calendar_day_snapshot = {key: True for key in app.day_vars}
+            app.day_vars[live].set(False)
+            app.day_vars[future].set(False)
+            with patch.object(app, 'load_settings', return_value={'disabled_dates': [other]}), \
+                 patch('gui.catalog_booking_dates', return_value=(today, today + timedelta(days=1))):
+                app.load_booking_days()
+                self.assertFalse(app.day_vars[live].get(), 'Refresh discarded the edited live date')
+                self.assertFalse(app.day_vars[future].get(), 'Refresh discarded the future date')
+                self.assertFalse(app.day_vars[other].get(), 'Unedited date did not follow the saved settings')
+                self.assertIs(app.day_vars[live], original_variables[live])
+                self.assertFalse(app.calendar_day_snapshot[other])
+                self.assertTrue(app.calendar_day_snapshot[live])
+                self.assertEqual(app.booking_dates, (today, today + timedelta(days=1)))
+                app.load_booking_days(preserve_calendar_edits=False)
+                self.assertTrue(app.day_vars[live].get())
+                self.assertNotIn(future, app.day_vars)
+        finally:
+            root.destroy()
+
+    def test_failed_process_launch_reports_error_after_exception_scope_ends(self):
+        app = object.__new__(gui.AsimutBookerGUI)
+        callbacks, errors = [], []
+        from unittest.mock import Mock
+        app.root = Mock()
+        app.root.after.side_effect = lambda delay, callback: callbacks.append(callback)
+        app.log = lambda message, tag: errors.append((message, tag))
+        app._on_booker_finished = Mock()
+        with patch('gui.subprocess.Popen', side_effect=OSError('Launch unavailable')):
+            app._run_booker_thread(True)
+        for callback in callbacks:
+            callback()
+        self.assertIn('Launch unavailable', errors[0][0])
+        app._on_booker_finished.assert_called_once()
+
     def test_active_reservation_and_week_total_exclude_classes_and_other_weeks(self):
         events = [event('2026-09-08', '08:00', '09:00'),
                   event('2026-09-08', '10:00', '12:00'),
