@@ -1577,3 +1577,6 @@ When modifying this codebase:
 - Mobile Chromium and WebKit checks now tap both summary cards and the sliders
   icon, clear/retype the daily goal, and save/reload combined goal/time edits.
   All prior editor checks, TypeScript, lint, and the static build passed.
+- Build `a2e9f7da5139` is deployed and private deployment verification passed.
+  Prior hashed assets were retained; no server restart or live preference write
+  was needed. Reload an already-open phone page to receive the new tap targets.
