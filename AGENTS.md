@@ -46,6 +46,12 @@
 - Runtime action-cap/plan-isolation tests now stub the saved-settings reader.
   Three tests had read real pending extension records from the checkout and
   failed against their fixture room catalog; all three now pass in isolation.
+- Manual phone Refresh now explains when the Assistant is busy instead of
+  silently returning. The audit report is `docs/UX_AUDIT_2026-09-08.md`.
+  Full Python discovery passed 772 tests, including the concurrent soft-time
+  policy, followed by the policy task's final 773-test pass. Phone regression
+  checks use no live preference writes or reservations. Static publication was
+  verified on private HTTPS without restarting either the GUI or phone server.
 
 
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.

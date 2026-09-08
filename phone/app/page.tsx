@@ -1191,7 +1191,11 @@ export default function HomePage() {
   }, [applyBootstrap, csrf, preview]);
 
   const refreshLiveSchedule = useCallback(async (force = false) => {
-    if (preview || !csrf || busy || liveScheduleRunningRef.current) return;
+    if (preview || !csrf || liveScheduleRunningRef.current) return;
+    if (busy) {
+      if (force) setError('Wait for the assistant to finish, then refresh your bookings.');
+      return;
+    }
     const now = Date.now();
     if (!force && now - liveScheduleAttemptRef.current < 45_000) return;
     liveScheduleAttemptRef.current = now;

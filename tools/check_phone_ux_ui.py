@@ -66,6 +66,7 @@ def check(dist):
                 elif path == '/api/v1/assistant/new-chat':
                     pending['reset'] = route
                 elif path == '/api/v1/refresh' and mode['refresh'] == 'delay':
+                    mode['refresh'] = 'ok'
                     pending['refresh'] = (route, bootstrap())
                 elif path in ('/api/v1/refresh', '/api/v1/live-refresh'):
                     reply(route, bootstrap())
@@ -146,8 +147,11 @@ def check(dist):
             reply(route, old)
             page.get_by_role('button', name='Assistant', exact=True).tap()
             expect(page.get_by_role('button', name='Stop assistant', exact=True)).to_be_visible()
+            page.get_by_role('button', name='Today', exact=True).tap()
+            page.get_by_role('button', name='Refresh bookings', exact=True).first.tap()
+            expect(page.get_by_text('Wait for the assistant to finish, then refresh your bookings.', exact=True)).to_be_visible()
             assert not errors, errors
-            page.unroute_all(behavior='ignoreErrors')
+            page.unroute_all(behavior='wait')
             browser.close()
             print(f'PASS {engine}: interrupted settings, draft preservation, exact retry, rejected Stop, reset race, stale snapshot')
 
