@@ -32,6 +32,11 @@
 - Build test shells outside `phone/dist-phone`, which is served live. Coordinate
   shared-file edits and deployment with concurrent agents; preserve old hashed
   assets when publishing so already-open phone sessions can finish loading.
+- Published `0af95ca-direct-cancel` after confirming the assistant was idle and
+  no Booker process was running, then restarting only the owned phone task.
+  `verify_phone_deployment.ps1` passed against private HTTPS; an authenticated
+  invalid cancellation request returned the new route's expected 400 response
+  without starting booking work. Physical phone tapping remains user-side proof.
 
 ## 2026-09-08 UX audit: desktop draft preservation
 
