@@ -1595,8 +1595,10 @@ When modifying this codebase:
   heights/hour spacing, reordered rooms, and nested scrolling; they also reject
   blockers, mismatched location IDs, ambiguous rows, and missing time geometry.
   All 80 focused renderer, targeting, snipe, and Save-safety tests passed.
-- Live read-only checks opened exact unsaved forms for Weston Gallery, Corus
-  Recital Room, and the first four AHC rooms. The remaining-room audit is ongoing.
+- The completed live read-only audit opened exact unsaved forms for all 31
+  eligible rooms, including Weston Gallery, Corus Recital Room, and the other
+  AHC rooms. Two transient category-menu failures succeeded on a fresh check;
+  bounded menu retries now handle that pre-Save condition in both create paths.
   `tools/manual_live/check_room_targeting.py --open-forms` repeats the audit under
   the Booker lock and blocks Save requests. This is form-opening evidence, not a
   claim that any reservation was saved. Scheduled processes load the new source
@@ -1624,3 +1626,6 @@ When modifying this codebase:
   exhaustion, scopes/budgets, uncertain Save refusal, delayed menus, and actual
   DOM clicks across layout variants. Read-only phone plan refreshes run a new
   backend process and receive the new wording without a phone server restart.
+  A completed live `--plan-only` refresh verified the new readiness wording in
+  the published plan. No test reservations were created; existing automatic
+  scheduling remains enabled and loads these changes on its next pass.
