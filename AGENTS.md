@@ -1560,5 +1560,8 @@ When modifying this codebase:
   APIs in mobile Chromium and WebKit. Both passed; 119 focused Python tests,
   19 phone state tests, TypeScript, lint, and the private static build passed.
   This is isolated browser proof, not physical iPhone interaction.
-- This source milestone requires the rebuilt phone shell and an idle phone
-  service reload to expose the new preference endpoint.
+- Build `232b0ba9c5b2` is deployed on the current private phone origin. The
+  verified idle phone task was reloaded, prior hashed assets were retained, and
+  deployment verification passed. An authenticated HTTPS preferences read
+  returned 200 with all four sections; no live preference save or booking action
+  was performed. Existing phone pages need a reload to load the editors.
