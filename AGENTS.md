@@ -31,7 +31,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
 - **In-App Assistant**: ChatGPT-style Codex chat pinned to `gpt-5.6-terra` with medium reasoning; the host refreshes the complete live Asimut agenda before every prompt, then Terra interprets the active request against that fresh context, chooses typed application actions, and emits visible concise progress summaries
-- **Phone Schedule**: The private PWA performs a real agenda-and-plan refresh when Schedule opens and every five minutes while it remains open; manual refresh bypasses the short server cooldown, and last-checked agenda/plan data stays visible during failures
+- **Phone Schedule**: The private PWA performs a real agenda-and-plan refresh when Today or My Week opens and every five minutes while it remains open; manual refresh bypasses the short server cooldown, and last-checked agenda/plan data stays visible during failures
 - **Health Dashboard**: Shows the last successful run, next scheduled run, saved-session evidence, auth cooldown, pending mutations, and physical wake-test evidence
 - **Practice Plan**: Set a default daily target from 0.5-12 hours, override individual dates, or turn dates off across Asimut's current live booking window
 - **Daily Foresight**: Ranks the complete fresh room grid across a configurable lookahead, can preserve scarce peak allowance for stronger later sessions, and falls back before an opportunity becomes too risky to lose
@@ -130,7 +130,8 @@ pythonw gui.py
 ```
 
 The GUI provides:
-- A first-tab conversational assistant for questions, status, preferences, future practice intentions, bounded booking, and exact reservation cancellation
+- A Today home screen with the next booking, checked-agenda weekly hours, and other events; a My Week agenda and simple Settings page
+- A conversational Assistant tab for questions, status, preferences, future practice intentions, bounded booking, and exact reservation cancellation
 - Streaming answers, concise reasoning summaries, live tool progress, Stop/New chat controls, and a locally restored bounded transcript
 - A six-card health dashboard with independently sourced status and detail
 - Run booker manually (visible or headless)
@@ -358,7 +359,9 @@ python -m unittest discover -s tests
 |------|---------|
 | `book_week.py` | Main booking script - scans agenda, navigates calendar, books slots |
 | `asimut_auth.py` | Deterministic Windows credential, Microsoft SSO, and SMS-bridge recovery |
-| `gui.py` | Tkinter GUI for monitoring and control |
+| `gui.py` | Tkinter controller, preference editors, and detailed monitoring |
+| `quiet_focus.py` | Display-only Today and My Week widgets and local-time summaries |
+| `quiet_focus_gui.py` | Quiet Focus sidebar, Settings, booking details, and controller adapter |
 | `assistant_ui.py` | Responsive, thread-safe assistant transcript, progress cards, and composer |
 | `assistant_runtime.py` | Persistent Codex conversation host and typed Booker-tool adapter |
 | `codex_chat.py` | Exact-model Codex App Server protocol bridge and event stream |
@@ -1436,6 +1439,29 @@ python -m unittest discover -s tests
 - Validation: phone TypeScript, lint, 19 unit tests, static/offline-shell checks,
   vinext build, and isolated browser navigation at 320/390/1024px passed. Sample
   screens were visually reviewed; this does not establish physical-phone behavior.
+
+## 2026-09-08 Quiet Focus Desktop and Private Release
+
+- `AsimutBookerGUI` uses the presentation adapter in `quiet_focus_gui.py` and
+  widgets in `quiet_focus.py`. Today is the default; sidebar navigation exposes
+  Today, My Week, Assistant, and Settings. Detailed preferences, system controls,
+  and activity remain reachable from Settings; the existing calendar editor stays
+  available through Plan my practice.
+- Today/My Week read validated display snapshots. Local minute refreshes reload
+  those snapshots; Refresh bookings invokes only the existing bounded agenda-only
+  path. Booked sessions, college events, stale evidence, and planned extensions
+  are explicitly distinguished. These new widgets never authorize a mutation.
+- Native booking details and preference shortcuts only prepare assistant drafts,
+  preserving existing composer text. The same live identity and persistence
+  checks still govern requests when the user sends them.
+- Validation: all 734 offline Python tests pass. Isolated native Tk construction,
+  live-snapshot display reads, and all four navigation pages passed at 1040x740;
+  no physical desktop/phone interaction is claimed by these checks.
+- Private phone build `b434755cc944` is deployed and the exact task, loopback
+  process, assets, anonymous rejection, and Tailnet route passed
+  `verify_phone_deployment.ps1`. Prior hashed assets were retained for open clients.
+  Deployment also refreshed a removed Codex executable path in the private config
+  and reloaded only the verified idle phone task. Origin and login were preserved.
 
 When modifying this codebase:
 - **Always update `AGENTS.md`** when adding features, changing behavior, or modifying architecture

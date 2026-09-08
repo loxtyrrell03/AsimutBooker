@@ -52,7 +52,7 @@ class _AssistantPanelProbe(_FakeWidget):
 
 
 class GuiAssistantLayoutTests(unittest.TestCase):
-    def test_assistant_is_first_default_tab_and_receives_all_callbacks(self):
+    def test_today_is_default_and_assistant_receives_all_callbacks(self):
         instance = object.__new__(gui.AsimutBookerGUI)
         instance.root = object()
         instance.ui_font_family = "Test UI"
@@ -71,6 +71,7 @@ class GuiAssistantLayoutTests(unittest.TestCase):
             return _AssistantPanelProbe(master)
 
         with (
+            patch.object(instance, "_create_quiet_shell", return_value=_FakeWidget()),
             patch("gui.ttk.Frame", _FakeWidget),
             patch("gui.ttk.Label", _FakeWidget),
             patch("gui.ttk.Notebook", side_effect=notebook_factory),
@@ -81,11 +82,11 @@ class GuiAssistantLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             [label for _tab, label in notebook.tabs],
-            ["Assistant", "Overview", "Preferences", "Activity"],
+            ["Today", "My Week", "Assistant", "Settings", "Advanced preferences", "System details", "Activity"],
         )
         self.assertIs(notebook.selected, notebook.tabs[0][0])
         self.assertEqual(notebook.explicit_select_calls, [])
-        self.assertIs(captured["master"], notebook.tabs[0][0])
+        self.assertIs(captured["master"], notebook.tabs[2][0])
         self.assertEqual(captured["kwargs"]["on_send"], instance._send_assistant_message)
         self.assertEqual(captured["kwargs"]["on_stop"], instance._stop_assistant)
         self.assertEqual(captured["kwargs"]["on_new_chat"], instance._new_assistant_chat)

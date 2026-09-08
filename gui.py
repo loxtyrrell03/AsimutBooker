@@ -73,6 +73,7 @@ from room_preferences import (
 from runtime_guard import SingleInstanceLock
 from assistant_runtime import AssistantRuntime
 from assistant_ui import AssistantEvent, AssistantPanel
+from quiet_focus_gui import QuietFocusGUI
 
 # Constants
 APP_DIR = Path(__file__).resolve().parent
@@ -140,12 +141,12 @@ UI_COLORS = {
     "secondary_text": "#6E6E73",
     "tertiary_text": "#86868B",
     "border": "#D9D9DE",
-    "accent": "#0071E3",
+    "accent": "#0868D9",
     "accent_hover": "#0077ED",
     "accent_pressed": "#0068D1",
     "danger": "#D70015",
     "danger_hover": "#E51C2E",
-    "selection": "#E8F2FF",
+    "selection": "#EAF3FF",
     "log": "#111214",
 }
 
@@ -1332,12 +1333,12 @@ def catalog_booking_dates(
     )
 
 
-class AsimutBookerGUI:
+class AsimutBookerGUI(QuietFocusGUI):
     def __init__(self, root):
         self.root = root
         self.root.title("Asimut Booker")
-        self.root.geometry("1320x920")
-        self.root.minsize(1040, 760)
+        self.root.geometry("1200x820")
+        self.root.minsize(1040, 740)
         self._configure_visual_system()
 
         # Set icon if available
@@ -1466,10 +1467,10 @@ class AsimutBookerGUI:
             else self.ui_font_family
         )
         named_fonts = {
-            "TkDefaultFont": (self.ui_font_family, 12, "normal"),
-            "TkTextFont": (self.ui_font_family, 12, "normal"),
-            "TkHeadingFont": (self.ui_display_font_family, 12, "bold"),
-            "TkMenuFont": (self.ui_font_family, 11, "normal"),
+            "TkDefaultFont": (self.ui_font_family, -15, "normal"),
+            "TkTextFont": (self.ui_font_family, -15, "normal"),
+            "TkHeadingFont": (self.ui_display_font_family, -15, "bold"),
+            "TkMenuFont": (self.ui_font_family, -14, "normal"),
             "TkFixedFont": ("Cascadia Mono", 11, "normal"),
         }
         for name, (family, size, weight) in named_fonts.items():
@@ -1489,10 +1490,10 @@ class AsimutBookerGUI:
         except tk.TclError:
             pass
 
-        body = (self.ui_font_family, 12)
-        body_semibold = (self.ui_font_family, 12, "bold")
-        caption = (self.ui_font_family, 10)
-        section = (self.ui_display_font_family, 16, "bold")
+        body = (self.ui_font_family, -15)
+        body_semibold = (self.ui_font_family, -15, "bold")
+        caption = (self.ui_font_family, -12)
+        section = (self.ui_display_font_family, -20, "bold")
         style.configure(".", font=body)
         style.configure("TFrame", background=UI_COLORS["surface"])
         style.configure(
@@ -1554,7 +1555,7 @@ class AsimutBookerGUI:
         )
         style.configure(
             "Toolbar.TButton",
-            font=(self.ui_font_family, 11, "bold"),
+            font=(self.ui_font_family, -14, "bold"),
             padding=(14, 9),
         )
 
@@ -1579,7 +1580,7 @@ class AsimutBookerGUI:
             ("CardSection.TLabel", section, UI_COLORS["text"]),
             (
                 "CardEyebrow.TLabel",
-                (self.ui_font_family, 10, "bold"),
+                (self.ui_font_family, -12, "bold"),
                 UI_COLORS["tertiary_text"],
             ),
         ):
@@ -1593,31 +1594,31 @@ class AsimutBookerGUI:
             "StatusLabel.TLabel",
             background=UI_COLORS["surface_muted"],
             foreground=UI_COLORS["text"],
-            font=(self.ui_font_family, 11, "bold"),
+            font=(self.ui_font_family, -14, "bold"),
         )
         style.configure(
             "StatusCaption.TLabel",
             background=UI_COLORS["surface_muted"],
             foreground=UI_COLORS["secondary_text"],
-            font=(self.ui_font_family, 10),
+            font=(self.ui_font_family, -12),
         )
         style.configure(
             "Title.TLabel",
             background=UI_COLORS["page"],
             foreground=UI_COLORS["text"],
-            font=(self.ui_display_font_family, 25, "bold"),
+            font=(self.ui_display_font_family, -31, "bold"),
         )
         style.configure(
             "Subtitle.TLabel",
             background=UI_COLORS["page"],
             foreground=UI_COLORS["secondary_text"],
-            font=(self.ui_font_family, 11),
+            font=(self.ui_font_family, -14),
         )
         style.configure(
             "Hero.TLabel",
             background=UI_COLORS["surface"],
             foreground=UI_COLORS["text"],
-            font=(self.ui_display_font_family, 21, "bold"),
+            font=(self.ui_display_font_family, -26, "bold"),
         )
         style.configure(
             "TCheckbutton",
@@ -1657,14 +1658,14 @@ class AsimutBookerGUI:
             fieldbackground=UI_COLORS["surface"],
             foreground=UI_COLORS["text"],
             bordercolor=UI_COLORS["border"],
-            font=(self.ui_font_family, 11),
+            font=(self.ui_font_family, -14),
             rowheight=34,
         )
         style.configure(
             "Treeview.Heading",
             background="#F0F0F2",
             foreground=UI_COLORS["text"],
-            font=(self.ui_font_family, 11, "bold"),
+            font=(self.ui_font_family, -14, "bold"),
             padding=(10, 9),
             relief="flat",
         )
@@ -1703,7 +1704,7 @@ class AsimutBookerGUI:
             "TNotebook.Tab",
             background="#ECECEF",
             foreground=UI_COLORS["secondary_text"],
-            font=(self.ui_font_family, 11, "bold"),
+            font=(self.ui_font_family, -14, "bold"),
             padding=(16, 10),
         )
         style.map(
@@ -1723,7 +1724,7 @@ class AsimutBookerGUI:
             foreground=UI_COLORS["secondary_text"],
             borderwidth=0,
             padding=(22, 12),
-            font=(self.ui_font_family, 12, "bold"),
+            font=(self.ui_font_family, -15, "bold"),
         )
         style.map(
             "Navigation.TNotebook.Tab",
@@ -1757,24 +1758,7 @@ class AsimutBookerGUI:
         help_menu.add_command(label="About", command=self.show_about)
 
     def create_main_layout(self):
-        main_frame = ttk.Frame(
-            self.root,
-            style="Page.TFrame",
-            padding=(30, 20, 30, 24),
-        )
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        title_bar = ttk.Frame(main_frame, style="Page.TFrame")
-        title_bar.pack(fill=tk.X, pady=(0, 14))
-        title_text = ttk.Frame(title_bar, style="Page.TFrame")
-        title_text.pack(side=tk.LEFT)
-        ttk.Label(title_text, text="Asimut Booker", style="Title.TLabel").pack(anchor=tk.W)
-        ttk.Label(
-            title_text,
-            text="Practice-room automation, without the clutter.",
-            style="Subtitle.TLabel",
-        ).pack(anchor=tk.W, pady=(2, 0))
-
+        main_frame = self._create_quiet_shell()
         self.main_notebook = ttk.Notebook(main_frame, style="Navigation.TNotebook")
         self.main_notebook.pack(fill=tk.BOTH, expand=True)
         assistant_tab = ttk.Frame(
@@ -1798,9 +1782,18 @@ class AsimutBookerGUI:
             padding=(2, 2, 2, 2),
         )
         self.activity_tab = activity_tab
+        self.today_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
+        self.week_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
+        self.assistant_tab = assistant_tab
+        self.advanced_preferences_page = preferences_page
+        self.preferences_page = ttk.Frame(self.main_notebook, style="Page.TFrame")
+        self.system_tab = overview_tab
+        self.main_notebook.add(self.today_tab, text="Today")
+        self.main_notebook.add(self.week_tab, text="My Week")
         self.main_notebook.add(assistant_tab, text="Assistant")
-        self.main_notebook.add(overview_tab, text="Overview")
-        self.main_notebook.add(preferences_page, text="Preferences")
+        self.main_notebook.add(self.preferences_page, text="Settings")
+        self.main_notebook.add(preferences_page, text="Advanced preferences")
+        self.main_notebook.add(overview_tab, text="System details")
         self.main_notebook.add(activity_tab, text="Activity")
 
         self.assistant_panel = AssistantPanel(
@@ -1826,9 +1819,9 @@ class AsimutBookerGUI:
             display_font_family=self.ui_display_font_family,
             starter_prompts=(
                 "What bookings and events do I have tomorrow?",
-                "Explain why the next planned booking is waiting.",
-                "Help me make a future practice plan with more time on weekends.",
-                "Is the automatic booker healthy?",
+                "Help me find a practice room.",
+                "Help me plan my practice for next week.",
+                "Keep tomorrow evening free.",
             ),
         )
         self.assistant_panel.pack(fill=tk.BOTH, expand=True)
@@ -1873,13 +1866,13 @@ class AsimutBookerGUI:
             ),
         )
 
-        ttk.Label(preferences_tab, text="Preferences", style="Title.TLabel").pack(
+        ttk.Label(preferences_tab, text="Settings", style="Title.TLabel").pack(
             anchor=tk.W,
             pady=(2, 2),
         )
         ttk.Label(
             preferences_tab,
-            text="Set your intent here. The booker still verifies every live rule before acting.",
+            text="Make your practice routine work for you.",
             style="Subtitle.TLabel",
         ).pack(anchor=tk.W, pady=(0, 18))
 
@@ -2615,6 +2608,7 @@ class AsimutBookerGUI:
 
         if self.settings_error:
             self.log(self.settings_error, "error")
+        self._finish_quiet_layout(preferences_tab)
 
     def show_health_details(self):
         """Show the full independent evidence without crowding the overview."""
@@ -2735,6 +2729,7 @@ class AsimutBookerGUI:
         self._refresh_booking_plan_display()
         self._start_local_health_refresh()
         self.check_scheduled_tasks()
+        self._refresh_quiet_views()
 
     def _read_booking_plan_for_display(self):
         """Read the display-only snapshot against the current user settings."""
@@ -2918,6 +2913,8 @@ class AsimutBookerGUI:
         state, headline, detail = automation_health_summary(self._health_items)
         self.automation_status_var.set(headline)
         self.automation_detail_var.set(detail)
+        if hasattr(self, 'quiet_health_var'):
+            self.quiet_health_var.set({'ok': 'Auto-booking is ready', 'warn': 'Auto-booking needs a check', 'error': 'Auto-booking needs attention', 'unknown': 'Checking auto-booking…'}.get(state, 'Checking auto-booking…'))
         self.automation_state_label.configure(
             text=HEALTH_STATE_SYMBOLS[state],
             foreground=HEALTH_STATE_COLORS[state],

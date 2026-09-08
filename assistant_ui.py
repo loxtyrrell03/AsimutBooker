@@ -430,13 +430,13 @@ class AssistantPanel(ttk.Frame):
             "Assistant.Title.TLabel",
             background=self.palette["page"],
             foreground=self.palette["text"],
-            font=(self.display_font_family, 20, "bold"),
+            font=(self.display_font_family, -28, "bold"),
         )
         style.configure(
             "Assistant.Subtitle.TLabel",
             background=self.palette["page"],
             foreground=self.palette["secondary_text"],
-            font=(self.font_family, 10),
+            font=(self.font_family, -14),
         )
         style.configure(
             "Assistant.Primary.TButton",
@@ -446,7 +446,7 @@ class AssistantPanel(ttk.Frame):
             lightcolor=self.palette["accent"],
             darkcolor=self.palette["accent"],
             padding=(16, 10),
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
             relief="flat",
         )
         style.map(
@@ -461,13 +461,13 @@ class AssistantPanel(ttk.Frame):
         style.configure(
             "Assistant.Toolbar.TButton",
             padding=(12, 8),
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
         )
         style.configure(
             "Assistant.Stop.TButton",
             padding=(16, 10),
             foreground=self.palette["danger"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
         )
 
     def _build_interface(self) -> None:
@@ -498,7 +498,7 @@ class AssistantPanel(ttk.Frame):
             text="●",
             background=self.palette["page"],
             foreground=self.palette["tertiary_text"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
         )
         self.connection_dot.pack(side="left", padx=(0, 5))
         self.connection_var = tk.StringVar(value="Starting…")
@@ -507,7 +507,7 @@ class AssistantPanel(ttk.Frame):
             textvariable=self.connection_var,
             background=self.palette["page"],
             foreground=self.palette["secondary_text"],
-            font=(self.font_family, 9),
+            font=(self.font_family, -13),
         ).pack(side="left", padx=(0, 14))
         self.new_chat_button = ttk.Button(
             actions,
@@ -618,7 +618,7 @@ class AssistantPanel(ttk.Frame):
             highlightthickness=0,
             padx=2,
             pady=2,
-            font=(self.font_family, 11),
+            font=(self.font_family, -15),
             takefocus=True,
         )
         self.composer.grid(row=0, column=0, sticky="ew", padx=(0, 10))
@@ -634,7 +634,7 @@ class AssistantPanel(ttk.Frame):
             text="Message Asimut Assistant",
             background=self.palette["surface"],
             foreground=self.palette["tertiary_text"],
-            font=(self.font_family, 11),
+            font=(self.font_family, -15),
             cursor="xterm",
         )
         self.placeholder.place(x=15, y=13)
@@ -666,7 +666,7 @@ class AssistantPanel(ttk.Frame):
             textvariable=self.composer_status_var,
             background=self.palette["page"],
             foreground=self.palette["tertiary_text"],
-            font=(self.font_family, 9),
+            font=(self.font_family, -13),
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
         self._sync_composer_width(self._content_width)
         self._sync_composer_state()
@@ -834,7 +834,7 @@ class AssistantPanel(ttk.Frame):
             text="How can I help with your practice-room bookings?",
             background=self.palette["page"],
             foreground=self.palette["text"],
-            font=(self.display_font_family, 16, "bold"),
+            font=(self.display_font_family, -22, "bold"),
             justify="left",
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
@@ -845,7 +845,7 @@ class AssistantPanel(ttk.Frame):
             ),
             background=self.palette["page"],
             foreground=self.palette["secondary_text"],
-            font=(self.font_family, 10),
+            font=(self.font_family, -14),
             justify="left",
             wraplength=max(300, self._content_width - 40),
         ).grid(row=1, column=0, sticky="w", pady=(6, 18))
@@ -867,7 +867,7 @@ class AssistantPanel(ttk.Frame):
                 relief="flat",
                 padx=14,
                 pady=10,
-                font=(self.font_family, 10),
+                font=(self.font_family, -14),
                 takefocus=True,
                 cursor="hand2",
             )
@@ -922,7 +922,7 @@ class AssistantPanel(ttk.Frame):
             highlightthickness=0,
             padx=0,
             pady=0,
-            font=(self.font_family, 11, weight),
+            font=(self.font_family, -15, weight),
             cursor="arrow",
             takefocus=True,
         )
@@ -1000,7 +1000,7 @@ class AssistantPanel(ttk.Frame):
                 text="A",
                 background=self.palette["accent"],
                 foreground="#FFFFFF",
-                font=(self.font_family, 9, "bold"),
+                font=(self.font_family, -13, "bold"),
                 width=2,
                 height=1,
             )
@@ -1010,7 +1010,7 @@ class AssistantPanel(ttk.Frame):
                 text="Asimut Assistant",
                 background=background,
                 foreground=self.palette["secondary_text"],
-                font=(self.font_family, 9, "bold"),
+                font=(self.font_family, -13, "bold"),
             ).grid(row=0, column=1, sticky="w", pady=(0, 5))
             body_row, body_column = 1, 1
         else:
@@ -1113,7 +1113,7 @@ class AssistantPanel(ttk.Frame):
             pady=0,
             takefocus=True,
             cursor="hand2",
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
         )
         toggle.grid(row=0, column=0, sticky="nw", padx=(0, 6))
         card.toggle_button = toggle
@@ -1131,7 +1131,7 @@ class AssistantPanel(ttk.Frame):
             ),
             background=self.palette["progress"],
             foreground=self.palette["text"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
             anchor="w",
         )
         title._assistant_title = True  # type: ignore[attr-defined]
@@ -1141,7 +1141,7 @@ class AssistantPanel(ttk.Frame):
             text="",
             background=self.palette["progress"],
             foreground=self.palette["secondary_text"],
-            font=(self.font_family, 9),
+            font=(self.font_family, -13),
             anchor="e",
         )
         status_label.grid(row=0, column=2, sticky="e", padx=(12, 0))
@@ -1246,7 +1246,7 @@ class AssistantPanel(ttk.Frame):
             text=event.title or "Something went wrong",
             background="#FFF5F5",
             foreground=self.palette["danger"],
-            font=(self.font_family, 10, "bold"),
+            font=(self.font_family, -14, "bold"),
             anchor="w",
         ).pack(fill="x")
         body = self._new_text_widget(
@@ -1529,6 +1529,15 @@ class AssistantPanel(ttk.Frame):
     def _move_transcript_to(self, fraction: float) -> str:
         self.transcript_canvas.yview_moveto(fraction)
         return "break"
+
+    def prefill_prompt(self, prompt: str) -> None:
+        """Open a shortcut as an editable draft; preserve any unfinished draft."""
+        if self._closed:
+            return
+        if prompt and not self.composer.get('1.0', 'end-1c').strip():
+            self.composer.insert('1.0', prompt)
+            self._sync_composer_state()
+        self.focus_composer()
 
     def focus_composer(self) -> None:
         if not self._closed:
