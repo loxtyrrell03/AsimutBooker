@@ -47,6 +47,11 @@
   rendering (`tools/check_calendar_closures_ui.py`). A live read-only refresh
   confirmed dated closure intervals for 31 rooms; no fully closed date was
   reported in the current booking window. Desktop reopening is required.
+- Published the private phone build as `calendar-closures`, preserving older
+  hashed assets. Restarted only the owned phone task after verifying no active
+  assistant, cancellation, unresolved request, pending mutation, or Booker
+  process. Private HTTPS deployment verification passed, and the running API
+  exposes `agenda.closed_dates`. Existing desktop sessions were preserved.
 
 ## 2026-09-08 Direct phone cancellation
 
