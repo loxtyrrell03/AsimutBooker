@@ -6,6 +6,8 @@ import json
 from app_settings import SETTINGS_FILE, load_settings, update_settings
 from assistant_tools import BookerToolSurface, AssistantToolError
 from room_preferences import load_room_preferences, apply_room_preferences_update
+from booking_strategy import load_booking_strategy, apply_booking_strategy_update
+from date_time_preferences import load_date_time_preferences, apply_date_time_preferences
 
 
 class PreferenceConflict(ValueError):
@@ -25,6 +27,8 @@ def preference_document(settings):
         'time_preferences': BookerToolSurface._apply_time_preferences(copy, {}),
         'disabled_dates': sorted(days),
         'room_preferences': load_room_preferences(copy).to_dict(),
+        'booking_strategy': load_booking_strategy(copy).to_dict(),
+        'date_time_preferences': load_date_time_preferences(copy),
     }
     revision = sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
     return {'revision': revision, **values}
@@ -39,7 +43,8 @@ def save_phone_preferences(payload, path=SETTINGS_FILE):
         raise ValueError('Supply the settings revision and changes')
     changes = payload['changes']
     if not isinstance(changes, dict) or not changes or set(changes) - {
-        'practice_plan', 'time_preferences', 'booking_days', 'room_preferences'
+        'practice_plan', 'time_preferences', 'booking_days', 'room_preferences',
+        'booking_strategy', 'date_time_preferences'
     }:
         raise ValueError('Unsupported preference changes')
 
@@ -49,6 +54,10 @@ def save_phone_preferences(payload, path=SETTINGS_FILE):
         for name, patch in changes.items():
             if name == 'room_preferences':
                 apply_room_preferences_update(settings, patch)
+            elif name == 'booking_strategy':
+                apply_booking_strategy_update(settings, patch)
+            elif name == 'date_time_preferences':
+                apply_date_time_preferences(settings, patch)
             else:
                 getattr(BookerToolSurface, '_apply_' + name)(settings, patch)
         return preference_document(settings)

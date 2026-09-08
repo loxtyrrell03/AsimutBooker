@@ -28,6 +28,34 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Shared calendar dates, times and complete practice preferences
+
+- Phone Calendar is a persistent fifth destination with month, fortnight, week,
+  three-day and plan modes, date navigation, day/bulk booking toggles, target
+  overrides, and per-day default/custom/any-time choices with strict mode.
+  Drafts survive navigation; atomic revision checks reject stale saves, and
+  uncertain delivery requires a read before another Save.
+- Desktop calendar cells and the plan headers open the same deterministic
+  date editor; Edit visible days supports scoped multi-selection. It saves only
+  edited fields, preserving distinct times/targets when toggling several dates.
+- `date_time_preferences.py` validates full exact-date windows independently of
+  the global preference. Normal booking, horizon discovery/ranking, fallback,
+  extension and capacity calculations resolve each date from the original
+  global default. Overrides enter the prepared-Save guard and plan fingerprint.
+  A changed day rule stops a prepared run before its next Save. Planning future
+  dates still cannot expand the live Asimut booking horizon.
+- Phone preferences now include all room requirements/session controls and the
+  complete booking strategy via shared validators. `help-tip.tsx` provides
+  bounded keyboard/touch/hover help in the existing theme.
+- Verification: all 838 Python tests passed, plus 19 phone Node tests, TypeScript,
+  mobile Chromium/WebKit day/bulk persistence and conflict checks at 320/390/844px,
+  all five calendar modes, and complete room/strategy controls. Isolated calendar
+  and help renders were visually inspected; no live preference/booking writes.
+- Remaining parity work: phone system jobs, scans, activity/history, maintenance,
+  final Settings organization and private deployment. These calendar changes are
+  not yet published to the phone. Preserve open desktop drafts; reopening will
+  be required for the new desktop controls.
+
 ## 2026-09-08 Phone capability parity design review
 
 - `docs/design/2026-09-08-phone-parity/README.md` maps the desktop controls to
@@ -37,7 +65,8 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   My Week/Calendar), Combined calendar (agenda inside Calendar), and Calendar
   home (Calendar/Assistant/Manage). Each has 30 example screens with setup,
   editing, loading, empty, error, progress, cancellation and confirmation states.
-  Navigation choice is pending; these artifacts do not implement phone parity.
+  Desktop companion was chosen: keep separate My Week and Calendar tabs.
+  The user also requested easy day selection and per-day times on both devices.
 - The static generator and isolated renderer check all 90 individual screens
   for text bounds/overlap and produce overview/narrow-help PNGs. Checks passed;
   overview and narrow-help renders were visually inspected. This is design

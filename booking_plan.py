@@ -84,6 +84,7 @@ _CANDIDATE_KEYS = {
 _FINGERPRINT_SETTINGS_KEYS = (
     "booking_strategy",
     "time_preferences",
+    "date_time_preferences",
     "practice_plan",
     "rebooking_blackouts",
     "disabled_dates",

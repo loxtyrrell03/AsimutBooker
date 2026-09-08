@@ -12,6 +12,8 @@ Usage:
     python book_week.py --headless   # Run without browser window (for scheduled tasks)
 """
 
+from date_time_preferences import with_date_overrides, resolve_time_preferences
+
 import re
 import sys
 import json
@@ -2043,19 +2045,19 @@ def load_time_preferences(settings=None):
         raise SettingsError("Custom preferred end time must be later than start time")
 
     if not enabled:
-        return default
+        return with_date_overrides(default, settings)
 
     if preset in TIME_PREFERENCE_PRESETS:
         start_hour, end_hour = TIME_PREFERENCE_PRESETS[preset]
     else:
         start_hour = start_h + start_m / 60.0
         end_hour = end_h + end_m / 60.0
-    return {
+    return with_date_overrides({
         "enabled": True,
         "start_hour": start_hour,
         "end_hour": end_hour,
         "strict_mode": strict_mode,
-    }
+    }, settings)
 
 
 def load_booking_strategy(settings=None):
@@ -2702,7 +2704,7 @@ def _soft_time_window(time_prefs):
 
 def uses_time_aware_planner(daily_planning, time_prefs):
     """Keep soft time selection active even when horizon foresight is disabled."""
-    return daily_planning.enabled or _soft_time_window(time_prefs) is not None
+    return daily_planning.enabled or _soft_time_window(time_prefs) is not None or bool(time_prefs and time_prefs.get("date_overrides"))
 
 
 def soft_time_allows_booking(start_hour, duration_minutes, time_prefs):
@@ -3862,6 +3864,7 @@ def try_extend_booking(
     Returns:
         Tuple of (success: bool, new_end_time: str or None, message: str)
     """
+    time_prefs = resolve_time_preferences(time_prefs, booking['date'])
     room = booking["room"]
     date_str = booking["date"]
     start_time = booking["startTime"]
@@ -5293,6 +5296,7 @@ def try_book_slot(
     time_prefs=None,
 ):
     """Attempt one slot and return its exact verified receipt, or False."""
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
     room = slot['room']
     start_hour = slot['start_hour']
     slot_duration = (slot['end_hour'] - start_hour) * 60
@@ -6081,6 +6085,7 @@ def build_day_booking_opportunities(
     only_room=None,
 ):
     """Build fresh, conflict-aware current and future opportunities for a day."""
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
 
     now = now or datetime.now()
     target_date = as_date(target_date)
@@ -6204,6 +6209,7 @@ def current_opportunities_after_hold(
     safely trimmed to real surplus instead of either consuming the held target
     or being discarded unnecessarily.
     """
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
 
     if decision.action != "wait" or decision.selected is None:
         return None
@@ -6264,6 +6270,7 @@ def _opportunity_to_horizon_candidate(opportunity, *, target_boundary):
 
 
 def horizon_candidate_rank(candidate, time_prefs):
+    time_prefs = resolve_time_preferences(time_prefs, candidate.get('target_date'))
     window = _soft_time_window(time_prefs)
     quality = (
         -soft_time_value(candidate["start_hour"] * 60,
@@ -6297,6 +6304,7 @@ def same_time_room_backups(
     extending into another planned session. All normal policy/budget checks are
     reapplied by the shared opportunity builder and again by the Save path.
     """
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
     start, end = failed_slot['start_hour'], failed_slot['end_hour']
     exact_gaps = []
     for row in available_data:
@@ -6331,6 +6339,7 @@ def attempt_booking_with_room_fallback(
     receipts, extension tracking, and displayed progress retain exact identity.
     Uncertain writes and unreadable journals always stop the whole run.
     """
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
     attempted = set()
     candidate = slot
     deadline = time.monotonic() + 180
@@ -6829,6 +6838,7 @@ def build_display_day_plan(
 
 def _legacy_opportunity_rank(opportunity, time_prefs):
     """Mirror the established non-foresight booking order for display."""
+    time_prefs = resolve_time_preferences(time_prefs, opportunity.target_date)
 
     return (
         -soft_time_value(
@@ -6879,6 +6889,7 @@ def build_legacy_display_day_plan(
     reserved_peak_minutes=0,
 ):
     """Build a display plan that exactly follows disabled-planner ordering."""
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
 
     target_date = as_date(target_date)
     existing_minutes = (
@@ -7240,6 +7251,7 @@ def build_horizon_display_days(
 
 def find_horizon_snipe_candidate(available_data, target_date, tracker, time_prefs):
     """Compatibility helper for one loaded date using boundary-driven edges."""
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
 
     now = datetime.now()
     boundary = _nearest_quarter_boundary(now)
@@ -7379,6 +7391,7 @@ def find_all_snipe_candidates_multi_day(
     for day_index, days_ahead in enumerate(day_offsets):
         day_plans = plans_by_day[days_ahead]
         target_date = day_plans[0]["target_date"]
+        time_prefs = resolve_time_preferences(time_prefs, target_date)
         date_key = target_date.isoformat()
         if is_date_disabled(target_date, disabled_dates):
             print(f"\n    Skipping Day {days_ahead} ({target_date}): disabled by user")
@@ -7736,6 +7749,7 @@ def try_horizon_snipe(
 
     Returns: True if successful, False otherwise.
     """
+    time_prefs = resolve_time_preferences(time_prefs, target_date)
     room = slot['room']
     start_hour = slot['start_hour']
     bookable_from = slot['bookable_from']
@@ -8928,6 +8942,8 @@ def calculate_extension_capacity_holds(
         ):
             continue
         target_date = date.fromisoformat(date_key)
+        time_prefs = resolve_time_preferences(time_prefs, target_date)
+        strict_time_prefs = resolve_time_preferences(strict_time_prefs, target_date)
         start_time = clock_minutes(booking["startTime"])
         current_end = clock_minutes(booking["endTime"])
         target_end = clock_minutes(booking["target_end"])
@@ -9275,6 +9291,7 @@ def generate_read_only_booking_plan(
     planned_weekly_minutes = 0
     day_plans = []
     for target_date in planning_dates:
+        time_prefs = resolve_time_preferences(time_prefs, target_date)
         days_ahead = (target_date - today).days
         if args.only_date and target_date.isoformat() != args.only_date:
             continue
@@ -10170,6 +10187,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 print("\nControlled action limit reached; no further booking changes will be attempted.")
                 break
             target_date = datetime.combine(today + timedelta(days=days_ahead), datetime.min.time())
+            time_prefs = resolve_time_preferences(time_prefs, target_date)
             day_name = target_date.strftime("%A")
 
             print(f"\n{'#'*60}")

@@ -74,6 +74,8 @@ from runtime_guard import SingleInstanceLock
 from assistant_runtime import AssistantRuntime
 from assistant_ui import AssistantEvent, AssistantPanel
 from quiet_focus_gui import QuietFocusGUI
+from calendar_preferences_ui import open_calendar_preferences
+from date_time_preferences import load_date_time_preferences
 
 # Constants
 APP_DIR = Path(__file__).resolve().parent
@@ -5185,6 +5187,8 @@ class AsimutBookerGUI(QuietFocusGUI):
             command=self._scan_calendar_events,
         ).pack(side=tk.LEFT, padx=5)
 
+        ttk.Button(selection_frame, text="Edit visible days…", command=self._edit_visible_calendar_days).pack(side=tk.LEFT, padx=5)
+
         # Scan status
         self.calendar_scan_var = tk.StringVar(value="Scanning events...")
         ttk.Label(
@@ -5413,6 +5417,15 @@ class AsimutBookerGUI(QuietFocusGUI):
             self.calendar_start_date = self.calendar_start_date.replace(day=1)
         self._refresh_calendar()
 
+    def _edit_visible_calendar_days(self):
+        view = self.calendar_view.get()
+        start = self.calendar_start_date
+        if view == 'month':
+            dates = [date(start.year, start.month, day) for day in range(1, cal.monthrange(start.year, start.month)[1] + 1)]
+        else:
+            dates = [start + timedelta(days=i) for i in range(14 if view == 'fortnight' else 3 if view == '3days' else 7)]
+        return open_calendar_preferences(self, dates, SETTINGS_FILE)
+
     def _select_visible_days(self, select: bool):
         """Select or deselect all visible days."""
         view = self.calendar_view.get()
@@ -5443,6 +5456,10 @@ class AsimutBookerGUI(QuietFocusGUI):
     def _refresh_calendar(self, *, reload_plan=True):
         """Refresh the calendar display."""
         from room_catalog import closed_practice_dates
+        try:
+            self.calendar_date_time_preferences = load_date_time_preferences(strict_load_settings(SETTINGS_FILE))
+        except (SettingsError, ValueError):
+            self.calendar_date_time_preferences = None
         self.load_room_catalog_cache()
         self.calendar_closed_dates = set(closed_practice_dates(self.room_catalog))
         if reload_plan:
@@ -5725,7 +5742,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 heading = "✓ " + heading
             if closed:
                 heading += " · Rooms closed"
-            tk.Label(
+            day_header = tk.Label(
                 self.calendar_frame,
                 text=heading,
                 bg=heading_bg,
@@ -5733,7 +5750,12 @@ class AsimutBookerGUI(QuietFocusGUI):
                 fg="#b91c1c" if closed else "#111111",
                 relief="solid",
                 borderwidth=1,
-            ).grid(row=0, column=index + 1, sticky="nsew", padx=1, pady=1)
+            )
+            day_header.grid(row=0, column=index + 1, sticky="nsew", padx=1, pady=1)
+            if current >= today:
+                day_header.configure(cursor='hand2', takefocus=True)
+                day_header.bind('<Button-1>', lambda event, day=current: open_calendar_preferences(self, [day], SETTINGS_FILE))
+                day_header.bind('<Return>', lambda event, day=current: open_calendar_preferences(self, [day], SETTINGS_FILE))
             canvas = tk.Canvas(
                 self.calendar_frame,
                 width=145,
@@ -5908,6 +5930,11 @@ class AsimutBookerGUI(QuietFocusGUI):
             anchor="w"
         )
         day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
+        if not is_past:
+            time_override = (getattr(self, 'calendar_date_time_preferences', None) or {}).get(date_str)
+            time_label = (f"{time_override['start_time']}–{time_override['end_time']}" if time_override['enabled'] else 'Any time') if time_override else 'Edit day…'
+            ttk.Button(cell, text=time_label, command=lambda d=current_date: open_calendar_preferences(self, [d], SETTINGS_FILE), style='QuietLink.TButton').pack(anchor='w', padx=3)
+
         if closed:
             tk.Label(cell, text="Practice rooms closed", fg="#b91c1c", bg=bg_color,
                      font=("Segoe UI", 9), anchor="w").pack(fill=tk.X, padx=5)
@@ -5924,7 +5951,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Calculate how many events can fit based on cell height
         # Header takes ~25px, each event line ~18px, "+more" line ~16px
-        header_space = 46 if not is_past and not is_in_live_window else 30
+        header_space = (46 if not is_past and not is_in_live_window else 30) + (36 if not is_past else 0)
         event_line_height = 18
         available_for_events = cell_height - header_space
         max_events_to_show = max(1, (available_for_events - 16) // event_line_height)

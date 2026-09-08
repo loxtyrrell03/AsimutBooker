@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from agenda_snapshot import AGENDA_SNAPSHOT_FILE, read_agenda_snapshot
 from app_settings import SETTINGS_FILE, SettingsError, load_settings
+from date_time_preferences import load_date_time_preferences
 from assistant_plans import load_assistant_plans
 from booking_blackouts import load_rebooking_blackouts
 from booking_plan import PLAN_FILE, booking_plan_fingerprint, read_booking_plan
@@ -216,6 +217,7 @@ def _settings_context(settings_path: Path) -> dict[str, Any]:
             "date_overrides": dict(practice.date_overrides or {}),
         },
         "time_preferences": _validate_time_preferences(settings),
+        "date_time_preferences": load_date_time_preferences(settings),
         "booking_strategy": booking_strategy_to_dict(strategy),
         "room_preferences": room_preferences_to_dict(rooms),
         "extendable_bookings": _safe_extendable_bookings(settings),
