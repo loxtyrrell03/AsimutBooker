@@ -1697,7 +1697,7 @@ When modifying this codebase:
 
 ## 2026-09-08 Soft Preferred-Time Distance
 
-- Soft preferences now apply the deterministic start-time weight
+- Soft preferences apply the deterministic interval weight
   `2 ** -(hours_outside_window ** 2)`. A session needs at least 15 weighted
   minutes to justify booking; the planner can leave the daily target unfilled.
   With a noon start, 11:00 retains half weight and a 30-minute fallback remains
@@ -1716,3 +1716,26 @@ When modifying this codebase:
   task and batch launcher were verified to load this canonical checkout; new
   scheduled or read-only refresh processes receive the fix without a server
   restart or phone build. This milestone did not create or cancel reservations.
+
+## 2026-09-08 Booking Selection Edge Audit
+
+- Soft-time scoring now considers the larger of an early start and a late end.
+  Enumeration retains useful shorter late sessions. Existing extension targets
+  and their capacity holds stop at the best useful end rather than extending
+  simply because the site permits it. Strict normal creates also recheck the
+  actual bounded interval before entering the form.
+- When penalized intervals compete, the day portfolio maximizes weighted useful
+  time with a 7.5-weighted-minute cost per session to discourage needless extra
+  visits. Filling the daily target cannot override that objective. Search retains
+  a feasible preference-ranked fallback and is bounded to 50,000 states/250,000
+  transitions; it does not claim global optimality on every large grid. With no
+  soft-time tradeoff, the existing exact coverage/session-count behavior remains.
+- `resize_opportunity` recalculates overlap evidence in both portfolio selection
+  and runtime conversion; weekend sessions never acquire weekday peak costs.
+  A day portfolio rejects mixed dates. Extension holds filter removed rooms,
+  disabled dates, and expired dates before asking for their live horizons.
+- Six failing audit scenarios were reproduced before repair. All 790 offline
+  tests passed afterward, including 35 exhaustive small-portfolio comparisons.
+  A 990-opportunity grid selected a valid three-hour plan in 0.183 seconds.
+  No reservations or preferences were changed by the audit; new runtime
+  processes load these backend changes from the canonical checkout.

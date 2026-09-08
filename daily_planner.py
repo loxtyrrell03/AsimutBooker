@@ -20,7 +20,8 @@ DEFAULT_PEAK_START_MINUTES = 9 * 60
 DEFAULT_PEAK_END_MINUTES = 16 * 60
 
 
-def soft_time_weight(start_minutes: float, window: tuple[int, int] | None) -> float:
+def soft_time_weight(start_minutes: float, window: tuple[int, int] | None,
+                     end_minutes: float | None = None) -> float:
     """Deterministic preference weight, not a probability redrawn each run.
 
     A start one hour outside the window has half weight; two hours has 1/16,
@@ -28,8 +29,28 @@ def soft_time_weight(start_minutes: float, window: tuple[int, int] | None) -> fl
     """
     if window is None:
         return 1.0
-    distance_hours = max(window[0] - start_minutes, start_minutes - window[1], 0) / 60
+    end = start_minutes if end_minutes is None else end_minutes
+    distance_hours = max(window[0] - start_minutes, end - window[1], 0) / 60
     return 2.0 ** -(distance_hours ** 2)
+
+
+def soft_time_value(start_minutes, duration_minutes, window) -> float:
+    return duration_minutes * soft_time_weight(
+        start_minutes, window, start_minutes + duration_minutes
+    )
+
+
+def soft_time_extension_end(start, current_end, target_end, window):
+    """Cap extension intent at its best useful end, without shortening a booking."""
+    if target_end <= current_end:
+        return None
+    if window is None:
+        return target_end
+    ends = range(int(current_end), int(target_end) + 1, QUARTER_MINUTES)
+    best = max(ends, key=lambda end: (soft_time_value(start, end - start, window), -end))
+    if best <= current_end or not soft_time_is_worth_booking(start, best - start, window):
+        return None
+    return best
 
 
 def soft_time_is_worth_booking(start_minutes, duration_minutes, window) -> bool:
@@ -38,7 +59,7 @@ def soft_time_is_worth_booking(start_minutes, duration_minutes, window) -> bool:
     This reservation cost prevents a terrible time winning just because it is
     the only free slot. Longer useful fallbacks can still justify more distance.
     """
-    return window is None or duration_minutes * soft_time_weight(start_minutes, window) >= 15
+    return window is None or soft_time_value(start_minutes, duration_minutes, window) >= 15
 
 
 def _require_quarter_minutes(value: int, label: str) -> int:
@@ -210,6 +231,29 @@ class OpportunityDecision:
             raise ValueError("a booking/wait decision requires an opportunity")
 
 
+def resize_opportunity(item: BookingOpportunity, end: int, planning) -> BookingOpportunity:
+    """Recalculate interval evidence after a legal portfolio truncation."""
+    if not item.start_minutes + item.initial_minutes <= end <= item.end_minutes:
+        raise ValueError("resized opportunity must remain inside its source interval")
+    weekday = item.target_date.weekday() < 5
+    preferred_start = _planning_clock_minutes(planning, "preferred_peak_start")
+    preferred_end = _planning_clock_minutes(planning, "preferred_peak_end")
+    return replace(
+        item, end_minutes=end, potential_minutes=end - item.start_minutes,
+        preferred_minutes=interval_overlap_minutes(
+            item.start_minutes, end, preferred_start, preferred_end
+        ) if weekday else 0,
+        soft_preferred_minutes=interval_overlap_minutes(
+            item.start_minutes, end, *item.soft_preferred_window
+        ) if item.soft_preferred_window is not None else min(
+            item.soft_preferred_minutes, end - item.start_minutes
+        ),
+        peak_minutes=interval_overlap_minutes(
+            item.start_minutes, end, item.peak_window_start_minutes, item.peak_window_end_minutes
+        ) if weekday else 0,
+    )
+
+
 def _peak_capped_end(
     start: int,
     requested_end: int,
@@ -320,7 +364,12 @@ def enumerate_gap_opportunities(
         if end - start < minimum:
             continue
 
-        if not soft_time_is_worth_booking(start, end - start, soft_preferred_window):
+        # A long late tail can be undesirable even when a shorter session fits.
+        while end - start >= minimum and not soft_time_is_worth_booking(
+            start, end - start, soft_preferred_window
+        ):
+            end -= QUARTER_MINUTES
+        if end - start < minimum:
             continue
 
         start_datetime = datetime.combine(
@@ -424,8 +473,8 @@ def opportunity_rank(opportunity: BookingOpportunity, planning, *, now: datetime
     quality = (*quality, wait_seconds)
     # Time suitability must not disappear behind room priority or peak groups.
     soft_quality = (
-        (-opportunity.potential_minutes * soft_time_weight(
-            opportunity.start_minutes, opportunity.soft_preferred_window),)
+        (-soft_time_value(opportunity.start_minutes, opportunity.potential_minutes,
+                          opportunity.soft_preferred_window),)
         if opportunity.soft_preferred_window is not None else ()
     )
     if getattr(planning, "priority_mode") == "room_first":
@@ -534,14 +583,15 @@ def select_day_plan(
     rank_key=None,
     required_opportunity: BookingOpportunity | None = None,
 ) -> tuple[BookingOpportunity, ...]:
-    """Select a target-maximizing, desirable whole-day session portfolio.
+    """Select a desirable whole-day portfolio within the daily target.
 
     Every legal quarter-hour truncation is considered.  The memoized search
     advances monotonically through the 96-slot day and retains only the target,
     peak allowance, and same-room cooldowns that can affect a continuation.
-    It therefore maximizes covered target minutes exactly, then minimizes the
-    session count.  Desirability is refined afterward on a deterministic
-    bounded frontier without weakening either hard optimum.  When
+    With no soft-time tradeoff, coverage and session count retain their exact
+    optima. With penalized intervals, weighted useful time takes precedence over
+    filling the target. That search is bounded and retains a feasible greedy
+    fallback; quotas, overlap and same-room gaps are always hard constraints. When
     ``required_opportunity`` is supplied, the result must include a variant
     derived from that exact source opportunity.  Its duration may still be
     trimmed so the complete portfolio can satisfy more of the daily target.
@@ -580,6 +630,8 @@ def select_day_plan(
     )
     if not ranked or remaining <= 0:
         return ()
+    if len({item.target_date for item in ranked}) != 1:
+        raise ValueError("a day plan cannot mix dates")
 
     def candidate_quality(item: BookingOpportunity) -> tuple:
         return (
@@ -630,22 +682,9 @@ def select_day_plan(
             ):
                 continue
             planned_end = item.start_minutes + duration
-            planned_peak = interval_overlap_minutes(
-                item.start_minutes,
-                planned_end,
-                item.peak_window_start_minutes,
-                item.peak_window_end_minutes,
-            )
-            if planned_peak > peak_remaining:
+            candidate = resize_opportunity(item, planned_end, planning)
+            if candidate.peak_minutes > peak_remaining:
                 continue
-            candidate = replace(
-                item,
-                end_minutes=planned_end,
-                potential_minutes=duration,
-                preferred_minutes=min(item.preferred_minutes, duration),
-                soft_preferred_minutes=min(item.soft_preferred_minutes, duration),
-                peak_minutes=planned_peak,
-            )
             identity = (
                 candidate.room,
                 candidate.target_date,
@@ -691,6 +730,15 @@ def select_day_plan(
 
     qualities = tuple(candidate_quality(item) for item in variants)
     durations = tuple(item.potential_minutes for item in variants)
+    values = tuple(round(soft_time_value(
+        item.start_minutes, item.potential_minutes, item.soft_preferred_window
+    ), 8) for item in variants)
+    soft_tradeoff = any(value < duration for value, duration in zip(values, durations))
+    if soft_tradeoff:
+        # A tiny score gain must not split a good session into extra room visits.
+        # This modest per-session cost still leaves every admitted 15-weighted-
+        # minute fallback with positive utility when it is the only option.
+        values = tuple(value - QUARTER_MINUTES / 2 for value in values)
     peak_minutes = tuple(item.peak_minutes for item in variants)
     chronological_keys = tuple(
         (item.start_minutes, item.end_minutes, item.room) for item in variants
@@ -699,7 +747,7 @@ def select_day_plan(
     @lru_cache(maxsize=None)
     def portfolio_key(plan: tuple[int, ...]) -> tuple:
         return (
-            -sum(durations[index] for index in plan),
+            -sum(values[index] for index in plan),
             len(plan),
             tuple(sorted(qualities[index] for index in plan)),
             tuple(sorted(chronological_keys[index] for index in plan)),
@@ -771,6 +819,95 @@ def select_day_plan(
                 starts[continuation_position],
             ),
         )
+
+    if soft_tradeoff:
+        # Never fall back to maximum raw hours when preference scoring is active.
+        # Seed a deterministic feasible plan so a busy grid can hit the search
+        # bound without turning a poor time into a compulsory target filler.
+        quality_order = sorted(range(len(variants)), key=lambda index: qualities[index])
+
+        def fits(index, chosen):
+            if durations[index] + sum(durations[i] for i in chosen) > remaining:
+                return False
+            if peak_minutes[index] + sum(peak_minutes[i] for i in chosen) > peak_remaining:
+                return False
+            item = variants[index]
+            for other_index in chosen:
+                other = variants[other_index]
+                gap = same_room_gap_minutes if item.room == other.room else 0
+                if not (item.end_minutes + gap <= other.start_minutes
+                        or other.end_minutes + gap <= item.start_minutes):
+                    return False
+            return True
+
+        def greedy(seed):
+            chosen = list(seed)
+            for index in quality_order:
+                if fits(index, chosen):
+                    chosen.append(index)
+            return tuple(chosen)
+
+        seeds = ((index,) for index in required_variant_indexes) if required_opportunity else ((),)
+        best_indexes = min((greedy(seed) for seed in seeds), key=portfolio_key)
+        frontier = set(best_indexes) | set(required_variant_indexes)
+        by_shape = {}
+        for index in quality_order:
+            item = variants[index]
+            shape = (item.start_minutes, item.end_minutes, item.peak_minutes)
+            by_shape.setdefault(shape, []).append(index)
+        for indexes in by_shape.values():
+            frontier.update(indexes[:4])
+        at_start = [[index for index in indexes if index in frontier]
+                    for indexes in variants_at_start]
+        states = 0
+        transitions = 0
+
+        class _SoftSearchLimit(Exception):
+            pass
+
+        @lru_cache(maxsize=None)
+        def useful_plan(position, capacity, peak_left, cooldowns, required_left):
+            nonlocal states, transitions
+            states += 1
+            if states > 50_000:
+                raise _SoftSearchLimit
+            if position >= len(starts) or capacity < minimum_duration:
+                return None if required_left else ()
+            best = None if required_left else ()
+            blocked = {room for room, _until in cooldowns}
+            for index in at_start[position]:
+                transitions += 1
+                if transitions > 250_000:
+                    raise _SoftSearchLimit
+                if (durations[index] > capacity or peak_minutes[index] > peak_left
+                        or variant_rooms[index] in blocked):
+                    continue
+                next_position, next_cooldowns = continuation_state(cooldowns, index)
+                rest = useful_plan(
+                    next_position, capacity - durations[index], peak_left - peak_minutes[index],
+                    next_cooldowns, required_left and index not in required_variant_indexes,
+                )
+                if rest is not None:
+                    candidate = (index, *rest)
+                    if best is None or portfolio_key(candidate) < portfolio_key(best):
+                        best = candidate
+            next_position = position + 1
+            if next_position < len(starts):
+                skipped = useful_plan(
+                    next_position, capacity, peak_left,
+                    active_cooldowns(cooldowns, starts[next_position]), required_left,
+                )
+                if skipped is not None and (best is None or portfolio_key(skipped) < portfolio_key(best)):
+                    best = skipped
+            return best
+
+        try:
+            refined = useful_plan(0, remaining, peak_remaining, (), required_opportunity is not None)
+        except _SoftSearchLimit:
+            refined = None
+        if refined is not None and portfolio_key(refined) < portfolio_key(best_indexes):
+            best_indexes = refined
+        return tuple(variants[index] for index in sorted(best_indexes, key=lambda i: qualities[i]))
 
     def first_feasible_plan(
         required_minutes: int,

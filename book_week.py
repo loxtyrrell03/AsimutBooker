@@ -58,8 +58,10 @@ from daily_planner import (
     interval_overlap_minutes,
     opportunity_rank,
     select_day_plan,
-    soft_time_weight,
+    soft_time_value,
+    soft_time_extension_end,
     soft_time_is_worth_booking,
+    resize_opportunity,
 )
 from booking_plan import (
     BookingPlanError,
@@ -3808,10 +3810,16 @@ def try_extend_booking(
     target_parts = target_end.split(':')
     target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
 
-    if not soft_time_allows_booking(
-        start_hour, min((target_end_hour - start_hour) * 60, MAX_BOOKING_HOURS * 60), time_prefs
-    ):
-        return False, None, "Extension time is too far from the preferred window"
+    if _soft_time_window(time_prefs) is not None:
+        preferred_target = soft_time_extension_end(
+            round(start_hour * 60), round(current_end_hour * 60),
+            round(min(target_end_hour, start_hour + MAX_BOOKING_HOURS) * 60),
+            _soft_time_window(time_prefs),
+        )
+        if preferred_target is None:
+            return False, None, "Further extension would not improve the preferred-time fit"
+        target_end_hour = preferred_target / 60
+        target_end = f"{preferred_target // 60:02d}:{preferred_target % 60:02d}"
 
     # A practice-plan target is authoritative.  If existing reservations have
     # already filled it (including after the user lowers a date override), this
@@ -5289,6 +5297,9 @@ def try_book_slot(
 
     end_hour = start_hour + booking_duration / 60
 
+    if time_prefs and not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
+        print("  Skipping: the final booking interval falls outside the strict time window")
+        return False
     if not soft_time_allows_booking(start_hour, booking_duration, time_prefs):
         print("  Skipping: this time is too far from the preferred window for this duration")
         return False
@@ -6185,8 +6196,8 @@ def _opportunity_to_horizon_candidate(opportunity, *, target_boundary):
 def horizon_candidate_rank(candidate, time_prefs):
     window = _soft_time_window(time_prefs)
     quality = (
-        -min(candidate["duration"], MAX_BOOKING_HOURS * 60)
-        * soft_time_weight(candidate["start_hour"] * 60, window)
+        -soft_time_value(candidate["start_hour"] * 60,
+                         min(candidate["duration"], MAX_BOOKING_HOURS * 60), window)
         if window is not None else 0
     )
     return (candidate["bookable_from"], quality, candidate["room_priority"], candidate["days_ahead"])
@@ -6400,25 +6411,11 @@ def _runtime_ordered_day_opportunities(
                 item.end_minutes,
             ),
         )
-        planned = replace(
-            source,
-            end_minutes=end_minutes,
-            potential_minutes=candidate.potential_minutes,
-            preferred_minutes=min(
-                source.preferred_minutes,
-                candidate.potential_minutes,
-            ),
-            soft_preferred_minutes=min(
-                source.soft_preferred_minutes,
-                candidate.potential_minutes,
-            ),
-            peak_minutes=interval_overlap_minutes(
-                start_minutes,
-                end_minutes,
-                source.peak_window_start_minutes,
-                source.peak_window_end_minutes,
-            ),
-        )
+        planned = resize_opportunity(source, end_minutes, daily_planning)
+        if not soft_time_is_worth_booking(
+            planned.start_minutes, planned.potential_minutes, planned.soft_preferred_window
+        ):
+            return []
         identity = (planned.room, planned.target_date, planned.start_minutes)
         if identity in used_starts:
             return []
@@ -6758,8 +6755,8 @@ def _legacy_opportunity_rank(opportunity, time_prefs):
     """Mirror the established non-foresight booking order for display."""
 
     return (
-        -opportunity.potential_minutes * soft_time_weight(
-            opportunity.start_minutes, _soft_time_window(time_prefs)
+        -soft_time_value(
+            opportunity.start_minutes, opportunity.potential_minutes, _soft_time_window(time_prefs)
         ) if _soft_time_window(time_prefs) is not None else 0,
         0 if is_preferred_time(opportunity.start_hour, time_prefs) else 1,
         opportunity.potential_minutes < max(MINIMUM_BLOCK_MINUTES, 60),
@@ -7462,8 +7459,9 @@ def find_all_snipe_candidates_multi_day(
                 )
                 if candidate_limit == 1 and (
                     _soft_time_window(time_prefs) is None
-                    or decision.selected.potential_minutes * soft_time_weight(
-                        decision.selected.start_minutes, _soft_time_window(time_prefs)
+                    or soft_time_value(
+                        decision.selected.start_minutes, decision.selected.potential_minutes,
+                        _soft_time_window(time_prefs)
                     ) >= MAX_BOOKING_HOURS * 60
                 ):
                     selected_priority = decision.selected.room_priority
@@ -8832,7 +8830,10 @@ def calculate_extension_capacity_holds(
         "end_hour": 24.0,
     }
     ordered = sorted(
-        extendable_bookings,
+        (booking for booking in extendable_bookings
+         if booking["room"] in PRIORITY_ROOMS
+         and booking["date"] in live_dates
+         and not is_date_disabled(date.fromisoformat(booking["date"]), disabled_dates)),
         key=lambda booking: extension_processing_sort_key(booking, now=now),
     )
     for booking in ordered:
@@ -8849,10 +8850,14 @@ def calculate_extension_capacity_holds(
         target_end = clock_minutes(booking["target_end"])
         start_hour = start_time / 60
         current_end_hour = current_end / 60
-        if not soft_time_allows_booking(
-            start_hour, min(target_end - start_time, MAX_BOOKING_HOURS * 60), time_prefs
-        ):
-            continue
+        if _soft_time_window(time_prefs) is not None:
+            preferred_target = soft_time_extension_end(
+                start_time, current_end, min(target_end, start_time + int(MAX_BOOKING_HOURS * 60)),
+                _soft_time_window(time_prefs),
+            )
+            if preferred_target is None:
+                continue
+            target_end = preferred_target
         if not interval_is_strictly_preferred(
             start_hour,
             current_end_hour,
