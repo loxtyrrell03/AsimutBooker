@@ -82,11 +82,11 @@ class GuiAssistantLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             [label for _tab, label in notebook.tabs],
-            ["Today", "My Week", "Assistant", "Settings", "Advanced preferences", "System details", "Activity"],
+            ["Today", "My Week", "Calendar", "Assistant", "Settings", "Advanced preferences", "System details", "Activity"],
         )
         self.assertIs(notebook.selected, notebook.tabs[0][0])
         self.assertEqual(notebook.explicit_select_calls, [])
-        self.assertIs(captured["master"], notebook.tabs[2][0])
+        self.assertIs(captured["master"], notebook.tabs[3][0])
         self.assertEqual(captured["kwargs"]["on_send"], instance._send_assistant_message)
         self.assertEqual(captured["kwargs"]["on_stop"], instance._stop_assistant)
         self.assertEqual(captured["kwargs"]["on_new_chat"], instance._new_assistant_chat)

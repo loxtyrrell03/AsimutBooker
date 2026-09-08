@@ -28,7 +28,7 @@ class QuietFocusGUI:
         label(brand, 'Asimut', size=21, bold=True).pack(anchor='w')
         label(brand, 'BOOKER', size=10, color='#667080').pack(anchor='w')
         self.quiet_nav = {}
-        for key, text in (('today', 'Today'), ('week', 'My Week'), ('assistant', 'Assistant')):
+        for key, text in (('today', 'Today'), ('week', 'My Week'), ('calendar', 'Calendar'), ('assistant', 'Assistant')):
             button = ttk.Button(self.sidebar, text=text, style='QuietNav.TButton', command=lambda k=key:self._select_quiet_page(k))
             button.pack(fill=tk.X, padx=14, pady=4)
             self.quiet_nav[key] = button
@@ -51,7 +51,10 @@ class QuietFocusGUI:
         return content
 
     def _select_quiet_page(self, page):
-        targets = {'today': self.today_tab, 'week': self.week_tab, 'assistant': self.assistant_tab, 'settings': self.preferences_page}
+        targets = {'today': self.today_tab, 'week': self.week_tab, 'calendar': self.calendar_tab, 'assistant': self.assistant_tab, 'settings': self.preferences_page}
+        if page == 'calendar':
+            self.show_calendar_dialog()
+            return
         self.main_notebook.select(targets[page])
         self._sync_quiet_navigation()
         if page in ('today', 'week'):
@@ -59,7 +62,7 @@ class QuietFocusGUI:
 
     def _sync_quiet_navigation(self, _event=None):
         selected = self.main_notebook.select()
-        for key, target in (('today', self.today_tab), ('week', self.week_tab), ('assistant', self.assistant_tab), ('settings', self.preferences_page)):
+        for key, target in (('today', self.today_tab), ('week', self.week_tab), ('calendar', self.calendar_tab), ('assistant', self.assistant_tab), ('settings', self.preferences_page)):
             active = selected == str(target) or key == 'settings' and selected in (str(self.system_tab), str(self.activity_tab), str(self.advanced_preferences_page))
             self.quiet_nav[key].state(['selected'] if active else ['!selected'])
 
@@ -76,7 +79,6 @@ class QuietFocusGUI:
         label(body, 'Make practice fit your day.', size=15, color='#667080').pack(anchor=tk.W, pady=(10, 28))
         for title, detail, action in (
             ('Practice goal', 'Choose how much time you want to practise.', lambda:self._quiet_ask('Help me change my daily practice goal.')),
-            ('Practice days', 'Plan your week or take a day off.', lambda:self.show_calendar_dialog(initial_view='week')),
             ('Preferred times', 'Choose the times of day that suit you.', lambda:self._quiet_ask('Help me change my preferred practice times.')),
             ('Favourite rooms', 'Choose the rooms and instruments you prefer.', self.show_room_preferences_dialog),
             ('Automatic booking', 'View your automatic schedule and manage it.', self.view_scheduled_tasks),

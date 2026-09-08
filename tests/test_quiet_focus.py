@@ -43,6 +43,22 @@ class QuietFocusTests(unittest.TestCase):
                 self.assertEqual(app.main_notebook.select(), str(app.today_tab))
                 with patch.object(app, '_refresh_quiet_views'), \
                      patch.object(app, '_send_assistant_message') as send:
+                    with patch.object(app, '_scan_calendar_events'):
+                        app._select_quiet_page('calendar')
+                    self.assertEqual(app.main_notebook.select(), str(app.calendar_tab))
+                    self.assertIs(app.calendar_dialog, app.calendar_tab)
+                    self.assertIsNone(root.grab_current())
+                    day = next(iter(app.day_vars))
+                    original = app.day_vars[day].get()
+                    app.day_vars[day].set(not original)
+                    app._select_quiet_page('today')
+                    app._select_quiet_page('calendar')
+                    self.assertEqual(app.day_vars[day].get(), not original)
+                    with patch.object(app, 'save_booking_days', return_value=True) as save:
+                        app._save_calendar_and_close(app.calendar_tab, app.calendar_day_snapshot)
+                    save.assert_called_once_with({day: not original})
+                    self.assertTrue(app.calendar_tab.winfo_exists())
+                    self.assertEqual(app.calendar_day_snapshot[day], not original)
                     for name in ('week', 'settings', 'today'):
                         app._select_quiet_page(name)
                     app._quiet_ask('Find a room tomorrow')

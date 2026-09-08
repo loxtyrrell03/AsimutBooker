@@ -1444,9 +1444,9 @@ python -m unittest discover -s tests
 
 - `AsimutBookerGUI` uses the presentation adapter in `quiet_focus_gui.py` and
   widgets in `quiet_focus.py`. Today is the default; sidebar navigation exposes
-  Today, My Week, Assistant, and Settings. Detailed preferences, system controls,
-  and activity remain reachable from Settings; the existing calendar editor stays
-  available through Plan my practice.
+  Today, My Week, Calendar, Assistant, and Settings. Detailed preferences, system
+  controls, and activity remain reachable from Settings. Calendar embeds the
+  booking-day editor directly; Plan my practice opens the same page.
 - Today/My Week read validated display snapshots. Local minute refreshes reload
   those snapshots; Refresh bookings invokes only the existing bounded agenda-only
   path. Booked sessions, college events, stale evidence, and planned extensions
@@ -1501,3 +1501,18 @@ When modifying this codebase:
 - Keep the "Key Functions" sections current with new/changed functions
 - Document any new booking rules or constraints
 - Update the Files Overview table if adding new files
+
+## 2026-09-08 Dedicated Desktop Calendar
+
+- Calendar has its own sidebar destination with month, fortnight, week, three-day,
+  and plan views, booking-day selection, reservations/events, and event refresh.
+  Settings no longer contains the Practice days shortcut.
+- The editor is a persistent notebook page, created on first use. Navigation
+  preserves unsaved selections; Save changes resets the comparison baseline and
+  keeps the page open, while Discard changes reloads saved preferences. Existing
+  calendar shortcuts select this same page without opening a modal.
+- The full offline suite passed 734 tests with one obsolete tab-order assertion;
+  after updating that assertion, all ten affected integration/Quiet Focus tests
+  passed. Focused GUI checks cover navigation, absence of a modal grab, retaining
+  edits across tabs, and saving without destroying the page. These checks do not
+  constitute physical desktop interaction or phone deployment.

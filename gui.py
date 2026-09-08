@@ -1787,12 +1787,14 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.activity_tab = activity_tab
         self.today_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.week_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
+        self.calendar_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.assistant_tab = assistant_tab
         self.advanced_preferences_page = preferences_page
         self.preferences_page = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.system_tab = overview_tab
         self.main_notebook.add(self.today_tab, text="Today")
         self.main_notebook.add(self.week_tab, text="My Week")
+        self.main_notebook.add(self.calendar_tab, text="Calendar")
         self.main_notebook.add(assistant_tab, text="Assistant")
         self.main_notebook.add(self.preferences_page, text="Settings")
         self.main_notebook.add(preferences_page, text="Advanced preferences")
@@ -5394,12 +5396,14 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self.log("Booking history cleared.", "info")
 
     def show_calendar_dialog(self, initial_view="month"):
-        """Show calendar dialog for selecting booking days."""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Booking Calendar")
-        dialog.geometry("1100x750")
-        dialog.transient(self.root)
-        dialog.grab_set()
+        """Open the persistent calendar page for booking days and agenda events."""
+        self.main_notebook.select(self.calendar_tab)
+        self._sync_quiet_navigation()
+        if getattr(self, "calendar_dialog", None) is not None:
+            self.calendar_view.set(initial_view)
+            self._refresh_calendar()
+            return
+        dialog = self.calendar_tab
         day_snapshot = {date_key: var.get() for date_key, var in self.day_vars.items()}
         self.calendar_day_snapshot = day_snapshot
 
@@ -5480,25 +5484,34 @@ class AsimutBookerGUI(QuietFocusGUI):
             font=("Segoe UI", 14, "bold")
         ).pack(side=tk.LEFT, padx=30)
 
+        # Keep selection controls on their own row at desktop widths.
+        selection_frame = ttk.Frame(dialog, padding=(10, 0, 10, 6))
+        selection_frame.pack(fill=tk.X)
         # Selection buttons
         ttk.Button(
-            nav_frame,
+            selection_frame,
             text="Select All Visible",
             command=lambda: self._select_visible_days(True),
             width=16
         ).pack(side=tk.RIGHT, padx=5)
 
         ttk.Button(
-            nav_frame,
+            selection_frame,
             text="Deselect All Visible",
             command=lambda: self._select_visible_days(False),
             width=18
         ).pack(side=tk.RIGHT, padx=5)
 
+        ttk.Button(
+            selection_frame,
+            text="Refresh events",
+            command=self._scan_calendar_events,
+        ).pack(side=tk.LEFT, padx=5)
+
         # Scan status
         self.calendar_scan_var = tk.StringVar(value="Scanning events...")
         ttk.Label(
-            nav_frame,
+            selection_frame,
             textvariable=self.calendar_scan_var,
             foreground="blue"
         ).pack(side=tk.RIGHT, padx=20)
@@ -5522,7 +5535,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         legend_selected.pack_propagate(False)
         ttk.Label(
             legend_frame,
-            text="= Selected; booking waits for the live window",
+            text="= Book this day",
             font=("Segoe UI", 10),
         ).pack(side=tk.LEFT, padx=(0, 20))
 
@@ -5557,7 +5570,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         plan_legend.pack(side=tk.LEFT, padx=(0, 5))
         ttk.Label(
             legend_frame,
-            text="= Potential plan — not booked",
+            text="= Potential plan",
             font=("Segoe UI", 10, "bold"),
         ).pack(side=tk.LEFT)
 
@@ -5602,7 +5615,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         # Enable mousewheel scrolling
         def _on_mousewheel(event):
             self.calendar_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        self.calendar_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.calendar_canvas.bind("<MouseWheel>", _on_mousewheel)
 
         def cancel_and_close():
             # Calendar navigation can create planning variables for dates well
@@ -5611,30 +5624,27 @@ class AsimutBookerGUI(QuietFocusGUI):
             self.load_booking_days()
             self._update_days_summary()
             self._update_practice_plan_summary()
-            self._calendar_scan_generation += 1
-            self.calendar_canvas.unbind_all("<MouseWheel>")
-            self.calendar_dialog = None
-            dialog.destroy()
+            day_snapshot.clear()
+            day_snapshot.update({key: var.get() for key, var in self.day_vars.items()})
+            self._refresh_calendar()
 
         # Bottom buttons
         bottom_frame = ttk.Frame(dialog, padding="10")
-        bottom_frame.pack(fill=tk.X)
+        bottom_frame.pack(fill=tk.X, before=calendar_container)
 
         ttk.Button(
             bottom_frame,
-            text="Save & Close",
+            text="Save changes",
             command=lambda: self._save_calendar_and_close(dialog, day_snapshot),
             width=15
         ).pack(side=tk.RIGHT, padx=5)
 
         ttk.Button(
             bottom_frame,
-            text="Cancel",
+            text="Discard changes",
             command=cancel_and_close,
-            width=10
+            width=16
         ).pack(side=tk.RIGHT, padx=5)
-
-        dialog.protocol("WM_DELETE_WINDOW", cancel_and_close)
 
         # Load cached events first (instant display)
         self._load_cached_events()
@@ -6410,7 +6420,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.log(f"Calendar scan error: {error_msg}", "error")
 
     def _save_calendar_and_close(self, dialog, day_snapshot):
-        """Save calendar selections and close."""
+        """Save selections while keeping the calendar page open."""
         changed_states = {
             date_key: var.get()
             for date_key, var in self.day_vars.items()
@@ -6418,10 +6428,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         }
         if not self.save_booking_days(changed_states):
             return
-        self._calendar_scan_generation += 1
-        self.calendar_canvas.unbind_all("<MouseWheel>")
-        self.calendar_dialog = None
-        dialog.destroy()
+        day_snapshot.clear()
+        day_snapshot.update({key: var.get() for key, var in self.day_vars.items()})
+        self._refresh_calendar()
+        self.calendar_scan_var.set("Changes saved")
         self.log("Calendar settings saved", "info")
 
     def show_events_dialog(self):
