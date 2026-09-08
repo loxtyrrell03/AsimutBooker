@@ -13,6 +13,20 @@
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-08 Compact desktop assistant progress
+
+- The Tk assistant shows one progress card per request with up to three curated
+  lines driven by actual agenda refresh, tool use, and answer streaming events.
+  Repeated tools update the same stage; reasoning, commentary, and routine
+  protocol activity no longer create transcript cards. Failed/blocked actions
+  and clarification requests remain visible outside the progress limit.
+- An indeterminate thinking indicator runs while busy and stops on completion,
+  error, clear, or panel disposal. This is presentation-only; execution,
+  model settings, persisted answers, and phone behavior are unchanged.
+- Verified 65 assistant UI, desktop integration, runtime, and protocol tests
+  using the repository virtual environment, including withdrawn Tk regressions.
+  Reopen the desktop app to load this change; existing sessions were preserved.
+
 ## 2026-09-08 Direct phone cancellation
 
 - My Week and booking details offer a deterministic Cancel booking action.

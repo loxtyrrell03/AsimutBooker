@@ -1,6 +1,7 @@
 """Headless helper coverage for the standalone assistant chat surface."""
 
 import threading
+import tkinter as tk
 import unittest
 
 from assistant_ui import (
@@ -246,6 +247,61 @@ class AssistantPanelDispatchTests(unittest.TestCase):
 
         self.assertEqual(answer.event_id, "assistant:turn-1")
         self.assertEqual(activity.event_id, "activity:turn-1")
+
+
+class CompactProgressTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.panel = AssistantPanel(self.root)
+        self.panel.apply_event(AssistantEvent("user_message", "My bookings?"))
+        self.panel.apply_event(AssistantEvent("turn_started"))
+
+    def tearDown(self):
+        self.panel.close()
+        self.root.destroy()
+
+    def test_noisy_turn_has_one_card_and_three_short_updates(self):
+        panel = self.panel
+        panel.apply_event(AssistantEvent("activity", title="Refreshing live agenda"))
+        for index in range(30):
+            for kind in ("reasoning_start", "reasoning_delta", "commentary_delta"):
+                panel.apply_event(AssistantEvent(kind, "internal detail", event_id=str(index)))
+            panel.apply_event(AssistantEvent("activity", "technical detail", title="Chat status changed"))
+            panel.apply_event(AssistantEvent("tool", "raw output", title="Get booker context"))
+        panel.apply_event(AssistantEvent("activity", title="Live agenda refreshed"))
+        panel.apply_event(AssistantEvent("assistant_delta", "Your bookings"))
+        progress = [card for card in panel._cards.values() if card.kind == "activity"]
+        self.assertEqual(len(progress), 1)
+        self.assertEqual(progress[0].text.splitlines(), [
+            "Live agenda checked", "Working on your request", "Preparing your answer",
+        ])
+        self.assertFalse(any(card.kind in {"reasoning", "tool"} for card in panel._cards.values()))
+        self.assertEqual(panel.thinking_animation.winfo_manager(), "grid")
+        panel.apply_event(AssistantEvent("done"))
+        self.assertEqual(panel.thinking_animation.winfo_manager(), "")
+        self.assertFalse(progress[0].active)
+
+    def test_failure_and_clarification_survive_filter(self):
+        for status in ("failed", "attention"):
+            self.panel.apply_event(AssistantEvent("activity", "Needs your attention", status=status))
+        self.assertEqual(sum(card.kind == "error" for card in self.panel._cards.values()), 2)
+        self.panel.apply_event(AssistantEvent("error", "Connection lost"))
+        self.assertFalse(self.panel.busy)
+        self.assertEqual(self.panel.thinking_animation.winfo_manager(), "")
+
+    def test_new_request_and_clear_reset_progress(self):
+        panel = self.panel
+        panel.apply_event(AssistantEvent("tool"))
+        previous = panel._compact_progress_id
+        panel.apply_event(AssistantEvent("done"))
+        panel.apply_event(AssistantEvent("user_message", "Another request"))
+        panel.apply_event(AssistantEvent("turn_started"))
+        panel.apply_event(AssistantEvent("tool"))
+        self.assertNotEqual(previous, panel._compact_progress_id)
+        panel.apply_event(AssistantEvent("clear"))
+        self.assertEqual(panel._progress_steps, {})
+        self.assertFalse(panel.busy)
 
 
 class AssistantLayoutHelperTests(unittest.TestCase):

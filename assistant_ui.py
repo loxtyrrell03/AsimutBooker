@@ -5,8 +5,8 @@ mutations.  A controller supplies three callbacks and posts small, neutral
 events.  Worker threads may call :meth:`AssistantPanel.post_event`; every Tk
 mutation is performed later by the panel's UI-thread event pump.
 
-``reasoning_*`` events are for concise, user-facing summaries such as
-"Checking tomorrow's agenda".  They must never contain hidden chain-of-thought.
+Internal reasoning/commentary events are accepted for protocol compatibility but
+not displayed. Real agenda, tool, and answer events drive three curated updates.
 """
 
 from __future__ import annotations
@@ -410,6 +410,8 @@ class AssistantPanel(ttk.Frame):
         self._active_reasoning_id = ""
         self._welcome_frame: tk.Frame | None = None
         self._busy = False
+        self._compact_progress_id = ""
+        self._progress_steps: dict[str, str] = {}
         self._content_width = 760
 
         self._configure_styles(master)
@@ -668,6 +670,11 @@ class AssistantPanel(ttk.Frame):
             foreground=self.palette["tertiary_text"],
             font=(self.font_family, -13),
         ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.thinking_animation = ttk.Progressbar(
+            self.composer_column, mode="indeterminate", length=90,
+        )
+        self.thinking_animation.grid(row=1, column=0, sticky="e", pady=(6, 0))
+        self.thinking_animation.grid_remove()
         self._sync_composer_width(self._content_width)
         self._sync_composer_state()
 
@@ -755,6 +762,8 @@ class AssistantPanel(ttk.Frame):
             self._clear_transcript(show_welcome=True)
             self.set_busy(False)
         elif kind == "user_message":
+            self._compact_progress_id = ""
+            self._progress_steps.clear()
             self._hide_welcome()
             self._upsert_message(event, role="user")
         elif kind == "assistant_start":
@@ -762,6 +771,8 @@ class AssistantPanel(ttk.Frame):
             self._active_assistant_id = event.event_id
             self._upsert_message(event, role="assistant")
         elif kind in {"assistant_delta", "assistant_message"}:
+            if self._busy and event.text:
+                self._show_compact_progress("answer", "Preparing your answer")
             self._hide_welcome()
             self._active_assistant_id = event.event_id
             self._upsert_message(event, role="assistant")
@@ -771,12 +782,18 @@ class AssistantPanel(ttk.Frame):
             "reasoning_summary",
             "commentary_delta",
         }:
-            self._hide_welcome()
-            self._active_reasoning_id = event.event_id
-            self._upsert_progress(event, reasoning=True)
+            pass  # Internal summaries and commentary do not belong in the transcript.
         elif kind in {"activity", "tool"}:
-            self._hide_welcome()
-            self._upsert_progress(event, reasoning=False)
+            if event.status.casefold() in {"error", "failed", "blocked", "attention"}:
+                self._create_alert(event)
+            elif self._busy:
+                if event.title in {"Refreshing live agenda", "Live agenda refreshed"}:
+                    self._show_compact_progress(
+                        "agenda", "Checking your live agenda" if event.title == "Refreshing live agenda"
+                        else "Live agenda checked",
+                    )
+                elif kind == "tool":
+                    self._show_compact_progress("work", "Working on your request")
         elif kind == "error":
             self._hide_welcome()
             self._create_alert(event)
@@ -890,6 +907,8 @@ class AssistantPanel(ttk.Frame):
         for child in self.transcript_inner.winfo_children():
             child.destroy()
         self._cards.clear()
+        self._compact_progress_id = ""
+        self._progress_steps.clear()
         self._row_counter = 0
         self._active_assistant_id = ""
         self._active_reasoning_id = ""
@@ -1060,6 +1079,24 @@ class AssistantPanel(ttk.Frame):
             self._toggle_progress(card, desired=event.expanded)
         elif event.kind == "reasoning_summary" and event.expanded is None:
             self._toggle_progress(card, desired=False)
+
+    def _show_compact_progress(self, step: str, text: str) -> None:
+        """One bounded, curated progress card per request, driven by real events."""
+        if self._progress_steps.get(step) == text:
+            return
+        self._progress_steps[step] = text
+        if not self._compact_progress_id:
+            self._compact_progress_id = self._next_event_id("progress")
+        self._hide_welcome()
+        event = AssistantEvent(
+            "activity", title="Progress", status="Working…",
+            text="\n".join(self._progress_steps.values()),
+            event_id=self._compact_progress_id, expanded=True,
+        )
+        self._upsert_progress(event, reasoning=False)
+        card = self._cards[self._compact_progress_id]
+        if card.toggle_button is not None:
+            card.toggle_button.grid_remove()
 
     def _create_progress_card(
         self,
@@ -1305,11 +1342,16 @@ class AssistantPanel(ttk.Frame):
             return
         self._busy = bool(busy)
         if self._busy:
+            self.thinking_animation.start(35)
+            self.thinking_animation.grid()
             self.send_button.grid_remove()
             self.stop_button.grid()
             self.stop_button.configure(state="normal")
-            self.composer_status_var.set(status_text or "Working…")
+            self.composer_status_var.set("Thinking…")
         else:
+            self.thinking_animation.stop()
+            self.thinking_animation.grid_remove()
+            self._finish_streaming_cards()
             self.stop_button.grid_remove()
             self.send_button.grid()
             self.send_button.configure(state="normal")
@@ -1549,6 +1591,7 @@ class AssistantPanel(ttk.Frame):
         if self._closed:
             return
         self._closed = True
+        self.thinking_animation.stop()
         self._event_buffer.clear()
         if self._event_after_id is not None:
             try:
