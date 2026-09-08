@@ -89,7 +89,7 @@ class DailyPlannerTests(unittest.TestCase):
         decision = choose_horizon_opportunity(current, future, planning, now=boundary)
 
         self.assertEqual(decision.action, "book_now")
-        self.assertIn("1 better later room option", decision.reason)
+        self.assertIn("Ready to book: the current room is the safer choice than waiting.", decision.reason)
 
     def test_short_later_gap_does_not_beat_full_early_session(self):
         boundary = datetime(2026, 8, 30, 9, 30)

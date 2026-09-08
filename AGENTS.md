@@ -1601,3 +1601,26 @@ When modifying this codebase:
   the Booker lock and blocks Save requests. This is form-opening evidence, not a
   claim that any reservation was saved. Scheduled processes load the new source
   on their next run; no phone UI build is required for this backend change.
+
+## 2026-09-08 Same-Time Room Fallback and Clear Readiness
+
+- Normal and horizon creates share `attempt_booking_with_room_fallback`.
+  Following a confirmed failure it reopens the canonical overview, proves the
+  requested date and complete grid, and ranks untried eligible rooms covering
+  exactly the same interval. Each room is attempted once per chain, with a
+  three-minute elapsed limit and the existing horizon boundary limit.
+- Replacements retain room exclusions, explicit room scope, strict times,
+  minimum duration, conflicts, same-room gaps, fragmentation, quotas, and held
+  extension capacity. Any pending/unreadable journal or verification uncertainty
+  stops fallback. A successful replacement retains its own exact receipt and
+  extension identity; normal booking then replans the remaining day.
+- `enter_new_booking_form` shares bounded menu handling across both create
+  paths. It can retry the visible category item while still on the overview,
+  handling an ignored initial click without repeating the grid click or Save.
+- Readiness now says "Ready to book: no better room is worth waiting for."
+  The internal threshold count is no longer shown as a booking requirement.
+  Fallback logs explain the failed room, fresh scan, and next room/time.
+- The full offline suite passed all 758 tests, including fresh backup races,
+  exhaustion, scopes/budgets, uncertain Save refusal, delayed menus, and actual
+  DOM clicks across layout variants. Read-only phone plan refreshes run a new
+  backend process and receive the new wording without a phone server restart.

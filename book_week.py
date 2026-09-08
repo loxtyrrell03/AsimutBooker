@@ -945,6 +945,31 @@ def wait_for_student_booking_option(page, *, timeout_ms=5000):
     return None
 
 
+def enter_new_booking_form(page, *, timeout_ms=15000):
+    """Handle a delayed booking menu without repeating a grid click or Save.
+
+    Asimut can show the category item before it accepts its first click. Retry
+    that same visible item only while still on the overview; once navigation
+    starts, wait exclusively for the exact unsaved form's usable controls.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    for _ in range(3):
+        remaining = max(0, int((deadline-time.monotonic())*1000))
+        if not remaining:
+            return False
+        if is_new_booking_form_url(page.url):
+            return wait_for_new_booking_form(page, timeout_ms=remaining)
+        if not _is_exact_practice_room_overview_url(page.url):
+            return False
+        option = wait_for_student_booking_option(page, timeout_ms=min(5000, remaining))
+        if option is not None and option.is_enabled():
+            option.click(timeout=min(3000, remaining))
+        remaining = max(0, int((deadline-time.monotonic())*1000))
+        if wait_for_new_booking_form(page, timeout_ms=min(3000, remaining)):
+            return True
+    return False
+
+
 def wait_for_new_booking_form(page, *, timeout_ms=10000):
     """Wait for an exact eventId=0 form whose time controls are usable."""
 
@@ -5308,138 +5333,9 @@ def try_book_slot(
         return False
 
     # Only click the proven free point; arbitrary offsets may hit adjacent events.
-    click_positions = [
-        (coords['x'], coords['y'], "center"),
-    ]
-
-    popup_found = False
-    current_url = page.url
-
-    for click_x, click_y, pos_desc in click_positions:
-        print(f"  Clicking at ({click_x:.0f}, {click_y:.0f}) for {room_name} ({pos_desc})...")
-        page.mouse.click(click_x, click_y)
-
-        # Wait for popup or navigation with retry
-        for wait_attempt in range(5):
-            page.wait_for_timeout(1000)  # Wait 1s between checks
-
-            # Check if clicking directly navigated to booking form (URL contains /event?eventId=0)
-            current_url = page.url
-            if '/event?eventId=0' in current_url:
-                print(f"  [DEBUG] Click navigated directly to booking form")
-                popup_found = True
-                break
-
-            # Check if popup with booking option appeared
-            student_btn = page.locator("mat-list-item:has-text('Student booking provisional')").first
-            if student_btn.count() > 0 and student_btn.is_visible():
-                popup_found = True
-                break
-
-            # Check for overlay WITH "Student booking provisional" text
-            overlays = page.locator(".cdk-overlay-pane, .mat-menu-panel, mat-bottom-sheet-container").all()
-            for overlay in overlays:
-                if overlay.is_visible():
-                    text = overlay.text_content() or ""
-                    if 'Student booking provisional' in text:
-                        popup_found = True
-                        break
-            if popup_found:
-                break
-
-        if popup_found:
-            break
-
-        # If we got a tooltip but not the booking menu, dismiss it and try another position
-        overlays = page.locator(".cdk-overlay-pane, .mat-menu-panel, mat-bottom-sheet-container").all()
-        visible_overlays = [o for o in overlays if o.is_visible()]
-        if visible_overlays:
-            # Got a tooltip, not the booking menu - dismiss and try again
-            tooltip_text = visible_overlays[0].text_content() or ""
-            print(f"  [DEBUG] Got tooltip instead of menu: {tooltip_text[:80]}...")
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(500)
-        else:
-            print(f"  [DEBUG] No popup at {pos_desc} position")
-
-    if '/event?eventId=0' in current_url:
-        print(f"  [DEBUG] Click navigated directly to booking form")
-        # Already on booking form, skip popup handling and go to Step 3
-        pass  # Continue to Step 3 below
-    elif not popup_found:
-        # Check if we accidentally clicked on an existing reservation
-        # The unique indicator is "Events where I participate" or "Choose which events to display"
-        events_participate = page.locator("text=Events where I participate").first
-        choose_events = page.locator("text=Choose which events to display").first
-
-        ep_visible = events_participate.count() > 0 and events_participate.is_visible()
-        ce_visible = choose_events.count() > 0 and choose_events.is_visible()
-
-        if ep_visible or ce_visible:
-            print(f"  [DEBUG] Clicked on existing reservation (events_participate={ep_visible}, choose_events={ce_visible})")
-            print("  Clicked on existing reservation - clicking back button...")
-
-            # Click the back button with aria-label="Back to previous page"
-            back_btn = page.locator("button[aria-label='Back to previous page']").first
-            if back_btn.count() > 0 and back_btn.is_visible():
-                back_btn.click()
-                page.wait_for_timeout(2000)
-                print("    Clicked back button")
-            else:
-                # Fallback: use browser back
-                page.go_back()
-                page.wait_for_timeout(2000)
-                print("    Used browser back")
-            return False
-
-        # No booking popup found after trying all positions
-        print("  No booking popup found after trying multiple click positions - skipping")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(500)
-        return False
-    else:
-        # Step 2: Click "Student booking provisional" - we know the popup is visible
-        print(f"  [DEBUG] Looking for 'Student booking provisional' button...")
-        student_btn = page.locator("mat-list-item:has-text('Student booking provisional')").first
-        if student_btn.count() > 0 and student_btn.is_visible():
-            print("  Found 'Student booking provisional' button")
-            student_btn.click()
-            page.wait_for_timeout(3000)
-        else:
-            # Try alternative locators
-            alt_btn = page.locator("text=Student booking provisional").first
-            if alt_btn.count() > 0 and alt_btn.is_visible():
-                print("  Found alt 'Student booking provisional' text")
-                alt_btn.click()
-                page.wait_for_timeout(3000)
-            else:
-                # Check overlays for the button
-                overlays = page.locator(".cdk-overlay-pane, .mat-menu-panel, mat-bottom-sheet-container").all()
-                found_in_overlay = False
-                for overlay in overlays:
-                    if overlay.is_visible():
-                        text = overlay.text_content() or ""
-                        if 'Student booking provisional' in text:
-                            overlay_btn = overlay.locator("text=Student booking provisional").first
-                            if overlay_btn.count() > 0:
-                                print("  Found 'Student booking provisional' in overlay, clicking...")
-                                overlay_btn.click()
-                                page.wait_for_timeout(3000)
-                                found_in_overlay = True
-                                break
-
-                if not found_in_overlay:
-                    print("  [DEBUG] Could not find 'Student booking provisional' button despite popup_found=True")
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-                    return False
-
-    if not wait_for_new_booking_form(page, timeout_ms=10000):
-        print(
-            "  Refusing to save: the exact new-booking form and its time "
-            f"controls did not become ready (URL: {page.url})"
-        )
-        go_back(page, days_ahead)
+    page.mouse.click(coords['x'], coords['y'])
+    if not enter_new_booking_form(page):
+        print("  The exact new-booking form did not become ready; no Save attempted")
         return False
 
     # Step 3: Set times
@@ -6260,6 +6156,125 @@ def _opportunity_to_normal_slot(opportunity):
     }
 
 
+def same_time_room_backups(
+    available_data, failed_slot, target_date, tracker, time_prefs, daily_planning,
+    *, now, excluded_rooms, remaining_daily_hours=None,
+    reserved_peak_minutes=0, reserved_weekly_minutes=0, only_room=None,
+):
+    """Rank freshly available replacements for exactly the failed interval.
+
+    Clipping the input gaps prevents fallback from moving the requested time or
+    extending into another planned session. All normal policy/budget checks are
+    reapplied by the shared opportunity builder and again by the Save path.
+    """
+    start, end = failed_slot['start_hour'], failed_slot['end_hour']
+    exact_gaps = []
+    for row in available_data:
+        if row['room'] in excluded_rooms:
+            continue
+        if any(gap['startHour'] <= start and gap['endHour'] >= end for gap in row['slots']):
+            exact_gaps.append({'room':row['room'], 'slots':[{'startHour':start, 'endHour':end}]})
+    if not fragmentation_allows_new_booking(tracker, target_date)[0]:
+        return []
+    opportunities = build_day_booking_opportunities(
+        exact_gaps, target_date, tracker, time_prefs, daily_planning,
+        now=now, remaining_daily_hours=remaining_daily_hours,
+        reserved_peak_minutes=reserved_peak_minutes,
+        reserved_weekly_minutes=reserved_weekly_minutes, only_room=only_room,
+    )
+    return sorted(
+        (item for item in opportunities
+         if item.start_minutes == round(start*60)
+         and item.end_minutes == round(end*60) and item.unlock_at <= now),
+        key=lambda item: item.room_priority,
+    )
+
+
+def attempt_booking_with_room_fallback(
+    page, slot, target_date, tracker, days_ahead, *, time_prefs, daily_planning,
+    remaining_daily_hours=None, max_action_minutes=None, only_room=None,
+    planning_context=None, horizon=False,
+):
+    """Try each eligible room at most once, refreshing after proven failures.
+
+    Return both the verified result and the room actually attempted, so horizon
+    receipts, extension tracking, and displayed progress retain exact identity.
+    Uncertain writes and unreadable journals always stop the whole run.
+    """
+    attempted = set()
+    candidate = slot
+    deadline = time.monotonic() + 180
+    while True:
+        attempted.add(candidate['room'])
+        try:
+            kwargs = dict(remaining_daily_hours=remaining_daily_hours,
+                          max_action_minutes=max_action_minutes)
+            if horizon:
+                result = try_horizon_snipe(page, candidate, target_date, tracker,
+                                         days_ahead, time_prefs=time_prefs, **kwargs)
+            else:
+                result = try_book_slot(page, candidate, target_date, tracker,
+                                       days_ahead, **kwargs)
+        except BookingVerificationError:
+            raise
+        except Exception as exc:
+            # A pre-Save interaction error can be retried only after the same
+            # durable-journal proof required for a returned rejection.
+            print(f"  Room interaction failed for {candidate['room']}: {exc}")
+            result = False
+        if result:
+            return result, candidate
+        try:
+            if list_pending_mutation_receipts():
+                raise BookingVerificationError(
+                    'A booking result is uncertain. Room fallback is blocked until reconciliation.'
+                )
+        except BookingVerificationError:
+            raise
+        except Exception as exc:
+            raise BookingVerificationError(
+                'The mutation journal could not be checked. No room fallback is allowed.'
+            ) from exc
+        if only_room or len(attempted) >= len(PRIORITY_ROOMS) or time.monotonic() >= deadline:
+            return False, candidate
+        if horizon and not is_horizon_snipe_timing_candidate(
+            (slot['bookable_from'] - datetime.now()).total_seconds()
+        ):
+            return False, candidate
+        print(f"  {candidate['room']} was not booked. Refreshing availability for another room at the same time.")
+        # Reopen the canonical overview even if a rejected form is still open.
+        # Both the requested date and complete room inventory must be re-proven.
+        go_back(page, days_ahead)
+        assert_calendar_date(page, as_date(target_date))
+        available_data = get_available_slots(page)
+        now = datetime.now()
+        context = planning_context or {}
+        date_key = as_date(target_date).isoformat()
+        reserved_weekly = sum(context.get('extension_target_by_date', {}).values()) + sum(
+            minutes for key, minutes in context.get('held_target_by_date', {}).items() if key != date_key
+        )
+        backup_daily_remaining = remaining_daily_hours
+        if horizon and backup_daily_remaining is not None:
+            backup_daily_remaining = max(
+                0, backup_daily_remaining - context.get('extension_target_by_date', {}).get(date_key, 0)/60
+            )
+        backups = same_time_room_backups(
+            available_data, slot, target_date, tracker, time_prefs, daily_planning,
+            now=max(now, slot['bookable_from']) if horizon else now,
+            excluded_rooms=attempted, remaining_daily_hours=backup_daily_remaining,
+            reserved_peak_minutes=context.get('extension_peak_by_date', {}).get(date_key, 0),
+            reserved_weekly_minutes=reserved_weekly, only_room=only_room,
+        )
+        if horizon:
+            backups = [item for item in backups if abs((item.unlock_at-slot['bookable_from']).total_seconds()) <= 1]
+        if not backups or time.monotonic() >= deadline:
+            print('  No eligible backup room remains for this time slot in the fresh scan.')
+            return False, candidate
+        candidate = (_opportunity_to_horizon_candidate(backups[0], target_boundary=slot['bookable_from'])
+                     if horizon else _opportunity_to_normal_slot(backups[0]))
+        print(f"  Trying backup: {candidate['room']} at {backups[0].start_text}-{backups[0].end_text}.")
+
+
 def _runtime_ordered_day_opportunities(
     current_opportunities,
     day_plan,
@@ -6364,7 +6379,9 @@ def _runtime_ordered_day_opportunities(
     # Do not append individually attractive fallbacks here. If a selected
     # member loses a live race, booking an unplanned overlapping alternative
     # could destroy the rest of the target-maximizing portfolio. The next
-    # recurring pass will rebuild from a fresh grid instead.
+    # attempt_booking_with_room_fallback re-reads the grid on a confirmed
+    # failure and replaces only this exact interval. Successful creates then
+    # rebuild the rest of the day with the existing quota and gap checks.
     return ordered
 
 
@@ -7684,19 +7701,8 @@ def try_horizon_snipe(
     print(f"  [SNIPE] Clicking at ({coords['x']:.0f}, {coords['y']:.0f})...")
     page.mouse.click(coords['x'], coords['y'])
 
-    # The SVG overview can take 2-3.5s to reveal this menu.
-    student_booking_btn = wait_for_student_booking_option(page, timeout_ms=5000)
-    if student_booking_btn is not None:
-        print(f"  [SNIPE] Found booking type button, clicking...")
-        student_booking_btn.click()
-    else:
-        print(f"  [SNIPE] No booking type button found, checking if form opened...")
-
-    if not wait_for_new_booking_form(page, timeout_ms=10000):
-        print(
-            "  [SNIPE] Exact new-booking form time controls did not become "
-            f"ready at {page.url}; aborting"
-        )
+    if not enter_new_booking_form(page):
+        print("  [SNIPE] Exact new-booking form did not become ready; no Save attempted")
         go_back(page, days_ahead)
         return False
 
@@ -9841,7 +9847,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         snipe_target_date,
                         tracker.get_hours_for_day(snipe_target_date),
                     )
-                    snipe_success = try_horizon_snipe(
+                    snipe_success, candidate = attempt_booking_with_room_fallback(
                         page,
                         candidate,
                         snipe_target_date,
@@ -9849,6 +9855,10 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         days_ahead,
                         remaining_daily_hours=daily_remaining,
                         time_prefs=time_prefs,
+                        daily_planning=daily_planning,
+                        planning_context=planning_context,
+                        only_room=args.only_room,
+                        horizon=True,
                         max_action_minutes=args.max_action_minutes,
                     )
 
@@ -10568,7 +10578,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 print(f"  [DEBUG] Attempt {attempts}/{max_attempts}: {slot['room']} {slot['start_hour']:.2f}-{slot['end_hour']:.2f} (duration: {slot['duration']:.2f}h)")
 
                 try:
-                    booked = try_book_slot(
+                    booked, attempted_slot = attempt_booking_with_room_fallback(
                         page,
                         slot,
                         target_date,
@@ -10576,6 +10586,10 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         days_ahead,
                         remaining_daily_hours=daily_remaining,
                         max_action_minutes=args.max_action_minutes,
+                        time_prefs=time_prefs,
+                        daily_planning=daily_planning,
+                        planning_context=planning_context,
+                        only_room=args.only_room,
                     )
                 except BookingVerificationError:
                     raise

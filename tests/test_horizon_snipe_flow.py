@@ -623,7 +623,7 @@ class SmartHorizonPlannerIntegrationTests(unittest.TestCase):
         candidates, _, _, context = self.run_smart_scan(boundary, available)
 
         self.assertEqual(context["decision"].action, "book_now")
-        self.assertIn("Only 1 better later room option", context["decision"].reason)
+        self.assertIn("Ready to book: the current room is the safer choice than waiting.", context["decision"].reason)
         self.assertEqual([item["room"] for item in candidates], ["Early"])
         self.assertEqual(candidates[0]["start_hour"], 9.0)
         self.assertEqual(context["held_peak_by_date"], {})

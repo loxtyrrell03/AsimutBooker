@@ -421,7 +421,7 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
 
         self.assertEqual(day_plan.primary.room, "Early")
         self.assertEqual(day_plan.primary.state, "ready")
-        self.assertIn("Only 1 better later room", day_plan.reason)
+        self.assertIn("Ready to book: the current room is the safer choice than waiting.", day_plan.reason)
 
     def test_display_keeps_best_full_day_portfolio_over_best_single_session(self):
         target_date = date(2026, 9, 4)

@@ -18,6 +18,8 @@ from runtime_guard import SingleInstanceLock
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--open-forms', action='store_true', help='Open one unsaved form per room; block every Save request')
+    parser.add_argument('--start-room', help='Resume the room audit at this exact preferred room')
+    parser.add_argument('--only-room', help='Audit one exact preferred room')
     args = parser.parse_args()
     lock = SingleInstanceLock(b.APP_DIR / 'data/booker-runtime.lock')
     for _ in range(90):
@@ -45,7 +47,12 @@ def main():
                 target_date = date.today() + timedelta(days=1)
                 b.navigate_to_day(page, 1, 0, base_date=date.today())
                 results = []
-                for room in b.PRIORITY_ROOMS:
+                rooms = b.PRIORITY_ROOMS
+                if args.start_room:
+                    rooms = rooms[rooms.index(args.start_room):]
+                if args.only_room:
+                    rooms = [args.only_room]
+                for room in rooms:
                     available = b.get_available_slots(page)
                     gaps = next(row['slots'] for row in available if row['room'] == room)
                     gap = next((gap for gap in gaps if gap['endHour']-gap['startHour'] >= 0.5), None)
@@ -57,10 +64,8 @@ def main():
                     if coords is None:
                         raise RuntimeError(f'No safe visible target for {room}')
                     page.mouse.click(coords['x'],coords['y'])
-                    option = b.wait_for_student_booking_option(page, timeout_ms=5000)
-                    if option is not None:
-                        option.click()
-                    if not b.wait_for_new_booking_form(page):
+                    if not b.enter_new_booking_form(page):
+                        print(json.dumps({'room':room,'start':start,'coords':coords,'url':page.url}),flush=True)
                         raise RuntimeError(f'Unsaved form did not open for {room}')
                     snapshot = b.page_booking_snapshot(page)
                     if snapshot.get('room') != room or snapshot.get('date') != target_date.isoformat():

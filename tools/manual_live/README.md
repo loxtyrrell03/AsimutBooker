@@ -21,6 +21,14 @@ python tools/manual_live/panel_matching_live.py
 
 # Open the real agenda and find a reservation without editing it.
 python tools/manual_live/edit_reservation_live.py --dry-run
+
+# Prove each eligible room opens its exact unsaved booking form. Holds the
+# normal runtime lock and blocks every event/type=save request. Does not book.
+python tools/manual_live/check_room_targeting.py --open-forms
+
+# Resume a bounded interrupted audit, or check one exact room.
+python tools/manual_live/check_room_targeting.py --open-forms --start-room "Corus Recital Room"
+python tools/manual_live/check_room_targeting.py --open-forms --only-room "Weston Gallery"
 ```
 
 The two agenda commands still access the real account and network. They are

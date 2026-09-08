@@ -470,8 +470,11 @@ def choose_horizon_opportunity(
             best_current,
             tuple(distinct_rooms[:3]),
             0,
-            f"Only {len(distinct_rooms)} better later room option(s) are visible; "
-            f"{minimum_options} required",
+            (
+                "Ready to book: no better room is worth waiting for."
+                if not distinct_rooms else
+                "Ready to book: the current room is the safer choice than waiting."
+            ),
         )
 
     selected = distinct_rooms[0]
