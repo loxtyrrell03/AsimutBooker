@@ -687,8 +687,12 @@ python -m unittest discover -s tests
   logging out, or opening a user-controlled browser.
 - `book_week.py` supports both the legacy overview and current
   `app-overview-svg` renderer. SVG readiness waits for asynchronous event
-  overlays, room labels are normalized, and click coordinates are refreshed
-  after scrolling. The current prefilled event URL and delayed time controls are
+  overlays and room labels are normalized. `overview_geometry.py` shares the
+  SVG row-boundary and time-axis interpretation between availability and clicks.
+  It scrolls the actual booking surface, checks event location IDs against the
+  row mapping, and hit-tests the freshly exposed point. Unsupported or ambiguous
+  geometry stops without clicking; fixed row heights and pixel offsets are not
+  booking authority. The current prefilled event URL and delayed time controls are
   accepted only when their exact fail-closed contracts pass.
 - Two bounded 30-minute live bookings were created in distinct AHC rooms on
   distinct dates. Each positive arrangement event survived reload and matched
@@ -1580,3 +1584,20 @@ When modifying this codebase:
 - Build `a2e9f7da5139` is deployed and private deployment verification passed.
   Prior hashed assets were retained; no server restart or live preference write
   was needed. Reload an already-open phone page to receive the new tap targets.
+
+## 2026-09-08 Room Targeting Repair
+
+- Asimut's room legend and SVG booking grid scroll separately. Scrolling the
+  legend left lower rooms outside the viewport. Normal and horizon creates now
+  use the same grid-scrolling, geometry-derived, unobstructed target; arbitrary
+  offset clicks are removed. The legacy renderer scrolls its actual day surface.
+- DOM regressions click all 31 fixture rows across three scales, different row
+  heights/hour spacing, reordered rooms, and nested scrolling; they also reject
+  blockers, mismatched location IDs, ambiguous rows, and missing time geometry.
+  All 80 focused renderer, targeting, snipe, and Save-safety tests passed.
+- Live read-only checks opened exact unsaved forms for Weston Gallery, Corus
+  Recital Room, and the first four AHC rooms. The remaining-room audit is ongoing.
+  `tools/manual_live/check_room_targeting.py --open-forms` repeats the audit under
+  the Booker lock and blocks Save requests. This is form-opening evidence, not a
+  claim that any reservation was saved. Scheduled processes load the new source
+  on their next run; no phone UI build is required for this backend change.

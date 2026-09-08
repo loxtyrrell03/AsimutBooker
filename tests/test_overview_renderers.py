@@ -246,9 +246,9 @@ class OverviewRendererTests(unittest.TestCase):
         self.assertIn("app-overview-svg", script)
         self.assertIn("a[data-location-id]", script)
         self.assertIn("rect.closed-hours, rect.event-overlay", script)
-        self.assertIn("7 + item.x / 60", script)
-        self.assertIn("rowIndex: uniqueLabels.length", script)
-        self.assertIn("const rowTop = 30 * rowIndex", script)
+        self.assertIn("grid.perHour", script)
+        self.assertIn("svgGeometry", script)
+        self.assertNotIn("30 * rowIndex", script)
 
     def test_site_named_room_is_not_truncated_to_its_first_word(self):
         snapshot = self.svg_snapshot()
@@ -303,12 +303,11 @@ class OverviewRendererTests(unittest.TestCase):
             )
 
         self.assertEqual(coordinates["renderer"], "svg")
-        self.assertEqual(page.arguments[0], ["B1.09", 16.5, ["B1.09"]])
+        self.assertEqual(page.arguments[0], ["B1.09", 16.0, 17.0, ["B1.09"]])
         script = page.scripts[0]
-        self.assertIn("configuredRoomFromText(item.textContent) === roomName", script)
-        self.assertLess(script.index("label.scrollIntoView"), script.index("svg.getScreenCTM"))
-        self.assertIn("point.x = 60 * (centerHour - 7)", script)
-        self.assertIn("point.y = 30 * rowIndex + 15", script)
+        self.assertIn("row.room === roomName", script)
+        self.assertIn("elementFromPoint", script)
+        self.assertNotIn("30 * rowIndex", script)
         self.assertIn(".location-day", script)
 
     def test_grid_readiness_accepts_svg_without_waiting_on_legacy_class(self):

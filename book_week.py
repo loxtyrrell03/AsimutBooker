@@ -113,6 +113,7 @@ from room_preferences import (
     load_room_preferences,
     validate_room_name,
 )
+from overview_geometry import ROOM_COORDINATES_JS, SVG_SNAPSHOT_JS
 from runtime_guard import (
     SingleInstanceLock,
     booking_identity_matches,
@@ -4538,6 +4539,7 @@ def get_practice_room_grid_snapshot(page, configured_rooms=None):
 
     configured_rooms = tuple(configured_rooms or LIVE_CATALOG_ROOM_NAMES)
     snapshot = page.evaluate(r"""(configuredRooms) => {
+        const readSvgSnapshot = """ + SVG_SNAPSHOT_JS + r""";
         const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
         const configuredRoomFromText = value => {
             const text = clean(value);
@@ -4568,73 +4570,7 @@ def get_practice_room_grid_snapshot(page, configured_rooms=None):
         const svgRoot = Array.from(document.querySelectorAll('app-overview-svg'))
             .find(visible);
         if (svgRoot) {
-            const rawLabels = Array.from(svgRoot.querySelectorAll('a[data-location-id]'));
-            const svg = rawLabels[0]?.ownerSVGElement || svgRoot.querySelector('svg');
-            if (!svg || !svg.getScreenCTM()) {
-                return { renderer: 'svg', rooms: [] };
-            }
-            const seenLocations = new Set();
-            const uniqueLabels = [];
-            for (const label of rawLabels) {
-                const id = label.getAttribute('data-location-id');
-                if (!id || seenLocations.has(id)) continue;
-                seenLocations.add(id);
-                uniqueLabels.push({
-                    label,
-                    room: configuredRoomFromText(label.textContent),
-                    rowIndex: uniqueLabels.length,
-                });
-            }
-            const labels = uniqueLabels.filter(item => item.room);
-            const blockers = Array.from(
-                svgRoot.querySelectorAll('rect.closed-hours, rect.event-overlay')
-            ).map(rect => {
-                let box;
-                try {
-                    box = rect.getBBox();
-                } catch (_) {
-                    box = { x: 0, y: 0, width: 0, height: 0 };
-                }
-                return {
-                    x: number(rect.getAttribute('x')) ?? number(box.x) ?? 0,
-                    y: number(rect.getAttribute('y')) ?? number(box.y) ?? 0,
-                    width: number(rect.getAttribute('width')) ?? number(box.width) ?? 0,
-                    height: number(rect.getAttribute('height')) ?? number(box.height) ?? 0,
-                    closed: rect.classList.contains('closed-hours'),
-                };
-            });
-            const matrix = svg.getScreenCTM();
-            const toScreen = (x, y) => {
-                const point = svg.createSVGPoint();
-                point.x = x;
-                point.y = y;
-                const screen = point.matrixTransform(matrix);
-                return { x: screen.x, y: screen.y };
-            };
-            const rooms = labels.map(({label, room, rowIndex}) => {
-                const rowTop = 30 * rowIndex;
-                const rowBottom = rowTop + 30;
-                const rowCenter = rowTop + 15;
-                const origin = toScreen(0, rowCenter);
-                const nextHour = toScreen(60, rowCenter);
-                const blockedRanges = blockers
-                    .filter(item => item.height > 0 && item.y < rowBottom
-                        && item.y + item.height > rowTop)
-                    .filter(item => item.width > 0)
-                    .map(item => ({
-                        startHour: 7 + item.x / 60,
-                        endHour: 7 + (item.x + item.width) / 60,
-                        closed: item.closed,
-                    }));
-                return {
-                    room,
-                    blockedRanges,
-                    clickOriginX: origin.x,
-                    clickPixelsPerHour: nextHour.x - origin.x,
-                    clickY: origin.y,
-                };
-            });
-            return { renderer: 'svg', rooms };
+            return readSvgSnapshot(configuredRooms);
         }
 
         const rows = Array.from(document.querySelectorAll(
@@ -5209,87 +5145,15 @@ def get_practice_room_names(page):
 
 
 def get_room_slot_coordinates(page, room, start_hour, end_hour):
-    """Return fresh screen coordinates for a room/time in either renderer."""
+    """Expose the actual grid slot and prove an unobstructed viewport target."""
 
     room = _normalize_practice_room_name(room)
-    if not room:
+    if not room or not (7 <= start_hour < end_hour <= 23):
         return None
-    center_hour = (float(start_hour) + float(end_hour)) / 2
-    return page.evaluate(r"""([roomName, centerHour, configuredRooms]) => {
-        const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
-        const configuredRoomFromText = value => {
-            const text = clean(value);
-            const matches = configuredRooms.filter(candidate => {
-                const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                return new RegExp(
-                    `(^|[^A-Za-z0-9.])${escaped}(?=$|[^A-Za-z0-9.])`,
-                    'i'
-                ).test(text);
-            });
-            if (!matches.length) return null;
-            const longest = Math.max(...matches.map(candidate => candidate.length));
-            const longestMatches = matches.filter(
-                candidate => candidate.length === longest
-            );
-            return longestMatches.length === 1 ? longestMatches[0] : null;
-        };
-        const svgRoot = Array.from(document.querySelectorAll('app-overview-svg'))
-            .find(root => {
-                const rect = root.getBoundingClientRect();
-                return rect.width > 0 && rect.height > 0;
-            });
-        if (svgRoot) {
-            const labels = Array.from(svgRoot.querySelectorAll('a[data-location-id]'));
-            const label = labels.find(
-                item => configuredRoomFromText(item.textContent) === roomName
-            );
-            const svg = label?.ownerSVGElement || svgRoot.querySelector('svg');
-            if (!label || !svg) return null;
-            label.scrollIntoView({ behavior: 'instant', block: 'center' });
-            void label.getBoundingClientRect();
-            const uniqueLabels = [];
-            const seen = new Set();
-            for (const item of labels) {
-                const id = item.getAttribute('data-location-id');
-                if (!id || seen.has(id)) continue;
-                seen.add(id);
-                uniqueLabels.push(item);
-            }
-            const rowIndex = uniqueLabels.indexOf(label);
-            const matrix = svg.getScreenCTM();
-            if (rowIndex < 0 || !matrix) return null;
-            const point = svg.createSVGPoint();
-            point.x = 60 * (centerHour - 7);
-            point.y = 30 * rowIndex + 15;
-            const screen = point.matrixTransform(matrix);
-            return { x: screen.x, y: screen.y, renderer: 'svg' };
-        }
-
-        const rows = Array.from(document.querySelectorAll(
-            "[data-cy='overview-location-row'], " +
-            ".location-name-container .location-row"
-        ));
-        const row = rows.find(
-            item => configuredRoomFromText(item.textContent) === roomName
-        );
-        if (!row) return null;
-        row.scrollIntoView({ behavior: 'instant', block: 'center' });
-        void row.getBoundingClientRect();
-        const rowRect = row.getBoundingClientRect();
-        const rowMidY = (rowRect.top + rowRect.bottom) / 2;
-        const day = Array.from(document.querySelectorAll('.location-day')).find(item => {
-            const rect = item.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0
-                && Math.abs((rect.top + rect.bottom) / 2 - rowMidY) < 30;
-        });
-        if (!day) return null;
-        const dayRect = day.getBoundingClientRect();
-        return {
-            x: dayRect.left + ((centerHour - 7) / 16) * dayRect.width,
-            y: rowMidY,
-            renderer: 'legacy',
-        };
-    }""", [room, center_hour, LIVE_CATALOG_ROOM_NAMES])
+    return page.evaluate(
+        ROOM_COORDINATES_JS,
+        [room, float(start_hour), float(end_hour), list(LIVE_CATALOG_ROOM_NAMES)],
+    )
 
 
 def try_book_slot(
@@ -5429,7 +5293,6 @@ def try_book_slot(
         print(f"  Could not find room '{room_name}' in grid - skipping")
         return False
 
-    page.wait_for_timeout(300)  # Brief wait after scroll
 
     # Log viewport info
     viewport = page.evaluate("() => ({ width: window.innerWidth, height: window.innerHeight, scrollY: window.scrollY })")
@@ -5440,14 +5303,13 @@ def try_book_slot(
     )
 
     # Check if click is within viewport
-    if coords['y'] < 0 or coords['y'] > viewport['height']:
-        print(f"  [DEBUG] WARNING: Click Y={coords['y']:.0f} is outside viewport (0-{viewport['height']})")
+    if not (0 <= coords['x'] < viewport['width'] and 0 <= coords['y'] < viewport['height']):
+        print("  Booking target moved outside the viewport; skipping without a click")
+        return False
 
-    # Try clicking at different positions if needed - start with center, then try offset positions
+    # Only click the proven free point; arbitrary offsets may hit adjacent events.
     click_positions = [
         (coords['x'], coords['y'], "center"),
-        (coords['x'] + 15, coords['y'] + 5, "offset right-bottom"),
-        (coords['x'] - 15, coords['y'] - 5, "offset left-top"),
     ]
 
     popup_found = False
@@ -7817,8 +7679,7 @@ def try_horizon_snipe(
         print(f"  [SNIPE] Could not find room '{room_name}' - aborting snipe")
         return False
 
-    page.wait_for_timeout(200)
-
+    # Click immediately after the fresh visibility and hit-test proof.
     # Click to open booking form
     print(f"  [SNIPE] Clicking at ({coords['x']:.0f}, {coords['y']:.0f})...")
     page.mouse.click(coords['x'], coords['y'])
