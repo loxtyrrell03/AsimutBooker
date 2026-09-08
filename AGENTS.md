@@ -62,9 +62,18 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   also pass. Rendered Settings, scan, rules and confirmation pages were inspected.
   Fixtures use temporary files and intercepted APIs; no live bookings, task
   changes, cleanup, credentials or preference writes were used for testing.
-- Private publication is the remaining delivery step. Preserve existing hashed
-  phone assets and only restart the verified idle owned phone task. PC calendar
-  controls load on opening the desktop app; preserve already-open desktop drafts.
+- Published privately as `e3c0f2d-phone-pc-parity`, retaining old hashed assets.
+  The actual Tailscale HTTPS hostname and compiled origin passed
+  `verify_phone_deployment.ps1`; all ten new/extended read-only endpoints were
+  checked on the running host. Publication used fresh idle assistant/cancellation,
+  zero unresolved requests/pending mutations, and the global runtime lock.
+  No live booking, preference, scheduling or cleanup action was used as a test.
+- Windows scheduled-task Stop is asynchronous. Before restarting the phone task,
+  wait for the old loopback listener to disappear and the old server lock to be
+  released; starting immediately can exit against the stopping instance's lock.
+  Restart only the owned phone task. Existing PC windows and drafts were retained;
+  Calendar controls load when the desktop opens. Physical phone tapping remains
+  separate user-side verification.
 
 ## 2026-09-08 Shared calendar dates, times and complete practice preferences
 
