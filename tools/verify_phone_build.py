@@ -41,7 +41,7 @@ def _read_json(path: Path) -> dict:
     return value
 
 
-def validate_phone_build(dist: Path, *, expected_version: str | None = None) -> None:
+def validate_phone_build(dist: Path, *, expected_version: str | None = None, expected_origin: str | None = None) -> None:
     root = Path(dist).resolve()
     index = root / "index.html"
     worker_path = root / "sw.js"
@@ -54,6 +54,8 @@ def validate_phone_build(dist: Path, *, expected_version: str | None = None) -> 
         raise PhoneBuildError("Phone build version is missing")
     if expected_version is not None and version != expected_version:
         raise PhoneBuildError("Phone build version does not match expected source")
+    if expected_origin is not None and build.get("public_origin") != expected_origin:
+        raise PhoneBuildError("Phone build origin does not match the configured private address")
 
     manifest = _read_json(root / "manifest.webmanifest")
     if manifest.get("display") != "standalone" or manifest.get("start_url") != "/":
@@ -92,8 +94,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify the built Asimut phone PWA")
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--expected-version")
+    parser.add_argument("--expected-origin")
     args = parser.parse_args(list(argv) if argv is not None else None)
-    validate_phone_build(args.dist, expected_version=args.expected_version)
+    validate_phone_build(args.dist, expected_version=args.expected_version, expected_origin=args.expected_origin)
     return 0
 
 

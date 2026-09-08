@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://lox-pc.tail89d19b.ts.net:10443'),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || 'https://localhost'),
   title: 'Asimut Booker',
   description:
     'A private, conversational control panel for practice plans and RWCMD room bookings.',

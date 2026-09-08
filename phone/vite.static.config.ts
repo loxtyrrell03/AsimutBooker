@@ -7,6 +7,12 @@ import { defineConfig } from 'vite';
 const projectRoot = __dirname;
 const outputDirectory = resolve(projectRoot, process.env.ASIMUT_PHONE_OUT_DIR || 'dist-phone');
 const version = process.env.ASIMUT_PHONE_VERSION || 'development';
+const configPath = resolve(projectRoot, '../data/phone_server_config.json');
+const publicOrigin = process.env.ASIMUT_PHONE_ORIGIN ||
+  (existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')).public_origin : '');
+if (typeof publicOrigin !== 'string' || !/^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.ts\.net:10443$/.test(publicOrigin)) {
+  throw new Error('Set ASIMUT_PHONE_ORIGIN to the exact private HTTPS origin before building.');
+}
 
 function filesUnder(directory: string, prefix = ''): string[] {
   if (!existsSync(directory)) return [];
@@ -20,6 +26,7 @@ function filesUnder(directory: string, prefix = ''): string[] {
 }
 
 export default defineConfig({
+  define: { 'process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN': JSON.stringify(publicOrigin) },
   root: resolve(projectRoot, 'local'),
   publicDir: resolve(projectRoot, 'public'),
   resolve: {
@@ -56,7 +63,7 @@ export default defineConfig({
         writeFileSync(workerPath, worker, 'utf8');
         writeFileSync(
           resolve(outputDirectory, 'build-info.json'),
-          `${JSON.stringify({ version }, null, 2)}\n`,
+          `${JSON.stringify({ version, public_origin: publicOrigin }, null, 2)}\n`,
           'utf8',
         );
       },

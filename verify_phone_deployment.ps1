@@ -39,6 +39,11 @@ if ($Origin.Scheme -cne "https" -or $Origin.Port -ne $HttpsPort -or -not $Origin
     throw "The phone server origin is not the expected private HTTPS origin."
 }
 $PublicHost = $Origin.Authority
+$Tailnet = (& $TailscalePath status --json | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0 -or $Tailnet.BackendState -ne 'Running' -or
+    ([string]$Tailnet.Self.DNSName).TrimEnd('.') -ine $Origin.Host) {
+    throw 'The configured phone address does not match this PC’s current Tailscale hostname. Rerun phone setup.'
+}
 
 $BuildInfo = Get-Content -LiteralPath (Join-Path $BuildDir "build-info.json") -Raw | ConvertFrom-Json
 if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
@@ -46,6 +51,9 @@ if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
 }
 if ([string]$BuildInfo.version -cne $ExpectedVersion) {
     throw "The deployed phone shell version does not match the expected source version."
+}
+if ([string]$BuildInfo.public_origin -cne [string]$Config.public_origin) {
+    throw 'The phone shell was built for a different private address. Rebuild it for the configured origin.'
 }
 
 $Task = Get-ScheduledTask -TaskName $TaskName -TaskPath "\" -ErrorAction Stop
@@ -142,4 +150,8 @@ if ($UnexpectedFunnelOrigin.Count -gt 0) {
     throw "The private phone origin was unexpectedly exposed through Funnel."
 }
 
+$RemoteHealth = Invoke-RestMethod -Uri "$($Config.public_origin)/healthz" -TimeoutSec 10
+if ($RemoteHealth.status -ne 'ok' -or [string]$RemoteHealth.version -cne $ExpectedVersion) {
+    throw 'The actual private HTTPS address did not serve the expected phone build.'
+}
 Write-Host "Verified private Asimut phone deployment $ExpectedVersion at $($Config.public_origin)/" -ForegroundColor Green

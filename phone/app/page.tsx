@@ -38,7 +38,7 @@ import {
 import { selectedPlanMinutes, selectedPlanSessions } from '@/lib/plan_state';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
 
-const PRIVATE_ORIGIN = 'https://lox-pc.tail89d19b.ts.net:10443';
+const PRIVATE_ORIGIN = process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || '';
 const subscribeBrowserSnapshot = () => () => undefined;
 
 type Tab = 'today' | 'assistant' | 'schedule' | 'status';
@@ -359,11 +359,11 @@ function RemoteGate() {
           Your Booker stays on your own PC. Open the private tailnet app to see
           your schedule and use the assistant.
         </p>
-        <a className="gate-button" href={PRIVATE_ORIGIN}>
+        <a className="gate-button" href={PRIVATE_ORIGIN || undefined}>
           <Home />
           Open my Booker
         </a>
-        <p className="gate-note">Tailscale must be connected on this phone.</p>
+        <p className="gate-note">{PRIVATE_ORIGIN ? 'Tailscale must be connected on this phone.' : 'Open the private address shown by your PC’s phone setup.'}</p>
       </div>
     </main>
   );
@@ -391,7 +391,7 @@ function AppHeader({
   const state = booker?.status.state ?? 'stale';
   const label =
     connection === 'offline'
-      ? 'Computer offline'
+      ? 'Connection interrupted'
       : connection === 'connecting'
         ? 'Connecting to Booker…'
         : booker?.status.label ?? 'Booker status unavailable';
@@ -437,7 +437,7 @@ function ConnectionBanner({
     <div className={`connection-banner ${connection}`} role={error ? 'alert' : 'status'}>
       {connection === 'offline' ? <WifiOff /> : <RefreshCw className="spin-slow" />}
       <div>
-        <strong>{connection === 'offline' ? 'Your PC is not reachable' : 'Connecting'}</strong>
+        <strong>{connection === 'offline' ? 'Couldn’t connect to Booker' : 'Connecting'}</strong>
         <span>{error || 'Opening your private Booker session…'}</span>
       </div>
       {connection === 'offline' && (
@@ -1138,6 +1138,7 @@ export default function HomePage() {
   const streamConfirmedDeliveryIdsRef = useRef(new Set<string>());
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const connectingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const connectRef = useRef<() => Promise<boolean>>(async () => false);
   const scheduleReconnectRef = useRef<() => void>(() => undefined);
@@ -1391,26 +1392,39 @@ export default function HomePage() {
       setConnection('online');
       return true;
     }
+    if (connectingRef.current) return false;
+    connectingRef.current = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10_000);
     setConnection('connecting');
     setError('');
     try {
       const response = await fetch('/api/v1/session', {
+        signal: controller.signal,
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client: 'asimut-phone-v1' }),
       });
-      if (!response.ok) throw new Error('Private session was rejected');
+      if (!response.ok) {
+        throw new Error(response.status === 401 || response.status === 403
+          ? 'Your PC responded, but private access was rejected. Check that Tailscale uses your allowed account.'
+          : 'Your PC responded, but Booker could not open a session. Try again.');
+      }
       const payload = await response.json() as { csrf_token: string; bootstrap: Bootstrap };
       setCsrf(payload.csrf_token);
       applyBootstrap(payload.bootstrap);
       setConnection('online');
       setError('');
       return true;
-    } catch {
+    } catch (failure) {
       setConnection('offline');
-      setError('Reconnect to Tailscale and make sure the Booker PC is awake.');
+      setError(failure instanceof Error && failure.message.startsWith('Your PC responded')
+        ? failure.message : 'Check Tailscale and that the Booker PC is awake. If its private address changed, open the new address from your PC.');
       return false;
+    } finally {
+      window.clearTimeout(timeout);
+      connectingRef.current = false;
     }
   }, [applyBootstrap, preview]);
 
@@ -1420,7 +1434,7 @@ export default function HomePage() {
     const delay = nextReconnectDelay(attempt);
     if (delay === null) {
       setConnection('offline');
-      setError('Live updates stopped after three retries. Tap Retry when your PC is reachable.');
+      setError(current => current || 'Live updates stopped after three retries. Tap Retry to reconnect.');
       return;
     }
     reconnectAttemptsRef.current += 1;
@@ -1441,12 +1455,12 @@ export default function HomePage() {
       reconnectTimerRef.current = null;
     }
     reconnectAttemptsRef.current = 0;
-    void connect();
+    void connect().then(ok => { if (!ok) scheduleReconnectRef.current(); });
   }, [connect]);
 
   useEffect(() => {
     const privateHost = window.location.origin === PRIVATE_ORIGIN || preview;
-    if (privateHost) queueMicrotask(() => void connect());
+    if (privateHost) queueMicrotask(() => void connect().then(ok => { if (!ok) scheduleReconnectRef.current(); }));
     if ('serviceWorker' in navigator && window.isSecureContext) {
       navigator.serviceWorker.register('/sw.js').catch(() => undefined);
     }
@@ -1455,6 +1469,17 @@ export default function HomePage() {
       if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
     };
   }, [connect, preview]);
+
+  useEffect(() => {
+    if (!privateSurface || preview) return;
+    const resume = () => {
+      if (document.visibilityState === 'visible' && connection === 'offline') retryConnection();
+      if ('serviceWorker' in navigator) void navigator.serviceWorker.getRegistration().then(reg => reg?.update()).catch(() => undefined);
+    };
+    window.addEventListener('online', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => { window.removeEventListener('online', resume); document.removeEventListener('visibilitychange', resume); };
+  }, [connection, preview, privateSurface, retryConnection]);
 
   useEffect(() => {
     if (csrf && !preview) openEventStream();

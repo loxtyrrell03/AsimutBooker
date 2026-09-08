@@ -53,6 +53,17 @@ class PhoneBuildVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(PhoneBuildError, "omits required assets"):
                 validate_phone_build(root)
 
+    def test_build_from_previous_machine_name_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.make_build(directory)
+            current = 'https://current-pc.example.ts.net:10443'
+            for recorded in (None, 'https://old-pc.example.ts.net:10443'):
+                (root / 'build-info.json').write_text(json.dumps({'version': 'test-sha', 'public_origin': recorded}))
+                with self.assertRaisesRegex(PhoneBuildError, 'origin does not match'):
+                    validate_phone_build(root, expected_origin=current)
+            (root / 'build-info.json').write_text(json.dumps({'version': 'test-sha', 'public_origin': current}))
+            validate_phone_build(root, expected_origin=current)
+
     def test_cache_version_mismatch_and_source_map_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.make_build(directory)

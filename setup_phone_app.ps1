@@ -75,19 +75,22 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Commit)) {
     throw "The phone build version could not be derived from Git."
 }
 $OldBuildVersion = $env:ASIMUT_PHONE_VERSION
+$OldBuildOrigin = $env:ASIMUT_PHONE_ORIGIN
 try {
     $env:ASIMUT_PHONE_VERSION = $Commit
+    $env:ASIMUT_PHONE_ORIGIN = $PublicOrigin
     & $NodePath[0] (Join-Path $PhoneDir "node_modules\vite\bin\vite.js") build --config (Join-Path $PhoneDir "vite.static.config.ts")
     if ($LASTEXITCODE -ne 0) {
         throw "The phone shell build failed with exit code $LASTEXITCODE."
     }
 } finally {
     $env:ASIMUT_PHONE_VERSION = $OldBuildVersion
+    $env:ASIMUT_PHONE_ORIGIN = $OldBuildOrigin
 }
 if (-not (Test-Path -LiteralPath $BuildPath -PathType Leaf)) {
     throw "The phone shell build did not produce index.html."
 }
-& $PythonPath (Join-Path $WorkingDir "tools\verify_phone_build.py") --dist (Join-Path $PhoneDir "dist-phone") --expected-version $Commit
+& $PythonPath (Join-Path $WorkingDir "tools\verify_phone_build.py") --dist (Join-Path $PhoneDir "dist-phone") --expected-version $Commit --expected-origin $PublicOrigin
 if ($LASTEXITCODE -ne 0) {
     throw "The built phone shell failed its offline/install verification."
 }

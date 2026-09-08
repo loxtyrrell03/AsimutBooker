@@ -1463,6 +1463,30 @@ python -m unittest discover -s tests
   Deployment also refreshed a removed Codex executable path in the private config
   and reloaded only the verified idle phone task. Origin and login were preserved.
 
+## 2026-09-09 Private Phone Address Recovery
+
+- The formerly configured `lox-pc.tail89d19b.ts.net` stopped resolving. Verify
+  Tailscale's live `Self.DNSName` before relying on a saved hostname; the local
+  Tailnet identity currently reports `windows-t8v5137.tail89d19b.ts.net`.
+- Static builds derive the exact private origin from `ASIMUT_PHONE_ORIGIN` or
+  the private runtime config, embed that origin in the client gate, and record
+  it in build-info. Setup supplies the fresh Tailscale origin before building.
+  Never weaken the exact-origin gate or server identity checks to fix a rename.
+- Deployment verification now rejects hostname/build/config mismatches and
+  requests health over the actual HTTPS address. Prior loopback and Serve-text
+  checks alone did not prove DNS, TLS, or phone-path reachability.
+- Initial connection failures use bounded retries and a ten-second timeout;
+  network recovery or returning to the app retries a disconnected session.
+  Access rejection is distinguished from inability to reach the server, and
+  recovery never resubmits booking actions or draft messages.
+- Validation: 47 phone Python tests, 19 phone state tests, TypeScript/lint, and
+  isolated built-UI checks pass. `tools/check_phone_connection_ui.py --dist ...`
+  checks wrong-origin rejection, four bounded session attempts, access errors,
+  and network recovery without contacting live APIs.
+- An installed shortcut on a hostname that no longer resolves cannot be updated
+  by that server. Open the current private URL in Safari and replace the old
+  home-screen shortcut; do not claim this migration was performed on the phone.
+
 When modifying this codebase:
 - Notebook tab styles explicitly map selected padding to their normal padding;
   Clam's inherited selected inset otherwise shrinks the active tab. Verified
