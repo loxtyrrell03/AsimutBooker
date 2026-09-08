@@ -115,6 +115,7 @@ export type BookerSnapshot = {
     freshness_reason: string;
     events: AgendaEvent[];
     next_event: AgendaEvent | null;
+    closed_dates?: string[];
   };
   plan: {
     available: boolean;
@@ -748,11 +749,12 @@ function ScheduleView({
 }) {
   const groups = useMemo(() => {
     const result = new Map<string, AgendaEvent[]>();
+    for (const date of booker.agenda.closed_dates ?? []) result.set(date, []);
     for (const event of booker.agenda.events) {
       result.set(event.date, [...(result.get(event.date) ?? []), event]);
     }
     return [...result.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [booker.agenda.events]);
+  }, [booker.agenda.events, booker.agenda.closed_dates]);
   const reservations = useMemo(
     () => booker.agenda.events.filter((event) => event.is_reservation),
     [booker.agenda.events],
@@ -832,6 +834,7 @@ function ScheduleView({
       <div className="schedule-legend" aria-label="Schedule legend">
         <span><i className="confirmed-key" /> Booked</span>
         <span><i className="potential-key" /> Planned · not booked yet</span>
+        <span className="closed-key">Practice rooms closed</span>
       </div>
 
       {!booker.agenda.available ? (
@@ -849,8 +852,9 @@ function ScheduleView({
       ) : (
         <div className="day-list">
           {groups.map(([date, events]) => (
-            <section className="day-section" key={date}>
+            <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed' : ''}`} key={date}>
               <h3>{dateLabel(date, true)}</h3>
+              {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
               {events.map((event, index) => (
                 <article className="agenda-card" key={`${event.start_time}-${event.room}-${index}`}>
                   <div className="event-time">

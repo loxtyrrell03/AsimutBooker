@@ -27,7 +27,7 @@ from health_status import (
 )
 from mutation_receipts import RECEIPTS_FILE, load_journal
 from practice_plan import load_practice_plan
-from room_catalog import ROOM_CATALOG_FILE, load_cached_catalog
+from room_catalog import ROOM_CATALOG_FILE, load_cached_catalog, closed_practice_dates
 from room_preferences import load_room_preferences, room_preferences_to_dict
 
 
@@ -309,6 +309,7 @@ def _catalog_context(path: Path) -> dict[str, Any]:
         "freshness_reason": "The catalog is a display cache; a live run must refresh it before mutation.",
         "observed_at": _iso(catalog.observed_at),
         "booking_horizon": _iso(catalog.booking_horizon),
+        "closed_dates": list(closed_practice_dates(catalog)),
         "minimum_booking_minutes": catalog.minimum_booking_minutes,
         "maximum_booking_minutes": catalog.maximum_booking_minutes,
         "minimum_booking_gap_minutes": catalog.minimum_booking_gap_minutes,

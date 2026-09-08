@@ -27,6 +27,27 @@
   using the repository virtual environment, including withdrawn Tk regressions.
   Reopen the desktop app to load this change; existing sessions were preserved.
 
+## 2026-09-08 Closed practice days in both calendars
+
+- Room metadata retains explicit `closed_hours`; legacy catalog caches without
+  this optional field remain readable. Asimut selects closure data by
+  `current_date`, so discovery reads each date through the live booking horizon
+  (at most 31 days ahead), with a 12-second total budget and 1.5-second per-call
+  deadline for the extra display requests. Missing/changed room identities or
+  failed date reads never imply closure or block the proven booking policy.
+- Shared `closed_practice_dates` requires continuous explicit closure of every
+  catalog room, including promoted rooms, over the full 07:00–23:00 calendar
+  timeline. Empty, partial, or older-than-24-hour evidence never marks a date.
+  These annotations do not change saved booking preferences or reservations.
+- Desktop month/day and plan headers turn red with strike-through. Phone My Week
+  shows red crossed-out date headings and a closure label, including dates with
+  no events. Existing events remain available. Both use the same derived dates.
+- Verified all 816 Python tests, 19 phone Node tests, TypeScript, lint, static
+  build validation, withdrawn Tk rendering, and isolated Chromium/WebKit mobile
+  rendering (`tools/check_calendar_closures_ui.py`). A live read-only refresh
+  confirmed dated closure intervals for 31 rooms; no fully closed date was
+  reported in the current booking window. Desktop reopening is required.
+
 ## 2026-09-08 Direct phone cancellation
 
 - My Week and booking details offer a deterministic Cancel booking action.

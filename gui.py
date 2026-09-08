@@ -5785,6 +5785,9 @@ class AsimutBookerGUI(QuietFocusGUI):
 
     def _refresh_calendar(self, *, reload_plan=True):
         """Refresh the calendar display."""
+        from room_catalog import closed_practice_dates
+        self.load_room_catalog_cache()
+        self.calendar_closed_dates = set(closed_practice_dates(self.room_catalog))
         if reload_plan:
             self.calendar_plan_result = self._read_booking_plan_for_display()
         # Tk retains row/column configuration after child widgets are destroyed.
@@ -6054,17 +6057,23 @@ class AsimutBookerGUI(QuietFocusGUI):
             self.calendar_frame.columnconfigure(index + 1, weight=1, uniform="plan-day")
             day_var = self._ensure_calendar_day_var(current, today=today)
             selected = day_var is not None and day_var.get()
+            closed = date_key in getattr(self, "calendar_closed_dates", set())
             heading_bg = "#e8f2ff" if selected else "#f0f0f0"
+            if closed:
+                heading_bg = "#fee2e2"
             heading = current.strftime("%a %d")
             if current == today:
                 heading += " · Today"
             if selected:
                 heading = "✓ " + heading
+            if closed:
+                heading += " · Rooms closed"
             tk.Label(
                 self.calendar_frame,
                 text=heading,
                 bg=heading_bg,
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", 9, "bold overstrike" if closed else "bold"),
+                fg="#b91c1c" if closed else "#111111",
                 relief="solid",
                 borderwidth=1,
             ).grid(row=0, column=index + 1, sticky="nsew", padx=1, pady=1)
@@ -6072,7 +6081,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self.calendar_frame,
                 width=145,
                 height=timeline_height,
-                bg="#ffffff",
+                bg="#fff1f2" if closed else "#ffffff",
                 highlightbackground="#4a90d9" if selected else "#d0d0d0",
                 highlightthickness=2 if selected else 1,
             )
@@ -6186,6 +6195,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         is_available = day_var is not None
         is_selected = is_available and day_var.get()
         is_in_live_window = current_date in set(getattr(self, "booking_dates", ()))
+        closed = date_str in getattr(self, "calendar_closed_dates", set())
 
         # Get events for this day
         events = self.calendar_events.get(date_str, [])
@@ -6206,6 +6216,8 @@ class AsimutBookerGUI(QuietFocusGUI):
         if is_past:
             bg_color = "#e0e0e0"  # Gray for past days
             fg_color = "#888888"
+        if closed:
+            bg_color, fg_color = "#fee2e2", "#b91c1c"
 
         # Create cell frame - use sticky="nsew" to fill grid cell
         cell = tk.Frame(
@@ -6233,12 +6245,15 @@ class AsimutBookerGUI(QuietFocusGUI):
         day_label = tk.Label(
             cell,
             text=header_text,
-            font=("Segoe UI", 12, "bold" if is_today else "normal"),
+            font=("Segoe UI", 12, "bold overstrike" if closed else "bold" if is_today else "normal"),
             bg=bg_color,
             fg=fg_color,
             anchor="w"
         )
         day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
+        if closed:
+            tk.Label(cell, text="Practice rooms closed", fg="#b91c1c", bg=bg_color,
+                     font=("Segoe UI", 9), anchor="w").pack(fill=tk.X, padx=5)
 
         if not is_past and not is_in_live_window:
             tk.Label(

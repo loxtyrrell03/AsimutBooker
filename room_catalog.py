@@ -18,6 +18,7 @@ from email.utils import parsedate_to_datetime
 import json
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as datetime_time, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
@@ -223,6 +224,7 @@ class LocationMeta:
     location_id: int
     name: str
     secondary_name: str
+    closed_hours: tuple[tuple[datetime, datetime], ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -260,6 +262,7 @@ class RoomCatalogRoom:
     features: tuple[str, ...]
     horizon_minutes: int
     booking_cutoff: datetime
+    closed_hours: tuple[tuple[datetime, datetime], ...] = ()
 
     @property
     def horizon_days(self) -> float:
@@ -549,6 +552,7 @@ def parse_location_group_meta(
         seen_ids.add(location_id)
         seen_names.add(name)
         closed_hours = _list(item.get("closed_hours"), f"locations[{index}].closed_hours")
+        intervals = []
         for closed_index, raw_closed in enumerate(closed_hours):
             closed = _mapping(
                 raw_closed, f"locations[{index}].closed_hours[{closed_index}]"
@@ -561,7 +565,8 @@ def parse_location_group_meta(
             )
             if end <= start:
                 raise RoomCatalogError("Location closed-hours end must be after its start")
-        result.append(LocationMeta(location_id, name, secondary))
+            intervals.append((start, end))
+        result.append(LocationMeta(location_id, name, secondary, tuple(intervals)))
     return tuple(result)
 
 
@@ -1099,6 +1104,7 @@ def build_catalog(
                 features=features,
                 horizon_minutes=evidence.horizon_minutes,
                 booking_cutoff=normalized_cutoff,
+                closed_hours=location.closed_hours,
             )
         )
     catalog = RoomCatalog(
@@ -1160,6 +1166,8 @@ def _catalog_to_dict(catalog: RoomCatalog) -> dict[str, Any]:
                 "features": list(room.features),
                 "horizon_minutes": room.horizon_minutes,
                 "booking_cutoff": room.booking_cutoff.isoformat(),
+                "closed_hours": [{"st": start.isoformat(), "en": end.isoformat()}
+                                 for start, end in room.closed_hours],
             }
             for room in catalog.rooms
         ],
@@ -1207,7 +1215,7 @@ def _catalog_from_dict(raw: Any) -> RoomCatalog:
     seen_names: set[str] = set()
     for index, raw_room in enumerate(raw_rooms):
         item = _mapping(raw_room, f"cache.rooms[{index}]")
-        if set(item) != _CACHE_ROOM_KEYS:
+        if set(item) not in (_CACHE_ROOM_KEYS, _CACHE_ROOM_KEYS | {"closed_hours"}):
             raise RoomCatalogError(f"cache.rooms[{index}] has an unsupported schema")
         location_id = _positive_int(item.get("location_id"), f"cache.rooms[{index}].location_id")
         name = _text(item.get("name"), f"cache.rooms[{index}].name")
@@ -1234,6 +1242,10 @@ def _catalog_from_dict(raw: Any) -> RoomCatalog:
             raise RoomCatalogError(f"Cached cutoff and horizon disagree for {name}")
         if cutoff > booking_horizon:
             raise RoomCatalogError(f"Cached cutoff for {name} exceeds the global horizon")
+        closure_meta = parse_location_group_meta({"response": {"success": True, "locations": [{
+            "id": location_id, "name": name, "secondary_name": secondary,
+            "closed_hours": item.get("closed_hours", []),
+        }]}})[0]
         rooms.append(
             RoomCatalogRoom(
                 location_id=location_id,
@@ -1258,6 +1270,7 @@ def _catalog_from_dict(raw: Any) -> RoomCatalog:
                 ),
                 horizon_minutes=horizon_minutes,
                 booking_cutoff=cutoff,
+                closed_hours=closure_meta.closed_hours,
             )
         )
     return RoomCatalog(
@@ -1313,6 +1326,44 @@ def load_cached_catalog(
     except (SettingsError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RoomCatalogError(f"Room catalog cache is unreadable: {cache_path}") from exc
     return _catalog_from_dict(raw)
+
+
+def closed_practice_dates(
+    catalog: RoomCatalog | None, *, now: datetime | None = None,
+) -> tuple[str, ...]:
+    """Display-only dates with explicit closures covering every room, 07:00–23:00.
+
+    Unknown, old, partially closed, fully booked, and beyond-horizon days are
+    never labelled closed. Adjacent closure intervals may jointly cover a day.
+    """
+    current = (now or datetime.now(SITE_TIMEZONE)).astimezone(SITE_TIMEZONE)
+    if catalog is None or not catalog.rooms:
+        return ()
+    age = current - catalog.observed_at
+    if age < timedelta(minutes=-5) or age > timedelta(hours=24):
+        return ()
+    first = max(current.date(), catalog.observed_at.astimezone(SITE_TIMEZONE).date())
+    last = min(catalog.booking_horizon.astimezone(SITE_TIMEZONE).date(), first + timedelta(days=31))
+
+    def covers(room: RoomCatalogRoom, start: datetime, end: datetime) -> bool:
+        cursor = start
+        for left, right in sorted(room.closed_hours):
+            if right <= cursor:
+                continue
+            if left > cursor:
+                return False
+            cursor = max(cursor, right)
+            if cursor >= end:
+                return True
+        return False
+
+    result = []
+    day = first
+    while day <= last:
+        if all(covers(room, _day_time(day, 7), _day_time(day, 23)) for room in catalog.rooms):
+            result.append(day.isoformat())
+        day += timedelta(days=1)
+    return tuple(result)
 
 
 # Clear aliases for callers that use the longer noun in their import names.
@@ -1417,9 +1468,10 @@ def _get_json(
     label: str,
     *,
     include_server_time: bool = False,
+    timeout_ms: int | None = None,
 ) -> Any:
     try:
-        response = page.request.get(ASIMUT_ORIGIN + path)
+        response = page.request.get(ASIMUT_ORIGIN + path, **({"timeout": timeout_ms} if timeout_ms else {}))
     except Exception as exc:
         raise RoomCatalogError(f"{label} request failed") from exc
     payload = _api_json(response, path, label)
@@ -1784,6 +1836,40 @@ def refresh_from_site(
         allow_empty=True,
     )
     locations = merge_location_groups(core_locations, all_locations)
+    # Asimut's closed_hours follows current_date, even with a wider start/end
+    # range. Read each displayed date explicitly; no room-grid navigation.
+    horizon_days = min(31, (session.booking_horizon.date() - session.observed_at.date()).days)
+    closure_deadline = time.monotonic() + 12
+    for offset in range(1, horizon_days + 1):
+        day_observed = session.observed_at + timedelta(days=offset)
+        for group_id, payload, expected in (
+            (LOCATION_GROUP_ID, meta_payload, core_locations),
+            (ALL_LOCATIONS_GROUP_ID, all_meta_payload, all_locations),
+        ):
+            remaining_ms = int((closure_deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                break
+            try:
+                daily = parse_location_group_meta(
+                    _get_json(page, _group_meta_path(day_observed, group_id=group_id), "Calendar room closures",
+                              timeout_ms=min(1500, remaining_ms)),
+                    group_id=group_id, allow_empty=group_id == ALL_LOCATIONS_GROUP_ID,
+                )
+                if {r.location_id for r in daily} != {r.location_id for r in expected}:
+                    continue
+                by_id = {r.location_id: r for r in daily}
+                if any(by_id[r.location_id] != r for r in expected):
+                    continue
+                for raw in payload["response"]["locations"]:
+                    raw["closed_hours"].extend(
+                        {"st": start.isoformat(), "en": end.isoformat()}
+                        for start, end in by_id[raw["id"]].closed_hours
+                        if start.date() <= day_observed.date() <= end.date()
+                    )
+            except RoomCatalogError:
+                # Missing display evidence never means closed, and must not
+                # block the live booking policy's independently proven rules.
+                continue
     info_path = _location_info_path(locations, session.observed_at)
     info_payload = _get_json(page, info_path, "location info")
     # Validate the combined response before using a room identity in a form URL.

@@ -108,6 +108,13 @@ def context_fixture(*, stale=False, pending=False):
 
 
 class PhoneSnapshotTests(unittest.TestCase):
+    def test_calendar_receives_only_validated_closure_dates(self):
+        context = context_fixture()
+        context["sections"]["rooms"] = {"closed_dates": ["2026-09-02", "2026-99-99", "private", 123]}
+        with mock.patch.object(phone_api, "build_assistant_context", return_value=context):
+            snapshot = phone_api.build_phone_snapshot()
+        self.assertEqual(snapshot["agenda"]["closed_dates"], ["2026-09-02"])
+
     def test_snapshot_is_small_and_omits_mutation_authority(self):
         with mock.patch.object(
             phone_api, "build_assistant_context", return_value=context_fixture()

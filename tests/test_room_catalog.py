@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -305,6 +306,45 @@ def complete_catalog():
         observed_at=OBSERVED,
         booking_category_id=56,
     )
+
+
+class ClosureCalendarTests(unittest.TestCase):
+    def catalog_with_closures(self):
+        payload = meta_payload()
+        for room in payload["response"]["locations"]:
+            room["closed_hours"] = [
+                {"st": "2026-08-31T07:00:00+01:00", "en": "2026-08-31T12:00:00+01:00"},
+                {"st": "2026-08-31T12:00:00+01:00", "en": "2026-08-31T23:00:00+01:00"},
+            ]
+        return build_catalog(session_payload=session_payload(), location_meta_payload=payload,
+                             location_info_payload=info_payload(), check_payloads=complete_checks(),
+                             observed_at=OBSERVED, booking_category_id=56)
+
+    def test_all_rooms_must_explicitly_cover_the_whole_day(self):
+        catalog = self.catalog_with_closures()
+        self.assertEqual(room_catalog.closed_practice_dates(catalog, now=OBSERVED), ("2026-08-31",))
+        for intervals in ((), ((OBSERVED.replace(day=31, hour=8), OBSERVED.replace(day=31, hour=23)),)):
+            partial = replace(catalog, rooms=(replace(catalog.rooms[0], closed_hours=intervals),) + catalog.rooms[1:])
+            self.assertEqual(room_catalog.closed_practice_dates(partial, now=OBSERVED), ())
+        self.assertEqual(room_catalog.closed_practice_dates(catalog, now=OBSERVED + timedelta(hours=25)), ())
+        self.assertEqual(room_catalog.closed_practice_dates(None, now=OBSERVED), ())
+
+    def test_closures_round_trip_and_legacy_caches_remain_readable(self):
+        catalog = self.catalog_with_closures()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            save_catalog(catalog, path)
+            restored = load_cached_catalog(path)
+            self.assertEqual(room_catalog.closed_practice_dates(restored, now=OBSERVED), ("2026-08-31",))
+            raw = json.loads(path.read_text())
+            for room in raw["rooms"]:
+                del room["closed_hours"]
+            path.write_text(json.dumps(raw))
+            self.assertEqual(room_catalog.closed_practice_dates(load_cached_catalog(path), now=OBSERVED), ())
+
+    def test_metadata_request_selects_the_exact_date(self):
+        path = room_catalog._group_meta_path(GLOBAL_CUTOFF, group_id=10)
+        self.assertIn("current_date=2026-09-06T00:00:00.000+01:00", path)
 
 
 class SessionPolicyTests(unittest.TestCase):
@@ -762,7 +802,7 @@ class _FakeRequestContext:
         self.page = page
         self.calls = []
 
-    def get(self, url):
+    def get(self, url, **kwargs):
         self.calls.append(("GET", url, None))
         path = urlsplit(url).path
         if path == "/services/v2/session-context/me":
@@ -873,11 +913,11 @@ class RefreshWorkflowTests(unittest.TestCase):
             self.assertIn(("GET", "/services/v2/categories"), methods_and_paths)
             self.assertEqual(
                 sum("location_group_ids=2" in path_value for _method, path_value in methods_and_paths),
-                1,
+                8,
             )
             self.assertEqual(
                 sum("location_group_ids=10" in path_value for _method, path_value in methods_and_paths),
-                1,
+                8,
             )
             info_calls = [
                 path_value

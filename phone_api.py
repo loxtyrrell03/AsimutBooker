@@ -8,7 +8,7 @@ the assistant's typed tools; explicit preference forms use phone_preferences.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -43,6 +43,13 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 def _sequence(value: Any) -> Sequence[Any]:
     return value if isinstance(value, list) else ()
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
 
 
 def _phone_event(raw: Any) -> dict[str, Any] | None:
@@ -169,7 +176,7 @@ def build_phone_snapshot(*, paths: ContextPaths | None = None) -> dict[str, Any]
     """Build the complete allow-listed phone snapshot from validated context."""
 
     context = build_assistant_context(
-        ["preferences", "agenda", "plan", "health", "mutations"],
+        ["preferences", "agenda", "plan", "health", "mutations", "rooms"],
         paths=paths,
     )
     sections = _mapping(context.get("sections"))
@@ -285,6 +292,8 @@ def build_phone_snapshot(*, paths: ContextPaths | None = None) -> dict[str, Any]
             "freshness_reason": _text(agenda.get("freshness_reason")),
             "events": events,
             "next_event": _next_event(events, local_now, timezone_name),
+            "closed_dates": [value for value in _sequence(_mapping(sections.get("rooms")).get("closed_dates"))
+                             if isinstance(value, str) and _valid_date(value)],
         },
         "plan": {
             "available": plan_available,
