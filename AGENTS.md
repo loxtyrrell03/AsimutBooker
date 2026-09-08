@@ -43,6 +43,9 @@
   Mobile Chromium and WebKit pass, along with the settings editor checks,
   19 Node tests, TypeScript, lint, and static build validation. These are isolated
   checks, not physical phone interaction or live booking mutations.
+- Runtime action-cap/plan-isolation tests now stub the saved-settings reader.
+  Three tests had read real pending extension records from the checkout and
+  failed against their fixture room catalog; all three now pass in isolation.
 
 
 Automated booking system for Royal Welsh College of Music and Drama (RWCMD) practice rooms via Asimut.

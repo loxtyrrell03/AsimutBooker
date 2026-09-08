@@ -325,6 +325,12 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
 
 
 class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
+    def setUp(self):
+        # Runtime state in the developer's checkout is not a test fixture.
+        settings = mock.patch.object(book_week, 'load_settings_document', return_value={})
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def test_agenda_only_stops_after_complete_scan_without_grid_or_mutation(self):
         args = SimpleNamespace(
             headless=True,
@@ -941,6 +947,11 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
 
 
 class LiveActionDurationBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        settings = mock.patch.object(book_week, 'load_settings_document', return_value={})
+        settings.start()
+        self.addCleanup(settings.stop)
+
     def test_create_cap_stays_subordinate_to_daily_and_weekly_budgets(self):
         self.assertEqual(
             book_week._bounded_create_duration_minutes(120, 2.0, 28.0, 30),
