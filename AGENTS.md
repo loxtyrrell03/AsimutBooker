@@ -1767,3 +1767,18 @@ When modifying this codebase:
   form preparation, blocked stale-room fallback, and a concurrent preference
   writer waiting until the Save boundary releases the shared lock. No live
   booking, cancellation, preference write, or service restart was used to test it.
+
+## 2026-09-08 Extension Validation Timing
+
+- Extension edits commit the end-time control with Tab, await the exact trusted
+  PATCH `event/event_id=N;type=check` response for that event/date/start/new end,
+  finish reading the response, and allow up to five seconds for Save to enable.
+  Unrelated or stale checks, failed responses, and a persistently disabled Save
+  stop before any receipt. Existing form, warning, identity, preference, and
+  persisted-result checks still gate the mutation.
+- A read-only live reproduction observed Save disabled at the old check point
+  and enabled 250 ms later after validation completed. The repaired path reached
+  the pre-receipt boundary with all remote writes blocked except no-Save checks.
+  All 804 offline tests passed, including delayed enable, stale response, timeout,
+  failed response body, and no-receipt failure regressions. New CLI processes
+  load the fix from this checkout without restarting the phone companion.

@@ -929,6 +929,63 @@ def refresh_new_booking_validation(page, expected_end_time):
     return True, "fresh event validation completed"
 
 
+def refresh_extension_validation(page, end_input, booking, expected_end_time):
+    """Commit the edit and await its exact no-Save check, including async UI work."""
+
+    event_id = booking["eventId"]
+    expected_path = f"/services/v2/event/event_id={event_id};type=check"
+
+    def matches_check(response):
+        try:
+            parsed = urlsplit(response.url)
+            if (
+                parsed.scheme != "https"
+                or parsed.netloc != "rwcmd.asimut.net"
+                or parsed.path != expected_path
+                or parsed.query or parsed.fragment
+                or response.request.method != "PATCH"
+            ):
+                return False
+            event = response.request.post_data_json["event"]
+            if type(event["id"]) is not int or event["id"] != event_id:
+                return False
+            for key, expected_time in (
+                ("st", booking["startTime"]), ("en", expected_end_time)
+            ):
+                value = datetime.fromisoformat(event[key])
+                if (
+                    value.utcoffset() is None
+                    or value.date().isoformat() != booking["date"]
+                    or value.strftime("%H:%M") != expected_time
+                    or value.second or value.microsecond
+                ):
+                    return False
+            return True
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+
+    try:
+        with page.expect_response(matches_check, timeout=10000) as pending:
+            end_input.fill(expected_end_time)
+            end_input.press("Tab")
+        response = pending.value
+        if not matches_check(response) or not response.ok:
+            return False, "exact extension validation did not return HTTP success"
+        if response.finished() is not None:
+            return False, "extension validation response did not finish"
+        # HTTP headers can arrive before Angular has applied the response and
+        # enabled Save. Poll the real control; never force a disabled click.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            save = page.locator("button:has-text('Save')").first
+            if save.count() == 1 and save.is_visible() and save.is_enabled():
+                return True, "exact extension validation completed and Save is enabled"
+            page.wait_for_timeout(100)
+        return False, "Save remained disabled after the exact extension validation"
+    except Exception as exc:
+        return False, f"fresh extension validation did not complete: {exc}"
+
+
 def wait_for_student_booking_option(page, *, timeout_ms=5000):
     """Wait for Asimut's delayed provisional-booking menu item."""
 
@@ -3584,10 +3641,16 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
 
-            # Click and fill the new time
+            # Asimut debounces validation and disables Save until it completes.
+            # A fixed sleep used to abandon valid extensions on slower replies.
             end_input.click()
-            end_input.fill(new_end_time)
-            page.wait_for_timeout(300)
+            validation_ok, validation_detail = refresh_extension_validation(
+                page, end_input, booking, new_end_time
+            )
+            if not validation_ok:
+                print(f"    Extension not saved: {validation_detail}")
+                safe_goto(page, ASIMUT_AGENDA_URL)
+                return False
             actual_end = end_input.input_value()
             if not booking_times_match(start_time, new_end_time, start_time, actual_end):
                 print(

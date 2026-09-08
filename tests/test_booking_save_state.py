@@ -139,6 +139,14 @@ class BookingSaveStateTests(unittest.TestCase):
 
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
+        def validated(_page, end_input, _booking, end_time):
+            end_input.fill(end_time)
+            return True, "validated"
+        validation = mock.patch.object(
+            book_week, "refresh_extension_validation", side_effect=validated
+        )
+        validation.start()
+        self.addCleanup(validation.stop)
         self.receipts_path = (
             Path(self.temporary_directory.name) / "mutation_receipts.json"
         )
@@ -375,6 +383,23 @@ class BookingSaveStateTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in pending], [receipt["id"]])
         self.assertNotIn("verified_at", pending[0])
         self.assertNotIn("resolved_at", pending[0])
+
+    def test_extension_failed_validation_never_creates_receipt_or_clicks_save(self):
+        page = self._extension_edit_page()
+        booking = {
+            "room": self.ROOM, "date": self.BOOKING_DATE.isoformat(),
+            "startTime": self.START, "endTime": "10:30",
+            "eventId": 4242, "event_url": self.EVENT_URL,
+        }
+        with (
+            mock.patch.object(book_week, "safe_goto"),
+            mock.patch.object(book_week, "refresh_extension_validation",
+                              return_value=(False, "validation timed out")),
+            mock.patch.object(book_week, "record_pending_extension") as receipt,
+        ):
+            self.assertFalse(book_week.edit_reservation_end_time(page, booking, self.END))
+        receipt.assert_not_called()
+        page.locator("button:has-text('Save')").first.click.assert_not_called()
 
     def test_extension_post_save_page_error_is_never_returned_as_retryable(self):
         page = self._extension_edit_page(
