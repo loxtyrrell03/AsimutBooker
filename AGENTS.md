@@ -43,8 +43,13 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Verified 135 focused booking, receipt, agenda, extension and phone tests, plus
   the final five publication regressions (136 distinct tests). Tests use temporary
   snapshots and mocked notifications; no live reservation or notification tests.
-- Server reload is pending an idle Booker runtime lock; scheduled runs load the
-  new Python source on their next start. Preserve concurrent phone UI changes.
+- Reloaded only the owned phone task after acquiring the Booker runtime lock and
+  checking idle assistant/cancellation/jobs, zero unresolved requests and zero
+  pending mutations. Waited for the old listener and server lock to release.
+  Private HTTPS deployment verification and the authenticated live update stream
+  passed. Retained the current phone shell and its assets. Scheduled runs load
+  the Python changes on their next start; physical notification timing remains
+  untested, and no live booking was changed for deployment verification.
 
 ## 2026-09-09 My Week plans grouped by date
 
