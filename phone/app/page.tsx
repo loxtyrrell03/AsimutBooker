@@ -745,12 +745,13 @@ function ScheduleView({
 }) {
   const groups = useMemo(() => {
     const result = new Map<string, AgendaEvent[]>();
+    for (const day of booker.plan.days) result.set(day.date, []);
     for (const date of booker.agenda.closed_dates ?? []) result.set(date, []);
     for (const event of booker.agenda.events) {
       result.set(event.date, [...(result.get(event.date) ?? []), event]);
     }
     return [...result.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [booker.agenda.events, booker.agenda.closed_dates]);
+  }, [booker.agenda.events, booker.agenda.closed_dates, booker.plan.days]);
   const reservations = useMemo(
     () => booker.agenda.events.filter((event) => event.is_reservation),
     [booker.agenda.events],
@@ -833,116 +834,95 @@ function ScheduleView({
         <span className="closed-key">Practice rooms closed</span>
       </div>
 
-      {!booker.agenda.available ? (
-        <div className="empty-card">
-          <AlertTriangle />
-          <strong>Current bookings could not be verified</strong>
-          <p>Refresh the live agenda or ask the assistant to check it.</p>
-        </div>
-      ) : groups.length === 0 ? (
+      {booker.plan.stale && booker.plan.available && (
+        <output className="attention-card">
+          <RefreshCw className={refreshing ? 'spin-slow' : ''} />
+          <div>
+            <strong>Showing the last generated plan</strong>
+            <p>
+              Generated {timeAgo(booker.plan.generated_at)}. Potential blocks remain visible
+              for context and are refreshed live before the Booker acts.
+            </p>
+          </div>
+        </output>
+      )}
+      {!booker.plan.available && (
+        <div className="empty-inline">No generated plan is available yet. Tap refresh to build one.</div>
+      )}
+
+      {groups.length === 0 ? (
         <div className="empty-card">
           <CalendarDays />
-          <strong>No agenda events in the last live check</strong>
+          <strong>No bookings or planned sessions to show</strong>
           <p>{refreshing ? 'Checking Asimut now…' : 'Tap refresh to check Asimut again.'}</p>
         </div>
       ) : (
         <div className="day-list">
-          {groups.map(([date, events]) => (
-            <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed' : ''}`} key={date}>
-              <h3>{dateLabel(date, true)}</h3>
-              {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
-              {events.map((event, index) => (
-                <article className="agenda-card" key={`${event.start_time}-${event.room}-${index}`}>
-                  <div className="event-time">
-                    <strong>{event.start_time}</strong>
-                    <span>{event.end_time}</span>
-                  </div>
-                  <div className="event-copy">
-                    <Badge variant={event.is_reservation ? 'default' : 'outline'}>
-                      {event.is_reservation ? 'Reservation' : 'College event'}
-                    </Badge>
-                    <h4>{event.room}</h4>
-                    {!event.is_reservation && <p>{event.title}</p>}
-                    {event.is_reservation && (
-                      <button disabled={cancelling || !event.event_id} onClick={() => onCancelBooking(event)} type="button">
-                        Cancel booking
-                      </button>
+          {groups.map(([date, events]) => {
+            const day = booker.plan.days.find((item) => item.date === date);
+            const sessions = day ? selectedPlanSessions(day) : [];
+            const plannedMinutes = day ? selectedPlanMinutes(day) : 0;
+            return (
+              <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed' : ''}`} key={date}>
+                <h3>{dateLabel(date, true)}</h3>
+                {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
+                {events.map((event, index) => (
+                  <article className="agenda-card" key={`${event.start_time}-${event.room}-${index}`}>
+                    <div className="event-time">
+                      <strong>{event.start_time}</strong>
+                      <span>{event.end_time}</span>
+                    </div>
+                    <div className="event-copy">
+                      <Badge variant={event.is_reservation ? 'default' : 'outline'}>
+                        {event.is_reservation ? 'Reservation' : 'College event'}
+                      </Badge>
+                      <h4>{event.room}</h4>
+                      {!event.is_reservation && <p>{event.title}</p>}
+                      {event.is_reservation && (
+                        <button disabled={cancelling || !event.event_id} onClick={() => onCancelBooking(event)} type="button">
+                          Cancel booking
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+                {day && (
+                  <article className="plan-day">
+                    <div className="plan-date">
+                      <span>
+                        {Math.round(day.existing_minutes / 60 * 10) / 10}h booked ·{' '}
+                        {Math.round(day.target_minutes / 60 * 10) / 10}h target
+                        {plannedMinutes > 0
+                          ? ` · ${Math.round(plannedMinutes / 60 * 10) / 10}h across ${sessions.length} planned ${sessions.length === 1 ? 'session' : 'sessions'}`
+                          : ''}
+                      </span>
+                    </div>
+                    {sessions.length ? (
+                      <div className="potential-list">
+                        {sessions.map((candidate, index) => (
+                          <div className="potential-card" key={`${candidate.room}-${candidate.start_time}-${candidate.end_time}`}>
+                            <div><Clock3 /></div>
+                            <div>
+                              <Badge variant="outline">
+                                {sessions.length > 1 ? `Session ${index + 1} · ` : ''}Not booked yet
+                              </Badge>
+                              <h4>{candidate.start_time}–{candidate.end_time}</h4>
+                              <p>{candidate.room}</p>
+                              <small>{candidate.reason || day.reason}</small>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="day-reason">{day.reason}</p>
                     )}
-                  </div>
-                </article>
-              ))}
-            </section>
-          ))}
+                  </article>
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
-
-      <section className="plan-section">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">Automatic Booker</span>
-            <h3>Planned practice</h3>
-          </div>
-          <Badge variant="outline">
-            {refreshing ? 'Updating' : booker.plan.stale ? 'Last checked plan' : 'Not booked yet'}
-          </Badge>
-        </div>
-        <p className="plan-summary">{booker.plan.summary}</p>
-        {booker.plan.stale && booker.plan.available && (
-          <output className="attention-card">
-            <RefreshCw className={refreshing ? 'spin-slow' : ''} />
-            <div>
-              <strong>Showing the last generated plan</strong>
-              <p>
-                Generated {timeAgo(booker.plan.generated_at)}. Potential blocks remain visible
-                for context and are refreshed live before the Booker acts.
-              </p>
-            </div>
-          </output>
-        )}
-        {!booker.plan.available ? (
-          <div className="empty-inline">No generated plan is available yet. Tap refresh to build one.</div>
-        ) : booker.plan.days.length === 0 ? (
-          <div className="empty-inline">No current potential blocks.</div>
-        ) : (
-          booker.plan.days.map((day) => {
-            const sessions = selectedPlanSessions(day);
-            const plannedMinutes = selectedPlanMinutes(day);
-            return (
-              <article className="plan-day" key={day.date}>
-                <div className="plan-date">
-                  <strong>{dateLabel(day.date, true)}</strong>
-                  <span>
-                    {Math.round(day.existing_minutes / 60 * 10) / 10}h booked ·{' '}
-                    {Math.round(day.target_minutes / 60 * 10) / 10}h target
-                    {plannedMinutes > 0
-                      ? ` · ${Math.round(plannedMinutes / 60 * 10) / 10}h across ${sessions.length} planned ${sessions.length === 1 ? 'session' : 'sessions'}`
-                      : ''}
-                  </span>
-                </div>
-                {sessions.length ? (
-                  <div className="potential-list">
-                    {sessions.map((candidate, index) => (
-                      <div className="potential-card" key={`${candidate.room}-${candidate.start_time}-${candidate.end_time}`}>
-                        <div><Clock3 /></div>
-                        <div>
-                          <Badge variant="outline">
-                            {sessions.length > 1 ? `Session ${index + 1} · ` : ''}Not booked yet
-                          </Badge>
-                          <h4>{candidate.start_time}–{candidate.end_time}</h4>
-                          <p>{candidate.room}</p>
-                          <small>{candidate.reason || day.reason}</small>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="day-reason">{day.reason}</p>
-                )}
-              </article>
-            );
-          })
-        )}
-      </section>
     </section>
   );
 }

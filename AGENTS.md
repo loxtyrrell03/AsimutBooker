@@ -28,6 +28,21 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-09 My Week plans grouped by date
+
+- My Week uses one chronological date list for agenda events, closed dates and
+  plan days. Each date shows its existing bookings followed by its planned
+  sessions and target summary; plan-only days and no-session reasons remain
+  visible. The separate bottom Planned practice list is removed. Stale-plan and
+  unavailable-agenda notices remain visible; potential sessions stay unbooked.
+- Verified 19 Node tests, TypeScript, lint, static build validation, and isolated
+  Chromium/WebKit grouping and cancellation checks. The grouping check covers
+  multiple sessions, plan-only dates, unavailable agenda, stale plans, closures,
+  and 320/390/844px widths; the WebKit render was inspected.
+- Published static build `20260909-planned-dates` and verified private HTTPS.
+  Old hashed assets and running sessions were retained; no server restart or
+  live booking/preference writes. Physical phone interaction remains unverified.
+
 ## 2026-09-09 Phone desktop tools and Settings parity
 
 - The chosen Desktop companion layout now includes grouped, dedicated Settings
