@@ -120,6 +120,9 @@ class FakeRuntime:
 
 
 class FakeAssistant:
+    def publish_booker_changes(self):
+        pass
+
     operations = mock.Mock(active=False)
     def __init__(self):
         self.runtime = type("Runtime", (), {"is_busy": False})()

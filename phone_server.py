@@ -513,6 +513,7 @@ class PhoneAssistantService:
         self._codex_executable = codex_executable
         self._runtime: Any | None = None
         self.operations = PhoneOperations(self, state_dir=self._state_path.parent / "phone_operations")
+        self.publish_booker_changes()
 
     @property
     def runtime(self) -> Any:
@@ -576,6 +577,21 @@ class PhoneAssistantService:
                     if self._active_client_message_id == active_id:
                         self._active_client_message_id = None
                         self._active_turn_started = False
+
+    def publish_booker_changes(self) -> None:
+        """Wake connected clients when an external Booker writes display data."""
+        with self._request_lock:
+            signature = []
+            for name in ("agenda_snapshot.json", "booking_plan.json"):
+                try:
+                    stat = (APP_DIR / "data" / name).stat()
+                    signature.append((stat.st_mtime_ns, stat.st_size))
+                except OSError:
+                    signature.append(None)
+            previous = getattr(self, "_booker_signature", None)
+            self._booker_signature = signature
+            if previous is not None and previous != signature:
+                self.events.publish({"kind": "snapshot.required"})
 
     def snapshot(self) -> dict[str, Any]:
         # Capture the replay boundary first. Runtime state is updated before
@@ -1444,6 +1460,7 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
         deadline = time.monotonic() + min(SSE_CONNECTION_SECONDS, absolute_remaining)
         try:
             while time.monotonic() < deadline:
+                self.app.assistant.publish_booker_changes()
                 events, overflow = self.app.assistant.events.wait_after(
                     cursor,
                     timeout=min(12.0, max(0.0, deadline - time.monotonic())),

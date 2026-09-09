@@ -28,6 +28,24 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-09 Immediate confirmed booking publication
+
+- Verified create/extension receipts patch their exact positive event into the
+  display agenda and notify immediately, before later scans or scheduled boundary
+  waits. End-of-run history suppresses notifications already attempted by that
+  process. Display/notification failures do not undo verified success.
+- The agenda patch preserves unrelated events and the full scan's observed time;
+  it does not make older agenda evidence appear freshly scanned. Invalid identity
+  or an unavailable/out-of-window snapshot never fabricates a complete agenda.
+- Phone SSE checks agenda/plan file changes at its existing twelve-second
+  heartbeat and emits replayable snapshot requests, including external scheduled
+  runs. Existing phone clients handle this event; no shell rebuild is needed.
+- Verified 135 focused booking, receipt, agenda, extension and phone tests, plus
+  the final five publication regressions (136 distinct tests). Tests use temporary
+  snapshots and mocked notifications; no live reservation or notification tests.
+- Server reload is pending an idle Booker runtime lock; scheduled runs load the
+  new Python source on their next start. Preserve concurrent phone UI changes.
+
 ## 2026-09-09 My Week plans grouped by date
 
 - My Week uses one chronological date list for agenda events, closed dates and

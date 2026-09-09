@@ -50,6 +50,7 @@ from booking_preferences_guard import (
 from agenda_snapshot import (
     AGENDA_SNAPSHOT_FILE,
     AgendaSnapshotError,
+    apply_verified_reservation,
     publish_agenda_snapshot,
 )
 from booking_strategy import (
@@ -103,7 +104,7 @@ from mutation_receipts import (
     attach_event_url,
     list_pending as list_pending_mutation_receipts,
     mark_resolved as resolve_mutation_receipt,
-    mark_verified as verify_mutation_receipt,
+    mark_verified as _mark_mutation_verified,
     record_pending_cancel,
     record_pending_create,
     record_pending_extension,
@@ -8726,6 +8727,37 @@ def scan_agenda(
     return events_found, all_reservations
 
 
+_published_receipts = set()
+_notified_booking_details = set()
+
+
+def verify_mutation_receipt(receipt_id, *, event_url=None):
+    """Publish confirmed changes before subsequent scanning or boundary waits."""
+    receipt = _mark_mutation_verified(receipt_id, event_url=event_url)
+    if receipt["kind"] not in {"create", "extension"} or receipt_id in _published_receipts:
+        return receipt
+    _published_receipts.add(receipt_id)
+    try:
+        apply_verified_reservation(receipt)
+    except Exception as exc:
+        print(f"Warning: Confirmed booking display update failed: {exc}")
+    if receipt["kind"] == "extension":
+        detail = f"EXTENDED: {receipt['room']} {receipt['date']} {receipt['start']}-{receipt['end']}"
+    else:
+        start_hour, start_minute = map(int, receipt['start'].split(':'))
+        end_hour, end_minute = map(int, receipt['end'].split(':'))
+        minutes = (end_hour - start_hour) * 60 + end_minute - start_minute
+        detail = f"{receipt['date']} {receipt['room']} {receipt['start']} {receipt['end']} {minutes}"
+    formatted = format_booking_notification_detail(detail)
+    # Reserve before sending: a lost HTTP response must not cause a duplicate.
+    _notified_booking_details.add(formatted)
+    try:
+        send_notification("Booked 1 room", f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
+    except Exception as exc:
+        print(f"Warning: Confirmed booking notification failed: {exc}")
+    return receipt
+
+
 def send_notification(title, message, priority="default"):
     """Send a push notification via ntfy.sh."""
     if not NTFY_ENABLED:
@@ -8830,11 +8862,15 @@ def save_history(
             # contain spaces (for example, "The Hopkins Studio").
             formatted = [
                 format_booking_notification_detail(detail)
-                for detail in booking_details[:5]
+                for detail in booking_details
+                if format_booking_notification_detail(detail) not in _notified_booking_details
             ]
-            message = "\n".join(formatted)
-            if len(booking_details) > 5:
-                message += f"\n+{len(booking_details) - 5} more"
+            if not formatted:
+                return
+            title = f"Booked {len(formatted)} room{'s' if len(formatted) > 1 else ''}"
+            message = "\n".join(formatted[:5])
+            if len(formatted) > 5:
+                message += f"\n+{len(formatted) - 5} more"
             message += f"\n{MANUAL_RECONFIRMATION_REMINDER}"
             send_notification(title, message, priority="default")
         else:

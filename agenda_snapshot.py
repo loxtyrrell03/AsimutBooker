@@ -277,6 +277,39 @@ def publish_agenda_snapshot(
     return snapshot_from_dict(document)
 
 
+def apply_verified_reservation(receipt: Mapping[str, Any], *, path: Path = AGENDA_SNAPSHOT_FILE) -> bool:
+    """Patch exact verified evidence without making the rest of the agenda newer."""
+    from runtime_guard import parse_confirmed_event_id
+
+    event_id = parse_confirmed_event_id(receipt.get("event_url", ""))
+    if receipt.get("status") != "verified" or receipt.get("kind") not in {"create", "extension"} or not event_id:
+        return False
+    path = Path(path)
+    with InterProcessFileLock(path.with_suffix(path.suffix + ".lock")):
+        current = read_agenda_snapshot(path).snapshot
+        if current is None or date.fromisoformat(receipt["date"]) not in current.dates:
+            return False
+        events = current.event_dicts()
+        matches = [event for event in events if event["eventId"] == event_id]
+        if len(matches) > 1 or any(
+            not event["isReservation"] or event["date"] != receipt["date"]
+            or event["room"] != receipt["room"] or event["startTime"] != receipt["start"]
+            for event in matches
+        ):
+            return False
+        events = [event for event in events if event["eventId"] != event_id]
+        events.append({"eventId": event_id, "date": receipt["date"], "room": receipt["room"],
+                       "startTime": receipt["start"], "endTime": receipt["end"],
+                       "title": "Reservation", "isReservation": True})
+        events.sort(key=lambda e: (e["date"], e["startTime"], e["endTime"], e["title"],
+                                   e["isReservation"], e["room"] or "", e["eventId"] or 0))
+        document = {"version": SCHEMA_VERSION, "observed_at": current.observed_at.isoformat(),
+                    "dates": [day.isoformat() for day in current.dates], "events": events}
+        snapshot_from_dict(document)
+        atomic_write_json(path, document, backup=True)
+    return True
+
+
 def read_agenda_snapshot(
     path: Path = AGENDA_SNAPSHOT_FILE,
     *,
