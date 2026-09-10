@@ -1,0 +1,7 @@
+{
+  "screens": 87,
+  "options": 3,
+  "frames_per_option": 29,
+  "errors": [],
+  "scope": "Static artwork geometry, local links and screen coverage only; no runtime or browser interaction."
+}

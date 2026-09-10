@@ -15,6 +15,29 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-10 Phone-inspired desktop design review
+
+- `docs/design/2026-09-10-desktop-refresh/` contains three editable SVG desktop
+  proposals: A Quiet desktop (light sidebar), B Open canvas (top navigation),
+  and C Week workspace (calendar home with adjacent detail). All retain the
+  phone's current Quiet Focus colours and system typography. A is recommended;
+  the user has not selected or authorized implementation of a direction yet.
+- Each option has 29 example frames covering main pages, all calendar modes,
+  compact settings and editors, system tools, setup, progress, cancellation,
+  errors/recovery, confirmations, 760px narrow help/settings and 1040x740
+  Settings. All values are invented. `index.html` is the comparison gallery;
+  the main SVGs and `comparison.svg` link to local static review frames.
+- All 87 frames passed text bounds/overlap, control-obstruction, palette and
+  local-link checks and rendered directly with Sharp. The home screens,
+  comparison/contact sheet and representative detail, calendar, settings,
+  narrow-help, scan and strategy renders were inspected; all 106 gallery
+  references resolve. This is static design evidence, not implemented form,
+  hover-help, booking, deployment or physical-device interaction.
+- No Computer Use or Chrome control was used. Only design documentation and
+  artwork changed; live application source, sessions, preferences, booking
+  records and deployment were preserved. Future implementation must retain
+  draft persistence, deterministic settings and all verified-mutation controls.
+
 ## 2026-09-10 crossed-out booking-off dates
 
 - Calendar dates whose saved state is Booking off are now crossed out on both
