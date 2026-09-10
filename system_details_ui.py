@@ -11,7 +11,11 @@ def build_system_details(app, parent, colors, labels, symbols, state_colors):
     canvas.configure(yscrollcommand=scroll.set)
     body = ttk.Frame(canvas, style='Page.TFrame', padding=(24, 20))
     window = canvas.create_window(0, 0, window=body, anchor='nw')
-    canvas.bind('<Configure>', lambda e: canvas.itemconfigure(window, width=e.width))
+    def fit(e):
+        width=min(984,e.width)
+        canvas.itemconfigure(window,width=width)
+        canvas.coords(window,(e.width-width)//2,0)
+    canvas.bind('<Configure>',fit)
     body.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
     app.system_details_body = body
 

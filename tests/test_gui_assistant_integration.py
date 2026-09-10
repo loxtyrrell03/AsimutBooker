@@ -19,6 +19,7 @@ class _FakeWidget:
         self.args = args
         self.kwargs = kwargs
         self.pack_calls = []
+        self.content = self
 
     def pack(self, *args, **kwargs):
         self.pack_calls.append((args, kwargs))
@@ -73,6 +74,7 @@ class GuiAssistantLayoutTests(unittest.TestCase):
         with (
             patch.object(instance, "_create_quiet_shell", return_value=_FakeWidget()),
             patch("gui.ttk.Frame", _FakeWidget),
+            patch("open_canvas_ui.CenteredFrame", _FakeWidget),
             patch("gui.ttk.Label", _FakeWidget),
             patch("gui.ttk.Notebook", side_effect=notebook_factory),
             patch("gui.AssistantPanel", side_effect=assistant_factory),
@@ -86,7 +88,7 @@ class GuiAssistantLayoutTests(unittest.TestCase):
         )
         self.assertIs(notebook.selected, notebook.tabs[0][0])
         self.assertEqual(notebook.explicit_select_calls, [])
-        self.assertIs(captured["master"], notebook.tabs[3][0])
+        self.assertIs(captured["master"].master, notebook.tabs[3][0])
         self.assertEqual(captured["kwargs"]["on_send"], instance._send_assistant_message)
         self.assertEqual(captured["kwargs"]["on_stop"], instance._stop_assistant)
         self.assertEqual(captured["kwargs"]["on_new_chat"], instance._new_assistant_chat)

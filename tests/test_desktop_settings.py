@@ -104,7 +104,7 @@ class DesktopSettingsTests(unittest.TestCase):
             with self.subTest(editor=title):
                 control.invoke()
                 self.root.update_idletasks()
-                dialog = next(w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel))
+                dialog = next(w for w in app._detail_pages.values() if w.title() == title)
                 self.assertEqual(dialog.title(), title)
                 buttons = [w for w in descendants(dialog) if isinstance(w, ttk.Button)]
                 self.assertTrue(any(str(w.cget('text')).startswith('Save') for w in buttons))
@@ -129,6 +129,8 @@ class DesktopSettingsTests(unittest.TestCase):
                 for widget in descendants(self.app.preferences_page):
                     if not isinstance(widget, (ttk.Button, ttk.Checkbutton, ttk.Combobox, ttk.Spinbox)):
                         continue
+                    if not widget.winfo_ismapped():
+                        continue
                     self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth() - 1, str(widget))
                     right = widget.winfo_rootx() + widget.winfo_width()
                     self.assertLessEqual(right, self.root.winfo_rootx() + width)
@@ -136,11 +138,12 @@ class DesktopSettingsTests(unittest.TestCase):
                 canvas.yview_moveto(0)
                 # All six settings groups fit at both supported window sizes.
                 self.assertEqual(canvas.yview(), (0.0, 1.0))
-                for card in self.app.settings_sections.values():
+                for card, _, _ in self.app.settings_tiles.values():
                     self.assertLessEqual(card.winfo_rooty() + card.winfo_height(),
                                          canvas.winfo_rooty() + canvas.winfo_height())
                 self.app.time_prefs_enabled.set(True)
                 self.app.time_prefs_dropdown.set('Custom...')
+                self.app._open_settings_group('Preferred time')
                 self.app._update_time_prefs_ui_state()
                 self.root.update()
                 self.assertEqual(canvas.yview(), (0.0, 1.0))
@@ -163,6 +166,7 @@ class DesktopSettingsTests(unittest.TestCase):
                 overflow.destroy()
                 self.app.time_prefs_enabled.set(False)
                 self.app._update_time_prefs_ui_state()
+                self.app._show_settings_hub()
                 canvas.yview_moveto(0)
                 self.root.update()
 

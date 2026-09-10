@@ -484,12 +484,12 @@ class AssistantPanel(ttk.Frame):
         heading.grid(row=0, column=0, sticky="w")
         ttk.Label(
             heading,
-            text="Asimut Assistant",
+            text="Assistant",
             style="Assistant.Title.TLabel",
         ).pack(anchor="w")
         ttk.Label(
             heading,
-            text="Ask about your schedule and plans, or tell the booker what to do.",
+            text="Your bookings, plans and preferences.",
             style="Assistant.Subtitle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -848,7 +848,7 @@ class AssistantPanel(ttk.Frame):
         frame.columnconfigure(0, weight=1)
         tk.Label(
             frame,
-            text="How can I help with your practice-room bookings?",
+            text="What would you like to arrange?",
             background=self.palette["page"],
             foreground=self.palette["text"],
             font=(self.display_font_family, -22, "bold"),
@@ -857,8 +857,8 @@ class AssistantPanel(ttk.Frame):
         tk.Label(
             frame,
             text=(
-                "I can explain your schedule, booking plan and preferences, "
-                "and carry out supported booker actions."
+                "Ask about your week "
+                "or arrange your next practice session."
             ),
             background=self.palette["page"],
             foreground=self.palette["secondary_text"],

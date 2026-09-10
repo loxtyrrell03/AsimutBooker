@@ -10,6 +10,7 @@ INK = '#1D2430'
 MUTED = '#667080'
 SURFACE = '#FFFFFF'
 LINE = '#E1E6EE'
+PAGE = '#F8FAFC'
 
 
 def display_summary(events, now=None):
@@ -48,7 +49,7 @@ def label(parent, text='', size=15, color=INK, bold=False, **kwargs):
 class RoundedCard(tk.Canvas):
     """Resizable rounded surface containing ordinary accessible Tk widgets."""
     def __init__(self, parent, fill=SURFACE, padding=24, **kwargs):
-        super().__init__(parent, bg=SURFACE, highlightthickness=0, bd=0, **kwargs)
+        super().__init__(parent, bg=parent.cget('background') if isinstance(parent,tk.Frame) else PAGE, highlightthickness=0, bd=0, **kwargs)
         self.fill, self.padding = fill, padding
         self.content = tk.Frame(self, bg=fill)
         self.window = self.create_window(padding, padding, window=self.content, anchor='nw')
@@ -72,19 +73,33 @@ class RoundedCard(tk.Canvas):
 
 class ScrollPage(tk.Frame):
     def __init__(self, parent):
-        super().__init__(parent, bg=SURFACE)
-        self.canvas = tk.Canvas(self, bg=SURFACE, highlightthickness=0)
+        super().__init__(parent, bg=PAGE)
+        self.canvas = tk.Canvas(self, bg=PAGE, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
-        self.scrollbar.pack(side='right', fill='y')
+        self.canvas.configure(yscrollcommand=self._scrollbar_visibility)
         self.canvas.pack(side='left', fill='both', expand=True)
-        self.content = tk.Frame(self.canvas, bg=SURFACE)
+        self.content = tk.Frame(self.canvas, bg=PAGE)
         self.window = self.canvas.create_window(0, 0, window=self.content, anchor='nw')
-        self.canvas.bind('<Configure>', lambda e: self.canvas.itemconfigure(self.window, width=e.width))
-        self.content.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
+        self.canvas.bind('<Configure>', self._resize_page)
+        self.content.bind('<Configure>', self._resize_content)
         self.canvas.bind('<MouseWheel>', self._scroll_wheel)
         # Bind only to descendants of this page, never steal scrolling from other dialogs.
         self.bind('<Enter>', self._bind_wheel)
+
+    def _resize_page(self,event):
+        width=min(984,max(1,event.width-24))
+        self.canvas.itemconfigure(self.window,width=width)
+        self.canvas.coords(self.window,(event.width-width)//2,0)
+
+    def _scrollbar_visibility(self,first,last):
+        self.scrollbar.set(first,last)
+        if float(first)>0 or float(last)<1:
+            if not self.scrollbar.winfo_manager(): self.scrollbar.pack(side='right',fill='y',before=self.canvas)
+        elif self.scrollbar.winfo_manager(): self.scrollbar.pack_forget()
+
+    def _resize_content(self,_event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+        self._bind_wheel()
 
     def _bind_wheel(self, _event=None):
         def visit(widget):
@@ -105,24 +120,23 @@ class TodayPanel(ScrollPage):
         self.on_find, self.on_week, self.on_ask = on_find, on_week, on_ask
         self.on_refresh, self.on_details = on_refresh, on_details
         self.next_event = None
-        self.body = tk.Frame(self.content, bg=SURFACE, padx=34, pady=24)
+        self.body = tk.Frame(self.content, bg=PAGE, padx=24, pady=24)
         self.body.pack(fill='both', expand=True)
-        heading = tk.Frame(self.body, bg=SURFACE)
-        heading.pack(fill='x', pady=(0,20))
-        self.date_label = label(heading, size=14, color=MUTED)
-        self.date_label.pack(anchor='w')
-        ttk.Button(heading, text='Find a room', command=on_find, style='Primary.TButton').pack(side='right')
+        heading = tk.Frame(self.body, bg=PAGE)
+        heading.pack(fill='x', pady=(0,6))
+        self.refresh_button=ttk.Button(heading,text='Refresh bookings',command=on_refresh)
+        self.refresh_button.pack(side='right')
         label(heading, 'Today', size=32, bold=True).pack(side='left', pady=(8,0))
+        self.date_label = label(self.body, size=14, color=MUTED)
+        self.date_label.pack(anchor='w',pady=(0,12))
         self.notice = label(self.body, color='#8B5C11', size=13, wraplength=720)
-        top = tk.Frame(self.body, bg=SURFACE)
+        top = tk.Frame(self.body, bg=PAGE)
         top.pack(fill='x')
-        top.columnconfigure(0, weight=5, uniform='cards')
-        top.columnconfigure(1, weight=3, uniform='cards')
         self.hero = RoundedCard(top, fill=TINT)
-        self.hero.grid(row=0,column=0,sticky='nsew',padx=(0,18))
+        self.hero.pack(fill='x')
         c = self.hero.content
         self.eyebrow = label(c, 'UP NEXT', size=12, color=BLUE, bold=True)
-        self.eyebrow.pack(anchor='w',pady=(0,18))
+        self.eyebrow.pack(anchor='w',pady=(0,12))
         self.room = label(c, 'Checking your bookings…', size=29, bold=True, wraplength=460)
         self.room.pack(anchor='w',fill='x')
         self.when = label(c, size=21, wraplength=460)
@@ -130,41 +144,33 @@ class TodayPanel(ScrollPage):
         self.duration = label(c, size=14, color=MUTED)
         self.duration.pack(anchor='w')
         self.reconfirm = label(c, 'Reconfirm on college Wi-Fi when available.', size=12, color=MUTED, wraplength=360)
-        self.reconfirm.pack(anchor='w',pady=(16,12))
-        self.details = ttk.Button(c, text='View booking', style='Primary.TButton', command=lambda: self.on_details(self.next_event))
-        self.details.pack(anchor='w')
-        week = RoundedCard(top, fill='#F7F9FC')
-        week.grid(row=0,column=1,sticky='nsew')
-        c = week.content
-        label(c,'This week',size=20,bold=True).pack(anchor='w')
-        self.week_total = label(c,'—',size=37,bold=True)
-        self.week_total.pack(anchor='w',pady=(24,0))
-        label(c,'booked in your checked agenda',size=13,color=MUTED,wraplength=230).pack(anchor='w')
-        self.goal = label(c,size=14,color=MUTED,wraplength=230)
-        self.goal.pack(anchor='w',pady=(20,16))
-        ttk.Button(c,text='See my week  →',command=on_week,style='QuietLink.TButton').pack(anchor='w')
-        section = tk.Frame(self.body,bg=SURFACE)
-        section.pack(fill='x',pady=(20,8))
+        self.reconfirm.pack(anchor='w',pady=(8,10))
+        self.details = ttk.Button(c, text='View booking', style='Hero.Primary.TButton', command=lambda: self.on_details(self.next_event))
+        self.details.pack(fill='x')
+        section = tk.Frame(self.body,bg=PAGE)
+        section.pack(fill='x',pady=(12,4))
         label(section,'Also today',size=21,bold=True).pack(side='left')
-        ttk.Button(section,text='My Week  →',command=on_week,style='QuietLink.TButton').pack(side='right')
-        self.events = tk.Frame(self.body,bg=SURFACE)
+
+        self.events = tk.Frame(self.body,bg=PAGE)
         self.events.pack(fill='x')
-        ask = RoundedCard(self.body,fill='#F7F9FC',padding=18)
-        ask.pack(fill='x',pady=(18,12))
-        ttk.Button(ask.content,text='Ask Assistant',command=lambda:on_ask(''),style='Toolbar.TButton').pack(side='right')
-        label(ask.content,'Need to change your plans?',size=16,bold=True).pack(anchor='w')
-        label(ask.content,'Find a room, change a session, or take a day off.',size=13,color=MUTED).pack(anchor='w',pady=(5,0))
-        footer=tk.Frame(self.body,bg=SURFACE);footer.pack(fill='x')
+        ttk.Separator(self.body).pack(fill='x',pady=12)
+        week=tk.Frame(self.body,bg=PAGE);week.pack(fill='x')
+        self.week_total=label(week,'Booked hours unavailable',size=18,bold=True)
+        self.week_total.pack(side='left')
+        ttk.Button(week,text='See my week →',command=on_week,style='QuietLink.TButton').pack(side='right')
+        self.goal=label(self.body,size=13,color=MUTED);self.goal.pack(anchor='w',pady=(2,10))
+        actions=tk.Frame(self.body,bg=PAGE);actions.pack(fill='x',pady=(8,14))
+        ttk.Button(actions,text='Find a room',command=on_find,style='Primary.TButton').pack(side='left')
+        ttk.Button(actions,text='Ask Assistant',command=lambda:on_ask('')).pack(side='left',padx=10)
+        footer=tk.Frame(self.body,bg=PAGE);footer.pack(fill='x')
         self.freshness=label(footer,size=12,color=MUTED);self.freshness.pack(side='left')
-        self.refresh_button=ttk.Button(footer,text='Refresh bookings',command=on_refresh,style='QuietLink.TButton')
-        self.refresh_button.pack(side='right')
 
     def update_data(self, events, *, available, stale, checked='', goal='', now=None):
         view=display_summary(events,now)
         self.next_event=view['next'] if available else None
         self.date_label.configure(text=datetime.fromisoformat(view['today']).strftime('%A, %d %B'))
         self.goal.configure(text=goal)
-        self.week_total.configure(text=f"{view['week_minutes']/60:g} hours" if available else '—')
+        self.week_total.configure(text=f"{view['week_minutes']/60:g} hours booked this week" if available else 'Booked hours unavailable')
         self.freshness.configure(text=f'Last checked {checked}' if checked else 'Not checked yet')
         if stale:
             self.notice.configure(text='Showing your last checked bookings. Refresh to check for changes.')
@@ -176,7 +182,8 @@ class TodayPanel(ScrollPage):
             self.room.configure(text=f"Room {event.get('room') or 'not shown'}")
             day='Today' if event['date']==view['today'] else datetime.fromisoformat(event['date']).strftime('%a, %d %b')
             self.when.configure(text=f"{day} · {event['startTime']}–{event['endTime']}")
-            self.duration.configure(text='Time reserved for your practice')
+            minutes=(datetime.strptime(event['endTime'],'%H:%M')-datetime.strptime(event['startTime'],'%H:%M')).total_seconds()/60
+            self.duration.configure(text=f'{minutes/60:g} hours of practice')
             self.reconfirm.configure(text='Reconfirm on college Wi-Fi when available.')
             self.details.configure(text='View booking',command=lambda:self.on_details(self.next_event))
         else:
@@ -189,11 +196,11 @@ class TodayPanel(ScrollPage):
         for child in self.events.winfo_children():child.destroy()
         rows=view['also_today'] if available else []
         for event in rows:
-            row=tk.Frame(self.events,bg=SURFACE,pady=10)
+            row=tk.Frame(self.events,bg=PAGE,pady=8)
             row.pack(fill='x')
             label(row,f"{event['startTime']}\n{event['endTime']}",size=14,color=MUTED,width=8).pack(side='left')
             title=f"Room {event.get('room','')}" if event.get('isReservation') else event.get('title','College event')
-            copy=tk.Frame(row,bg=SURFACE);copy.pack(side='left',fill='x',expand=True)
+            copy=tk.Frame(row,bg=PAGE);copy.pack(side='left',fill='x',expand=True)
             label(copy,title,size=16,bold=True,wraplength=450).pack(anchor='w')
             label(copy,'Booked practice' if event.get('isReservation') else event.get('room','College event'),size=13,color=MUTED).pack(anchor='w')
             ttk.Button(row,text='View',command=(lambda e=event:self.on_details(e)) if event.get('isReservation') else self.on_week,style='QuietLink.TButton').pack(side='right')
@@ -204,12 +211,12 @@ class WeekPanel(ScrollPage):
     def __init__(self,parent,*,on_calendar,on_refresh,on_details):
         super().__init__(parent)
         self.on_details=on_details
-        self.body=tk.Frame(self.content,bg=SURFACE,padx=34,pady=30);self.body.pack(fill='both',expand=True)
-        head=tk.Frame(self.body,bg=SURFACE);head.pack(fill='x')
+        self.body=tk.Frame(self.content,bg=PAGE,padx=24,pady=24);self.body.pack(fill='both',expand=True)
+        head=tk.Frame(self.body,bg=PAGE);head.pack(fill='x')
         label(head,'My Week',size=32,bold=True).pack(side='left')
         ttk.Button(head,text='Plan my practice',command=on_calendar,style='Primary.TButton').pack(side='right')
         self.status=label(self.body,size=13,color=MUTED);self.status.pack(anchor='w',pady=16)
-        self.rows=tk.Frame(self.body,bg=SURFACE);self.rows.pack(fill='x')
+        self.rows=tk.Frame(self.body,bg=PAGE);self.rows.pack(fill='x')
         ttk.Button(self.body,text='Refresh bookings',command=on_refresh,style='QuietLink.TButton').pack(anchor='w',pady=16)
 
     def update_data(self,events,*,available,stale,checked='',planned=()):
@@ -226,7 +233,7 @@ class WeekPanel(ScrollPage):
         for day,day_events in sorted(grouped.items()):
             label(self.rows,datetime.fromisoformat(day).strftime('%A, %d %B'),size=19,bold=True).pack(anchor='w',pady=(20,10))
             for event in sorted(day_events,key=lambda e:e['startTime']):
-                card=RoundedCard(self.rows,fill=TINT if event.get('isReservation') else '#F3EFF8',padding=17);card.pack(fill='x',pady=5)
+                card=RoundedCard(self.rows,fill=SURFACE if event.get('isReservation') else '#F1F4F8',padding=17);card.pack(fill='x',pady=5)
                 title=f"Room {event.get('room','')}" if event.get('isReservation') else event.get('title','College event')
                 if event.get('isReservation'):ttk.Button(card.content,text='View booking',command=lambda e=event:self.on_details(e)).pack(side='right')
                 label(card.content,f"{event['startTime']}–{event['endTime']}   {title}",size=17,bold=True,wraplength=580).pack(anchor='w')

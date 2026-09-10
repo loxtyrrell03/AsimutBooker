@@ -15,6 +15,23 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Open canvas desktop implementation
+
+- The user selected option B in `docs/design/2026-09-10-desktop-refresh/`.
+  The desktop now uses the phone palette, horizontal navigation, bounded content,
+  full-width Today summary and six-group Settings hub. The phone is unchanged.
+- `open_canvas_ui.py` owns the native theme, responsive column, bounded HelpTip
+  and embedded detail pages. Existing preference controllers remain responsible
+  for validation and saving. Editors stay mounted when navigating away; explicit
+  Save/Cancel closes them. Calendar view selection also survives navigation.
+- System, Activity, room/strategy/date editors, scans, history and support tools
+  remain available through the new shell. Existing desktop windows must reopen
+  to load it; do not restart sessions or booking workers during verification.
+- The first shell milestone passed the existing 880 Python tests and five new
+  isolated native navigation/draft/help/narrow-layout checks. Rendered fixture
+  pages were inspected; this is source and fixture evidence, not live desktop
+  or phone verification. Booking-detail and operation lifecycle work follows.
+
 ## 2026-09-10 Phone-inspired desktop design review
 
 - `docs/design/2026-09-10-desktop-refresh/` contains three editable SVG desktop

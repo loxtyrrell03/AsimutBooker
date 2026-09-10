@@ -11,7 +11,12 @@ def open_calendar_preferences(app, dates, settings_path):
     dates = [value for value in dates if value >= date.today().isoformat()]
     if not dates:
         return None
-    window = tk.Toplevel(app.root)
+    key = 'dates:' + ','.join(dates)
+    previous = getattr(app, '_detail_pages', {}).get(key)
+    if previous is not None and previous.winfo_exists():
+        app.main_notebook.select(previous.host)
+        return previous
+    window = app._open_detail_page(key, owner='calendar')
     window.title('Calendar practice settings')
     window.geometry('740x620')
     window.minsize(680, 580)

@@ -1,7 +1,7 @@
 # Phone-inspired desktop refresh
 
-Design review, 10 September 2026. **Awaiting the user's choice; do not implement
-these proposals without that choice.** All bookings, dates, preferences, health
+Design review, 10 September 2026. **The user selected B, Open canvas, for
+implementation on 11 September 2026.** All bookings, dates, preferences, health
 readings and results in the artwork are invented examples.
 
 ## Three options

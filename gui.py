@@ -7,6 +7,7 @@ import subprocess
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
+from open_canvas_ui import reuse_detail, HelpTip, CenteredFrame
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -136,20 +137,20 @@ HEALTH_STATE_COLORS = {
 # These are presentation tokens only; booking and health semantics stay in
 # their existing strict modules.
 UI_COLORS = {
-    "page": "#F5F5F7",
+    "page": "#F8FAFC",
     "surface": "#FFFFFF",
-    "surface_muted": "#FAFAFC",
-    "text": "#1D1D1F",
-    "secondary_text": "#6E6E73",
-    "tertiary_text": "#86868B",
-    "border": "#D9D9DE",
+    "surface_muted": "#F1F4F8",
+    "text": "#1D2430",
+    "secondary_text": "#667080",
+    "tertiary_text": "#667080",
+    "border": "#E1E6EE",
     "accent": "#0868D9",
     "accent_hover": "#0077ED",
     "accent_pressed": "#0068D1",
-    "danger": "#D70015",
-    "danger_hover": "#E51C2E",
+    "danger": "#B73332",
+    "danger_hover": "#9E3131",
     "selection": "#EAF3FF",
-    "log": "#111214",
+    "log": "#FFFFFF",
 }
 
 HEALTH_LABELS = {
@@ -1340,7 +1341,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.root = root
         self.root.title("Asimut Booker")
         self.root.geometry("1200x820")
-        self.root.minsize(1040, 740)
+        self.root.minsize(760, 600)
         self._configure_visual_system()
 
         # Set icon if available
@@ -1801,8 +1802,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.main_notebook.add(overview_tab, text="System details")
         self.main_notebook.add(activity_tab, text="Activity")
 
+        from open_canvas_ui import CenteredFrame
+        assistant_column = CenteredFrame(assistant_tab)
+        assistant_column.pack(fill=tk.BOTH, expand=True)
         self.assistant_panel = AssistantPanel(
-            assistant_tab,
+            assistant_column.content,
             on_send=self._send_assistant_message,
             on_stop=self._stop_assistant,
             on_new_chat=self._new_assistant_chat,
@@ -1840,7 +1844,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         ttk.Label(
             preferences_tab,
-            text="Quick changes save automatically. Editors have their own Save button.",
+            text="Your practice, your preferences.",
             style="Settings.Subtitle.TLabel",
         ).pack(anchor=tk.W, pady=(2, 10))
 
@@ -2198,6 +2202,9 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.load_strategy_settings()
 
         # Technical output is intentionally separate from the calm overview.
+        activity_column = CenteredFrame(activity_tab)
+        activity_column.pack(fill=tk.BOTH, expand=True)
+        activity_tab = activity_column.content
         activity_header = ttk.Frame(activity_tab, style="Page.TFrame")
         activity_header.pack(fill=tk.X, pady=(2, 16))
         activity_titles = ttk.Frame(activity_header, style="Page.TFrame")
@@ -2213,7 +2220,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         log_controls.pack(fill=tk.X, pady=(14, 0))
         ttk.Button(
             log_controls,
-            text="Clear",
+            text="Clear view",
             command=self.clear_log,
             style="Toolbar.TButton",
         ).pack(side=tk.LEFT, padx=(0, 7))
@@ -2255,8 +2262,8 @@ class AsimutBookerGUI(QuietFocusGUI):
             wrap=tk.WORD,
             font=("Cascadia Mono", 11),
             background=UI_COLORS["log"],
-            foreground="#F2F2F7",
-            insertbackground="#FFFFFF",
+            foreground=UI_COLORS["text"],
+            insertbackground=UI_COLORS["text"],
             selectbackground="#335F8A",
             selectforeground="#FFFFFF",
             relief=tk.FLAT,
@@ -2267,15 +2274,16 @@ class AsimutBookerGUI(QuietFocusGUI):
             spacing3=2,
         )
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.tag_config("success", foreground="#30D158")
-        self.log_text.tag_config("error", foreground="#FF453A")
-        self.log_text.tag_config("warning", foreground="#FFD60A")
-        self.log_text.tag_config("info", foreground="#64D2FF")
+        self.log_text.tag_config("success", foreground="#2B805B")
+        self.log_text.tag_config("error", foreground="#B73332")
+        self.log_text.tag_config("warning", foreground="#93620C")
+        self.log_text.tag_config("info", foreground="#0868D9")
 
         if self.settings_error:
             self.log(self.settings_error, "error")
         self._finish_quiet_layout(preferences_tab)
 
+    @reuse_detail('health')
     def show_health_details(self):
         """Show the full independent evidence without crowding the overview."""
 
@@ -2289,7 +2297,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             except tk.TclError:
                 pass
 
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('health')
         self.health_details_dialog = dialog
         dialog.title("System Status Details")
         dialog.geometry("900x660")
@@ -3014,9 +3022,10 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         self.refresh_status()
 
+    @reuse_detail('cleanup')
     def show_cleanup_dialog(self):
         """Show dialog to clean up old/unused files."""
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('cleanup')
         dialog.title("Clean Up Old Files")
         dialog.geometry("500x400")
         dialog.transient(self.root)
@@ -3096,9 +3105,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         """Show scheduled tasks manager dialog."""
         self._show_scheduled_tasks_dialog()
 
+    @reuse_detail('schedule')
     def _show_scheduled_tasks_dialog(self):
         """Show the single automatic recurring schedule."""
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('schedule')
         dialog.title("Automatic Schedule")
         dialog.geometry("820x440")
         dialog.transient(self.root)
@@ -3467,9 +3477,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         else:
             messagebox.showinfo("No Log", "No log file for today yet.")
 
+    @reuse_detail('logs')
     def show_logs_viewer(self):
         """Show log viewer dialog with date folders and log files."""
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('logs')
         dialog.title("Log Viewer")
         dialog.geometry("1000x700")
         dialog.transient(self.root)
@@ -4085,6 +4096,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         self._install_confirmed_room_preferences(saved_preferences[0])
         return True
 
+    @reuse_detail('rooms')
     def show_room_preferences_dialog(self):
         """Edit room ranking, exclusions, requirements, and session shape."""
 
@@ -4094,7 +4106,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         opening_preferences = self.room_preferences
         catalog_metadata = getattr(self, "room_catalog_metadata", None)
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('rooms')
         dialog.title("Room Preferences")
         dialog.geometry("1120x740")
         dialog.minsize(960, 680)
@@ -4418,6 +4430,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         ).pack(side=tk.RIGHT)
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
+    @reuse_detail('targets')
     def show_practice_plan_dialog(self):
         """Edit enabled days and per-date targets using isolated working copies."""
         if not self.settings_available:
@@ -4431,7 +4444,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             )
             return
 
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('targets')
         dialog.title("Customize Practice Plan")
         dialog.geometry("820x650")
         dialog.minsize(720, 580)
@@ -4743,11 +4756,12 @@ class AsimutBookerGUI(QuietFocusGUI):
         """Handle changes to booking strategy settings."""
         self.save_strategy_settings()
 
+    @reuse_detail('strategy')
     def show_booking_strategy_dialog(self):
         """Edit the forward-looking daily planner without exposing raw JSON."""
 
         daily = self.booking_strategy.daily_planning
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('strategy')
         dialog.title("Daily Booking Strategy")
         dialog.geometry("860x720")
         dialog.minsize(760, 650)
@@ -4759,7 +4773,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         body.pack(fill=tk.BOTH, expand=True)
         ttk.Label(
             body,
-            text="Plan the whole day before committing scarce peak allowance",
+            text="Booking strategy",
             font=(self.ui_display_font_family, 20, "bold"),
         ).pack(anchor=tk.W)
         ttk.Label(
@@ -4788,7 +4802,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         enable_cb = ttk.Checkbutton(
             body,
-            text="Enable day-level foresight and peak allowance protection",
+            text="Plan ahead before choosing rooms",
             variable=enabled_var,
         )
         enable_cb.pack(anchor=tk.W, pady=(0, 12))
@@ -4801,24 +4815,12 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         def add_row(label, widget, help_text):
             nonlocal row
-            ttk.Label(
-                form,
-                text=label,
-                font=(self.ui_font_family, 11, "bold"),
-            ).grid(
-                row=row, column=0, sticky="w", padx=(0, 16), pady=(5, 1)
-            )
-            widget.grid(row=row, column=1, sticky="w", pady=(5, 1))
-            ttk.Label(
-                form,
-                text=help_text,
-                foreground="#666666",
-                font=(self.ui_font_family, 10),
-                wraplength=430,
-                justify=tk.LEFT,
-            ).grid(row=row + 1, column=1, sticky="w", pady=(0, 5))
+            ttk.Label(form, text=label, font=(self.ui_font_family,-14,'bold')).grid(
+                row=row,column=0,sticky='w',padx=(0,16),pady=8)
+            widget.grid(row=row,column=1,sticky='w',pady=8)
+            HelpTip(form,help_text).grid(row=row,column=2,sticky='e',padx=8)
             controls.append(widget)
-            row += 2
+            row += 1
 
         quarter_times = [
             f"{minute // 60:02d}:{minute % 60:02d}"
@@ -4845,11 +4847,11 @@ class AsimutBookerGUI(QuietFocusGUI):
             state="readonly",
             width=12,
         )
-        add_row("Desired peak block", duration_combo, "Target continuous session length, in minutes.")
+        add_row("Peak session (minutes)", duration_combo, "Target continuous session length, in minutes.")
 
         hold_cb = ttk.Checkbutton(
             form,
-            text="Hold an early peak edge for demonstrably better later choices",
+            text="Wait for better later sessions",
             variable=hold_var,
         )
         add_row(
@@ -4865,7 +4867,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             state="readonly",
             width=12,
         )
-        add_row("Look-ahead", foresight_combo, "How many minutes of future horizon edges may influence the decision.")
+        add_row("Look ahead (minutes)", foresight_combo, "How many minutes of future horizon edges may influence the decision.")
 
         later_spin = ttk.Spinbox(form, from_=1, to=5, textvariable=later_var, width=10)
         add_row(
@@ -4882,7 +4884,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             width=12,
         )
         add_row(
-            "Fallback lead",
+            "Fallback lead (minutes)",
             fallback_combo,
             "Stop waiting this many minutes before the active peak-rule window ends so a useful fallback remains possible.",
         )
@@ -4984,9 +4986,10 @@ class AsimutBookerGUI(QuietFocusGUI):
             messagebox.showerror("Booking History Error", str(exc))
             return False
 
+    @reuse_detail('history')
     def show_history_dialog(self):
         """Show dialog with booking history."""
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('history')
         dialog.title("Booking History")
         dialog.geometry("900x680")
         dialog.minsize(760, 560)
@@ -5074,12 +5077,13 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self._refresh_history_list(tree)
                 self.log("Booking history cleared.", "info")
 
-    def show_calendar_dialog(self, initial_view="month"):
+    def show_calendar_dialog(self, initial_view=None):
         """Open the persistent calendar page for booking days and agenda events."""
         self.main_notebook.select(self.calendar_tab)
         self._sync_quiet_navigation()
         if getattr(self, "calendar_dialog", None) is not None:
-            self.calendar_view.set(initial_view)
+            if initial_view is not None:
+                self.calendar_view.set(initial_view)
             self._refresh_calendar()
             return
         dialog = self.calendar_tab
@@ -5097,174 +5101,42 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.calendar_events = {}  # {date_str: [events]}
         self.calendar_plan_result = self._read_booking_plan_for_display()
 
-        # Header frame
-        header_frame = ttk.Frame(dialog, padding="10")
+        column = CenteredFrame(dialog)
+        column.pack(fill='both', expand=True)
+        dialog = column.content
+        header_frame = ttk.Frame(dialog, padding=(24,20,24,8))
         header_frame.pack(fill=tk.X)
+        ttk.Label(header_frame, text='Calendar', font=(self.ui_font_family,-32,'bold')).pack(side=tk.LEFT)
 
-        ttk.Label(
-            header_frame,
-            text="Booking Calendar",
-            font=("Segoe UI", 16, "bold")
-        ).pack(side=tk.LEFT)
-
-        # View selector
         view_frame = ttk.Frame(header_frame)
         view_frame.pack(side=tk.RIGHT)
+        for text, value in [('Month','month'),('Fortnight','fortnight'),('Week','week'),('3 days','3days'),('Plan','plan')]:
+            ttk.Radiobutton(view_frame,text=text,variable=self.calendar_view,value=value,
+                            command=self._refresh_calendar,style='Segment.TRadiobutton').pack(side=tk.LEFT,padx=(0,5))
+        nav_frame=ttk.Frame(dialog,padding=(24,0,24,8));nav_frame.pack(fill=tk.X)
+        self.calendar_period_var=tk.StringVar(value='')
+        ttk.Label(nav_frame,textvariable=self.calendar_period_var,font=(self.ui_font_family,-17,'bold')).pack(side=tk.LEFT)
+        for text,action in [('Refresh',self._scan_calendar_events),('Next →',lambda:self._navigate_calendar(1)),('Today',self._go_to_today),('← Previous',lambda:self._navigate_calendar(-1))]:
+            ttk.Button(nav_frame,text=text,command=action,style='QuietLink.TButton').pack(side=tk.RIGHT,padx=2)
 
-        ttk.Label(view_frame, text="View:", font=("Segoe UI", 11)).pack(side=tk.LEFT, padx=(0, 10))
-
-        views = [
-            ("Month", "month"),
-            ("Fortnight", "fortnight"),
-            ("Week", "week"),
-            ("3 Days", "3days"),
-            ("Plan", "plan"),
-        ]
-        for text, value in views:
-            rb = ttk.Radiobutton(
-                view_frame,
-                text=text,
-                variable=self.calendar_view,
-                value=value,
-                command=self._refresh_calendar
-            )
-            rb.pack(side=tk.LEFT, padx=5)
-
-        # Navigation frame
-        nav_frame = ttk.Frame(dialog, padding="10")
-        nav_frame.pack(fill=tk.X)
-
-        ttk.Button(
-            nav_frame,
-            text="◀ Previous",
-            command=lambda: self._navigate_calendar(-1),
-            width=12
-        ).pack(side=tk.LEFT, padx=5)
-
-        ttk.Button(
-            nav_frame,
-            text="Today",
-            command=self._go_to_today,
-            width=10
-        ).pack(side=tk.LEFT, padx=5)
-
-        ttk.Button(
-            nav_frame,
-            text="Next ▶",
-            command=lambda: self._navigate_calendar(1),
-            width=12
-        ).pack(side=tk.LEFT, padx=5)
-
-        # Current period label
-        self.calendar_period_var = tk.StringVar(value="")
-        ttk.Label(
-            nav_frame,
-            textvariable=self.calendar_period_var,
-            font=("Segoe UI", 14, "bold")
-        ).pack(side=tk.LEFT, padx=30)
-
-        # Keep selection controls on their own row at desktop widths.
-        selection_frame = ttk.Frame(dialog, padding=(10, 0, 10, 6))
-        selection_frame.pack(fill=tk.X)
-        # Selection buttons
-        ttk.Button(
-            selection_frame,
-            text="Select All Visible",
-            command=lambda: self._select_visible_days(True),
-            width=16
-        ).pack(side=tk.RIGHT, padx=5)
-
-        ttk.Button(
-            selection_frame,
-            text="Deselect All Visible",
-            command=lambda: self._select_visible_days(False),
-            width=18
-        ).pack(side=tk.RIGHT, padx=5)
-
-        ttk.Button(
-            selection_frame,
-            text="Refresh events",
-            command=self._scan_calendar_events,
-        ).pack(side=tk.LEFT, padx=5)
-
-        ttk.Button(selection_frame, text="Edit visible days…", command=self._edit_visible_calendar_days).pack(side=tk.LEFT, padx=5)
-
-        # Scan status
-        self.calendar_scan_var = tk.StringVar(value="Scanning events...")
-        ttk.Label(
-            selection_frame,
-            textvariable=self.calendar_scan_var,
-            foreground="blue"
-        ).pack(side=tk.RIGHT, padx=20)
-
-        # Legend
-        legend_frame = ttk.Frame(dialog, padding="5")
-        legend_frame.pack(fill=tk.X)
-
-        ttk.Label(legend_frame, text="Legend:", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(10, 15))
-
-        # Blue = selected
-        legend_selected = tk.Frame(
-            legend_frame,
-            bg="#e8f2ff",
-            width=20,
-            height=20,
-            highlightbackground="#4a90d9",
-            highlightthickness=2,
-        )
-        legend_selected.pack(side=tk.LEFT, padx=(0, 5))
-        legend_selected.pack_propagate(False)
-        ttk.Label(
-            legend_frame,
-            text="= Book this day",
-            font=("Segoe UI", 10),
-        ).pack(side=tk.LEFT, padx=(0, 20))
-
-        # White = deselected
-        legend_deselected = tk.Frame(legend_frame, bg="white", width=20, height=20, highlightbackground="gray", highlightthickness=1)
-        legend_deselected.pack(side=tk.LEFT, padx=(0, 5))
-        legend_deselected.pack_propagate(False)
-        ttk.Label(
-            legend_frame,
-            text="= Booking off (date crossed out)",
-            font=("Segoe UI", 10),
-        ).pack(side=tk.LEFT, padx=(0, 20))
-
-        ttk.Label(legend_frame, text="●", font=("Segoe UI", 11), foreground="#147d34").pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Label(legend_frame, text="Booking", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 14))
-        ttk.Label(legend_frame, text="●", font=("Segoe UI", 11), foreground="#b35e00").pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Label(legend_frame, text="Class or event", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 18))
-
-        plan_legend = tk.Canvas(
-            legend_frame,
-            width=24,
-            height=16,
-            bg="#f6f9ff",
-            highlightthickness=0,
-        )
-        plan_legend.create_rectangle(
-            1,
-            1,
-            23,
-            15,
-            fill="#6fa8dc",
-            outline="#245a9a",
-            dash=(4, 2),
-            stipple="gray50",
-        )
-        plan_legend.pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Label(
-            legend_frame,
-            text="= Potential plan",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(side=tk.LEFT)
+        selection_frame=ttk.Frame(dialog,padding=(24,0,24,4));selection_frame.pack(fill=tk.X)
+        ttk.Button(selection_frame,text='Edit visible days',command=self._edit_visible_calendar_days).pack(side=tk.LEFT)
+        ttk.Button(selection_frame,text='On',command=lambda:self._select_visible_days(True),style='QuietLink.TButton').pack(side=tk.LEFT,padx=6)
+        ttk.Button(selection_frame,text='Off',command=lambda:self._select_visible_days(False),style='QuietLink.TButton').pack(side=tk.LEFT)
+        self.calendar_scan_var=tk.StringVar(value='Checking your bookings…')
+        status=ttk.Label(dialog,textvariable=self.calendar_scan_var,foreground='#667080',font=(self.ui_font_family,-12))
+        status.pack(fill=tk.X,padx=26,pady=(4,8))
+        status.bind('<Configure>',lambda e:status.configure(wraplength=max(80,e.width)))
+        legend_frame=ttk.Frame(dialog,padding=(24,0,24,4));legend_frame.pack(fill=tk.X)
+        ttk.Label(legend_frame,text='● Booked    ● Class or event    ◌ Not booked yet',foreground='#667080',font=(self.ui_font_family,-12)).pack(side=tk.LEFT)
+        HelpTip(selection_frame,'On and Off apply to every visible date. Crossed-out grey dates have booking turned off; red dates mean all practice rooms are confirmed closed. Existing bookings stay visible.').pack(side=tk.RIGHT)
 
         # Calendar container with scrollbar
-        calendar_container = ttk.Frame(dialog, padding="10")
+        calendar_container = ttk.Frame(dialog, padding=(24,0,24,16))
         calendar_container.pack(fill=tk.BOTH, expand=True)
 
         # Canvas for calendar grid
-        self.calendar_canvas = tk.Canvas(calendar_container, bg="white", highlightthickness=1, highlightbackground="gray")
+        self.calendar_canvas = tk.Canvas(calendar_container, bg="#F8FAFC", highlightthickness=0)
         calendar_scrollbar_y = ttk.Scrollbar(calendar_container, orient="vertical", command=self.calendar_canvas.yview)
         calendar_scrollbar_x = ttk.Scrollbar(calendar_container, orient="horizontal", command=self.calendar_canvas.xview)
 
@@ -5288,7 +5160,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             # Make the frame fill the canvas
             canvas_width = e.width
             canvas_height = e.height
-            self.calendar_canvas.itemconfig(self.calendar_canvas_window, width=canvas_width, height=canvas_height)
+            self.calendar_canvas.itemconfig(self.calendar_canvas_window, width=max(canvas_width, self.calendar_frame.winfo_reqwidth()) if self.calendar_view.get() == "plan" else canvas_width, height=max(canvas_height,self.calendar_frame.winfo_reqheight()))
             # Store canvas height for cell sizing and refresh
             if hasattr(self, '_last_canvas_height') and self._last_canvas_height != canvas_height:
                 self._last_canvas_height = canvas_height
@@ -5314,21 +5186,21 @@ class AsimutBookerGUI(QuietFocusGUI):
             self._refresh_calendar()
 
         # Bottom buttons
-        bottom_frame = ttk.Frame(dialog, padding="10")
-        bottom_frame.pack(fill=tk.X, before=calendar_container)
+        bottom_frame = selection_frame
 
         ttk.Button(
             bottom_frame,
             text="Save changes",
-            command=lambda: self._save_calendar_and_close(dialog, day_snapshot),
-            width=15
+            style="Primary.TButton",
+            command=lambda: self._save_calendar_and_close(self.calendar_tab, day_snapshot),
+            width=0
         ).pack(side=tk.RIGHT, padx=5)
 
         ttk.Button(
             bottom_frame,
-            text="Discard changes",
+            text="Discard",
             command=cancel_and_close,
-            width=16
+            width=0
         ).pack(side=tk.RIGHT, padx=5)
 
         # Load cached events first (instant display)
@@ -5534,10 +5406,11 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self.calendar_frame,
                 text=day,
                 font=("Segoe UI", 12, "bold"),
-                width=14,
-                bg="#f0f0f0",
-                relief="solid",
-                borderwidth=1
+                width=1,
+                bg="#F8FAFC",
+                fg="#667080",
+                relief="flat",
+                borderwidth=0
             )
             lbl.grid(row=0, column=col, sticky="nsew", padx=1, pady=1)
 
@@ -5655,8 +5528,8 @@ class AsimutBookerGUI(QuietFocusGUI):
             cursor="hand2",
         )
         canvas.pack(fill=tk.X, pady=1)
-        fill = "#6fa8dc" if primary else "#b8c0cc"
-        outline = "#245a9a" if primary else "#687381"
+        fill = "#EAF3FF" if primary else "#b8c0cc"
+        outline = "#0868D9" if primary else "#687381"
         canvas.create_rectangle(
             2,
             2,
@@ -5708,7 +5581,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         tk.Label(
             self.calendar_frame,
             text="Time",
-            bg="#f0f0f0",
+            bg="#F1F4F8",
             font=("Segoe UI", 9, "bold"),
             relief="solid",
             borderwidth=1,
@@ -5727,7 +5600,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 f"{hour:02d}:15",
                 timeline_height,
             )
-            axis.create_text(52, y + 2, text=f"{hour:02d}:00", anchor="ne", fill="#555555", font=("Segoe UI", 8))
+            axis.create_text(52, y + 2, text=f"{hour:02d}:00", anchor="ne", fill="#667080", font=("Segoe UI", 8))
 
         for index in range(7):
             current = start_date + timedelta(days=index)
@@ -5740,9 +5613,9 @@ class AsimutBookerGUI(QuietFocusGUI):
                 or (day_var is None and date_key in getattr(self, "disabled_dates", set()))
             )
             closed = date_key in getattr(self, "calendar_closed_dates", set())
-            heading_bg = "#e8f2ff" if selected else "#f0f0f0"
+            heading_bg = "#EAF3FF" if selected else "#F1F4F8"
             if closed:
-                heading_bg = "#fee2e2"
+                heading_bg = "#FFF1F0"
             heading = current.strftime("%a %d")
             if current == today:
                 heading += " · Today"
@@ -5755,7 +5628,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 text=heading,
                 bg=heading_bg,
                 font=("Segoe UI", 9, "bold overstrike" if closed or booking_off else "bold"),
-                fg="#b91c1c" if closed else "#111111",
+                fg="#B73332" if closed else "#111111",
                 relief="solid",
                 borderwidth=1,
             )
@@ -5769,7 +5642,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 width=145,
                 height=timeline_height,
                 bg="#fff1f2" if closed else "#ffffff",
-                highlightbackground="#4a90d9" if selected else "#d0d0d0",
+                highlightbackground="#0868D9" if selected else "#E1E6EE",
                 highlightthickness=2 if selected else 1,
             )
             canvas.grid(row=1, column=index + 1, sticky="nsew", padx=1, pady=1)
@@ -5790,7 +5663,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 except (KeyError, TypeError, ValueError):
                     continue
                 fill = "#92cf99" if event.get("isReservation", False) else "#f3bb7d"
-                canvas.create_rectangle(3, top, 142, bottom, fill=fill, outline="#555555")
+                canvas.create_rectangle(3, top, 142, bottom, fill=fill, outline="#667080")
                 title = calendar_event_display_name(event)
                 canvas.create_text(
                     7,
@@ -5841,8 +5714,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                         potential_top,
                         141 - inset,
                         potential_bottom,
-                        fill="#6fa8dc" if primary else "#b8c0cc",
-                        outline="#245a9a" if primary else "#687381",
+                        fill="#EAF3FF" if primary else "#b8c0cc",
+                        outline="#0868D9" if primary else "#687381",
                         width=2 if primary else 1,
                         dash=(4, 2) if primary else (2, 3),
                         stipple="gray50",
@@ -5896,31 +5769,15 @@ class AsimutBookerGUI(QuietFocusGUI):
             events,
         )
 
-        # Background color
-        if is_selected:
-            bg_color = "#e8f2ff"
-            fg_color = "#102a43"
-        else:
-            bg_color = "white"
-            fg_color = "black"
-
-        if is_past:
-            bg_color = "#e0e0e0"  # Gray for past days
-            fg_color = "#888888"
+        # Phone palette: today is accented, off dates remain neutral and crossed out.
+        bg_color = '#EAF3FF' if is_today and is_selected else '#F1F4F8' if booking_off or is_past else '#FFFFFF'
+        fg_color = '#667080' if is_past or booking_off else '#1D2430'
         if closed:
-            bg_color, fg_color = "#fee2e2", "#b91c1c"
-
-        # Create cell frame - use sticky="nsew" to fill grid cell
-        cell = tk.Frame(
-            self.calendar_frame,
-            bg=bg_color,
-            relief="solid",
-            borderwidth=1,
-            highlightbackground="#4a90d9" if is_selected else "#b5b5b5",
-            highlightthickness=2 if is_selected else 0,
-            cursor="hand2" if (not is_past and is_available) else ""
-        )
-        cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
+            bg_color, fg_color = '#FFF1F0', '#B73332'
+        cell = tk.Frame(self.calendar_frame, bg=bg_color, relief='flat', borderwidth=0,
+                        highlightbackground='#0868D9' if is_today else '#E1E6EE',highlightthickness=1,
+                        cursor='hand2' if not is_past and is_available else '')
+        cell.grid(row=row,column=col,sticky='nsew',padx=4,pady=4)
 
         # Day number and name
         day_num = current_date.day
@@ -5930,15 +5787,13 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         if is_today:
             header_text += " (Today)"
-        if is_selected:
-            header_text = "✓ " + header_text
 
         day_label = tk.Label(
             cell,
             text=header_text,
             font=(
                 "Segoe UI",
-                12,
+                -14,
                 "bold overstrike" if closed or (booking_off and is_today)
                 else "overstrike" if booking_off
                 else "bold" if is_today
@@ -5951,17 +5806,17 @@ class AsimutBookerGUI(QuietFocusGUI):
         day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
         if not is_past:
             time_override = (getattr(self, 'calendar_date_time_preferences', None) or {}).get(date_str)
-            time_label = (f"{time_override['start_time']}–{time_override['end_time']}" if time_override['enabled'] else 'Any time') if time_override else 'Edit day…'
-            ttk.Button(cell, text=time_label, command=lambda d=current_date: open_calendar_preferences(self, [d], SETTINGS_FILE), style='QuietLink.TButton').pack(anchor='w', padx=3)
+            time_label = (f"{time_override['start_time']}–{time_override['end_time']}" if time_override['enabled'] else 'Any time') if time_override else 'Edit'
+            tk.Button(cell,text=time_label,command=lambda d=current_date:open_calendar_preferences(self,[d],SETTINGS_FILE),bg=bg_color,fg='#0868D9',activebackground='#EAF3FF',relief='flat',bd=0,font=(self.ui_font_family,-12),cursor='hand2',takefocus=True).pack(anchor='w',padx=5)
 
         if closed:
-            tk.Label(cell, text="Practice rooms closed", fg="#b91c1c", bg=bg_color,
+            tk.Label(cell, text="Practice rooms closed", fg="#B73332", bg=bg_color,
                      font=("Segoe UI", 9), anchor="w").pack(fill=tk.X, padx=5)
 
         if not is_past and not is_in_live_window:
             tk.Label(
                 cell,
-                text="Waits for booking window",
+                text="Opens later",
                 font=("Segoe UI", 8),
                 bg=bg_color,
                 fg="#687381",
@@ -5970,7 +5825,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Calculate how many events can fit based on cell height
         # Header takes ~25px, each event line ~18px, "+more" line ~16px
-        header_space = (46 if not is_past and not is_in_live_window else 30) + (36 if not is_past else 0)
+        header_space = (46 if not is_past and not is_in_live_window else 30) + (24 if not is_past else 0)
         event_line_height = 18
         available_for_events = cell_height - header_space
         max_events_to_show = max(1, (available_for_events - 16) // event_line_height)
@@ -6002,7 +5857,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                     title = title[:14] + "…"
 
                 is_reservation = event.get('isReservation', False)
-                event_color = "#b35e00" if not is_reservation else "#147d34"
+                event_color = "#667080" if not is_reservation else "#0868D9"
 
                 event_lbl = tk.Label(
                     events_frame,
@@ -6172,9 +6027,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.calendar_scan_var.set("Changes saved")
         self.log("Calendar settings saved", "info")
 
+    @reuse_detail('events')
     def show_events_dialog(self):
         """Show dialog to manage events (ignore/include for booking conflicts)."""
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('events')
         dialog.title("Manage Events")
         dialog.geometry("900x650")
         dialog.transient(self.root)
@@ -6255,7 +6111,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         self._load_and_display_events(events_frame)
 
         # Bottom buttons
-        bottom_frame = ttk.Frame(dialog, padding="10")
+        bottom_frame = ttk.Frame(dialog, padding=(24,0,24,8))
         bottom_frame.pack(fill=tk.X)
 
         ttk.Button(
@@ -6492,6 +6348,7 @@ class AsimutBookerGUI(QuietFocusGUI):
     # SCAN AVAILABLE ROOMS FEATURE
     # =========================================================================
 
+    @reuse_detail('scan')
     def show_scan_rooms_dialog(self):
         """Show dialog for scanning available rooms with date range selection."""
         window_dates = tuple(getattr(self, "booking_dates", ()))
@@ -6503,7 +6360,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             )
             return
         self._room_scan_generation += 1
-        dialog = tk.Toplevel(self.root)
+        dialog = self._open_detail_page('scan')
         dialog.title("Scan Available Rooms")
         dialog.geometry("900x700")
         dialog.transient(self.root)
@@ -6589,28 +6446,28 @@ class AsimutBookerGUI(QuietFocusGUI):
             quick_frame,
             text="Select All",
             command=lambda: self._select_all_scan_dates(True),
-            width=12
+            width=9
         ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             quick_frame,
             text="Deselect All",
             command=lambda: self._select_all_scan_dates(False),
-            width=12
+            width=9
         ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             quick_frame,
             text="Today Only",
             command=self._select_today_only,
-            width=12
+            width=9
         ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             quick_frame,
             text="Next 3 Days",
             command=lambda: self._select_next_n_days(3),
-            width=12
+            width=9
         ).pack(side=tk.LEFT, padx=5)
 
         # Progress indicator
@@ -6945,7 +6802,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             self.scan_rooms_dialog = None
 
         # Create results window
-        results = tk.Toplevel(self.root)
+        results = self._open_detail_page('scan-results')
         results.title("Available Rooms")
         results.geometry("1200x900")
         results.transient(self.root)
@@ -7086,7 +6943,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             bottom_frame,
             text="New Scan",
             command=lambda: self._new_scan_from_results(results),
-            width=12
+            width=9
         ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
