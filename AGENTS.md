@@ -29,7 +29,12 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   build validation, and isolated Chromium/WebKit calendar rendering at 390px.
   The WebKit render was visually inspected. Tests used temporary preferences;
   no live booking or preference write was made. Existing desktop sessions must
-  reopen to load the source change; phone publication is recorded separately.
+  reopen to load the source change.
+- Published private phone build `87bddeb-calendar-crossed` after confirming the
+  assistant and Booker runtime were idle with no active system job, pending
+  mutation receipt or unresolved phone request. Existing hashed assets and the
+  running phone server were retained. Private HTTPS deployment verification
+  passed; physical phone display remains separate user-side verification.
 
 ## 2026-09-10 distinctive phone icon
 
