@@ -5224,7 +5224,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         legend_deselected = tk.Frame(legend_frame, bg="white", width=20, height=20, highlightbackground="gray", highlightthickness=1)
         legend_deselected.pack(side=tk.LEFT, padx=(0, 5))
         legend_deselected.pack_propagate(False)
-        ttk.Label(legend_frame, text="= Not selected", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Label(
+            legend_frame,
+            text="= Booking off (date crossed out)",
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=(0, 20))
 
         ttk.Label(legend_frame, text="●", font=("Segoe UI", 11), foreground="#147d34").pack(side=tk.LEFT, padx=(0, 5))
         ttk.Label(legend_frame, text="Booking", font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(0, 14))
@@ -5731,6 +5735,10 @@ class AsimutBookerGUI(QuietFocusGUI):
             self.calendar_frame.columnconfigure(index + 1, weight=1, uniform="plan-day")
             day_var = self._ensure_calendar_day_var(current, today=today)
             selected = day_var is not None and day_var.get()
+            booking_off = (
+                (day_var is not None and not selected)
+                or (day_var is None and date_key in getattr(self, "disabled_dates", set()))
+            )
             closed = date_key in getattr(self, "calendar_closed_dates", set())
             heading_bg = "#e8f2ff" if selected else "#f0f0f0"
             if closed:
@@ -5746,7 +5754,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self.calendar_frame,
                 text=heading,
                 bg=heading_bg,
-                font=("Segoe UI", 9, "bold overstrike" if closed else "bold"),
+                font=("Segoe UI", 9, "bold overstrike" if closed or booking_off else "bold"),
                 fg="#b91c1c" if closed else "#111111",
                 relief="solid",
                 borderwidth=1,
@@ -5874,6 +5882,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         is_available = day_var is not None
         is_selected = is_available and day_var.get()
         is_in_live_window = current_date in set(getattr(self, "booking_dates", ()))
+        booking_off = (
+            (is_available and not is_selected)
+            or (not is_available and date_str in getattr(self, "disabled_dates", set()))
+        )
         closed = date_str in getattr(self, "calendar_closed_dates", set())
 
         # Get events for this day
@@ -5924,7 +5936,14 @@ class AsimutBookerGUI(QuietFocusGUI):
         day_label = tk.Label(
             cell,
             text=header_text,
-            font=("Segoe UI", 12, "bold overstrike" if closed else "bold" if is_today else "normal"),
+            font=(
+                "Segoe UI",
+                12,
+                "bold overstrike" if closed or (booking_off and is_today)
+                else "overstrike" if booking_off
+                else "bold" if is_today
+                else "normal",
+            ),
             bg=bg_color,
             fg=fg_color,
             anchor="w"

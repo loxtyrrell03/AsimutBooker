@@ -15,6 +15,22 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-10 crossed-out booking-off dates
+
+- Calendar dates whose saved state is Booking off are now crossed out on both
+  phone and desktop. The phone applies this consistently in month, fortnight,
+  week, three-day, plan and focused-day headings; desktop day cells and plan
+  headings update immediately for saved or drafted day changes.
+- Booking-off dates keep the existing neutral shaded treatment. Independently
+  confirmed whole-day room closures remain red, crossed out and explicitly
+  labelled Practice rooms closed, so a preference is not presented as site
+  closure evidence. Existing reservations on an off date remain visible.
+- Verified all 880 Python tests, 19 phone Node tests, TypeScript, lint, static
+  build validation, and isolated Chromium/WebKit calendar rendering at 390px.
+  The WebKit render was visually inspected. Tests used temporary preferences;
+  no live booking or preference write was made. Existing desktop sessions must
+  reopen to load the source change; phone publication is recorded separately.
+
 ## 2026-09-10 distinctive phone icon
 
 - The phone companion now uses an ImageGen-created calendar and open
