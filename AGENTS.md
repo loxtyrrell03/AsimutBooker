@@ -28,6 +28,22 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Update or replace stale guidance instead of accumulating contradictory history; keep notes factual and useful to future agents.
 - Do not record secrets, credentials, personal data, raw transcripts, routine command logs, or transient debugging noise.
 
+## 2026-09-10 Full-horizon display plans
+
+- Read-only plan generation now selects suitable sessions from every freshly
+  observed free interval in the live booking window, even when the first booking
+  edge is beyond the configured immediate foresight period. These sessions stay
+  explicitly waiting/not booked and include when booking starts opening.
+- Runtime booking decisions retain the existing foresight filter. A distant
+  display candidate cannot suppress or authorize a current Save, and every
+  booking still requires fresh live revalidation at its exact horizon edge.
+- Verified all 880 Python tests, 19 phone Node tests, TypeScript and lint. A live
+  `--plan-only` scan made no reservation changes and produced a complete
+  three-hour Thursday plan from two sessions beyond the immediate horizon. The
+  existing phone shell renders the refreshed snapshot via its file-change SSE;
+  no server restart or static rebuild was required. Physical phone display was
+  not inspected.
+
 ## 2026-09-09 Immediate confirmed booking publication
 
 - Verified create/extension receipts patch their exact positive event into the

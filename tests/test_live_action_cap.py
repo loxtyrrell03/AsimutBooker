@@ -566,6 +566,115 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
         self.assertEqual(publish.call_args.kwargs["status"], "active")
         self.assertIn("Next: 2026-08-31 12:00-14:00", publish.call_args.kwargs["summary"])
 
+    def test_generate_read_only_plan_keeps_future_session_beyond_foresight(self):
+        today = date(2026, 9, 10)
+        target_date = date(2026, 9, 17)
+        frozen_now = datetime(2026, 9, 10, 1, 37)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen_now if tz is None else frozen_now.replace(tzinfo=tz)
+
+        opportunity = book_week.BookingOpportunity(
+            room="Weston Gallery",
+            target_date=target_date,
+            start_minutes=12 * 60,
+            end_minutes=14 * 60,
+            unlock_at=datetime(2026, 9, 10, 12, 30),
+            room_priority=0,
+            initial_minutes=30,
+            potential_minutes=120,
+            preferred_minutes=120,
+            soft_preferred_minutes=120,
+            peak_minutes=120,
+            peak_window_start_minutes=9 * 60,
+            peak_window_end_minutes=16 * 60,
+            source_gap_start_minutes=12 * 60,
+            source_gap_end_minutes=18 * 60,
+            soft_preferred_window=(12 * 60, 18 * 60),
+        )
+        later = book_week.BookingOpportunity(
+            room="Weston Gallery",
+            target_date=target_date,
+            start_minutes=16 * 60,
+            end_minutes=17 * 60,
+            unlock_at=datetime(2026, 9, 10, 16, 30),
+            room_priority=0,
+            initial_minutes=30,
+            potential_minutes=60,
+            preferred_minutes=0,
+            soft_preferred_minutes=60,
+            peak_minutes=0,
+            peak_window_start_minutes=9 * 60,
+            peak_window_end_minutes=16 * 60,
+            source_gap_start_minutes=16 * 60,
+            source_gap_end_minutes=18 * 60,
+            soft_preferred_window=(12 * 60, 18 * 60),
+        )
+        tracker = mock.MagicMock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_peak_used_for_day.return_value = 0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        policy = mock.Mock(
+            observed_at=datetime(2026, 9, 10, 0, 37, tzinfo=timezone.utc)
+        )
+        args = SimpleNamespace(only_date=None, only_room=None)
+
+        with (
+            mock.patch.object(book_week, "datetime", FrozenDateTime),
+            mock.patch.object(
+                book_week, "booking_window_dates", return_value=(target_date,)
+            ),
+            mock.patch.object(book_week, "ALLOW_FRAGMENTED_SESSIONS", True),
+            mock.patch.object(book_week, "open_practice_room_overview"),
+            mock.patch.object(book_week, "navigate_to_day", return_value=7),
+            mock.patch.object(book_week, "wait_for_practice_room_grid"),
+            mock.patch.object(book_week, "get_available_slots", return_value=[]),
+            mock.patch.object(
+                book_week,
+                "build_day_booking_opportunities",
+                return_value=[opportunity, later],
+            ),
+            mock.patch.object(book_week, "publish_booking_plan") as publish,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            book_week.generate_read_only_booking_plan(
+                mock.MagicMock(),
+                policy,
+                {},
+                book_week.PracticePlan(enabled=True, default_hours=3.0),
+                tracker,
+                {
+                    "enabled": True,
+                    "strict_mode": False,
+                    "start_hour": 12.0,
+                    "end_hour": 18.0,
+                },
+                book_week.DailyPlanningPreferences(foresight_minutes=420),
+                set(),
+                args,
+                today=today,
+            )
+
+        day = publish.call_args.args[0][0]
+        self.assertEqual(day.primary.room, "Weston Gallery")
+        self.assertEqual(day.primary.state, "waiting")
+        self.assertEqual(day.status, "waiting")
+        self.assertEqual(
+            sum(
+                item.potential_minutes
+                for item in (day.primary, *day.additional)
+            ),
+            180,
+        )
+        self.assertIn("booking starts opening Thu 10 Sep at 12:30", day.reason)
+        self.assertIn(
+            "Next: 2026-09-17 12:00-14:00",
+            publish.call_args.kwargs["summary"],
+        )
+
     def test_disabled_daily_planning_preview_uses_legacy_gap_start_order(self):
         self._check_disabled_planner_preview(soft_preferences=False)
 

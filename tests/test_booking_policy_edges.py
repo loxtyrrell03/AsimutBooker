@@ -576,6 +576,90 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
             [],
         )
 
+    def test_read_only_display_can_plan_beyond_immediate_foresight(self):
+        target_date = date(2026, 9, 17)
+        now = datetime(2026, 9, 10, 1, 37)
+        future = book_week.BookingOpportunity(
+            room="Weston Gallery",
+            target_date=target_date,
+            start_minutes=12 * 60,
+            end_minutes=14 * 60,
+            unlock_at=datetime(2026, 9, 10, 12, 30),
+            room_priority=0,
+            initial_minutes=30,
+            potential_minutes=120,
+            preferred_minutes=120,
+            soft_preferred_minutes=120,
+            peak_minutes=120,
+            peak_window_start_minutes=9 * 60,
+            peak_window_end_minutes=16 * 60,
+            source_gap_start_minutes=12 * 60,
+            source_gap_end_minutes=18 * 60,
+            soft_preferred_window=(12 * 60, 18 * 60),
+        )
+        later = book_week.BookingOpportunity(
+            room="Weston Gallery",
+            target_date=target_date,
+            start_minutes=16 * 60,
+            end_minutes=17 * 60,
+            unlock_at=datetime(2026, 9, 10, 16, 30),
+            room_priority=0,
+            initial_minutes=30,
+            potential_minutes=60,
+            preferred_minutes=0,
+            soft_preferred_minutes=60,
+            peak_minutes=0,
+            peak_window_start_minutes=9 * 60,
+            peak_window_end_minutes=16 * 60,
+            source_gap_start_minutes=16 * 60,
+            source_gap_end_minutes=18 * 60,
+            soft_preferred_window=(12 * 60, 18 * 60),
+        )
+        tracker = mock.Mock()
+        tracker.get_hours_for_day.return_value = 0.0
+        tracker.get_remaining_quota_hours.return_value = 28.0
+        tracker.get_remaining_peak_minutes.return_value = 120
+        tracker.get_peak_used_for_day.return_value = 0
+        planning = book_week.DailyPlanningPreferences(foresight_minutes=420)
+
+        with mock.patch.multiple(
+            book_week,
+            PRIORITY_ROOMS=["Weston Gallery"],
+            ALLOW_FRAGMENTED_SESSIONS=True,
+            SAME_ROOM_GAP_MINUTES=60,
+        ):
+            immediate = book_week.build_display_day_plan(
+                target_date,
+                [future, later],
+                tracker,
+                planning,
+                now=now,
+                target_minutes=180,
+            )
+            preview = book_week.build_display_day_plan(
+                target_date,
+                [future, later],
+                tracker,
+                planning,
+                now=now,
+                target_minutes=180,
+                include_future_outside_foresight=True,
+            )
+
+        self.assertIsNone(immediate.primary)
+        self.assertEqual(immediate.status, "unplanned")
+        self.assertEqual(preview.primary.room, "Weston Gallery")
+        self.assertEqual(preview.primary.state, "waiting")
+        self.assertEqual(preview.status, "waiting")
+        self.assertEqual(
+            sum(
+                item.potential_minutes
+                for item in (preview.primary, *preview.additional)
+            ),
+            180,
+        )
+        self.assertIn("booking starts opening Thu 10 Sep at 12:30", preview.reason)
+
     def test_current_fallback_is_trimmed_to_preserve_complete_day_target(self):
         target_date = date(2026, 9, 4)
         now = datetime(2026, 8, 30, 17, 0)

@@ -6649,8 +6649,15 @@ def build_display_day_plan(
     remaining_weekly_minutes=None,
     reserved_daily_minutes=0,
     reserved_peak_minutes=0,
+    include_future_outside_foresight=False,
 ):
-    """Convert fresh opportunities into one clear display-only day plan."""
+    """Convert fresh opportunities into one clear display-only day plan.
+
+    Runtime callers keep the configured foresight boundary so a distant plan
+    cannot suppress a safe current booking edge. Read-only preview callers may
+    include the complete observed day: those candidates remain explicitly
+    waiting and never become booking authority.
+    """
 
     target_date = as_date(target_date)
     existing_minutes = int(round(tracker.get_hours_for_day(target_date) * 60 / 15)) * 15
@@ -6662,11 +6669,13 @@ def build_display_day_plan(
     latest_useful_unlock = now + timedelta(
         minutes=daily_planning.foresight_minutes
     )
-    opportunities = [
-        item
-        for item in opportunities
-        if item.unlock_at <= now or item.unlock_at <= latest_useful_unlock
-    ]
+    opportunities = list(opportunities)
+    if not include_future_outside_foresight:
+        opportunities = [
+            item
+            for item in opportunities
+            if item.unlock_at <= now or item.unlock_at <= latest_useful_unlock
+        ]
     selection_minutes = min(
         remaining_minutes,
         _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0,
@@ -6765,10 +6774,19 @@ def build_display_day_plan(
         else:
             candidate_state = "waiting"
             status = "waiting"
-            reason = (
-                f"Best visible opportunity is {primary_opportunity.start_text}-"
-                f"{primary_opportunity.end_text} in {primary_opportunity.room}"
-            )
+            if primary_opportunity.unlock_at > latest_useful_unlock:
+                unlock_label = _aware_local_datetime(
+                    primary_opportunity.unlock_at
+                ).strftime("%a %d %b at %H:%M")
+                reason = (
+                    "Planned from the currently free schedule; booking starts "
+                    f"opening {unlock_label}"
+                )
+            else:
+                reason = (
+                    f"Best visible opportunity is {primary_opportunity.start_text}-"
+                    f"{primary_opportunity.end_text} in {primary_opportunity.room}"
+                )
     elif decision.action == "wait":
         # A held decision can be omitted only when an aggregate hard budget no
         # longer supports it. Expose that honestly instead of claiming a plan.
@@ -9461,15 +9479,6 @@ def generate_read_only_booking_plan(
             ),
             only_room=args.only_room,
         )
-        if daily_planning.enabled:
-            latest_useful_unlock = now + timedelta(
-                minutes=daily_planning.foresight_minutes
-            )
-            opportunities = [
-                item
-                for item in opportunities
-                if item.unlock_at <= now or item.unlock_at <= latest_useful_unlock
-            ]
         available_weekly_for_new = max(
             0,
             remaining_weekly_minutes
@@ -9487,6 +9496,7 @@ def generate_read_only_booking_plan(
                 remaining_weekly_minutes=available_weekly_for_new,
                 reserved_daily_minutes=extension_target_minutes,
                 reserved_peak_minutes=extension_peak_minutes,
+                include_future_outside_foresight=True,
             )
         else:
             day_plan = build_legacy_display_day_plan(
