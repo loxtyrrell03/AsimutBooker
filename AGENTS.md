@@ -15,6 +15,17 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-10 distinctive phone icon
+
+- The phone companion now uses an ImageGen-created calendar and open
+  practice-room emblem in the existing Asimut blue, navy and confirmation-green
+  palette. Apple touch, favicon, 192/512 px and maskable icons are versioned in
+  metadata while the private application URL remains unchanged.
+- The phone service worker cache key is bumped so an opened client fetches the
+  new icon resources. Source/build and served-hash verification do not prove an
+  existing iOS SpringBoard web clip refreshed; iOS may require removing and
+  re-adding that clip at the same URL.
+
 ## Local checkout
 
 - The canonical Windows checkout is `C:\Users\Lox\Desktop\repo\AsimutBooker`.

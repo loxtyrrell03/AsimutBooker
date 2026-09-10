@@ -43,7 +43,7 @@ export default defineConfig({
         const shellFiles = [
           '/',
           '/manifest.webmanifest',
-          '/favicon.svg',
+          '/favicon.png',
           '/icon-192.png',
           '/icon-512.png',
           '/icon-maskable-512.png',

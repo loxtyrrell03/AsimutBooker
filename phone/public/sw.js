@@ -1,10 +1,10 @@
-const CACHE_VERSION = 'asimut-phone-development';
+const CACHE_VERSION = 'asimut-phone-icon-20260910';
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const ASSET_CACHE = `${CACHE_VERSION}-assets`;
 const SHELL_FILES = [
   '/',
   '/manifest.webmanifest',
-  '/favicon.svg',
+  '/favicon.png',
   '/icon-192.png',
   '/icon-512.png',
   '/icon-maskable-512.png',
