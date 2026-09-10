@@ -25,6 +25,10 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   new icon resources. Source/build and served-hash verification do not prove an
   existing iOS SpringBoard web clip refreshed; iOS may require removing and
   re-adding that clip at the same URL.
+- Source commit `048193d` is published. The icon-only static deployment retained
+  the running phone server and existing hashed assets; version
+  `20260910-icons` and the touch-icon hash matched over loopback/private HTTPS
+  with zero active system operations or unresolved reserved requests.
 
 ## Local checkout
 
