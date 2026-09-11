@@ -62,6 +62,8 @@ APP_CAPABILITIES = {
         "Single, inclusive-date-range, upcoming-scope, or bounded selected-set reservation cancellation through the assistant action surface",
     ],
     "assistant_actions": [
+        "Read fresh room availability for dated or rolling time windows without changing preferences",
+        "Set exact-date time windows while preserving the usual schedule",
         "Answer questions from sanitized preferences, agenda, plan, room, health, receipt, and history context",
         "Refresh login health, the complete live agenda/grid, or the explainable booking plan without mutation",
         "Enable or disable exact dates and turn natural daily-total requests into dated practice targets",

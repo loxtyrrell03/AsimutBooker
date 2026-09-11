@@ -171,6 +171,7 @@ class AssistantToolSurfaceTests(unittest.TestCase):
             {
                 "get_booker_context",
                 "refresh_booker_data",
+                "find_availability",
                 "find_reservations",
                 "set_future_practice_plan",
                 "update_booker_preferences",

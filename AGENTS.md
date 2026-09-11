@@ -15,6 +15,21 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Assistant scoped requests
+
+- Assistant `update_booker_preferences` now exposes the shared exact-date time
+  validator. Dated booking requests use strict dated windows and preserve global
+  defaults; clearing a dated window restores inheritance. Combined patches are
+  atomic, reject duplicate dates and retain unrelated settings.
+- `find_availability` reuses the existing read-only scan worker in an owned
+  temporary directory. It clips dated/rolling windows against completion time,
+  reports unknown date coverage separately from empty results, and returns
+  observed room gaps rather than claiming personal booking eligibility.
+- Initial verification: 48 isolated tool/window/worker tests passed. No live
+  reservations, preferences or sessions changed. Existing desktop/phone hosts
+  need to reload Python to expose the new assistant contract; broad model
+  evaluation and further reliability work follow this milestone.
+
 ## 2026-09-11 Published phone closure crosses
 
 - `ClosedDayCross` supplies a non-interactive SVG X behind phone month/fortnight

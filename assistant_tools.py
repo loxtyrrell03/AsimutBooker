@@ -13,6 +13,7 @@ import os
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from booking_strategy import (
     booking_strategy_to_dict,
 )
 from practice_plan import PracticePlanError, load_practice_plan
+from date_time_preferences import apply_date_time_preferences
 from room_preferences import (
     RoomPreferencesError,
     apply_room_preferences_update,
@@ -375,6 +377,31 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
         },
         {
             "type": "function",
+            "name": "find_availability",
+            "description": (
+                "Read fresh room-grid gaps without booking or changing preferences. "
+                "Use next_minutes for a rolling window from now, or date with start_time "
+                "and end_time for a dated window. Results are room gaps, not guaranteed "
+                "personal booking eligibility; check agenda conflicts and live booking limits."
+            ),
+            "inputSchema": {
+                **_object_schema({
+                    "date": canonical_date, "start_time": clock, "end_time": clock,
+                    "next_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+                    "minimum_minutes": {"type": "integer", "minimum": 1, "maximum": 120},
+                    "room": {"type": "string", "minLength": 1, "maxLength": 120},
+                }),
+                "oneOf": [
+                    {"required": ["next_minutes"], "not": {"anyOf": [
+                        {"required": ["date"]}, {"required": ["start_time"]},
+                        {"required": ["end_time"]}]}},
+                    {"required": ["date", "start_time", "end_time"],
+                     "not": {"required": ["next_minutes"]}},
+                ],
+            },
+        },
+        {
+            "type": "function",
             "name": "find_reservations",
             "description": (
                 "Let Terra resolve whichever reservation set it judges the user means against "
@@ -544,6 +571,21 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                             },
                         }
                     ),
+                    "date_time_preferences": {
+                        "type": "array", "minItems": 1, "maxItems": 31,
+                        "description": "Exact-date windows; preserve usual global times. Null window restores that date to the global default.",
+                        "items": _object_schema({
+                            "date": canonical_date,
+                            "window": {"anyOf": [
+                                _object_schema({
+                                    "enabled": {"type": "boolean"},
+                                    "start_time": clock, "end_time": clock,
+                                    "strict_mode": {"type": "boolean"},
+                                }, required=("enabled", "start_time", "end_time", "strict_mode")),
+                                {"type": "null"},
+                            ]},
+                        }, required=("date", "window")),
+                    },
                     "booking_strategy": _object_schema(
                         {
                             "reverse_date_order": {"type": "boolean"},
@@ -893,6 +935,7 @@ class BookerToolSurface:
         handlers = {
             "get_booker_context": self._get_context,
             "refresh_booker_data": self._refresh,
+            "find_availability": self._find_availability,
             "find_reservations": self._find_reservations,
             "set_future_practice_plan": self._set_future_practice_plan,
             "update_booker_preferences": self._update_preferences,
@@ -1029,6 +1072,27 @@ class BookerToolSurface:
             "command": command,
             "context": build_assistant_context(sections, paths=self.paths),
         }
+
+    def _find_availability(self, arguments, *, user_request, progress):
+        from assistant_availability import resolve_query, filter_scan
+
+        try:
+            query = resolve_query(arguments, datetime.now(LOCAL_TIMEZONE))
+        except ValueError as exc:
+            raise AssistantToolError(str(exc)) from exc
+        with tempfile.TemporaryDirectory(prefix="asimut-availability-") as directory:
+            output = Path(directory) / "result.json"
+            self._run_booker_command(
+                ["--output", str(output), "--dates", *query["dates"]],
+                progress=progress, timeout=15 * 60,
+                script=APP_DIR / "assistant_availability.py",
+            )
+            try:
+                scan = json.loads(output.read_text(encoding="utf-8"))
+                result = filter_scan(scan, query, now=datetime.now(LOCAL_TIMEZONE))
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise AssistantToolError("Availability could not be verified; no empty result can be inferred.") from exc
+        return result
 
     def _find_reservations(
         self,
@@ -1677,6 +1741,7 @@ class BookerToolSurface:
             "booking_days",
             "practice_plan",
             "time_preferences",
+            "date_time_preferences",
             "booking_strategy",
             "room_preferences",
         }
@@ -1701,6 +1766,22 @@ class BookerToolSurface:
                 changed["time_preferences"] = self._apply_time_preferences(
                     settings, patch["time_preferences"]
                 )
+            if "date_time_preferences" in patch:
+                entries = patch["date_time_preferences"]
+                if not isinstance(entries, list) or not 1 <= len(entries) <= 31:
+                    raise AssistantToolError("Supply between one and 31 dated windows")
+                windows = {}
+                for entry in entries:
+                    if not isinstance(entry, dict) or set(entry) != {"date", "window"}:
+                        raise AssistantToolError("Each dated window requires date and window")
+                    key = _canonical_date(entry["date"], "date")
+                    if key in windows:
+                        raise AssistantToolError("Dated windows must be unique")
+                    windows[key] = entry["window"]
+                try:
+                    changed["date_time_preferences"] = apply_date_time_preferences(settings, windows)
+                except ValueError as exc:
+                    raise AssistantToolError(str(exc)) from exc
             if "booking_strategy" in patch:
                 value = apply_booking_strategy_update(settings, patch["booking_strategy"])
                 changed["booking_strategy"] = booking_strategy_to_dict(value)
@@ -2552,6 +2633,7 @@ class BookerToolSurface:
         progress: ProgressCallback,
         timeout: int,
         allow_nonzero: bool = False,
+        script: Path | None = None,
     ) -> dict[str, Any]:
         generation, cancel_event = self._command_cancel_event()
         try:
@@ -2580,11 +2662,12 @@ class BookerToolSurface:
                     raise AssistantToolError(
                         f"The isolated Booker Python runtime is missing: {self.python_executable}"
                     )
-                if not self.booker_script.is_file():
+                entrypoint = script or self.booker_script
+                if not entrypoint.is_file():
                     raise AssistantToolError(
                         f"The Booker entry point is missing: {self.booker_script}"
                     )
-                command = [str(self.python_executable), str(self.booker_script), *flags]
+                command = [str(self.python_executable), str(entrypoint), *flags]
                 creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                 try:
                     process = subprocess.Popen(
