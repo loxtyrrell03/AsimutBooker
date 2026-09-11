@@ -40,6 +40,7 @@ from uuid import UUID
 
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
 from assistant_runtime import AssistantRuntime, AssistantRuntimeError, load_assistant_state
+from codex_chat import configured_model_label
 from phone_api import build_phone_snapshot
 from phone_cancellation import CancellationNotStarted, cancel_phone_reservation, validate_target
 from phone_preferences import (
@@ -607,7 +608,7 @@ class PhoneAssistantService:
                     messages = load_assistant_state(self._state_path)["messages"]
                 except AssistantRuntimeError:
                     messages = []
-                model = "GPT-5.6 Terra · medium"
+                model = configured_model_label()
                 busy = False
             else:
                 messages = runtime.restored_messages()

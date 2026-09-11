@@ -34,6 +34,12 @@ CODEX_REASONING_SUMMARY = "concise"
 CODEX_APPROVAL_POLICY = "never"
 CODEX_THREAD_SANDBOX = "read-only"
 
+
+def configured_model_label() -> str:
+    name = 'GPT-' + CODEX_MODEL.removeprefix('gpt-').replace('-', ' ').title()
+    tier = ' · Fast' if CODEX_SERVICE_TIER in {'fast', 'priority'} else ''
+    return f'{name} · {CODEX_REASONING_EFFORT}{tier}'
+
 _CORE_DEVELOPER_INSTRUCTIONS = """
 You are the conversational interface for Asimut Booker. Use only the
 application-provided tools for booker data and application changes. Treat

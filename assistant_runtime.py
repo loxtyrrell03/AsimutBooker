@@ -23,6 +23,7 @@ from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
 from assistant_context import APP_CAPABILITIES
 from assistant_tools import MUTATING_TOOLS, AssistantToolError, BookerToolSurface
 from codex_chat import (
+    configured_model_label,
     CodexChatController,
     CodexChatError,
     CodexRemoteError,
@@ -610,7 +611,7 @@ class AssistantRuntime:
 
     @property
     def model_label(self) -> str:
-        return "GPT-5.6 Terra · medium"
+        return configured_model_label()
 
     def restored_messages(self) -> list[dict[str, str]]:
         with self._state_lock:

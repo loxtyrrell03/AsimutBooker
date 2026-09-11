@@ -1983,10 +1983,10 @@ def evaluate_case(
             issues.append("dated morning command asked the old preference to win")
         if not re.search(r"(?:2|two)[\s-]*hours?", lower):
             issues.append("dated morning final omitted the two-hour target")
-        if "morning" not in lower:
+        if "morning" not in lower and not ('07:00' in lower and '12:00' in lower):
             issues.append("dated morning final omitted the requested daypart")
         if not re.search(
-            r"overrid|replac|updated|changed|morning preference|"
+            r"overrid|replac|updated|changed|morning preference|restrict booking to 07:00|"
             r"(?:made|set|use).{0,50}(?:morning|07:00).{0,50}(?:strict|window)|"
             r"(?:morning|07:00).{0,50}(?:made|set|use).{0,50}strict|"
             r"(?:apply|set|made|use).{0,50}strict.{0,50}(?:morning|07:00)|"
@@ -2062,7 +2062,7 @@ def evaluate_case(
             issues.append("daily-total run started before its dated target was saved")
         if len(preference_updates) != len(valid_preference_targets):
             issues.append("dated total caused an unrelated global preference mutation")
-        if not re.search(r"(?:3|three)[\s-]*(?:hours?|h\b)", lower):
+        if not re.search(r"(?:3|three)[\s-]*(?:total[\s-]+)?(?:hours?|h\b)", lower):
             issues.append("daily-total final did not state the three-hour goal")
         if not re.search(
             r"split|multiple|multi.?session|more than one|one session.{0,100}remaining|"
@@ -2160,6 +2160,11 @@ def evaluate_case(
                 r"(?:reservations?|bookings?)",
                 lower,
             )
+            if not existing_fact and ('existing' in lower or 'already' in lower):
+                existing_fact = bool(unique_agenda_events) and all(
+                    re.search(re.escape(item['start_time']) + r'\s*-\s*' + re.escape(item['end_time']), lower)
+                    for item in unique_agenda_events.values()
+                )
             if not (existing_fact and existing_remainder_fact):
                 issues.append(
                     "existing-booking final did not separately state two hours existing and one hour remaining"
@@ -2338,7 +2343,7 @@ def evaluate_request_contract(case, calls, final):
             for key, value in expected['availability'].items():
                 if key == 'room' and key not in call.arguments and str(value).casefold() in final.casefold():
                     continue  # Querying all rooms and reporting the requested room is correct.
-                if key == 'minimum_minutes' and key not in call.arguments and call.result.get('rows') and all(row['minutes'] >= value for row in call.result['rows']):
+                if key == 'minimum_block_minutes' and key not in call.arguments and call.result.get('rows') and all(row['minutes'] >= value for row in call.result['rows']):
                     continue  # A broader scan whose every result meets the duration is correct.
                 if call.arguments.get(key) != value:
                     return False
@@ -2412,7 +2417,7 @@ AUDIT_CASES = (
     EvalCase('audit_availability_hour', "What's available in the next hour?", 'Rolling availability is read-only.', expected={'read_only': True, 'availability': {'next_minutes': 60}}),
     EvalCase('audit_availability_90', 'Any rooms free over the next 90 minutes?', 'Rolling duration variant.', expected={'read_only': True, 'availability': {'next_minutes': 90}}),
     EvalCase('audit_availability_room', 'Is B0.29 free tomorrow between noon and 2pm?', 'Exact room and dated time filter.', expected={'read_only': True, 'availability': {'date': '2026-09-01', 'start_time': '12:00', 'end_time': '14:00', 'room': 'B0.29'}}),
-    EvalCase('audit_availability_evening', 'Show me free rooms tomorrow evening, for at least an hour.', 'Duration filter and daypart.', expected={'read_only': True, 'availability': {'date': '2026-09-01', 'start_time': '18:00', 'end_time': '22:00', 'minimum_minutes': 60}}),
+    EvalCase('audit_availability_evening', 'Show me free rooms tomorrow evening, for at least an hour.', 'Duration filter and daypart.', expected={'read_only': True, 'availability': {'date': '2026-09-01', 'start_time': '18:00', 'end_time': '22:00', 'minimum_block_minutes': 60}}),
     EvalCase('audit_availability_unknown', 'What rooms are available on 20 September from noon until 6pm?', 'Missing date coverage is not no availability.', expected={'read_only': True, 'availability': {'date': '2026-09-20', 'start_time': '12:00', 'end_time': '18:00'}, 'unknown': True}),
     EvalCase('audit_availability_empty', "What's free in the next hour?", 'Successful empty scan.', expected={'read_only': True, 'availability': {'next_minutes': 60}}),
     EvalCase('audit_readonly_booking', 'Could I fit 3 hours tomorrow afternoon? Just check; do not change anything.', 'Feasibility does not authorize a preference write.', expected={'read_only': True}),
@@ -2658,6 +2663,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--model', choices=['gpt-5.6-terra', 'gpt-5.6-luna'], default=CODEX_MODEL)
     parser.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'], default=CODEX_REASONING_EFFORT)
     parser.add_argument('--service-tier', choices=['default', 'fast'], default='default')
+    parser.add_argument('--output', type=Path, help='Write the JSON report directly to this file while streaming progress.')
     return parser
 
 
@@ -2667,7 +2673,11 @@ async def _async_main(args: argparse.Namespace) -> int:
     with patch.object(codex_chat, 'CODEX_MODEL', args.model), patch.object(codex_chat, 'CODEX_REASONING_EFFORT', args.effort), patch.object(codex_chat, 'CODEX_SERVICE_TIER', args.service_tier):
         results = await run_evaluation(_select_cases(args.case_ids), case_timeout=args.timeout)
         report = _report(results)
-    if args.json:
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        print(f'Report saved: {args.output}')
+    elif args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         _print_human(results)

@@ -813,7 +813,7 @@ class EvaluationContractTests(unittest.TestCase):
                 case,
                 [plan, run],
                 (
-                    "Dry run only: this would save a three-hour total, split it across "
+                    "Dry run only: this would save 3 total hours, split it across "
                     "multiple sessions, and recurring runs would pursue the remainder."
                 ),
                 "completed",

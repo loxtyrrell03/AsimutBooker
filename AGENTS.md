@@ -56,9 +56,25 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   candidates before exclusions, and explicitly names the daypart selector.
   All five focused Terra retests passed, including those repairs, empty
   availability, failed prerequisites and uncertain Save handling.
-- All 916 offline tests passed. Higher-reasoning Luna comparisons are in progress;
-  retain the existing production model until the final comparison is recorded.
-  Existing desktop/phone sessions and live settings/bookings were preserved.
+- All 917 offline tests passed, followed by 111 focused checks after scoring and
+  reporting refinements. The final-prompt 22-case comparison passed 22/22 on
+  Terra/medium and Luna/high/Fast; Luna/xhigh/Fast passed 21/22, omitting one
+  remainder explanation. Respective median turn times were 14.6/16.8/20.9s.
+- Luna/high/Fast's complete 54-case run passed 52 contracts (18.6s median): one
+  omitted remainder explanation and one rejected availability argument followed
+  by successful recovery. Requested actions and final scopes were correct.
+  Retain Terra/medium: cheaper published API rates do not establish equal quality
+  or measured Codex account savings, and Luna was not faster in this comparison.
+  See `docs/assistant-reliability-2026-09-11.md` and its synthetic evidence.
+- Terra's corresponding 54-case run passed 53 contracts (16.0s median), with the
+  same recovered availability error. The filter now uses the established
+  `minimum_block_minutes` field name, aligning tool vocabulary with preferences.
+  All three availability retests passed on both models; Luna also passed a fresh
+  remainder-explanation retest. The final 917-test suite passed after alignment.
+- Model labels now derive from the shared model/reasoning/tier constants. The
+  evaluator supports `--output` for a JSON artifact with live progress. Model
+  overrides remain process-local. Existing desktop/phone sessions and live
+  settings/bookings were preserved; reopen/reload hosts to use the new contract.
 
 ## 2026-09-11 Published phone closure crosses
 

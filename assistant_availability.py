@@ -9,10 +9,10 @@ import re
 
 
 def resolve_query(arguments, now):
-    allowed = {'date', 'start_time', 'end_time', 'next_minutes', 'minimum_minutes', 'room'}
+    allowed = {'date', 'start_time', 'end_time', 'next_minutes', 'minimum_block_minutes', 'room'}
     if not isinstance(arguments, dict) or set(arguments) - allowed:
         raise ValueError('Unknown availability fields')
-    minimum = arguments.get('minimum_minutes', 1)
+    minimum = arguments.get('minimum_block_minutes', 1)
     if type(minimum) is not int or not 1 <= minimum <= 120:
         raise ValueError('Minimum duration must be between one and 120 minutes')
     room = arguments.get('room')
@@ -47,7 +47,7 @@ def resolve_query(arguments, now):
         dates.append(day.isoformat())
         day += timedelta(days=1)
     return {'start': start.isoformat(), 'end': end.isoformat(), 'dates': dates,
-            'minimum_minutes': minimum, 'room': room}
+            'minimum_block_minutes': minimum, 'room': room}
 
 
 def filter_scan(scan, query, *, now):
@@ -78,7 +78,7 @@ def filter_scan(scan, query, *, now):
         midnight = left.replace(hour=0, minute=0, second=0, microsecond=0)
         left = midnight + timedelta(minutes=15 * math.ceil((left - midnight).total_seconds() / 900))
         minutes = int((right - left).total_seconds() // 60)
-        if minutes >= query['minimum_minutes']:
+        if minutes >= query['minimum_block_minutes']:
             rows.append({'date': row['date'], 'room': row['room'],
                          'start_time': left.strftime('%H:%M'), 'end_time': right.strftime('%H:%M'),
                          'minutes': minutes})

@@ -388,7 +388,7 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                 **_object_schema({
                     "date": canonical_date, "start_time": clock, "end_time": clock,
                     "next_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
-                    "minimum_minutes": {"type": "integer", "minimum": 1, "maximum": 120},
+                    "minimum_block_minutes": {"type": "integer", "minimum": 1, "maximum": 120},
                     "room": {"type": "string", "minLength": 1, "maxLength": 120},
                 }),
                 "oneOf": [

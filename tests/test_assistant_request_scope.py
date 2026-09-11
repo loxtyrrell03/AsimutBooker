@@ -76,7 +76,7 @@ class AvailabilityWindowTests(unittest.TestCase):
         result = filter_scan(self.scan, query, now=self.now)
         self.assertEqual(result['rows'], [{'date': '2026-08-31', 'room': 'B0.29',
             'start_time': '10:15', 'end_time': '11:07', 'minutes': 52}])
-        self.assertEqual(filter_scan(self.scan, {**query, 'minimum_minutes': 60}, now=self.now)['rows'], [])
+        self.assertEqual(filter_scan(self.scan, {**query, 'minimum_block_minutes': 60}, now=self.now)['rows'], [])
 
     def test_missing_date_is_unknown_but_scanned_empty_is_empty(self):
         query = resolve_query({'date': '2026-09-01', 'start_time': '12:00', 'end_time': '18:00'}, self.now)
@@ -94,7 +94,7 @@ class AvailabilityWindowTests(unittest.TestCase):
 
     def test_bad_queries_and_stale_output_fail_closed(self):
         for args in ({}, {'next_minutes': True}, {'next_minutes': 60, 'date': '2026-09-01'},
-                     {'next_minutes': 60, 'minimum_minutes': 0},
+                     {'next_minutes': 60, 'minimum_block_minutes': 0},
                      {'date': '2026-09-01', 'start_time': '18:00', 'end_time': '12:00'}):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 resolve_query(args, self.now)

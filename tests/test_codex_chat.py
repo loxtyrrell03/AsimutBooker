@@ -5,6 +5,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from codex_chat import (
@@ -14,6 +15,7 @@ from codex_chat import (
     CodexConfigurationError,
     CodexProtocolError,
     CodexRequestTimeout,
+    configured_model_label,
 )
 
 
@@ -519,6 +521,12 @@ class _FakeServerCase(unittest.IsolatedAsyncioTestCase):
 
 
 class CodexChatProtocolTests(_FakeServerCase):
+    def test_model_label_tracks_reasoning_and_service_tier(self):
+        with patch.multiple('codex_chat', CODEX_MODEL='gpt-5.6-luna',
+                            CODEX_REASONING_EFFORT='high', CODEX_SERVICE_TIER='fast'):
+            self.assertEqual(configured_model_label(), 'GPT-5.6 Luna · high · Fast')
+        self.assertEqual(configured_model_label(), 'GPT-5.6 Terra · medium')
+
     async def test_force_shutdown_kills_and_releases_the_owned_process(self):
         class FakeStdin:
             def __init__(self):
