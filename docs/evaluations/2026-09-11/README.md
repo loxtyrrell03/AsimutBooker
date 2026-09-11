@@ -19,6 +19,9 @@ outcomes, elapsed turn time and deterministic issues remain.
 - `*-aligned`: focused retests after aligning the availability duration filter
   to the existing `minimum_block_minutes` vocabulary. Earlier reports retain the
   former field name as evidence of the tested contract at that time.
+- `calendar-*`: follow-up weekday-substitution regressions. The final-model
+  report passes all four new scenarios. Earlier trials retain failures and the
+  interim grader's overly narrow `closed|shut` check, which missed “closure”.
 
 Where manual review accepted equivalent safe behavior, `original_issues`
 preserves the earlier score and `issues` contains the reviewed score. Review

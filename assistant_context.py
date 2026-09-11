@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from agenda_snapshot import AGENDA_SNAPSHOT_FILE, read_agenda_snapshot
+from assistant_calendar import calendar_day
 from app_settings import SETTINGS_FILE, SettingsError, load_settings
 from date_time_preferences import load_date_time_preferences
 from assistant_plans import load_assistant_plans
@@ -231,7 +232,7 @@ def _settings_context(settings_path: Path) -> dict[str, Any]:
     }
 
 
-def _agenda_context(path: Path) -> dict[str, Any]:
+def _agenda_context(path: Path, catalog_path: Path | None = None) -> dict[str, Any]:
     result = read_agenda_snapshot(path)
     payload: dict[str, Any] = {
         "available": result.snapshot is not None,
@@ -247,6 +248,20 @@ def _agenda_context(path: Path) -> dict[str, Any]:
             window=[value.isoformat() for value in result.snapshot.dates],
             events=result.snapshot.event_dicts(),
         )
+        payload['calendar_dates'] = [calendar_day(value) for value in result.snapshot.dates]
+        for event in payload['events']:
+            event['weekday'] = calendar_day(event['date'])['weekday']
+    if catalog_path is not None:
+        try:
+            catalog = load_cached_catalog(catalog_path)
+            payload['practice_room_closures'] = {
+                'observed_at': _iso(catalog.observed_at) if catalog else None,
+                'closed_dates': list(closed_practice_dates(catalog)),
+                'scope': 'Confirmed whole-day practice-room closures from evidence no older than 24 hours. Other dates are not proven open; recital venues can differ.',
+            }
+        except Exception:
+            # A broken display catalog must not hide an independently valid agenda.
+            payload['practice_room_closures'] = {'observed_at': None, 'closed_dates': [], 'unavailable': True}
     return payload
 
 
@@ -435,7 +450,7 @@ def _recent_history(path: Path, *, limit: int = 20) -> dict[str, Any]:
 _SECTION_BUILDERS = {
     "app": lambda paths: APP_CAPABILITIES,
     "preferences": lambda paths: _settings_context(paths.settings),
-    "agenda": lambda paths: _agenda_context(paths.agenda),
+    "agenda": lambda paths: _agenda_context(paths.agenda, paths.catalog),
     "plan": lambda paths: _plan_context(paths.plan, paths.settings),
     "rooms": lambda paths: _catalog_context(paths.catalog),
     "health": lambda paths: _health_context(

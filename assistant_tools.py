@@ -45,6 +45,7 @@ from booking_strategy import (
 )
 from practice_plan import PracticePlanError, load_practice_plan
 from date_time_preferences import apply_date_time_preferences
+from assistant_calendar import calendar_day, validate_cancellation_weekdays
 from room_preferences import (
     RoomPreferencesError,
     apply_room_preferences_update,
@@ -799,6 +800,7 @@ def _event_payload(observed_at: Any, event: AgendaEvent) -> dict[str, Any]:
     return {
         "event_id": event.event_id,
         "date": event.date.isoformat(),
+        "weekday": calendar_day(event.date)['weekday'],
         "start_time": event.start_time,
         "end_time": event.end_time,
         "room": event.room,
@@ -2123,6 +2125,10 @@ class BookerToolSurface:
             raw_targets,
             require_exact_batch=True,
         )
+        try:
+            validate_cancellation_weekdays(user_request, targets)
+        except ValueError as exc:
+            raise AssistantToolError(str(exc)) from exc
         outcomes: list[dict[str, Any]] = []
         deadline = time.monotonic() + BULK_CANCELLATION_TIMEOUT_SECONDS
         stopped_early = False

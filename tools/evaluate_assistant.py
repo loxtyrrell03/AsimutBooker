@@ -39,6 +39,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from assistant_context import APP_CAPABILITIES  # noqa: E402
+from assistant_calendar import calendar_day, validate_cancellation_weekdays
 from assistant_runtime import ASSISTANT_DEVELOPER_INSTRUCTIONS  # noqa: E402
 import assistant_tools as production_tools  # noqa: E402
 from codex_chat import (  # noqa: E402
@@ -85,7 +86,7 @@ class SyntheticEvent:
     match_token: str
 
     def payload(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), 'weekday': calendar_day(self.date)['weekday']}
 
 
 SYNTHETIC_EVENTS = (
@@ -726,6 +727,15 @@ class SyntheticBookerDispatcher:
     def _events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
         with self._lock:
             case_id = self._active_case
+        if case_id in {'calendar_empty_sunday', 'calendar_wrong_weekday_label'}:
+            return (SyntheticEvent(49001, '2026-09-07', '12:00', '14:00', 'B0.29',
+                                   'Reservation', 'sha256:' + 'a' * 64),)
+        if case_id == 'calendar_existing_sunday':
+            return (SyntheticEvent(49002, '2026-09-06', '12:00', '14:00', 'B0.29',
+                                   'Reservation', 'sha256:' + 'b' * 64),)
+        if case_id == 'calendar_empty_wednesday':
+            return (SyntheticEvent(49003, '2026-09-03', '12:00', '14:00', 'B0.29',
+                                   'Reservation', 'sha256:' + 'c' * 64),)
         if case_id.startswith('audit_cancel'):
             return UPCOMING_CANCELLATION_EVENTS
         if case_id.startswith('audit_book'):
@@ -821,6 +831,13 @@ class SyntheticBookerDispatcher:
                         for offset in range(14)
                     ],
                     "events": [event.payload() for event in events],
+                    "calendar_dates": [calendar_day(date(2026, 8, 31) + timedelta(days=offset)) for offset in range(14)],
+                    "practice_room_closures": {
+                        'observed_at': EVAL_OBSERVED_AT,
+                        'closed_dates': (['2026-09-02'] if case_id == 'calendar_empty_wednesday' else
+                                         ['2026-09-06'] if case_id.startswith('calendar_') else []),
+                        'scope': 'Confirmed whole-day practice-room closures; recital venues can differ.',
+                    },
                 },
                 "plan": {
                     "available": True,
@@ -833,6 +850,8 @@ class SyntheticBookerDispatcher:
                     "stale": True,
                     "freshness_reason": "Synthetic display data only.",
                     "rooms": [{"name": "B0.29"}, {"name": "B1.09"}, {"name": "B0.27"}],
+                    "closed_dates": (['2026-09-02'] if case_id == 'calendar_empty_wednesday' else
+                                     ['2026-09-06'] if case_id.startswith('calendar_') else []),
                 },
                 "health": {"items": []},
                 "mutations": {"pending": [{'operation': 'create', 'status': 'pending'}] if case_id == 'audit_pending_receipt' else []},
@@ -1420,6 +1439,10 @@ class SyntheticBookerDispatcher:
                     "The selection is empty or outside the synthetic bound.",
                     code="invalid_batch_size",
                 )
+            try:
+                validate_cancellation_weekdays(prompt, [event.payload() for event in matches])
+            except ValueError as exc:
+                raise CodexToolFailure(str(exc), code='weekday_mismatch') from exc
             selection["consumed"] = True
             protected_window = selection.get("protected_window")
             interpreted_scope = selection.get("interpreted_scope")
@@ -2337,6 +2360,10 @@ def evaluate_request_contract(case, calls, final):
         issues.append('quoted example was treated as an active request')
     if expected.get('clarify') and '?' not in final:
         issues.append('unresolved ambiguity did not produce a question')
+    if expected.get('closure') and not re.search(r'closed|closure|shut', final, re.I):
+        issues.append('confirmed practice-room closure was not explained')
+    if expected.get('suggest_weekday') and not re.search(expected['suggest_weekday'], final, re.I):
+        issues.append('alternative was not labelled with its actual weekday')
     if 'availability' in expected:
         scans = [call for call in calls if call.tool == 'find_availability']
         def matches_query(call):
@@ -2402,6 +2429,10 @@ def evaluate_request_contract(case, calls, final):
 
 
 AUDIT_CASES = (
+    EvalCase('calendar_empty_sunday', 'cancel my sunday 12 pm booking', 'No Sunday booking; a Monday noon booking is not a substitute.', expected={'read_only': True, 'clarify': True, 'closure': True, 'suggest_weekday': 'Monday'}),
+    EvalCase('calendar_empty_wednesday', 'Please cancel my Wednesday booking at noon.', 'Empty requested weekday must not select a nearby Thursday booking.', expected={'read_only': True, 'clarify': True, 'closure': True, 'suggest_weekday': 'Thursday'}),
+    EvalCase('calendar_wrong_weekday_label', 'Cancel my Sunday 7 September booking at noon.', 'Conflicting named weekday and date require clarification.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('calendar_existing_sunday', 'Cancel my Sunday noon booking.', 'A real Sunday reservation can be cancelled even on a closed practice day.', expected={'cancel_ids': [49002]}),
     EvalCase('audit_book_afternoon', 'Book 3 hours tomorrow afternoon.', 'Dated total with strict afternoon scope.', expected={'hours': {'2026-09-01': 3}, 'window': ('12:00', '18:00')}),
     EvalCase('audit_book_default_afternoon', 'Book me practice this afternoon.', 'Resolve omitted duration from preferences.', expected={'hours': {'2026-08-31': 2}, 'window': ('12:00', '18:00')}),
     EvalCase('audit_book_default_evening', 'Can you book me practice this evening?', 'Polite booking request with default duration.', expected={'hours': {'2026-08-31': 2}, 'window': ('18:00', '22:00')}),

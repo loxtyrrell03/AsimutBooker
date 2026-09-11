@@ -15,6 +15,32 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Cancellation weekday contradiction guard
+
+- An incorrect weekday interpretation exposed a gap: exact reservation identity
+  and verified-absence checks validated the selected booking, not whether its
+  date contradicted the weekday in the user's request. The earlier 54-case suite
+  did not pair an empty requested day with a plausible neighboring booking.
+- `assistant_calendar.py` computes weekday facts for every covered agenda date
+  and selected event. Its bounded named-weekday veto runs over every validated
+  cancellation target before any worker or blackout write, including ID-selected
+  and mixed batches. It supports named lists/exclusions and simple weekday ranges;
+  range boundaries remain semantic interpretation, not authorization by regex.
+- Agenda context includes independently freshness-filtered practice-room closure
+  dates. An unreadable catalog does not hide a valid agenda. Missing/old closure
+  evidence never implies open rooms, and practice closures do not invalidate an
+  existing reservation or establish recital-venue closure.
+- For an empty requested day, the assistant explains confirmed closure and asks
+  before using a nearby booking, naming its real weekday/date. Conflicting
+  weekday/date wording requires clarification. Four real-model synthetic checks
+  pass, including a Wednesday/Thursday variant and a genuine Sunday reservation;
+  separated-day and rolling-exclusion cancellation checks also pass. The suite
+  now has 58 model scenarios. All 923 offline tests passed after the final change.
+  Evidence is in the reliability report.
+- Existing desktop/phone hosts and live booking state were preserved. Hosts must
+  reload Python to activate this guard; the prompt contract also changes so stale
+  semantic context is refreshed. This work does not restore a cancelled booking.
+
 ## 2026-09-11 Assistant scoped requests
 
 - Assistant `update_booker_preferences` now exposes the shared exact-date time

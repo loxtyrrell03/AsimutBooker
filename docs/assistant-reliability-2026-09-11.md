@@ -1,5 +1,37 @@
 # Assistant reliability and model comparison — 11 September 2026
 
+## Follow-up: empty weekday must not select a neighboring booking
+
+A real incident after the initial evaluation exposed a missing scenario: an
+empty requested Sunday was confused with a Monday reservation at the same time.
+The existing identity/receipt guards verified the chosen booking, while the
+model's date interpretation was wrong. The original 54-case result did not prove
+this behavior safe. Four added scenarios bring the model suite to 58.
+
+The host now supplies calendar-computed weekday labels and freshness-filtered
+practice-room closure dates directly in agenda context. A separate code check
+vetoes cancellation targets that contradict explicitly named weekdays before
+any cancellation worker or rebooking-protection write. It applies to exact-date,
+ID and mixed-batch selections. This is a limited contradiction check, not a
+replacement natural-language parser or sufficient mutation authorization.
+
+All four final Terra/medium model checks passed: empty Sunday with a Monday
+alternative, empty Wednesday with a Thursday alternative, a conflicting named
+weekday/date, and a real Sunday reservation despite practice-room closure.
+The empty-day responses explain closure and ask before cancelling the alternative.
+The first model check already avoided substitution but omitted the closure and
+question; a later Wednesday variant showed that a separate closure lookup could
+be skipped. Putting closure facts in agenda context addressed that omission.
+One interim score also wrongly rejected the word “closure”; the grader now
+accepts it. Earlier trials remain in `calendar-*.json`, including original scores.
+
+Production-handler tests cover all 49 requested/selected weekday combinations,
+range/list/exclusion variants, rollover dates, empty-day calendar facts, catalog
+failure, and blocking a mixed batch before even its valid first item executes.
+All 923 offline tests passed after the final change (61.9 seconds).
+Tests use temporary settings and synthetic reservations; live booking state and
+running hosts were preserved. Reopen/reload hosts to activate the guard.
+
 ## Scope
 
 The real Codex controller and production tool declarations are exercised with
