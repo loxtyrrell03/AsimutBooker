@@ -19,7 +19,7 @@ import json
 import math
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time as datetime_time, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
@@ -1328,16 +1328,96 @@ def load_cached_catalog(
     return _catalog_from_dict(raw)
 
 
+def with_closure_events(
+    catalog: RoomCatalog, agenda_payload: Any, category_payload: Any,
+) -> RoomCatalog:
+    """Add explicit site closure events to display evidence, without refreshing policy.
+
+    Asimut paints College Closed events red independently of closed_hours (the
+    ordinary opening-hours metadata). Resolve their category by its live name
+    and active status, never by colour, event title or a hard-coded category ID.
+    Only intervals and room identities survive; no event/personal data is cached.
+    """
+    categories = _response_object(category_payload, "closure categories")
+    _require_success(categories, "closure categories", True)
+    closure_ids: set[int] = set()
+    seen_categories: set[int] = set()
+    for raw in _list(categories.get("categories"), "closure categories.categories"):
+        category = _mapping(raw, "closure category")
+        category_id = _positive_int(category.get("id"), "closure category.id")
+        if category_id in seen_categories:
+            raise RoomCatalogError("Duplicate closure category identity")
+        seen_categories.add(category_id)
+        name = _text(category.get("name"), "closure category.name").casefold()
+        if (
+            name in {"college closed", "practice rooms closed", "rooms closed", "room closed"}
+            and category.get("eventstatus") == "normal"
+        ):
+            closure_ids.add(category_id)
+
+    response = _response_object(agenda_payload, "room closure agenda")
+    _require_success(response, "room closure agenda", True)
+    intervals: dict[int, list[tuple[datetime, datetime]]] = {
+        room.location_id: list(room.closed_hours) for room in catalog.rooms
+    }
+    for raw in _list(response.get("arrangements"), "room closure agenda.arrangements"):
+        arrangement = _mapping(raw, "closure arrangement")
+        for raw_event in _list(arrangement.get("events"), "closure arrangement.events"):
+            event = _mapping(raw_event, "closure event")
+            category_id = _positive_int(event.get("ca"), "closure event.ca")
+            if category_id not in closure_ids or event.get("vi") != "visible":
+                continue
+            _positive_int(event.get("id"), "closure event.id")
+            start = _parse_aware_datetime(event.get("st"), "closure event.st")
+            end = _parse_aware_datetime(event.get("en"), "closure event.en")
+            if end <= start:
+                raise RoomCatalogError("Closure event end must follow its start")
+            resources = _list(event.get("rs"), "closure event.rs")
+            if not resources:
+                raise RoomCatalogError("Closure event has no room identity")
+            for raw_resource in resources:
+                resource = _mapping(raw_resource, "closure event room")
+                location_id = _positive_int(resource.get("id"), "closure event room.id")
+                if location_id not in intervals:
+                    raise RoomCatalogError("Closure event references an unrequested room")
+                intervals[location_id].append((start, end))
+    return replace(catalog, rooms=tuple(
+        replace(room, closed_hours=tuple(sorted(set(intervals[room.location_id]))))
+        for room in catalog.rooms
+    ))
+
+
+def refresh_closure_events(page: Any, catalog: RoomCatalog, category_payload: Any) -> RoomCatalog:
+    """Read closure events for the whole displayed window in one bounded GET."""
+    first = catalog.observed_at.astimezone(SITE_TIMEZONE).date()
+    last = min(catalog.booking_horizon.astimezone(SITE_TIMEZONE).date(), first + timedelta(days=31))
+    ids = ",".join(str(room.location_id) for room in catalog.rooms)
+    path = (
+        f"/services/v2/locations/location_ids={ids}"
+        f";start_at={_format_site_iso(_day_time(first, 0))}"
+        f";end_at={_format_site_iso(_day_time(last, 23))}/agenda"
+    )
+    payload = _get_json(page, path, "Calendar closure events", timeout_ms=3000)
+    return with_closure_events(catalog, payload, category_payload)
+
+
 def closed_practice_dates(
     catalog: RoomCatalog | None, *, now: datetime | None = None,
 ) -> tuple[str, ...]:
-    """Display-only dates with explicit closures covering every room, 07:00–23:00.
+    """Display dates with closures covering all practice rooms, 07:00–23:00.
 
     Unknown, old, partially closed, fully booked, and beyond-horizon days are
     never labelled closed. Adjacent closure intervals may jointly cover a day.
     """
     current = (now or datetime.now(SITE_TIMEZONE)).astimezone(SITE_TIMEZONE)
     if catalog is None or not catalog.rooms:
+        return ()
+    # The catalog also contains explicitly promoted recital venues. They are
+    # optional booking alternatives, not practice rooms; their opening hours
+    # must not hide a closure of the practice-room group. Reuse the catalog's
+    # exact promotion allow-list, rather than guessing from piano/type tags.
+    practice_rooms = tuple(room for room in catalog.rooms if room.name not in PROMOTED_LOCATION_NAMES)
+    if not practice_rooms:
         return ()
     age = current - catalog.observed_at
     if age < timedelta(minutes=-5) or age > timedelta(hours=24):
@@ -1360,7 +1440,7 @@ def closed_practice_dates(
     result = []
     day = first
     while day <= last:
-        if all(covers(room, _day_time(day, 7), _day_time(day, 23)) for room in catalog.rooms):
+        if all(covers(room, _day_time(day, 7), _day_time(day, 23)) for room in practice_rooms):
             result.append(day.isoformat())
         day += timedelta(days=1)
     return tuple(result)
@@ -1968,6 +2048,12 @@ def refresh_from_site(
         check_observed_ats=check_observed_ats,
         site_clock_offset_bounds=_intersect_clock_offset_bounds(clock_samples),
     )
+    try:
+        catalog = refresh_closure_events(page, catalog, category_payload)
+    except RoomCatalogError:
+        # Missing closure-event evidence cannot block the independently proven
+        # booking policy, nor turn an ordinary reservation into a site closure.
+        pass
     if save:
         save_catalog(catalog, path)
     return catalog

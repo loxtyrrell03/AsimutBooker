@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import room_catalog
@@ -345,6 +346,74 @@ class ClosureCalendarTests(unittest.TestCase):
     def test_metadata_request_selects_the_exact_date(self):
         path = room_catalog._group_meta_path(GLOBAL_CUTOFF, group_id=10)
         self.assertIn("current_date=2026-09-06T00:00:00.000+01:00", path)
+
+    def real_weekend(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures" / "college_closed_weekend.json").read_text())
+        observed = datetime.fromisoformat(fixture["observed_at"])
+        base = complete_catalog()
+        template = base.rooms[0]
+        rooms = tuple(replace(
+            template, location_id=row["id"], name=row["name"],
+            booking_cutoff=observed + timedelta(minutes=template.horizon_minutes),
+            closed_hours=tuple((datetime.fromisoformat(h["st"]), datetime.fromisoformat(h["en"]))
+                               for h in row["closed_hours"]),
+        ) for row in fixture["rooms"])
+        catalog = replace(base, observed_at=observed,
+                          booking_horizon=observed + timedelta(minutes=base.global_horizon_minutes), rooms=rooms)
+        return fixture, catalog
+
+    def test_actual_weekend_closure_events_complete_opening_hours_and_survive_cache(self):
+        fixture, catalog = self.real_weekend()
+        self.assertEqual(room_catalog.closed_practice_dates(catalog, now=catalog.observed_at), ())
+        closed = room_catalog.with_closure_events(catalog, fixture["agenda"], fixture["categories"])
+        expected = ("2026-09-12", "2026-09-13")
+        self.assertEqual(room_catalog.closed_practice_dates(closed, now=catalog.observed_at), expected)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "catalog.json"
+            save_catalog(closed, path)
+            cached = load_cached_catalog(path)
+            self.assertEqual(room_catalog.closed_practice_dates(cached, now=catalog.observed_at), expected)
+            self.assertFalse(cached.fresh)
+            enriched = room_catalog.with_closure_events(cached, fixture["agenda"], fixture["categories"])
+            self.assertFalse(enriched.fresh)
+            self.assertEqual(enriched.observed_at, cached.observed_at)
+            self.assertEqual(room_catalog.closed_practice_dates(enriched, now=catalog.observed_at + timedelta(hours=25)), ())
+            self.assertNotIn("College Closed", path.read_text())
+
+    def test_missing_room_partial_day_and_ordinary_red_events_do_not_imply_closure(self):
+        for variant in ("missing_room", "partial", "reservation", "cancelled", "hidden"):
+            with self.subTest(variant=variant):
+                fixture, catalog = self.real_weekend()
+                events = fixture["agenda"]["response"]["arrangements"][0]["events"]
+                saturday = [e for e in events if e["st"].startswith("2026-09-12")]
+                if variant == "missing_room":
+                    events.remove(saturday[0])
+                elif variant == "partial":
+                    saturday[0]["en"] = "2026-09-12T12:00:00+01:00"
+                elif variant == "hidden":
+                    saturday[0]["vi"] = "hidden"
+                else:
+                    cat = fixture["categories"]["response"]["categories"][0]
+                    if variant == "reservation":
+                        cat["name"] = "Reservation"  # Keep red colour and College Closed event title.
+                    else:
+                        cat["eventstatus"] = "cancelled"
+                closed = room_catalog.with_closure_events(catalog, fixture["agenda"], fixture["categories"])
+                self.assertNotIn("2026-09-12", room_catalog.closed_practice_dates(closed, now=catalog.observed_at))
+
+    def test_closure_category_identity_is_discovered_and_bad_evidence_is_rejected(self):
+        fixture, catalog = self.real_weekend()
+        fixture["categories"]["response"]["categories"][0]["id"] = 9048
+        events = fixture["agenda"]["response"]["arrangements"][0]["events"]
+        for event in events:
+            event["ca"] = 9048
+        closed = room_catalog.with_closure_events(catalog, fixture["agenda"], fixture["categories"])
+        self.assertEqual(room_catalog.closed_practice_dates(closed, now=catalog.observed_at), ("2026-09-12", "2026-09-13"))
+        for field, value in (("en", "2026-09-11T00:00:00+01:00"), ("rs", [{"id": 999999}])):
+            bad = copy_json(fixture["agenda"])
+            bad["response"]["arrangements"][0]["events"][0][field] = value
+            with self.assertRaises(RoomCatalogError):
+                room_catalog.with_closure_events(catalog, bad, fixture["categories"])
 
 
 class SessionPolicyTests(unittest.TestCase):
@@ -822,6 +891,8 @@ class _FakeRequestContext:
             except KeyError as exc:
                 raise AssertionError(f"unexpected info identity {exc.args[0]}") from exc
             payload = info_payload(requested_rooms)
+        elif "/services/v2/locations/location_ids=" in path and path.endswith("/agenda"):
+            payload = {"response": {"success": True, "arrangements": []}}
         else:
             raise AssertionError(f"unexpected GET {url}")
         return _FakeResponse(url, payload)
@@ -887,6 +958,43 @@ class _FakePage:
 
 
 class RefreshWorkflowTests(unittest.TestCase):
+    def test_normal_refresh_fetches_closure_events_and_publishes_them_in_cache(self):
+        page = _FakePage()
+        original_get = page.request.get
+        event_requests = []
+        fixture, _ = ClosureCalendarTests().real_weekend()
+        category = fixture["categories"]["response"]["categories"][0]
+
+        def get(url, **kwargs):
+            if url.endswith("/agenda"):
+                event_requests.append((url, kwargs))
+                events = [{"id": room[0], "ca": category["id"], "vi": "visible",
+                           "st": "2026-08-31T00:00:00+01:00", "en": "2026-08-31T23:55:00+01:00",
+                           "rs": [{"id": room[0]}]} for room in ROOMS + PROMOTED_ROOMS]
+                return _FakeResponse(url, {"response": {"success": True, "arrangements": [{"events": events}]}})
+            response = original_get(url, **kwargs)
+            if url.endswith("/categories"):
+                response._payload["response"]["categories"].append(category)
+            return response
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(page.request, "get", side_effect=get):
+            path = Path(directory) / "catalog.json"
+            catalog = refresh_from_site(page, path=path, observed_at=OBSERVED)
+            self.assertEqual(room_catalog.closed_practice_dates(catalog, now=OBSERVED), ("2026-08-31",))
+            self.assertEqual(room_catalog.closed_practice_dates(load_cached_catalog(path), now=OBSERVED), ("2026-08-31",))
+        self.assertEqual(len(event_requests), 1)
+        url, kwargs = event_requests[0]
+        self.assertIn("location_ids=11,12,13,201,202", url)
+        self.assertIn("start_at=2026-08-30T00:00:00.000+01:00", url)
+        self.assertIn("end_at=2026-09-06T23:00:00.000+01:00", url)
+        self.assertEqual(kwargs["timeout"], 3000)
+
+    def test_unavailable_closure_events_do_not_block_booking_policy_refresh(self):
+        with patch("room_catalog.refresh_closure_events", side_effect=RoomCatalogError("Unavailable")):
+            catalog = refresh_from_site(_FakePage(), observed_at=OBSERVED, save=False)
+        self.assertTrue(catalog.fresh)
+        self.assertEqual(room_catalog.closed_practice_dates(catalog, now=OBSERVED), ())
+
     def test_authenticated_refresh_checks_every_live_room_and_never_saves(self):
         page = _FakePage()
         with tempfile.TemporaryDirectory() as temp_dir:

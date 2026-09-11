@@ -15,6 +15,32 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Actual College Closed events in Calendar
+
+- Asimut's red full-day blocks can be College Closed category events, separate
+  from `closed_hours` opening-hours metadata. Catalog discovery now reads the
+  room agenda across the display window in one GET (three-second deadline),
+  resolves active closure categories by live name/status, and caches only their
+  room/time intervals alongside opening-hours closures. Event titles, red colour,
+  ordinary bookings and cancelled categories cannot establish closure.
+- Calendar closure coverage applies to every practice room, excluding the exact
+  promoted recital venues in `PROMOTED_LOCATION_NAMES`. Those optional venues
+  can have different hours while the AHC practice-room group is closed. Cached
+  schema, policy freshness, booking eligibility and reservations are unchanged.
+- Authenticated read-only metadata/agenda requests verified all 29 AHC practice
+  rooms closed on 12 and 13 September, with partial closures only on Monday 14.
+  The display cache was enriched under its lock without changing its policy
+  timestamp. Requests using saved cookies must retain the browser user agent;
+  Asimut can report unauthenticated when a generic API client changes it.
+- Verified 900 Python tests, then one additional real-cache-to-Tk regression in
+  all five Calendar modes. The sanitized response fixture reproduces both the
+  missing-event and promoted-room failures. `tools/render_calendar_chrome.py
+  --catalog <snapshot>` renders derived dates without mocking closure results;
+  wide/narrow renders were inspected and `verified-weekend-closures.png` in the
+  desktop design folder records the result (other calendar content omitted).
+  Existing desktop/phone sessions were preserved; reopen the PC app to load the
+  detection change. No live booking or preference changes were made.
+
 ## 2026-09-11 Centred navigation and closed-day crosses
 
 - Desktop navigation is centred against the full window with equal side columns;
@@ -23,7 +49,7 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - Confirmed whole-day closures now have a red diagonal X across the entire day
   in all five Calendar modes. Month/day cells retain readable closure text,
   direct date editing and existing booking links. Booking-off dates remain grey;
-  the shared fresh, explicit all-room closure evidence requirement is unchanged.
+  closure evidence is derived by the shared catalog rules documented above.
 - Calendar columns have equal widths and day rows grow into the scroll area
   for labels/bookings. Avoid flushing Configure events during calendar rendering:
   that caused recursive rendering and duplicate day cells when changing views.
@@ -358,8 +384,9 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   deadline for the extra display requests. Missing/changed room identities or
   failed date reads never imply closure or block the proven booking policy.
 - Shared `closed_practice_dates` requires continuous explicit closure of every
-  catalog room, including promoted rooms, over the full 07:00–23:00 calendar
-  timeline. Empty, partial, or older-than-24-hour evidence never marks a date.
+  practice room over the full 07:00–23:00 calendar timeline. The 11 September
+  correction adds closure-category events and excludes promoted recital venues.
+  Empty, partial, or older-than-24-hour evidence never marks a date.
   These annotations do not change saved booking preferences or reservations.
 - Desktop month/day and plan headers turn red with strike-through. Phone My Week
   shows red crossed-out date headings and a closure label, including dates with

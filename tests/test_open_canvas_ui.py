@@ -71,6 +71,26 @@ class OpenCanvasTests(unittest.TestCase):
                         self.root.update()
                         details.assert_called_once_with(booking)
 
+    def test_actual_weekend_cache_drives_both_crosses_without_mocking_closure_result(self):
+        from datetime import datetime
+        from booking_plan import BookingPlanReadResult
+        from room_catalog import with_closure_events, save_catalog, load_cached_catalog
+        from tests.test_room_catalog import ClosureCalendarTests
+        fixture, catalog = ClosureCalendarTests().real_weekend()
+        path = self.fixture.settings.parent / 'catalog.json'
+        save_catalog(with_closure_events(catalog, fixture['agenda'], fixture['categories']), path)
+        self.app.room_catalog = load_cached_catalog(path)
+        with patch('room_catalog.datetime', wraps=datetime) as clock, patch.object(self.app, '_load_cached_events'), patch.object(self.app, '_read_booking_plan_for_display', return_value=BookingPlanReadResult(None, False, '')):
+            clock.now.return_value = catalog.observed_at
+            for mode in ('month', 'fortnight', 'week', '3days', 'plan'):
+                self.app.show_calendar_dialog(mode)
+                self.app.calendar_start_date = date(2026, 9, 12)
+                self.app._refresh_calendar(); self.root.update()
+                self.assertEqual(self.app.calendar_closed_dates, {'2026-09-12', '2026-09-13'})
+                crossed = [w for w in descendants(self.app.calendar_frame)
+                           if isinstance(w, tk.Canvas) and w.find_withtag('closed-day-cross')]
+                self.assertEqual(len(crossed), 2, mode)
+
     def test_room_editor_draft_survives_navigation_and_cancel_does_not_save(self):
         original = self.fixture.settings.read_bytes()
         self.app.show_room_preferences_dialog()
