@@ -219,7 +219,7 @@ class WeekPanel(ScrollPage):
         self.rows=tk.Frame(self.body,bg=PAGE);self.rows.pack(fill='x')
         ttk.Button(self.body,text='Refresh bookings',command=on_refresh,style='QuietLink.TButton').pack(anchor='w',pady=16)
 
-    def update_data(self,events,*,available,stale,checked='',planned=()):
+    def update_data(self,events,*,available,stale,checked='',planned=(),closed_dates=(),off_dates=(),plan_days=(),plan_stale=False):
         self.status.configure(text=('Last checked agenda · ' if stale else 'Booked practice and college events · ')+ (checked or 'Not checked yet'))
         for child in self.rows.winfo_children():child.destroy()
         today=datetime.now(ZoneInfo('Europe/London')).date().isoformat()
@@ -228,10 +228,20 @@ class WeekPanel(ScrollPage):
             if event['date']>=today:grouped.setdefault(event['date'],[]).append(event)
         for candidate in planned:
             if candidate.date>=today:grouped.setdefault(candidate.date,[])
+        for day in plan_days:
+            if day.date>=today:grouped.setdefault(day.date,[])
+        for day in closed_dates:
+            if day>=today:grouped.setdefault(day,[])
+        if plan_stale:
+            label(self.rows,'Your practice plan needs a refresh. Bookings below are from the last checked agenda.',color=MUTED,wraplength=650).pack(fill='x',pady=8)
         if not available:label(self.rows,'Your agenda is unavailable. Refresh before relying on these plans.',color=MUTED,wraplength=600).pack(anchor='w',pady=20)
         if not grouped and available:label(self.rows,'No upcoming sessions in the last checked agenda.',color=MUTED).pack(anchor='w',pady=20)
         for day,day_events in sorted(grouped.items()):
-            label(self.rows,datetime.fromisoformat(day).strftime('%A, %d %B'),size=19,bold=True).pack(anchor='w',pady=(20,10))
+            heading=label(self.rows,datetime.fromisoformat(day).strftime('%A, %d %B'),size=19,bold=True,color='#B73332' if day in closed_dates else INK)
+            if day in closed_dates or day in off_dates: heading.configure(font=('Segoe UI',-19,'bold overstrike'))
+            heading.pack(anchor='w',pady=(20,10))
+            if day in closed_dates or day in off_dates:
+                label(self.rows,'Practice rooms closed' if day in closed_dates else 'Booking off',color='#B73332' if day in closed_dates else MUTED,size=13).pack(anchor='w',pady=(0,6))
             for event in sorted(day_events,key=lambda e:e['startTime']):
                 card=RoundedCard(self.rows,fill=SURFACE if event.get('isReservation') else '#F1F4F8',padding=17);card.pack(fill='x',pady=5)
                 title=f"Room {event.get('room','')}" if event.get('isReservation') else event.get('title','College event')
@@ -244,3 +254,8 @@ class WeekPanel(ScrollPage):
                 label(card.content,f'{candidate.start_time}–{candidate.end_time}   {candidate.room}',size=17,bold=True).pack(anchor='w')
                 state = f'Planned extension · {candidate.confirmed_minutes} min already booked' if candidate.confirmed_minutes else 'Planned · not booked yet'
                 label(card.content,state,size=13,color=MUTED).pack(anchor='w',pady=(6,0))
+            plan_day=next((item for item in plan_days if item.date==day),None)
+            if plan_day:
+                label(self.rows,f'Daily target: {plan_day.target_minutes/60:g} hours',size=13,color=MUTED).pack(anchor='w',pady=8)
+                if not plan_day.primary and not plan_day.additional and plan_day.reason:
+                    label(self.rows,plan_day.reason,size=13,color=MUTED,wraplength=650).pack(fill='x')

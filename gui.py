@@ -1355,6 +1355,8 @@ class AsimutBookerGUI(QuietFocusGUI):
         # Variables
         self.running_process = None
         self.is_running = False
+        self._desktop_run_id = None
+        self._desktop_stop_path = None
         self.settings_available = True
         self.settings_error = ""
         self._settings_error_reported = False
@@ -2770,6 +2772,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             return
 
         self.is_running = True
+        self._prepare_desktop_run()
         self.run_visible_btn.config(state=tk.DISABLED)
         self.run_headless_btn.config(state=tk.DISABLED)
         self.plan_refresh_btn.config(state=tk.DISABLED)
@@ -2784,7 +2787,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             target=self._run_booker_thread,
             args=(headless, (), "Booker"),
         )
-        thread.daemon = True
+        thread.daemon = False
         thread.start()
 
     def refresh_booking_plan(self):
@@ -2797,6 +2800,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             )
             return
         self.is_running = True
+        self._prepare_desktop_run()
         self.run_visible_btn.config(state=tk.DISABLED)
         self.run_headless_btn.config(state=tk.DISABLED)
         self.plan_refresh_btn.config(state=tk.DISABLED)
@@ -2806,13 +2810,27 @@ class AsimutBookerGUI(QuietFocusGUI):
         threading.Thread(
             target=self._run_booker_thread,
             args=(True, ("--plan-only",), "Plan refresh"),
-            daemon=True,
+            daemon=False,
         ).start()
+
+    def _prepare_desktop_run(self):
+        from uuid import uuid4
+        self._desktop_run_id = str(uuid4())
+        self._desktop_stop_path = APP_DIR / 'data' / 'desktop_operations' / self._desktop_run_id / 'stop'
 
     def _run_booker_thread(self, headless, extra_args=(), operation_name="Booker"):
         """Thread function to run booker."""
+        def post(callback):
+            if getattr(self, '_closing', False):
+                return
+            try:
+                self.root.after(0, callback)
+            except (RuntimeError, tk.TclError):
+                pass
         try:
-            cmd = [sys.executable, str(APP_DIR / "book_week.py")]
+            if not getattr(self, '_desktop_run_id', None):
+                self._prepare_desktop_run()
+            cmd = [sys.executable, str(APP_DIR / "desktop_operation_worker.py"), self._desktop_run_id]
             if headless:
                 cmd.append("--headless")
             cmd.extend(extra_args)
@@ -2822,6 +2840,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 cwd=str(APP_DIR),
                 creationflags=subprocess.CREATE_NO_WINDOW if headless else 0
             )
@@ -2830,32 +2850,35 @@ class AsimutBookerGUI(QuietFocusGUI):
             for line in iter(self.running_process.stdout.readline, ''):
                 if line:
                     line = line.strip()
+                    if line.startswith('ASIMUT_STAGE: '):
+                        post(lambda text=line[14:]: self.progress_var.set(text))
+                        continue
 
                     # Track statistics
                     if "SUCCESS:" in line or "Booked" in line:
-                        self.root.after(0, lambda l=line: self.log(l, "success"))
+                        post(lambda l=line: self.log(l, "success"))
                     elif "Found" in line and "unique events" in line:
-                        self.root.after(0, lambda l=line: self.log(l, "info"))
+                        post(lambda l=line: self.log(l, "info"))
                     elif "Total bookings made:" in line:
-                        self.root.after(0, lambda l=line: self.log(l, "success"))
+                        post(lambda l=line: self.log(l, "success"))
                     elif "ERROR" in line or "Error" in line or "failed" in line.lower():
-                        self.root.after(0, lambda l=line: self.log(l, "error"))
+                        post(lambda l=line: self.log(l, "error"))
                     elif "WARNING" in line or "Skip" in line:
-                        self.root.after(0, lambda l=line: self.log(l, "warning"))
+                        post(lambda l=line: self.log(l, "warning"))
                     else:
-                        self.root.after(0, lambda l=line: self.log(l))
+                        post(lambda l=line: self.log(l))
 
             self.running_process.wait()
             exit_code = self.running_process.returncode
 
-            if exit_code == 0:
-                self.root.after(
-                    0,
+            if self._desktop_stop_path and self._desktop_stop_path.exists():
+                post(lambda: self.log('Stopped. Any bookings already verified remain in the agenda.', 'info'))
+            elif exit_code == 0:
+                post(
                     lambda: self.log(f"{operation_name} finished successfully.", "success"),
                 )
             else:
-                self.root.after(
-                    0,
+                post(
                     lambda: self.log(
                         f"{operation_name} finished with exit code {exit_code}",
                         "warning",
@@ -2863,17 +2886,18 @@ class AsimutBookerGUI(QuietFocusGUI):
                 )
 
         except Exception as e:
-            self.root.after(
-                0,
+            post(
                 lambda message=f"Error running {operation_name.lower()}: {e}": self.log(message, "error"),
             )
         finally:
-            self.root.after(0, self._on_booker_finished)
+            post(self._on_booker_finished)
 
     def _on_booker_finished(self):
         """Called when booker finishes."""
         self.is_running = False
         self.running_process = None
+        self._desktop_run_id = None
+        self._desktop_stop_path = None
         self.run_visible_btn.config(state=tk.NORMAL)
         self.run_headless_btn.config(state=tk.NORMAL)
         self.plan_refresh_btn.config(state=tk.NORMAL)
@@ -2882,10 +2906,17 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.refresh_status()
 
     def stop_booker(self):
-        """Stop the running booker process."""
-        if self.running_process:
-            self.running_process.terminate()
-            self.log("Booker stopped by user.", "warning")
+        """Stop at the next safe boundary; never interrupt Save verification."""
+        if self.is_running and self._desktop_stop_path:
+            try:
+                self._desktop_stop_path.parent.mkdir(parents=True, exist_ok=True)
+                self._desktop_stop_path.touch()
+            except OSError:
+                self.progress_var.set('Stop could not be requested. The operation is still running; try Stop again.')
+                return
+            self.stop_btn.configure(state=tk.DISABLED)
+            self.progress_var.set('Stop requested. If a Save has started, finishing its verification first.')
+            self.log('Stop requested; verified bookings remain in the agenda.', 'info')
 
     def run_login_setup(self):
         """Backward-compatible alias for the safe login health/recovery action."""
@@ -3123,8 +3154,8 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         ttk.Label(
             header_frame,
-            text="AsimutBooker Automatic Schedule",
-            font=("Segoe UI", 14, "bold"),
+            text="Automatic booking",
+            font=(self.ui_font_family, -32, "bold"),
         ).pack(side=tk.LEFT)
 
         # Task count label
@@ -3186,7 +3217,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Left side buttons
         left_btns = ttk.Frame(btn_frame)
-        left_btns.pack(side=tk.LEFT)
+        left_btns.pack(side=tk.TOP, anchor=tk.W)
 
         self.schedule_setup_btn = ttk.Button(
             left_btns,
@@ -3203,7 +3234,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Right side buttons
         right_btns = ttk.Frame(btn_frame)
-        right_btns.pack(side=tk.RIGHT)
+        right_btns.pack(side=tk.TOP, anchor=tk.W, pady=(8,0))
 
         ttk.Button(right_btns, text="🔄 Refresh", command=self._refresh_tasks_list).pack(side=tk.LEFT, padx=5)
         ttk.Button(
@@ -4119,14 +4150,13 @@ class AsimutBookerGUI(QuietFocusGUI):
         content.columnconfigure(0, weight=3)
         content.columnconfigure(1, weight=2)
         content.rowconfigure(2, weight=1)
-        ttk.Label(content, text="Room Preferences", style="Title.TLabel").grid(
+        ttk.Label(content, text="Rooms", style="Title.TLabel").grid(
             row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 4)
         )
         ttk.Label(
             content,
             text=(
-                "Rooms at the top are tried first. Excluded rooms are never selected. "
-                "Tag filters accept any listed tag; every required feature phrase must match."
+                "Rooms at the top are tried first. Excluded rooms are never selected."
             ),
             foreground="#555555",
             wraplength=900,
@@ -4250,6 +4280,12 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         requirements = ttk.LabelFrame(content, text="Room and session requirements", padding="12")
         requirements.grid(row=2, column=1, sticky="nsew")
+        def fit_room_columns(event):
+            if event.widget is not content: return
+            narrow=event.width<850
+            rooms_frame.grid_configure(columnspan=2 if narrow else 1,padx=0 if narrow else (0,12))
+            requirements.grid_configure(row=3 if narrow else 2,column=0 if narrow else 1,columnspan=2 if narrow else 1,pady=(16,0) if narrow else 0)
+        content.bind('<Configure>',fit_room_columns)
         requirements.columnconfigure(0, weight=1)
         instrument_var = tk.StringVar()
         room_type_var = tk.StringVar()
@@ -4268,24 +4304,17 @@ class AsimutBookerGUI(QuietFocusGUI):
             ttk.Entry(requirements, textvariable=variable).grid(
                 row=row + 1, column=0, sticky=tk.EW
             )
-            ttk.Label(
-                requirements,
-                text=explanation,
-                foreground="#555555",
-                font=(self.ui_font_family, 10),
-                wraplength=340,
-                justify=tk.LEFT,
-            ).grid(row=row + 2, column=0, sticky=tk.W, pady=(2, 11))
+            HelpTip(requirements,explanation).grid(row=row+1,column=1,padx=(8,0))
 
         add_text_control(
             0,
-            "Acceptable instrument tags",
+            "Acceptable instruments",
             "Comma separated. Blank accepts any instrument; otherwise a room may match any listed tag.",
             instrument_var,
         )
         add_text_control(
             3,
-            "Acceptable room-type tags",
+            "Acceptable room types",
             "Comma separated. Blank accepts any type; otherwise a room may match any listed tag.",
             room_type_var,
         )
@@ -4779,9 +4808,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         ttk.Label(
             body,
             text=(
-                "The booker may wait for a stronger live opportunity only when the "
-                "configured evidence threshold is met. It can still use off-peak time "
-                "while a peak block is being held."
+                "Choose when to wait for a better session and when to take a fallback."
             ),
             foreground="#555555",
             font=(self.ui_font_family, 11),
@@ -4797,8 +4824,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         foresight_var = tk.StringVar(value=str(daily.foresight_minutes))
         later_var = tk.StringVar(value=str(daily.minimum_later_options))
         fallback_var = tk.StringVar(value=str(daily.fallback_lead_minutes))
-        after_peak_var = tk.StringVar(value=daily.after_peak_mode)
-        priority_var = tk.StringVar(value=daily.priority_mode)
+        after_peak_choices = {'Longest gaps first':'longest_first', 'Earliest starts first':'earliest_first', 'Room priority first':'room_first'}
+        priority_choices = {'Preferred time first':'time_first', 'Room priority first':'room_first'}
+        after_peak_var = tk.StringVar(value=next(k for k,v in after_peak_choices.items() if v==daily.after_peak_mode))
+        priority_var = tk.StringVar(value=next(k for k,v in priority_choices.items() if v==daily.priority_mode))
 
         enable_cb = ttk.Checkbutton(
             body,
@@ -4809,7 +4838,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         form = ttk.Frame(body)
         form.pack(fill=tk.BOTH, expand=True)
-        form.columnconfigure(1, weight=1)
+        form.columnconfigure(3, weight=1)
         row = 0
         controls = []
 
@@ -4892,7 +4921,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         after_peak_combo = ttk.Combobox(
             form,
             textvariable=after_peak_var,
-            values=("longest_first", "earliest_first", "room_first"),
+            values=tuple(after_peak_choices),
             state="readonly",
             width=18,
         )
@@ -4901,7 +4930,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         priority_combo = ttk.Combobox(
             form,
             textvariable=priority_var,
-            values=("time_first", "room_first"),
+            values=tuple(priority_choices),
             state="readonly",
             width=18,
         )
@@ -4938,8 +4967,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                         "foresight_minutes": int(foresight_var.get()),
                         "minimum_later_options": int(later_var.get()),
                         "fallback_lead_minutes": int(fallback_var.get()),
-                        "after_peak_mode": after_peak_var.get(),
-                        "priority_mode": priority_var.get(),
+                        "after_peak_mode": after_peak_choices[after_peak_var.get()],
+                        "priority_mode": priority_choices[priority_var.get()],
                     }
                 }
                 preview_document = {
@@ -5115,9 +5144,13 @@ class AsimutBookerGUI(QuietFocusGUI):
                             command=self._refresh_calendar,style='Segment.TRadiobutton').pack(side=tk.LEFT,padx=(0,5))
         nav_frame=ttk.Frame(dialog,padding=(24,0,24,8));nav_frame.pack(fill=tk.X)
         self.calendar_period_var=tk.StringVar(value='')
-        ttk.Label(nav_frame,textvariable=self.calendar_period_var,font=(self.ui_font_family,-17,'bold')).pack(side=tk.LEFT)
+        nav_frame.columnconfigure(0,weight=1)
+        period=ttk.Label(nav_frame,textvariable=self.calendar_period_var,font=(self.ui_font_family,-17,'bold'),wraplength=280)
+        period.grid(row=0,column=0,sticky='ew')
+        period.bind('<Configure>',lambda e:period.configure(wraplength=max(80,e.width)))
+        nav_actions=ttk.Frame(nav_frame);nav_actions.grid(row=0,column=1,sticky='e')
         for text,action in [('Refresh',self._scan_calendar_events),('Next →',lambda:self._navigate_calendar(1)),('Today',self._go_to_today),('← Previous',lambda:self._navigate_calendar(-1))]:
-            ttk.Button(nav_frame,text=text,command=action,style='QuietLink.TButton').pack(side=tk.RIGHT,padx=2)
+            ttk.Button(nav_actions,text=text,command=action,style='QuietLink.TButton').pack(side=tk.RIGHT,padx=2)
 
         selection_frame=ttk.Frame(dialog,padding=(24,0,24,4));selection_frame.pack(fill=tk.X)
         ttk.Button(selection_frame,text='Edit visible days',command=self._edit_visible_calendar_days).pack(side=tk.LEFT)
@@ -5810,8 +5843,10 @@ class AsimutBookerGUI(QuietFocusGUI):
             tk.Button(cell,text=time_label,command=lambda d=current_date:open_calendar_preferences(self,[d],SETTINGS_FILE),bg=bg_color,fg='#0868D9',activebackground='#EAF3FF',relief='flat',bd=0,font=(self.ui_font_family,-12),cursor='hand2',takefocus=True).pack(anchor='w',padx=5)
 
         if closed:
-            tk.Label(cell, text="Practice rooms closed", fg="#B73332", bg=bg_color,
-                     font=("Segoe UI", 9), anchor="w").pack(fill=tk.X, padx=5)
+            closure_label=tk.Label(cell, text="Practice rooms closed", fg="#B73332", bg=bg_color,
+                     font=("Segoe UI", 9), anchor="w",justify='left',wraplength=110)
+            closure_label.pack(fill=tk.X, padx=5)
+            cell.bind('<Configure>',lambda e:closure_label.configure(wraplength=max(60,e.width-12)),add='+')
 
         if not is_past and not is_in_live_window:
             tk.Label(
@@ -5868,6 +5903,10 @@ class AsimutBookerGUI(QuietFocusGUI):
                     anchor="w"
                 )
                 event_lbl.pack(fill=tk.X)
+                if is_reservation:
+                    event_lbl.configure(cursor='hand2',takefocus=True)
+                    event_lbl.bind('<Button-1>',lambda _e,item=event:self._show_quiet_booking(item))
+                    event_lbl.bind('<Return>',lambda _e,item=event:self._show_quiet_booking(item))
 
             if len(events) > events_to_display:
                 more_lbl = tk.Label(

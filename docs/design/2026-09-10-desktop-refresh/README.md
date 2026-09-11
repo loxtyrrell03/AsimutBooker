@@ -16,6 +16,30 @@ All three retain Today, My Week, Calendar, Assistant and Settings. These are
 complete alternative desktop shells, not three new colour palettes. C changes
 the opening destination to Calendar. A and B open Today. The phone is unchanged.
 
+## Implemented B
+
+The native desktop now uses Open canvas: horizontal navigation, centred pages,
+the phone palette, rounded actions, a full-width next-booking summary, and a
+compact Settings hub. Full-width editors keep their drafts across navigation;
+Rooms stacks at narrow widths. Quick preference controls state that they save
+automatically. The original validators and scoped preference writes remain.
+
+Booking details include exact cancellation confirmation, real progress and
+read-only recovery for uncertain results. Manual runs use cooperative Stop and
+finish verification safely if the window closes. My Week distinguishes booked
+and unbooked sessions, booking-off dates and confirmed closures.
+
+![Implemented Open canvas with example data](implemented-overview.png)
+
+Validation: all 894 Python tests passed, then 30 focused native and operation
+checks passed after final editor teardown cleanup. `tools/render_open_canvas.py`
+renders isolated fixture pages and checks actionable controls at 760px, including
+all five Calendar modes, main views and editors. The Settings hub also fits
+1040×740. Representative images were visually inspected. These are native
+fixture checks, not live bookings or physical phone verification. No phone
+publication or live session restart was performed. Reopen the PC app to load
+the source changes.
+
 ## Source audit and design rules
 
 Inspected the current phone CSS and components (`phone/app/globals.css`,

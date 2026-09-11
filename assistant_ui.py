@@ -22,24 +22,24 @@ from typing import Any, Literal
 
 
 DEFAULT_PALETTE = {
-    "page": "#F7F7F8",
+    "page": "#F8FAFC",
     "surface": "#FFFFFF",
     "surface_muted": "#F4F4F5",
     "surface_hover": "#ECECEF",
-    "text": "#1D1D1F",
-    "secondary_text": "#6E6E73",
+    "text": "#1D2430",
+    "secondary_text": "#667080",
     "tertiary_text": "#86868B",
-    "border": "#D9D9DE",
-    "accent": "#0071E3",
+    "border": "#E1E6EE",
+    "accent": "#0868D9",
     "accent_hover": "#0077ED",
     "accent_pressed": "#0068D1",
     "selection": "#E8F2FF",
-    "user_bubble": "#EAF2FB",
+    "user_bubble": "#EAF3FF",
     "assistant_bubble": "#FFFFFF",
     "progress": "#F5F7FA",
-    "success": "#147D34",
+    "success": "#2B805B",
     "warning": "#A85D00",
-    "danger": "#B00020",
+    "danger": "#B73332",
 }
 
 DEFAULT_STARTER_PROMPTS = (

@@ -78,6 +78,38 @@ class OpenCanvasTests(unittest.TestCase):
         help_button.hide()
         self.assertIsNone(help_button.popup)
 
+    def test_confirmation_keep_does_not_cancel_and_confirm_uses_exact_identity(self):
+        from desktop_cancellation import DesktopCancellation
+        self.app._desktop_cancellation=DesktopCancellation(self.fixture.settings.parent)
+        event=dict(eventId=123,date=date.today().isoformat(),startTime='12:00',endTime='13:00',room='Example',isReservation=True)
+        with patch('desktop_cancellation.cancel_phone_reservation',return_value=dict(cancelled=True,reconciliation_required=False,message='Booking cancelled.')) as action:
+            self.app._show_cancel_booking(event);self.root.update()
+            page=self.app._detail_pages['cancellation']
+            buttons={w.cget('text'):w for w in descendants(page) if isinstance(w,ttk.Button)}
+            buttons['Keep booking'].invoke();self.root.update()
+            action.assert_not_called()
+            self.app._show_cancel_booking(event);self.root.update()
+            page=self.app._detail_pages['cancellation']
+            next(w for w in descendants(page) if isinstance(w,ttk.Button) and w.cget('text')=='Cancel this booking').invoke()
+            self.app._desktop_cancellation.thread.join(3)
+            action.assert_called_once()
+            self.assertEqual(action.call_args.args[0]['event_id'],123)
+            self.assertEqual(action.call_args.args[0]['room'],'Example')
+
+    def test_my_week_distinguishes_booked_planned_off_and_closed(self):
+        from types import SimpleNamespace
+        from datetime import timedelta
+        day=date.today().isoformat()
+        closed=(date.today()+timedelta(days=1)).isoformat()
+        event=dict(eventId=123,date=day,startTime='12:00',endTime='13:00',room='Example',isReservation=True)
+        plan=SimpleNamespace(date=day,start_time='15:00',end_time='16:00',room='Example 2',confirmed_minutes=0)
+        self.app.week_panel.update_data([event],available=True,stale=False,planned=[plan],off_dates=[day],closed_dates=[closed])
+        labels=[w.cget('text') for w in descendants(self.app.week_panel) if isinstance(w,tk.Label)]
+        self.assertIn('Booking off',labels)
+        self.assertIn('Practice rooms closed',labels)
+        self.assertIn('Booked',labels)
+        self.assertIn('Planned · not booked yet',labels)
+
 
 if __name__ == '__main__':
     unittest.main()

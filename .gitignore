@@ -56,6 +56,9 @@ data/phone_assistant_state.json
 data/phone_assistant_state.json.lock
 data/phone_assistant_state.json.bak
 data/phone_operations/
+data/desktop_operations/
+data/desktop_cancellation.json*
+data/desktop-cancellation.lock
 config/config.yaml.bak
 config/config.yaml.lock
 

@@ -201,13 +201,18 @@ class QuietFocusGUI:
             for day in plan_result.snapshot.days:
                 candidates = ([day.primary] if day.primary else []) + list(day.additional)
                 planned.extend(candidate for candidate in candidates if candidate.potential_minutes > 0)
-        self.week_panel.update_data(events, available=snapshot is not None, stale=result.stale, checked=checked, planned=planned)
+        from room_catalog import closed_practice_dates
+        self.week_panel.update_data(events, available=snapshot is not None, stale=result.stale, checked=checked, planned=planned,
+            closed_dates=closed_practice_dates(getattr(self,'room_catalog',None)),off_dates=getattr(self,'disabled_dates',()),
+            plan_days=plan_result.snapshot.days if plan_result and plan_result.snapshot and not plan_result.stale else (),
+            plan_stale=bool(plan_result and plan_result.stale))
         self.today_panel.refresh_button.configure(state=tk.DISABLED if self.is_running else tk.NORMAL)
 
     def _build_settings_hub(self,parent):
         self.settings_grid.pack_forget()
         # The original direct controls stay mounted in their editor, retaining drafts.
         self.settings_back=ttk.Button(parent,text='← Settings',style='QuietLink.TButton',command=self._show_settings_hub)
+        self.settings_save_note=label(parent,'Changes in these quick controls save automatically.',size=13,color=MUTED)
         self.settings_hub=tk.Frame(parent,bg=PAGE)
         self.settings_hub.pack(fill='x',before=self.settings_links)
         self.settings_tiles={}
@@ -234,7 +239,7 @@ class QuietFocusGUI:
             tile.grid_configure(row=i//columns,column=i%columns,padx=(0,8) if columns==2 and i%2==0 else (8,0) if columns==2 else 0)
 
     def _show_settings_hub(self):
-        self.settings_grid.pack_forget(); self.settings_back.pack_forget()
+        self.settings_grid.pack_forget(); self.settings_back.pack_forget(); self.settings_save_note.pack_forget()
         self.settings_hub.pack(fill='x',before=self.settings_links)
         p=self.practice_plan
         summaries={'Practice target':f'{p.default_hours:g} hours each practice day' if p.enabled else 'Daily target is off',
@@ -254,12 +259,14 @@ class QuietFocusGUI:
         self.settings_grid.columnconfigure(1,weight=0)
         self.settings_sections[key].grid(row=0,column=0,columnspan=2,sticky='ew',padx=0)
         self.settings_grid.pack(fill='x',before=self.settings_links)
+        self.settings_save_note.pack(anchor='w',pady=(4,10),before=self.settings_grid)
         self.settings_scroll.canvas.yview_moveto(0)
 
     def _refresh_quiet_agenda(self):
         if self.is_running or self.login_operation_in_progress:
             return
         self.is_running = True
+        self._prepare_desktop_run()
         for control in (self.run_visible_btn, self.run_headless_btn, self.plan_refresh_btn):
             control.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
@@ -267,7 +274,7 @@ class QuietFocusGUI:
         self.today_panel.refresh_button.configure(state=tk.DISABLED)
         self.today_panel.freshness.configure(text='Checking your bookings…')
         threading.Thread(target=self._run_booker_thread,
-            args=(True, ('--agenda-only', '--wait-for-runtime-seconds', '180'), 'Agenda refresh'), daemon=True).start()
+            args=(True, ('--agenda-only', '--wait-for-runtime-seconds', '180'), 'Agenda refresh'), daemon=False).start()
 
     def _show_quiet_booking(self, event):
         if not event or not event.get('isReservation'):
@@ -297,5 +304,101 @@ class QuietFocusGUI:
             dialog.destroy()
             self._quiet_ask(prompt)
         ttk.Button(body,text='Ask to change booking',command=lambda:ask(f'I would like to change my booking in {identity}. Ask what I want to change, then check the live agenda.')).pack(fill=tk.X,pady=12)
-        ttk.Button(body,text='Ask to cancel booking',command=lambda:ask(f'Cancel my reservation in {identity}. Check the live agenda and exact booking before acting.'),style='Danger.TButton').pack(fill=tk.X,pady=(0,16))
-        label(body,'The assistant checks the current booking before making changes.',size=13,color='#667080',wraplength=440).pack(anchor=tk.W)
+        ttk.Button(body,text='Cancel booking',command=lambda:self._show_cancel_booking(event),style='Danger.TButton').pack(fill=tk.X,pady=(0,16))
+
+    def _show_cancel_booking(self,event):
+        from desktop_cancellation import DesktopCancellation
+        from phone_cancellation import validate_target
+        if not hasattr(self,'_desktop_cancellation'):
+            self._desktop_cancellation=DesktopCancellation()
+        controller=self._desktop_cancellation
+        previous=self._detail_pages.get('cancellation')
+        if previous is not None and previous.winfo_exists():
+            self.main_notebook.select(previous.host); return
+        page=self._open_detail_page('cancellation',owner='week')
+        body=tk.Frame(page,bg=PAGE,padx=24,pady=16);body.pack(fill='both',expand=True)
+        label(body,'Cancel booking',size=32,bold=True).pack(anchor='w',pady=(0,20))
+        status=tk.StringVar()
+        try:
+            target=validate_target(dict(event_id=event.get('eventId'),date=event['date'],room=event.get('room'),start_time=event['startTime'],end_time=event['endTime']))
+            old=controller.snapshot()
+            if old and old['state'] in {'running','uncertain'}: target=old['target']
+        except Exception as exc:
+            label(body,str(exc),color='#B73332',wraplength=620).pack(fill='x')
+            ttk.Button(body,text='Refresh bookings',command=self._refresh_quiet_agenda).pack(anchor='w',pady=16)
+            return
+        card=RoundedCard(body,fill=WHITE,padding=24);card.pack(fill='x',pady=(0,20))
+        label(card.content,'Room '+target['room'],size=24,bold=True).pack(anchor='w')
+        label(card.content,datetime.fromisoformat(target['date']).strftime('%A, %d %B'),size=17).pack(anchor='w',pady=8)
+        label(card.content,target['start_time']+'–'+target['end_time'],size=21).pack(anchor='w')
+        label(body,'This removes this booking and keeps this time free from automatic rebooking.',wraplength=650).pack(fill='x',pady=12)
+        label(body,'You can reopen the time later in Settings → Advanced tools → Manage events.',size=13,color=MUTED,wraplength=650).pack(fill='x')
+        text=ttk.Label(body,textvariable=status,wraplength=620);text.pack(fill='x',pady=20)
+        progress=ttk.Progressbar(body,mode='indeterminate')
+        actions=tk.Frame(body,bg=PAGE);actions.pack(fill='x',pady=12)
+        poll_id=[None]
+        review_result=[]
+        reviewing=[False]
+        override=[None]
+        published=[None]
+
+        def refresh():
+            if not page.winfo_exists(): return
+            try:
+                job=controller.snapshot()
+            except Exception:
+                status.set('The cancellation record could not be read. Check System details before another action.')
+                cancel.configure(state='disabled');return
+            relevant=job and job['target']==target
+            state=job['state'] if relevant else None
+            busy=(controller.active if state in {'running','uncertain'} else controller.lock.acquired) or reviewing[0]
+            if review_result:
+                override[0]=review_result.pop();reviewing[0]=False;busy=controller.lock.acquired
+            if override[0]: status.set(override[0])
+            elif relevant: status.set(job['text'])
+            if state=='running' and not busy:
+                status.set('The previous cancellation was interrupted. Review its outcome before another action.')
+            cancel.configure(state='normal' if state in {None,'rejected','reviewed'} and not busy else 'disabled')
+            keep.configure(state='disabled' if busy else 'normal',text='Back to My Week' if state else 'Keep booking')
+            review.configure(state='normal' if state in {'running','uncertain'} and not busy else 'disabled')
+            if state in {'running','uncertain'}:
+                if not review.winfo_manager(): review.pack(anchor='w',pady=8)
+            else: review.pack_forget()
+            if busy:
+                if not progress.winfo_manager(): progress.pack(fill='x',before=actions);progress.start(15)
+            else:
+                progress.stop();progress.pack_forget()
+            if state=='cancelled' and published[0]!=job['request_id']:
+                self._refresh_quiet_views()
+                published[0]=job['request_id']
+            poll_id[0]=page.after(400,refresh)
+
+        def start():
+            override[0]=None
+            try:
+                controller.start(target)
+            except Exception as exc:
+                override[0]=str(exc);status.set(str(exc));return
+            status.set('Checking your exact booking… You can leave this page while verification finishes.')
+            cancel.configure(state='disabled')
+
+        def review_outcome():
+            reviewing[0]=True
+            override[0]=None
+            status.set('Reading the live agenda to review the previous outcome…')
+            def work():
+                try: review_result.append(controller.review()['text'])
+                except Exception as exc: review_result.append(str(exc))
+            threading.Thread(target=work,daemon=False).start()
+
+        keep=ttk.Button(actions,text='Keep booking',command=page.destroy);keep.pack(side='left')
+        cancel=ttk.Button(actions,text='Cancel this booking',style='Danger.TButton',command=start);cancel.pack(side='right')
+        review=ttk.Button(body,text='Review outcome',command=review_outcome);review.pack(anchor='w',pady=8)
+        label(body,'A cancellation already sent will finish verification if you close this window.',size=13,color=MUTED,wraplength=620).pack(fill='x',pady=12)
+        def dispose(event):
+            if event.widget is page:
+                try: progress.stop()
+                except tk.TclError: pass
+                if poll_id[0]: page.after_cancel(poll_id[0])
+        page.bind('<Destroy>',dispose,add='+')
+        refresh()

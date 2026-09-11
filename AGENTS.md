@@ -27,18 +27,34 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 - System, Activity, room/strategy/date editors, scans, history and support tools
   remain available through the new shell. Existing desktop windows must reopen
   to load it; do not restart sessions or booking workers during verification.
-- The first shell milestone passed the existing 880 Python tests and five new
-  isolated native navigation/draft/help/narrow-layout checks. Rendered fixture
-  pages were inspected; this is source and fixture evidence, not live desktop
-  or phone verification. Booking-detail and operation lifecycle work follows.
+- Booking details now offer direct confirmation/cancellation through the shared
+  exact-reservation engine. `desktop_cancellation.py` reserves a durable record
+  under an OS lock before dispatch, blocks duplicate/uncertain requests, and
+  exposes read-only outcome review. Its non-daemon worker finishes verification
+  after the UI closes. The record and operation files are local and ignored.
+- `desktop_operation_worker.py` wraps manual/agenda/plan runs in the shared
+  cooperative operation control. Stop writes a per-run marker; it never kills
+  a process during Save. Output-draining threads survive UI closure and avoid
+  posting to a destroyed Tk root. Existing runtime/mutation guards still apply.
+- My Week retains confirmed bookings on off/closed dates, labels unbooked plans,
+  and shows unavailable/stale evidence explicitly. Calendar modes, Settings,
+  Assistant, tools and editors were checked at 760px; Rooms stacks at narrow
+  widths. Quick Settings controls disclose automatic saving.
+- Verified all 894 Python tests, followed by 30 focused native/operation checks
+  after final editor teardown cleanup. `tools/render_open_canvas.py` renders
+  owned fixtures and checks controls at narrow widths without controlling a
+  live application or browser. Representative renders were inspected; the
+  example-data contact sheet is `docs/design/2026-09-10-desktop-refresh/implemented-overview.png`.
+  This is source/fixture evidence; live bookings, preferences, phone deployment
+  and existing desktop sessions were not changed for verification.
 
 ## 2026-09-10 Phone-inspired desktop design review
 
 - `docs/design/2026-09-10-desktop-refresh/` contains three editable SVG desktop
   proposals: A Quiet desktop (light sidebar), B Open canvas (top navigation),
   and C Week workspace (calendar home with adjacent detail). All retain the
-  phone's current Quiet Focus colours and system typography. A is recommended;
-  the user has not selected or authorized implementation of a direction yet.
+  phone's current Quiet Focus colours and system typography. The user selected
+  and authorized B on 11 September; implementation is recorded above.
 - Each option has 29 example frames covering main pages, all calendar modes,
   compact settings and editors, system tools, setup, progress, cancellation,
   errors/recovery, confirmations, 760px narrow help/settings and 1040x740

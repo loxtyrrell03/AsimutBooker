@@ -87,7 +87,7 @@ class DesktopSettingsTests(unittest.TestCase):
             refresh.assert_called_once_with(
                 target=self.app._run_booker_thread,
                 args=(True, ('--agenda-only', '--wait-for-runtime-seconds', '180'), 'Agenda refresh'),
-                daemon=True,
+                daemon=False,
             )
             refresh.return_value.start.assert_called_once()
         self.ask.assert_not_called()

@@ -117,11 +117,11 @@ class HelpTip(ttk.Button):
     """Small adjacent help, usable with mouse, keyboard and touch."""
     def __init__(self,parent,text):
         super().__init__(parent,text='?',width=2,style='QuietLink.TButton',takefocus=True)
-        self.help_text=text; self.popup=None
+        self.help_text=text; self.popup=None; self._pinned=False
         self.configure(command=self.toggle)
         self.bind('<Enter>',self.show)
         self.bind('<FocusIn>',self.show)
-        self.bind('<Leave>',self.hide)
+        self.bind('<Leave>',self._leave)
         self.bind('<FocusOut>',self.hide)
         self.bind('<Escape>',self.hide)
         self.bind('<Destroy>',self.hide)
@@ -131,8 +131,13 @@ class HelpTip(ttk.Button):
         if event.widget is not self and (not self.popup or event.widget.winfo_toplevel()!=self.popup): self.hide()
 
     def toggle(self):
-        if self.popup: self.hide()
-        else: self.show()
+        if self._pinned: self.hide()
+        else:
+            self._pinned=True
+            self.show()
+
+    def _leave(self,_event=None):
+        if not self._pinned and self.focus_get() is not self: self.hide()
 
     def show(self,_event=None):
         if self.popup or not self.winfo_ismapped(): return
@@ -149,6 +154,7 @@ class HelpTip(ttk.Button):
         popup.geometry(f'+{x}+{max(top+8,y)}')
 
     def hide(self,_event=None):
+        self._pinned=False
         if self.popup:
             self.popup.destroy(); self.popup=None
 
@@ -186,6 +192,18 @@ class DetailPage(tk.Frame):
         self.pack(fill='both',expand=True)
         app._detail_pages[key]=self
         app.main_notebook.select(self.host)
+        self.bind('<Map>',self._prepare_labels)
+
+    def _prepare_labels(self,_event=None):
+        def visit(widget):
+            if isinstance(widget,ttk.Label) and widget.cget('wraplength') and not getattr(widget,'_open_canvas_wrapped',False):
+                maximum=widget.winfo_pixels(widget.cget('wraplength'))
+                widget._open_canvas_wrapped=True
+                widget.master.bind('<Configure>',lambda e,w=widget,limit=maximum:w.configure(wraplength=max(80,min(limit,e.width-24))) if w.winfo_exists() else None,add='+')
+            if isinstance(widget,ttk.Button) and str(widget.cget('text')).startswith('Save'):
+                widget.configure(style='Primary.TButton')
+            for child in widget.winfo_children(): visit(child)
+        visit(self)
 
     def title(self,value=None):
         if value is not None: self._title=value
@@ -205,4 +223,5 @@ class DetailPage(tk.Frame):
         super().destroy()
         self.app.main_notebook.forget(self.host)
         self.app._select_quiet_page(self.owner)
-        self.app.root.after_idle(lambda: self.host.destroy() if self.host.winfo_exists() else None)
+        if self.host.winfo_exists():
+            self.host.destroy()
