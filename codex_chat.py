@@ -29,6 +29,7 @@ LOGGER = logging.getLogger(__name__)
 
 CODEX_MODEL = "gpt-5.6-terra"
 CODEX_REASONING_EFFORT = "medium"
+CODEX_SERVICE_TIER: str | None = None
 CODEX_REASONING_SUMMARY = "concise"
 CODEX_APPROVAL_POLICY = "never"
 CODEX_THREAD_SANDBOX = "read-only"
@@ -1639,6 +1640,7 @@ class CodexChatController:
 
         return {
             "model_reasoning_effort": CODEX_REASONING_EFFORT,
+            **({"service_tier": CODEX_SERVICE_TIER} if CODEX_SERVICE_TIER else {}),
             "features": {
                 "shell_tool": False,
                 "multi_agent": False,

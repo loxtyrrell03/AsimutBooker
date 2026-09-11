@@ -71,6 +71,21 @@ class _ScriptedEvalController:
 
 
 class SyntheticBookerDispatcherTests(unittest.TestCase):
+    def test_simulated_target_and_window_survive_subsequent_context_reads(self):
+        case = _case('audit_book_temporary')
+        self.dispatcher.begin_case(case)
+        window = {'enabled': True, 'strict_mode': True, 'start_time': '18:00', 'end_time': '22:00'}
+        self.dispatcher.dispatch(None, 'update_booker_preferences', {
+            'practice_plan': {'date_overrides': [{'date': '2026-09-01', 'hours': 1.5}]},
+            'date_time_preferences': [{'date': '2026-09-01', 'window': window}],
+        }, {})
+        context = self.dispatcher.dispatch(None, 'get_booker_context', {'sections': ['preferences']}, {})
+        prefs = context['sections']['preferences']
+        self.assertEqual(prefs['practice_plan']['date_overrides'], {'2026-09-01': 1.5})
+        self.assertEqual(prefs['date_time_preferences'], {'2026-09-01': window})
+        self.dispatcher.reset_case_attempt(case)
+        self.assertNotIn('date_time_preferences', self.dispatcher._all_context()['sections']['preferences'])
+
     def setUp(self):
         self.dispatcher = SyntheticBookerDispatcher()
         self.progress = []
@@ -586,6 +601,29 @@ class SyntheticBookerDispatcherTests(unittest.TestCase):
 
 
 class EvaluationContractTests(unittest.TestCase):
+    def test_audit_contract_rejects_global_time_changes_and_wrong_cancel_set(self):
+        case = _case('audit_book_default_evening')
+        call = ToolCallRecord(case.case_id, 1, None, 'update_booker_preferences', {
+            'request_quote': case.prompt, 'time_preferences': {'preset': 'evening'},
+            'practice_plan': {'date_overrides': [{'date': '2026-08-31', 'hours': 2}]},
+        }, {})
+        issues = evaluate_case(case, [call], 'Done.', 'completed', [])
+        self.assertTrue(any('global' in issue for issue in issues))
+        self.assertTrue(any('time windows' in issue for issue in issues))
+        case = _case('audit_cancel_separated')
+        call = ToolCallRecord(case.case_id, 1, None, 'cancel_reservations', {'request_quote': case.prompt},
+                             {'outcomes': [{'reservation': {'event_id': 42004}}]})
+        self.assertTrue(any('wrong reservation set' in issue for issue in evaluate_case(case, [call], 'Done.', 'completed', [])))
+
+    def test_audit_contract_rejects_mutating_availability_and_ignores_commentary(self):
+        case = _case('audit_availability_hour')
+        call = ToolCallRecord(case.case_id, 1, None, 'run_booker', {'request_quote': case.prompt}, {})
+        self.assertTrue(any('read-only' in issue for issue in evaluate_case(case, [call], 'Done.', 'completed', [])))
+        recorder = EventRecorder()
+        recorder({'kind': 'assistant_delta', 'turn_id': 'one', 'phase': 'commentary', 'text': 'Checking?'})
+        recorder({'kind': 'assistant_delta', 'turn_id': 'one', 'phase': 'final_answer', 'text': 'No result.'})
+        self.assertEqual(recorder.turn_text('one', 'assistant_delta'), 'No result.')
+
     def test_dated_time_override_requires_preference_target_plan_and_run_sequence(self):
         case = _case("dated_time_override")
         update = ToolCallRecord(
@@ -600,11 +638,10 @@ class EvaluationContractTests(unittest.TestCase):
                         {"date": "2026-09-01", "hours": 2.0}
                     ]
                 },
-                "time_preferences": {
-                    "enabled": True,
-                    "preset": "morning",
+                "date_time_preferences": [{"date": "2026-09-01", "window": {
+                    "enabled": True, "start_time": "07:00", "end_time": "12:00",
                     "strict_mode": True,
-                },
+                }}],
             },
             {"dry_run": True},
         )

@@ -91,6 +91,8 @@ Grounding and trust:
   Read agenda for personal conflicts. Unavailable scan dates mean unknown, not
   fully booked. Report room gaps as observed availability, never guaranteed
   booking eligibility. Questions about availability do not authorize mutations.
+  Use the room filter when a room is named. Trust a successful empty scan;
+  do not repeat the same query merely because it returned no gaps.
 - Resolve calendar phrases against the actual local calendar and verify every
   weekday/date mapping before replying or acting. The cancellation-specific
   rolling-seven-day meaning of "next week" is defined below; do not replace it
@@ -140,6 +142,12 @@ Actions:
   that rolling set rather than manually listing event_ids, so the host excludes
   reservations that already ended earlier today and enforces complete coverage.
   Explicit dates always control instead of that rolling shorthand.
+  When narrowing a rolling scope with exclusions, first obtain its candidates
+  using scope and days, then select the remaining event_ids. Let the host enforce
+  the exact rolling timestamp boundary instead of reconstructing it from dates.
+- For a named-daypart cancellation, use find_reservations with date and
+  time_period. start_time/end_time are exact reservation endpoints, not a search
+  interval; they cannot replace time_period for an overlapping daypart set.
 - For separated dates or weekdays, select the union of their reservation IDs
   from the fresh agenda and cancel that single selection. Do not turn separated
   days into a continuous range or execute several batches. Exclude other events.

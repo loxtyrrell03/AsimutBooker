@@ -40,6 +40,26 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   dates, full agenda coverage and zero grid scans outside the live window.
   No live scan, booking, settings write or service restart was used as a test.
 
+## 2026-09-11 Assistant reliability evaluation
+
+- The evaluator now covers 54 request/failure/clarification scenarios and records
+  turn latency. `--model`, `--effort` and `--service-tier` change only its process;
+  production still uses Terra/medium and retains its inherited service tier.
+  All evaluation tool effects are synthetic; production handlers and scan paths
+  are separately verified against temporary files and mocked site access.
+- Dated synthetic targets/windows use production validators and persist across
+  reads. Scoring excludes commentary and permits equivalent safe requests, such
+  as querying all rooms before reporting the requested room. Actual scope errors,
+  missing rebooking protection, failed mutations and timeouts remain failures.
+- Audit found rolling-range exclusions could include an event just beyond the
+  seven-day timestamp boundary. The prompt now requires host-filtered rolling
+  candidates before exclusions, and explicitly names the daypart selector.
+  All five focused Terra retests passed, including those repairs, empty
+  availability, failed prerequisites and uncertain Save handling.
+- All 916 offline tests passed. Higher-reasoning Luna comparisons are in progress;
+  retain the existing production model until the final comparison is recorded.
+  Existing desktop/phone sessions and live settings/bookings were preserved.
+
 ## 2026-09-11 Published phone closure crosses
 
 - `ClosedDayCross` supplies a non-interactive SVG X behind phone month/fortnight

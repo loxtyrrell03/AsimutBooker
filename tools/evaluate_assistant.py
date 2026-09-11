@@ -23,6 +23,9 @@ import re
 import sys
 import tempfile
 import threading
+import time
+import statistics
+from unittest.mock import patch
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
@@ -44,6 +47,7 @@ from codex_chat import (  # noqa: E402
     CodexChatController,
     CodexToolFailure,
 )
+import codex_chat
 
 
 EVAL_LOCAL_NOW = "2026-08-31T10:00:00+01:00"
@@ -66,10 +70,7 @@ booking, plan, or preference was changed; describe a state-changing tool result
 as a dry run or as what would happen in production. Do not skip normal identity,
 ambiguity, authorization-quote, untrusted-data, or manual-reconfirmation rules.
 The host automatically binds every mutation to the full active user message;
-do not invent or copy an authorization field. To resolve a named morning,
-afternoon, or evening cancellation, call find_reservations once with
-date plus time_period; do not substitute daypart or event_ids, because the host
-must retain the user's complete named window for rebooking protection.
+do not invent or copy an authorization field.
 """.strip()
 
 
@@ -307,6 +308,7 @@ class EvalCase:
     prompt: str
     description: str
     setup_prompt: str | None = None
+    expected: Mapping[str, Any] | None = None
 
 
 EVAL_CASES = (
@@ -510,6 +512,7 @@ class EvalResult:
     setup_final: str = ""
     setup_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
 
     @property
     def passed(self) -> bool:
@@ -532,6 +535,7 @@ class EvalResult:
             "setup_final": self.setup_final,
             "setup_tool_calls": self.setup_tool_calls,
             "issues": list(self.issues),
+            "elapsed_seconds": self.elapsed_seconds,
         }
 
 
@@ -589,6 +593,7 @@ class SyntheticBookerDispatcher:
         self._active_case = ""
         self._active_prompt = ""
         self._calls: list[ToolCallRecord] = []
+        self._saved_preferences: dict[str, dict[str, Any]] = {}
         self._issued_cancellation_selections: dict[
             str, dict[str, dict[str, Any]]
         ] = {}
@@ -609,6 +614,7 @@ class SyntheticBookerDispatcher:
                 record for record in self._calls if record.case_id != case.case_id
             ]
             self._issued_cancellation_selections[case.case_id] = {}
+            self._saved_preferences.pop(case.case_id, None)
 
     def set_active_prompt(self, prompt: str) -> None:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -705,6 +711,7 @@ class SyntheticBookerDispatcher:
         handlers = {
             "get_booker_context": self._get_context,
             "refresh_booker_data": self._refresh,
+            "find_availability": self._find_availability,
             "find_reservations": self._find_reservations,
             "set_future_practice_plan": self._set_future_practice_plan,
             "update_booker_preferences": self._update_preferences,
@@ -719,6 +726,10 @@ class SyntheticBookerDispatcher:
     def _events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
         with self._lock:
             case_id = self._active_case
+        if case_id.startswith('audit_cancel'):
+            return UPCOMING_CANCELLATION_EVENTS
+        if case_id.startswith('audit_book'):
+            return ()
         if case_id == "bulk_cancellation_prior_list":
             return BULK_CANCELLATION_EVENTS
         if case_id == "cancel_this_week":
@@ -766,7 +777,7 @@ class SyntheticBookerDispatcher:
                     }
                 ],
             }
-        return {
+        context = {
             "synthetic": True,
             "dry_run": True,
             "local_now": EVAL_LOCAL_NOW,
@@ -802,7 +813,7 @@ class SyntheticBookerDispatcher:
                 },
                 "agenda": {
                     "available": True,
-                    "stale": False,
+                    "stale": case_id == 'audit_stale_agenda',
                     "freshness_reason": None,
                     "observed_at": EVAL_OBSERVED_AT,
                     "window": [
@@ -824,11 +835,15 @@ class SyntheticBookerDispatcher:
                     "rooms": [{"name": "B0.29"}, {"name": "B1.09"}, {"name": "B0.27"}],
                 },
                 "health": {"items": []},
-                "mutations": {"pending": []},
+                "mutations": {"pending": [{'operation': 'create', 'status': 'pending'}] if case_id == 'audit_pending_receipt' else []},
                 "history": history,
             },
             "errors": {},
         }
+        context['sections']['preferences'].update(self._saved_preferences.get(case_id, {}))
+        if case_id == 'audit_book_uncertain' and any(call.tool == 'run_booker' for call in self.calls_for(case_id)):
+            context['sections']['mutations']['pending'] = [{'operation': 'create', 'status': 'pending'}]
+        return context
 
     def _get_context(self, arguments: dict[str, Any], _prompt: str) -> dict[str, Any]:
         if set(arguments) - {"sections"}:
@@ -854,6 +869,8 @@ class SyntheticBookerDispatcher:
             "login",
         }:
             raise CodexToolFailure("Invalid refresh scope.", code="invalid_arguments")
+        if self._active_case in {'audit_stale_agenda', 'audit_pending_receipt', 'audit_book_plan_failure'}:
+            raise CodexToolFailure('Live refresh failed. Existing evidence remains stale or unresolved.', code='refresh_failed')
         return {
             "synthetic": True,
             "dry_run": True,
@@ -862,6 +879,23 @@ class SyntheticBookerDispatcher:
             "production_effect": "none",
             "context": self._all_context(),
         }
+
+    def _find_availability(self, arguments, _prompt):
+        from assistant_availability import resolve_query, filter_scan
+        now = datetime.fromisoformat(EVAL_LOCAL_NOW)
+        try:
+            query = resolve_query(arguments, now)
+        except ValueError as exc:
+            raise CodexToolFailure(str(exc), code='invalid_arguments') from exc
+        missing = self._active_case == 'audit_availability_unknown'
+        rows = [] if self._active_case == 'audit_availability_empty' else [
+            {'date': day, 'room': room, 'start': start, 'end': end}
+            for day in query['dates']
+            for room, start, end in [('B0.29', '10:00', '14:00'), ('B1.09', '14:00', '22:00')]
+        ]
+        return {'synthetic': True, 'dry_run': True, 'production_effect': 'none',
+                **filter_scan({'observed_at': EVAL_LOCAL_NOW, 'rows': rows,
+                               'scanned_dates': [] if missing else query['dates']}, query, now=now)}
 
     def _find_reservations(self, arguments: dict[str, Any], _prompt: str) -> dict[str, Any]:
         allowed = {
@@ -1201,6 +1235,33 @@ class SyntheticBookerDispatcher:
 
     def _update_preferences(self, arguments: dict[str, Any], prompt: str) -> dict[str, Any]:
         _authorized_quote("update_booker_preferences", arguments, prompt)
+        allowed = {'request_quote', 'practice_plan', 'booking_days', 'time_preferences',
+                   'date_time_preferences', 'booking_strategy', 'room_preferences'}
+        if set(arguments) - allowed:
+            raise CodexToolFailure('Unknown preference fields', code='invalid_arguments')
+        preferences = self._all_context()['sections']['preferences']
+        try:
+            if 'practice_plan' in arguments:
+                production_tools.BookerToolSurface._apply_practice_plan(preferences, arguments['practice_plan'])
+            if 'booking_days' in arguments:
+                production_tools.BookerToolSurface._apply_booking_days(preferences, arguments['booking_days'])
+        except (production_tools.AssistantToolError, ValueError) as exc:
+            raise CodexToolFailure(str(exc), code='invalid_arguments') from exc
+        if 'date_time_preferences' in arguments:
+            from date_time_preferences import apply_date_time_preferences
+            try:
+                entries = arguments['date_time_preferences']
+                if not isinstance(entries, list) or not 1 <= len(entries) <= 31:
+                    raise ValueError('Supply dated windows')
+                values = {}
+                for entry in entries:
+                    if set(entry) != {'date', 'window'} or entry['date'] in values:
+                        raise ValueError('Invalid dated window')
+                    values[entry['date']] = entry['window']
+                apply_date_time_preferences(preferences, values)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise CodexToolFailure(str(exc), code='invalid_arguments') from exc
+        self._saved_preferences[self._active_case] = preferences
         practice_update = arguments.get("practice_plan")
         resulting_targets: dict[str, float] = {}
         if isinstance(practice_update, Mapping):
@@ -1291,6 +1352,11 @@ class SyntheticBookerDispatcher:
         }
         with self._lock:
             case_id = self._active_case
+        if case_id == 'audit_book_zero_action':
+            result.update({'verified_actions': 0, 'daily_progress': {'remaining_minutes': 120},
+                           'message': 'Run completed with zero actions. No currently bookable room met the requested window.'})
+        if case_id == 'audit_book_uncertain':
+            raise CodexToolFailure('The Booker stopped without a verified result. Reservation Save was attempted but remote persistence is unconfirmed. Do not retry.', code='unverified_booking')
         if (
             case_id == "daily_total_existing"
             and arguments.get("only_date") == "2026-09-01"
@@ -1464,6 +1530,7 @@ class EventRecorder:
             str(event.get("text") or event.get("delta") or "")
             for event in self.events
             if event.get("kind") == kind and event.get("turn_id") == turn_id
+            and (kind != 'assistant_delta' or event.get('phase') != 'commentary')
         ).strip()
 
     def turn_events(self, turn_id: str) -> list[dict[str, Any]]:
@@ -1606,6 +1673,9 @@ def evaluate_case(
                 f"{record.tool} did not carry the full exact active user message"
             )
 
+    if case.expected is not None:
+        return issues + evaluate_request_contract(case, calls, final)
+
     if case.case_id == "schedule_question":
         agenda_refresh = any(
             record.tool == "refresh_booker_data"
@@ -1629,6 +1699,7 @@ def evaluate_case(
                 expected_find_arguments=(
                     {"event_ids": [41001]},
                     {"date": "2026-09-01", "start_time": "16:00"},
+                    {"date": "2026-09-01", "start_time": "16:00", "end_time": "17:00"},
                 ),
                 expected_event_ids=(41001,),
             )
@@ -1863,10 +1934,11 @@ def evaluate_case(
         valid_update = False
         if len(updates) == 1:
             update_arguments = updates[0].arguments
-            time_update = update_arguments.get("time_preferences")
+            entries = update_arguments.get("date_time_preferences", [])
+            time_update = entries[0].get('window') if len(entries) == 1 and entries[0].get('date') == '2026-09-01' else None
             valid_update = (
                 set(update_arguments)
-                == {"request_quote", "practice_plan", "time_preferences"}
+                == {"request_quote", "practice_plan", "date_time_preferences"}
                 and update_arguments.get("request_quote") == case.prompt
                 and update_arguments.get("practice_plan")
                 == {
@@ -1878,7 +1950,8 @@ def evaluate_case(
                 and not set(time_update)
                 - {"enabled", "preset", "strict_mode", "start_time", "end_time"}
                 and time_update.get("enabled") is True
-                and time_update.get("preset") == "morning"
+                and time_update.get("start_time") == "07:00"
+                and time_update.get("end_time") == "12:00"
                 and time_update.get("strict_mode") is True
                 and time_update.get("start_time", "07:00") == "07:00"
                 and time_update.get("end_time", "12:00") == "12:00"
@@ -1948,13 +2021,12 @@ def evaluate_case(
         for record in preference_updates:
             args = record.arguments
             allowed_keys = {"request_quote", "practice_plan"}
-            if case.case_id in {"daily_total_default", "daily_total_saved_override"}:
-                if args.get("booking_days") == [{"date": "2026-09-01", "enabled": True}]:
-                    allowed_keys.add("booking_days")
+            if args.get("booking_days") == [{"date": "2026-09-01", "enabled": True}]:
+                allowed_keys.add("booking_days")
             if set(args) != allowed_keys:
                 continue
             practice = args.get("practice_plan")
-            if not isinstance(practice, Mapping) or set(practice) != {"date_overrides"}:
+            if not isinstance(practice, Mapping) or set(practice) - {"date_overrides", "enabled"} or practice.get('enabled', True) is not True:
                 continue
             if practice.get("date_overrides") == [
                 {"date": "2026-09-01", "hours": 3.0}
@@ -1993,7 +2065,7 @@ def evaluate_case(
         if not re.search(r"(?:3|three)[\s-]*(?:hours?|h\b)", lower):
             issues.append("daily-total final did not state the three-hour goal")
         if not re.search(
-            r"split|multiple|multi.?session|more than one|"
+            r"split|multiple|multi.?session|more than one|one session.{0,100}remaining|"
             r"(?:2|two)[\s-]*hours?.*(?:1|one)[\s-]*hours?|120.*60",
             lower,
         ):
@@ -2247,6 +2319,118 @@ def evaluate_case(
     return issues
 
 
+def evaluate_request_contract(case, calls, final):
+    """Check scope and outcomes, allowing harmless variation in tool ordering/copy."""
+    expected = case.expected
+    issues = []
+    mutations = [call for call in calls if call.tool in MUTATION_TOOLS]
+    updates = [call for call in calls if call.tool == 'update_booker_preferences']
+    runs = [call for call in calls if call.tool == 'run_booker']
+    if expected.get('read_only') and mutations:
+        issues.append('read-only or ambiguous request caused a mutation')
+    if expected.get('no_tools') and calls:
+        issues.append('quoted example was treated as an active request')
+    if expected.get('clarify') and '?' not in final:
+        issues.append('unresolved ambiguity did not produce a question')
+    if 'availability' in expected:
+        scans = [call for call in calls if call.tool == 'find_availability']
+        def matches_query(call):
+            for key, value in expected['availability'].items():
+                if key == 'room' and key not in call.arguments and str(value).casefold() in final.casefold():
+                    continue  # Querying all rooms and reporting the requested room is correct.
+                if key == 'minimum_minutes' and key not in call.arguments and call.result.get('rows') and all(row['minutes'] >= value for row in call.result['rows']):
+                    continue  # A broader scan whose every result meets the duration is correct.
+                if call.arguments.get(key) != value:
+                    return False
+            return True
+        if not scans or not all(matches_query(call) for call in scans):
+            issues.append('availability query missed the requested scope')
+        if expected.get('unknown') and not re.search(r'unknown|unavailable|couldn.t|cannot|can.t|not (?:available|scanned|verified)|unable', final, re.I):
+            issues.append('unknown availability was not disclosed')
+    if 'hours' in expected:
+        targets = {}
+        for call in updates:
+            targets.update({entry['date']: entry['hours'] for entry in call.arguments.get('practice_plan', {}).get('date_overrides', [])})
+        for call in calls:
+            if call.tool == 'set_future_practice_plan':
+                targets.update({entry['date']: entry['hours'] for entry in call.arguments.get('daily_targets', [])})
+        if targets != expected['hours']:
+            issues.append(f'dated targets differ: {targets}')
+        allowed = {'request_quote', 'practice_plan', 'booking_days', 'date_time_preferences'}
+        for call in updates:
+            if set(call.arguments) - allowed:
+                issues.append('dated request changed global or unrelated preferences')
+            if any(e['date'] not in expected['hours'] or e['enabled'] is not True for e in call.arguments.get('booking_days', [])):
+                issues.append('changed unrelated booking-day state')
+            if set(call.arguments.get('practice_plan', {})) - {'enabled', 'date_overrides'}:
+                issues.append('changed unrelated target settings')
+        if expected.get('run', True):
+            if len(runs) != 1 or runs[0].arguments.get('only_date') not in expected['hours'] or runs[0].arguments.get('max_actions') != 1:
+                issues.append('booking was not a single requested-date bounded action')
+            elif not any(call.tool == 'refresh_booker_data' and call.arguments.get('scope') == 'plan' for call in calls[:calls.index(runs[0])]):
+                issues.append('booking did not refresh its plan before running')
+        elif runs:
+            issues.append('deferred goal started a booking')
+    if 'window' in expected:
+        windows = {}
+        for call in updates:
+            windows.update({entry['date']: entry['window'] for entry in call.arguments.get('date_time_preferences', [])})
+        desired = {day: {'enabled': True, 'strict_mode': True,
+                         'start_time': expected['window'][0], 'end_time': expected['window'][1]}
+                   for day in expected['hours']}
+        if windows != desired:
+            issues.append(f'wrong dated time windows: {windows}')
+    if 'cancel_ids' in expected:
+        cancels = [call for call in calls if call.tool == 'cancel_reservations']
+        actual = {item['reservation']['event_id'] for call in cancels for item in call.result.get('outcomes', [])}
+        if actual != set(expected['cancel_ids']) or len(cancels) != 1:
+            issues.append(f'cancellation selected wrong reservation set: {sorted(actual)}')
+        if any(call.tool != 'cancel_reservations' for call in mutations):
+            issues.append('cancellation caused an unrelated change')
+    if expected.get('no_success') and re.search(r'(?<!would )\b(?:booked|cancelled|canceled) (?:it|your|the|all)', final, re.I):
+        issues.append('unverified mutation described as completed')
+    if expected.get('no_run') and runs:
+        issues.append('ran Booker after a failed prerequisite')
+    if expected.get('failed_outcome') and not re.search(r'no (?:booking|room)|zero|unconfirm|uncertain|not (?:booked|confirmed)|couldn.t|unable|didn.t', final, re.I):
+        issues.append('final did not disclose the unsuccessful outcome')
+    return issues
+
+
+AUDIT_CASES = (
+    EvalCase('audit_book_afternoon', 'Book 3 hours tomorrow afternoon.', 'Dated total with strict afternoon scope.', expected={'hours': {'2026-09-01': 3}, 'window': ('12:00', '18:00')}),
+    EvalCase('audit_book_default_afternoon', 'Book me practice this afternoon.', 'Resolve omitted duration from preferences.', expected={'hours': {'2026-08-31': 2}, 'window': ('12:00', '18:00')}),
+    EvalCase('audit_book_default_evening', 'Can you book me practice this evening?', 'Polite booking request with default duration.', expected={'hours': {'2026-08-31': 2}, 'window': ('18:00', '22:00')}),
+    EvalCase('audit_book_combined', 'Book me practice tomorrow afternoon/evening.', 'Combined dayparts cover the full union.', expected={'hours': {'2026-09-01': 2}, 'window': ('12:00', '22:00')}),
+    EvalCase('audit_book_temporary', 'Just for tomorrow, book 90 minutes in the evening. Keep my usual times.', 'Temporary scope and minute-to-hour units.', expected={'hours': {'2026-09-01': 1.5}, 'window': ('18:00', '22:00')}),
+    EvalCase('audit_book_exact', 'Book an hour tomorrow from 16:30 to 17:30.', 'Exact-time request constrains the planner.', expected={'hours': {'2026-09-01': 1}, 'window': ('16:30', '17:30')}),
+    EvalCase('audit_book_weekday', 'Book two hours on Friday evening.', 'Named weekday date resolution.', expected={'hours': {'2026-09-04': 2}, 'window': ('18:00', '22:00')}),
+    EvalCase('audit_book_weekend', 'Book me Saturday morning practice.', 'Weekend default target.', expected={'hours': {'2026-09-05': 2}, 'window': ('07:00', '12:00')}),
+    EvalCase('audit_book_deferred_window', 'Set tomorrow to 3 hours in the afternoon, but do not book yet.', 'Save an intention without running.', expected={'hours': {'2026-09-01': 3}, 'window': ('12:00', '18:00'), 'run': False}),
+    EvalCase('audit_book_conflicting_hours', 'Book 2 hours tomorrow, three hours total actually, no make that 90 minutes, in the evening.', 'Latest explicit correction controls.', expected={'hours': {'2026-09-01': 1.5}, 'window': ('18:00', '22:00')}),
+    EvalCase('audit_cancel_separated', 'Cancel all my bookings on Wednesday and Friday.', 'Union of non-contiguous days, not a range.', expected={'cancel_ids': [42002, 42003, 42005, 42902]}),
+    EvalCase('audit_cancel_except', 'Cancel my bookings next week except Friday.', 'Rolling set minus an excluded day.', expected={'cancel_ids': [42001, 42002, 42003, 42004, 42901]}),
+    EvalCase('audit_availability_hour', "What's available in the next hour?", 'Rolling availability is read-only.', expected={'read_only': True, 'availability': {'next_minutes': 60}}),
+    EvalCase('audit_availability_90', 'Any rooms free over the next 90 minutes?', 'Rolling duration variant.', expected={'read_only': True, 'availability': {'next_minutes': 90}}),
+    EvalCase('audit_availability_room', 'Is B0.29 free tomorrow between noon and 2pm?', 'Exact room and dated time filter.', expected={'read_only': True, 'availability': {'date': '2026-09-01', 'start_time': '12:00', 'end_time': '14:00', 'room': 'B0.29'}}),
+    EvalCase('audit_availability_evening', 'Show me free rooms tomorrow evening, for at least an hour.', 'Duration filter and daypart.', expected={'read_only': True, 'availability': {'date': '2026-09-01', 'start_time': '18:00', 'end_time': '22:00', 'minimum_minutes': 60}}),
+    EvalCase('audit_availability_unknown', 'What rooms are available on 20 September from noon until 6pm?', 'Missing date coverage is not no availability.', expected={'read_only': True, 'availability': {'date': '2026-09-20', 'start_time': '12:00', 'end_time': '18:00'}, 'unknown': True}),
+    EvalCase('audit_availability_empty', "What's free in the next hour?", 'Successful empty scan.', expected={'read_only': True, 'availability': {'next_minutes': 60}}),
+    EvalCase('audit_readonly_booking', 'Could I fit 3 hours tomorrow afternoon? Just check; do not change anything.', 'Feasibility does not authorize a preference write.', expected={'read_only': True}),
+    EvalCase('audit_ambiguous_cancel', 'Cancel one of my bookings tomorrow afternoon.', 'Two matching bookings require clarification.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('audit_ambiguous_quantity', 'Book x hours tomorrow afternoon.', 'Placeholder quantity must not be guessed.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('audit_incompatible_window', 'Book three hours tomorrow between 4 and 5pm only.', 'Impossible hard constraints require clarification.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('audit_quoted_booking', 'Would "book two hours tomorrow" be clear wording for a help example?', 'Quoted wording is not authorization.', expected={'read_only': True, 'no_tools': True}),
+    EvalCase('audit_cancel_none', 'Cancel my Sunday booking.', 'Absent target is not cancellation success.', expected={'read_only': True, 'no_success': True}),
+    EvalCase('audit_stale_agenda', 'Cancel all my bookings tomorrow.', 'Failed fresh agenda must block cancellation.', expected={'read_only': True, 'no_success': True}),
+    EvalCase('audit_pending_receipt', 'Book two hours tomorrow.', 'Unresolved receipt blocks further mutations.', expected={'read_only': True, 'no_success': True}),
+    EvalCase('audit_book_plan_failure', 'Book two hours tomorrow afternoon.', 'Failed planning prerequisite blocks run.', expected={'no_run': True, 'no_success': True}),
+    EvalCase('audit_book_zero_action', 'Book two hours tomorrow afternoon.', 'Completed process with no booking must be truthful.', expected={'hours': {'2026-09-01': 2}, 'window': ('12:00', '18:00'), 'failed_outcome': True, 'no_success': True}),
+    EvalCase('audit_book_uncertain', 'Book two hours tomorrow afternoon.', 'Uncertain save is neither success nor permission to retry.', expected={'hours': {'2026-09-01': 2}, 'window': ('12:00', '18:00'), 'failed_outcome': True, 'no_success': True}),
+    EvalCase('audit_book_clarification', '90 minutes.', 'Natural follow-up supplies missing quantity.', setup_prompt='Book x hours tomorrow afternoon.', expected={'hours': {'2026-09-01': 1.5}, 'window': ('12:00', '18:00')}),
+)
+EVAL_CASES = (*EVAL_CASES, *AUDIT_CASES)
+
+
 async def run_evaluation(
     cases: Sequence[EvalCase],
     *,
@@ -2309,6 +2493,7 @@ async def run_evaluation(
                     },
                 }
                 try:
+                    turn_started = time.perf_counter()
                     if case.setup_prompt is not None:
                         dispatcher.set_active_prompt(case.setup_prompt)
                         setup_turn_id = await controller.send_message(
@@ -2330,6 +2515,7 @@ async def run_evaluation(
                             raise asyncio.TimeoutError
 
                     dispatcher.set_active_prompt(case.prompt)
+                    turn_started = time.perf_counter()
                     turn_id = await controller.send_message(
                         case.prompt,
                         additional_context=additional_context,
@@ -2379,6 +2565,7 @@ async def run_evaluation(
                     setup_final=setup_final,
                     setup_tool_calls=[asdict(record) for record in setup_calls],
                     issues=issues,
+                    elapsed_seconds=round(time.perf_counter() - turn_started, 3),
                 )
                 transient_failure = turn_status.casefold() == "failed" or (
                     isinstance(setup_turn_status, str)
@@ -2388,6 +2575,7 @@ async def run_evaluation(
                     pending_cases.insert(0, (case, True))
                 else:
                     results.append(result)
+                    print(f'{case.case_id}: {"PASS" if result.passed else "FAIL"} {result.elapsed_seconds:.1f}s {result.issues}', file=sys.stderr, flush=True)
         finally:
             await controller.shutdown()
     if guard.attempts:
@@ -2416,6 +2604,8 @@ def _report(results: Sequence[EvalResult]) -> dict[str, Any]:
             "local_now": EVAL_LOCAL_NOW,
             "cases": len(results),
             "passed": sum(result.passed for result in results),
+            "median_seconds": statistics.median([r.elapsed_seconds for r in results]) if results else None,
+            "service_tier": codex_chat.CODEX_SERVICE_TIER,
         },
         "results": [result.to_dict() for result in results],
     }
@@ -2465,13 +2655,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the complete JSON report with exact calls and finals.",
     )
+    parser.add_argument('--model', choices=['gpt-5.6-terra', 'gpt-5.6-luna'], default=CODEX_MODEL)
+    parser.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'], default=CODEX_REASONING_EFFORT)
+    parser.add_argument('--service-tier', choices=['default', 'fast'], default='default')
     return parser
 
 
 async def _async_main(args: argparse.Namespace) -> int:
-    results = await run_evaluation(_select_cases(args.case_ids), case_timeout=args.timeout)
+    global CODEX_MODEL, CODEX_REASONING_EFFORT
+    CODEX_MODEL, CODEX_REASONING_EFFORT = args.model, args.effort
+    with patch.object(codex_chat, 'CODEX_MODEL', args.model), patch.object(codex_chat, 'CODEX_REASONING_EFFORT', args.effort), patch.object(codex_chat, 'CODEX_SERVICE_TIER', args.service_tier):
+        results = await run_evaluation(_select_cases(args.case_ids), case_timeout=args.timeout)
+        report = _report(results)
     if args.json:
-        print(json.dumps(_report(results), ensure_ascii=False, indent=2))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         _print_human(results)
     return 0 if all(result.passed for result in results) else 1
