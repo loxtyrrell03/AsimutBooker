@@ -65,6 +65,15 @@ def _refresh_test_live_policy(call_order=None, *, window_days=8):
 
 
 class LiveActionCliBoundaryTests(unittest.TestCase):
+    def test_scoped_grid_scan_is_read_only_and_validates_dates(self):
+        args = self.parse_validated(['--check-only', '--check-dates', '2026-09-01', '2026-09-03'])
+        self.assertEqual(args.check_dates, ['2026-09-01', '2026-09-03'])
+        for flags in (['--check-dates', '2026-09-01'],
+                      ['--check-only', '--check-dates', '2026-09-01', '2026-09-01'],
+                      ['--check-only', '--check-dates', '2026-9-1'],
+                      ['--check-only', '--check-dates', '2026-02-30']):
+            self.assert_rejected(flags)
+
     def parse_validated(self, argv):
         parser = book_week.build_argument_parser()
         args = parser.parse_args(argv)

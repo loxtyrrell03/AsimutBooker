@@ -30,6 +30,16 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
   need to reload Python to expose the new assistant contract; broad model
   evaluation and further reliability work follow this milestone.
 
+## 2026-09-11 Scoped read-only room scans
+
+- `--check-dates` is valid only with `--check-only`. Phone and assistant scan
+  workers now visit only the requested room-grid dates within the live horizon,
+  while retaining the complete agenda scan and existing booking safeguards.
+  Out-of-window dates remain explicitly unavailable, never silently empty.
+- Verified 96 isolated CLI, renderer, worker and tool tests, including separated
+  dates, full agenda coverage and zero grid scans outside the live window.
+  No live scan, booking, settings write or service restart was used as a test.
+
 ## 2026-09-11 Published phone closure crosses
 
 - `ClosedDayCross` supplies a non-interactive SVG X behind phone month/fortnight

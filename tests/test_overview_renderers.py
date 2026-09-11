@@ -658,7 +658,18 @@ class OverviewRendererTests(unittest.TestCase):
 
 class CheckOnlyRendererIntegrationTests(unittest.TestCase):
     def test_check_only_traverses_svg_grids_through_renderer_abstraction(self):
+        self._check_grid_scope(None, 5, 4)
+
+    def test_scoped_check_retains_full_agenda_but_skips_unrequested_grids(self):
+        today = datetime.now().date()
+        self._check_grid_scope([(today + timedelta(days=offset)).isoformat() for offset in (1, 3)], 2, 2)
+
+    def test_outside_window_check_reports_no_scanned_grids(self):
+        self._check_grid_scope([(datetime.now().date() + timedelta(days=40)).isoformat()], 0, 0)
+
+    def _check_grid_scope(self, dates, expected_grids, expected_navigation):
         args = SimpleNamespace(headless=True, check_only=True)
+        args.check_dates = dates
         expected_window_days = 5
         page = mock.MagicMock()
         context = mock.MagicMock()
@@ -727,10 +738,10 @@ class CheckOnlyRendererIntegrationTests(unittest.TestCase):
             expected_window_days,
         )
         open_grid.assert_called_once()
-        self.assertEqual(navigate.call_count, expected_window_days - 1)
-        self.assertEqual(wait_grid.call_count, expected_window_days)
-        self.assertEqual(room_names.call_count, expected_window_days)
-        self.assertEqual(available.call_count, expected_window_days)
+        self.assertEqual(navigate.call_count, expected_navigation)
+        self.assertEqual(wait_grid.call_count, expected_grids)
+        self.assertEqual(room_names.call_count, expected_grids)
+        self.assertEqual(available.call_count, expected_grids)
 
 
 if __name__ == "__main__":

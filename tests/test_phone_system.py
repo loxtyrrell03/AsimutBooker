@@ -113,7 +113,7 @@ class SystemDataTests(unittest.TestCase):
         from operation_control import report_available_gaps
         directory = self.root / 'job'; directory.mkdir()
         def main(flags):
-            self.assertEqual(flags, ['--headless', '--check-only'])
+            self.assertEqual(flags, ['--headless', '--check-only', '--check-dates', '2030-10-15', '2030-10-17'])
             for day in [date(2030, 10, 15), date(2030, 10, 16)]:
                 report_available_gaps(day, [{'room': 'B0.14', 'slots': [{'startHour': 10, 'endHour': 11.5, 'clickX': 42}]}])
             return 0

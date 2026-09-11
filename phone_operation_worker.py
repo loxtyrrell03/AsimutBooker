@@ -43,7 +43,7 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                     from book_week import main as booker_main
                 flags = {'run': ['--headless'], 'run_visible': [],
                          'login': ['--headless', '--login-only'],
-                         'scan': ['--headless', '--check-only'],
+                         'scan': ['--headless', '--check-only', '--check-dates', *args.get('dates', [])],
                          'agenda': ['--headless', '--agenda-only'],
                          'plan': ['--headless', '--plan-only']}[action]
                 code = booker_main(flags)

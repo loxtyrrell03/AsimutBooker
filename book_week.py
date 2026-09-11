@@ -9657,6 +9657,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             return 0 if cancelled else 7
 
         if args.check_only:
+            check_dates = set(getattr(args, "check_dates", None) or ())
             print(
                 f"\nChecking all {len(live_dates)} live-window practice-room "
                 "calendar days (read only)..."
@@ -9668,6 +9669,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             daily_summaries = []
             for days_ahead in booking_window_day_offsets(today):
                 target_date = today + timedelta(days=days_ahead)
+                if check_dates and target_date.isoformat() not in check_dates:
+                    continue
                 if days_ahead:
                     current_calendar_day = navigate_to_day(
                         page,
@@ -9716,7 +9719,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             persist_storage_state(context)
             print(
                 "CHECK PASSED: authenticated session, complete agenda, date "
-                f"navigation, and {len(live_dates)} room grids are usable "
+                f"navigation, and {len(daily_summaries)} room grids are usable "
                 f"({len(seen_configured_rooms)} configured rooms, "
                 f"{total_slot_count} visible gaps)."
             )
@@ -11229,6 +11232,8 @@ def build_argument_parser():
         action="store_true",
         help="Verify login, agenda, and room grid without changing bookings or history",
     )
+    parser.add_argument("--check-dates", nargs="+", metavar="YYYY-MM-DD",
+                        help="Limit read-only room-grid checks to these dates in the live window")
     parser.add_argument(
         "--agenda-only",
         action="store_true",
@@ -11469,6 +11474,15 @@ def _validate_cli_args(parser, args):
         if selected_date.isoformat() != args.only_date:
             parser.error("--only-date must use zero-padded YYYY-MM-DD")
 
+    if args.check_dates is not None:
+        if not args.check_only or not 1 <= len(args.check_dates) <= 31 or len(set(args.check_dates)) != len(args.check_dates):
+            parser.error("--check-dates requires --check-only and one to 31 unique dates")
+        for value in args.check_dates:
+            try:
+                if datetime.strptime(value, "%Y-%m-%d").date().isoformat() != value:
+                    raise ValueError
+            except ValueError:
+                parser.error("--check-dates must use valid zero-padded YYYY-MM-DD dates")
     if args.check_only and (
         args.only_date
         or args.only_room

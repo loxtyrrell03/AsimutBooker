@@ -109,7 +109,7 @@ class AvailabilityWindowTests(unittest.TestCase):
             root = Path(directory)
             (root / 'data').mkdir()
             def booker(flags):
-                self.assertEqual(flags, ['--headless', '--check-only'])
+                self.assertEqual(flags, ['--headless', '--check-only', '--check-dates', '2026-08-31'])
                 report_available_gaps(self.now.date(), [{'room': 'B0.29', 'slots': [{'startHour': 10, 'endHour': 12}]}])
                 return 0
             result = execute('scan', {'dates': ['2026-08-31']}, root, root=root, booker_main=booker)
