@@ -23,13 +23,53 @@ class OpenCanvasTests(unittest.TestCase):
         self.root.update()
 
     def test_narrow_navigation_and_hub_have_no_clipped_actions(self):
-        for width in (760, 1040, 1200):
+        for width in (760, 1040, 1200, 1920, 3440):
             self.root.geometry(f'{width}x740'); self.root.update()
             for widget in [*self.app.quiet_nav.values(), *(v[2] for v in self.app.settings_tiles.values())]:
                 self.assertTrue(widget.winfo_ismapped())
                 self.assertGreaterEqual(widget.winfo_width(), widget.winfo_reqwidth())
                 self.assertLessEqual(widget.winfo_rootx()+widget.winfo_width(), self.root.winfo_rootx()+width)
+            nav=self.app.quiet_nav['today'].master
+            nav_centre=nav.winfo_rootx()+nav.winfo_width()/2
+            window_centre=self.root.winfo_rootx()+self.root.winfo_width()/2
+            self.assertLessEqual(abs(nav_centre-window_centre),1)
+            brand=self.app.topbar.winfo_children()[0]
+            if abs(nav.winfo_rooty()-brand.winfo_rooty())<10:
+                self.assertLessEqual(brand.winfo_rootx()+brand.winfo_width(),nav.winfo_rootx())
         self.assertEqual(ttk.Style(self.root).layout('Navigation.TNotebook.Tab'), [('null', {'sticky': 'nswe'})])
+
+    def test_confirmed_closure_has_full_day_cross_in_every_calendar_mode(self):
+        from datetime import timedelta
+        from booking_plan import BookingPlanReadResult
+        from open_canvas_ui import ClosedCalendarDay
+        day=date.today().isoformat()
+        off=(date.today()+timedelta(days=1)).isoformat()
+        self.app.day_vars[off].set(False)
+        booking=dict(date=day,eventId=123,startTime='12:00',endTime='13:00',room='Example',isReservation=True)
+        with patch.object(self.app,'_load_cached_events'),patch.object(self.app,'_read_booking_plan_for_display',return_value=BookingPlanReadResult(None,False,'')),patch('room_catalog.closed_practice_dates',return_value=(day,)):
+            for mode in ('month','fortnight','week','3days','plan'):
+                self.app.show_calendar_dialog(mode)
+                self.app.calendar_events={day:[booking]}
+                self.app._refresh_calendar();self.root.update()
+                crossed=[w for w in descendants(self.app.calendar_frame) if isinstance(w,tk.Canvas) and w.find_withtag('closed-day-cross')]
+                self.assertEqual(len(crossed),1,mode)
+                canvas=crossed[0]
+                self.assertEqual(len(canvas.find_withtag('closed-day-cross')),2)
+                bounds=canvas.bbox('closed-day-cross')
+                self.assertGreater(bounds[2]-bounds[0],canvas.winfo_width()*.8)
+                self.assertGreater(bounds[3]-bounds[1],canvas.winfo_height()*.8)
+                if isinstance(canvas,ClosedCalendarDay):
+                    self.assertLessEqual(canvas.bbox('copy')[3],canvas.winfo_height())
+                    self.assertLessEqual(canvas.bbox('booking-0')[3],canvas.winfo_height())
+                    self.assertTrue(any('Example' in canvas.itemcget(item,'text') for item in canvas.find_all() if canvas.type(item)=='text'))
+                    # Clicking a persisted booking opens its detail, not the day editor.
+                    bounds=canvas.bbox('booking-0')
+                    with patch.object(self.app,'_show_quiet_booking') as details:
+                        canvas.on_booking=details
+                        canvas.event_generate('<Motion>',x=bounds[0]+4,y=bounds[1]+4)
+                        canvas.event_generate('<Button-1>',x=bounds[0]+4,y=bounds[1]+4)
+                        self.root.update()
+                        details.assert_called_once_with(booking)
 
     def test_room_editor_draft_survives_navigation_and_cancel_does_not_save(self):
         original = self.fixture.settings.read_bytes()

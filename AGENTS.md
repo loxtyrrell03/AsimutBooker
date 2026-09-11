@@ -15,6 +15,24 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Centred navigation and closed-day crosses
+
+- Desktop navigation is centred against the full window with equal side columns;
+  it stays centred on a second row when the brand and navigation cannot fit.
+  Geometry is verified at 760, 1040, 1200, 1920 and 3440px.
+- Confirmed whole-day closures now have a red diagonal X across the entire day
+  in all five Calendar modes. Month/day cells retain readable closure text,
+  direct date editing and existing booking links. Booking-off dates remain grey;
+  the shared fresh, explicit all-room closure evidence requirement is unchanged.
+- Calendar columns have equal widths and day rows grow into the scroll area
+  for labels/bookings. Avoid flushing Configure events during calendar rendering:
+  that caused recursive rendering and duplicate day cells when changing views.
+- Verified 33 focused native/calendar/catalog tests and the full Open canvas
+  fixture renderer. Wide navigation and narrow/month/three-day/plan closure
+  images were inspected using owned test windows. Reproduce with
+  `tools/render_calendar_chrome.py`. No live preferences, bookings, running
+  sessions or phone deployment changed; reopen the desktop to load the fix.
+
 ## 2026-09-11 Open canvas desktop implementation
 
 - The user selected option B in `docs/design/2026-09-10-desktop-refresh/`.

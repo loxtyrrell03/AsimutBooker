@@ -13,6 +13,59 @@ LINE = '#E1E6EE'
 RED = '#B73332'
 
 
+def draw_closed_day_cross(canvas, width, height):
+    """A full-cell X, behind text and booking blocks so they stay readable."""
+    canvas.delete('closed-day-cross')
+    inset=7
+    for coordinates in ((inset,inset,width-inset,height-inset),
+                        (width-inset,inset,inset,height-inset)):
+        canvas.create_line(*coordinates,fill=RED,width=3,capstyle=tk.ROUND,tags='closed-day-cross')
+    canvas.tag_lower('closed-day-cross')
+
+
+class ClosedCalendarDay(tk.Canvas):
+    """Closed date with a visible X, retained events and direct date editing."""
+    def __init__(self,parent,*,heading,height,on_edit,on_booking,events=()):
+        super().__init__(parent,width=1,height=height,bg='#FFF1F0',bd=0,
+                         highlightthickness=1,highlightbackground=LINE,
+                         highlightcolor=BLUE,takefocus=True,cursor='hand2')
+        self.heading,self.events=heading,events
+        self.on_edit,self.on_booking=on_edit,on_booking
+        self.bind('<Configure>',self._draw)
+        self.bind('<Button-1>',self._click)
+        self.bind('<Return>',lambda _e:self.on_edit())
+        self.bind('<space>',lambda _e:self.on_edit())
+
+    def _text(self,x,y,text,*,size=12,bold=False,color=RED,width=None,tag='copy'):
+        item=self.create_text(x,y,text=text,anchor='nw',fill=color,width=width or 0,
+                              font=('Segoe UI',-size,'bold' if bold else 'normal'),tags=tag)
+        bounds=self.bbox(item)
+        if bounds:
+            background=self.create_rectangle(bounds[0]-2,bounds[1],bounds[2]+2,bounds[3],fill='#FFF1F0',outline='',tags=tag)
+            self.tag_lower(background,item)
+        return self.bbox(item)[3]
+
+    def _draw(self,event):
+        self.delete('all')
+        draw_closed_day_cross(self,event.width,event.height)
+        y=self._text(9,7,self.heading,size=14,bold=True,width=event.width-18)+5
+        y=self._text(9,y,'Practice rooms closed',bold=True,width=event.width-18)+8
+        for index,booking in enumerate(self.events):
+            title=('Room '+booking.get('room','')) if booking.get('isReservation') else booking.get('title','College event')
+            tag=f'booking-{index}'
+            y=self._text(9,y,f"{booking['startTime']}–{booking['endTime']}\n{title}",color=INK,width=event.width-18,tag=tag)+6
+        self.configure(height=max(80,y+8))
+
+    def _click(self,_event):
+        for tag in self.gettags('current'):
+            if tag.startswith('booking-'):
+                booking=self.events[int(tag.removeprefix('booking-'))]
+                if booking.get('isReservation'):
+                    self.on_booking(booking)
+                    return
+        self.on_edit()
+
+
 def _rounded_image(root, fill, outline=None, radius=10):
     """Nine-slice rounded background without an optional imaging dependency."""
     image = tk.PhotoImage(master=root, width=44, height=44)

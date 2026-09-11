@@ -5193,7 +5193,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             # Make the frame fill the canvas
             canvas_width = e.width
             canvas_height = e.height
-            self.calendar_canvas.itemconfig(self.calendar_canvas_window, width=max(canvas_width, self.calendar_frame.winfo_reqwidth()) if self.calendar_view.get() == "plan" else canvas_width, height=max(canvas_height,self.calendar_frame.winfo_reqheight()))
+            self.calendar_canvas.itemconfig(self.calendar_canvas_window, width=max(canvas_width, self.calendar_frame.winfo_reqwidth()) if self.calendar_view.get() == "plan" else canvas_width, height=0)
             # Store canvas height for cell sizing and refresh
             if hasattr(self, '_last_canvas_height') and self._last_canvas_height != canvas_height:
                 self._last_canvas_height = canvas_height
@@ -5400,15 +5400,17 @@ class AsimutBookerGUI(QuietFocusGUI):
         today = datetime.now().date()
 
         # Get available height for calendar content
-        self.calendar_canvas.update_idletasks()
+        # Configure events supply the current size. Flushing them here can
+        # recursively render a second set of day cells during a view switch.
         available_height = getattr(self, '_last_canvas_height', None)
         if not available_height or available_height < 100:
             available_height = self.calendar_canvas.winfo_height()
         if available_height < 100:
             available_height = 450  # Default fallback
 
-        # Set the frame to fill canvas and not shrink
-        self.calendar_frame.grid_propagate(False)
+        # Let taller day contents extend the scroll region instead of clipping
+        # closure labels or existing bookings inside a fixed-height frame.
+        self.calendar_frame.grid_propagate(True)
 
         if view == "month":
             self._render_month_view(today, available_height)
@@ -5476,7 +5478,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         # Configure grid weights and row heights
         self.calendar_frame.rowconfigure(0, weight=0, minsize=header_height)  # Header row fixed
         for c in range(7):
-            self.calendar_frame.columnconfigure(c, weight=1)
+            self.calendar_frame.columnconfigure(c, weight=1, uniform='calendar-day')
         for r in range(1, num_rows + 1):
             self.calendar_frame.rowconfigure(r, weight=1, minsize=cell_height)
 
@@ -5512,7 +5514,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         # Configure grid weights and row heights
         for c in range(cols_per_row):
-            self.calendar_frame.columnconfigure(c, weight=1)
+            self.calendar_frame.columnconfigure(c, weight=1, uniform='calendar-day')
         for r in range(rows_needed):
             self.calendar_frame.rowconfigure(r, weight=1, minsize=cell_height)
 
@@ -5600,6 +5602,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
     def _render_plan_timeline_view(self, today, available_height):
         """Render seven days as a real time axis with translucent potential blocks."""
+        from open_canvas_ui import draw_closed_day_cross
 
         start_date = self.calendar_start_date
         end_date = start_date + timedelta(days=6)
@@ -5655,12 +5658,12 @@ class AsimutBookerGUI(QuietFocusGUI):
             if selected:
                 heading = "✓ " + heading
             if closed:
-                heading += " · Rooms closed"
+                heading += "\nRooms closed"
             day_header = tk.Label(
                 self.calendar_frame,
                 text=heading,
                 bg=heading_bg,
-                font=("Segoe UI", 9, "bold overstrike" if closed or booking_off else "bold"),
+                font=("Segoe UI", 9, "bold overstrike" if booking_off and not closed else "bold"),
                 fg="#B73332" if closed else "#111111",
                 relief="solid",
                 borderwidth=1,
@@ -5679,6 +5682,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                 highlightthickness=2 if selected else 1,
             )
             canvas.grid(row=1, column=index + 1, sticky="nsew", padx=1, pady=1)
+            if closed:
+                canvas.bind('<Configure>',lambda e,c=canvas:draw_closed_day_cross(c,e.width,e.height))
             for hour in range(7, 23):
                 y, _ = calendar_timeline_geometry(
                     f"{hour:02d}:00",
@@ -5801,6 +5806,15 @@ class AsimutBookerGUI(QuietFocusGUI):
             date_str,
             events,
         )
+
+        if closed:
+            from open_canvas_ui import ClosedCalendarDay
+            heading=current_date.strftime('%a %d') if show_day_name else str(current_date.day)
+            if is_today: heading+=' · Today'
+            cell=ClosedCalendarDay(self.calendar_frame,heading=heading,height=cell_height,events=events,
+                on_edit=lambda:open_calendar_preferences(self,[current_date],SETTINGS_FILE),on_booking=self._show_quiet_booking)
+            cell.grid(row=row,column=col,sticky='nsew',padx=4,pady=4)
+            return
 
         # Phone palette: today is accented, off dates remain neutral and crossed out.
         bg_color = '#EAF3FF' if is_today and is_selected else '#F1F4F8' if booking_off or is_past else '#FFFFFF'

@@ -40,6 +40,15 @@ fixture checks, not live bookings or physical phone verification. No phone
 publication or live session restart was performed. Reopen the PC app to load
 the source changes.
 
+The 11 September follow-up centres navigation against the full window, including
+wide and wrapped layouts, and marks confirmed closed days with a red X across
+the day in every Calendar mode. Booking-off dates keep their grey treatment.
+Thirty-three focused tests and native fixture rendering verify the change;
+`tools/render_calendar_chrome.py` reproduces the example-data images below.
+
+![Centred desktop navigation](nav-centred.png)
+![Confirmed closure with a full-day cross](closed-calendar.png)
+
 ## Source audit and design rules
 
 Inspected the current phone CSS and components (`phone/app/globals.css`,

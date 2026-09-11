@@ -27,8 +27,9 @@ class QuietFocusGUI:
             mark.create_line(x,27,x,27-height,fill=WHITE,width=4,capstyle=tk.ROUND)
         label(brand,'Asimut',size=21,bold=True).pack(side='left')
         nav = tk.Frame(self.topbar,bg=WHITE)
-        nav.grid(row=0,column=1,sticky='e')
-        self.topbar.columnconfigure(1,weight=1)
+        nav.grid(row=0,column=1)
+        self.topbar.columnconfigure(0,weight=1,uniform='nav-side')
+        self.topbar.columnconfigure(2,weight=1,uniform='nav-side')
         self.quiet_nav={}
         for i,(key,text) in enumerate((('today','Today'),('week','My Week'),('calendar','Calendar'),('assistant','Assistant'),('settings','Settings'))):
             button=ttk.Button(nav,text=text,style='QuietNav.TButton',command=lambda k=key:self._select_quiet_page(k))
@@ -36,9 +37,10 @@ class QuietFocusGUI:
             self.quiet_nav[key]=button
         def fit(event):
             if event.widget is not self.topbar: return
-            row = 1 if event.width < 860 else 0
-            nav.grid_configure(row=row,column=0 if row else 1,columnspan=2 if row else 1,
-                               sticky='ew' if row else 'e',pady=(10,0) if row else 0)
+            minimum = nav.winfo_reqwidth() + 2 * brand.winfo_reqwidth() + 56
+            row = 1 if event.width < minimum else 0
+            nav.grid_configure(row=row,column=0 if row else 1,columnspan=3 if row else 1,
+                               sticky='',pady=(10,0) if row else 0)
         self.topbar.bind('<Configure>',fit)
         ttk.Separator(self.root).pack(fill='x')
         self.quiet_goal_var=tk.StringVar(value='Your daily routine')
