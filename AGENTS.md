@@ -15,6 +15,16 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Calendar month navigation
+
+- Desktop Previous/Next now use calendar-month arithmetic. Adding 30 days and
+  snapping to day one kept August (and other 31-day months) stuck; backward
+  navigation from late March could also skip February.
+- Reproduced five failing cases through the actual native buttons, then verified
+  32 focused native/calendar tests. Coverage includes 28/29/30/31-day months,
+  year boundaries, displayed month labels and Today recovery. Existing desktop
+  sessions and drafts were preserved; reopen the PC app to load this fix.
+
 ## 2026-09-11 Actual College Closed events in Calendar
 
 - Asimut's red full-day blocks can be College Closed category events, separate

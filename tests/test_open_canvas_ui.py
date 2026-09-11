@@ -118,6 +118,28 @@ class OpenCanvasTests(unittest.TestCase):
         self.assertIs(open_calendar_preferences(self.app, [date.today()], self.fixture.settings), editor)
         self.assertEqual(field.get(), '4.5')
 
+    def test_calendar_month_buttons_cross_short_long_months_and_year_boundaries(self):
+        from booking_plan import BookingPlanReadResult
+        with patch.object(self.app, '_load_cached_events'), patch.object(self.app, '_read_booking_plan_for_display', return_value=BookingPlanReadResult(None, False, '')):
+            self.app.show_calendar_dialog('month')
+            buttons = {w.cget('text'): w for w in descendants(self.app.calendar_tab) if isinstance(w, ttk.Button)}
+            for start, previous, following in (
+                (date(2026, 9, 11), date(2026, 8, 1), date(2026, 9, 1)),
+                (date(2026, 4, 30), date(2026, 3, 1), date(2026, 4, 1)),
+                (date(2026, 3, 31), date(2026, 2, 1), date(2026, 3, 1)),
+                (date(2028, 3, 31), date(2028, 2, 1), date(2028, 3, 1)),
+                (date(2027, 1, 31), date(2026, 12, 1), date(2027, 1, 1)),
+            ):
+                with self.subTest(start=start):
+                    self.app.calendar_start_date = start
+                    buttons['← Previous'].invoke(); self.root.update()
+                    self.assertEqual(self.app.calendar_start_date, previous)
+                    buttons['Next →'].invoke(); self.root.update()
+                    self.assertEqual(self.app.calendar_start_date, following)
+                    self.assertEqual(self.app.calendar_period_var.get(), following.strftime('%B %Y'))
+            buttons['Today'].invoke(); self.root.update()
+            self.assertEqual(self.app.calendar_start_date, date.today().replace(day=1))
+
     def test_distinct_bookings_never_reuse_another_booking_detail(self):
         base = dict(date=date.today().isoformat(), startTime='12:00', endTime='13:00',room='Example',isReservation=True)
         self.app._show_quiet_booking(dict(base,eventId=123))

@@ -5305,10 +5305,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         """Navigate calendar forward or backward."""
         view = self.calendar_view.get()
         if view == "month":
-            # Move by ~30 days
-            self.calendar_start_date += timedelta(days=30 * direction)
-            # Snap to first of month
-            self.calendar_start_date = self.calendar_start_date.replace(day=1)
+            # Move by calendar month: 30-day arithmetic can stay in a 31-day
+            # month or skip February, leaving Previous/Next apparently stuck.
+            month_index = self.calendar_start_date.year * 12 + self.calendar_start_date.month - 1 + direction
+            year, month = divmod(month_index, 12)
+            self.calendar_start_date = date(year, month + 1, 1)
         elif view == "fortnight":
             self.calendar_start_date += timedelta(days=14 * direction)
         elif view == "week":
