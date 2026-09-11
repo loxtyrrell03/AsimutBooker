@@ -15,6 +15,33 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-11 Published phone closure crosses
+
+- `ClosedDayCross` supplies a non-interactive SVG X behind phone month/fortnight
+  cells, week/three-day tracks, Plan cards, focused-date headings and My Week.
+  Dates remain selectable and existing bookings remain readable and clickable.
+  Plan includes closed dates even when no checked plan exists. Booking-off dates
+  keep their neutral treatment and do not receive a red closure cross.
+- `tools/check_calendar_closures_ui.py` now derives closure dates through the
+  actual catalog-to-phone snapshot path using sanitized Asimut responses, rather
+  than injecting closed dates. Chromium/WebKit checks pass in all five modes at
+  320/390/844px, including booking details and navigation. Calendar preference and
+  planned-date UI checks, 19 Node tests, TypeScript, lint and static validation
+  also passed. WebKit month/Plan renders were inspected; the desktop design
+  folder contains `phone-weekend-closures.png` (recorded closure data, example
+  retained booking and isolated settings; not physical-device proof).
+- Published `20260911-closure-crosses`, retained old hashed assets, and restarted
+  only the idle phone task after checking assistant/cancellation/system jobs,
+  unresolved requests, mutation receipts and the Booker lock. The running API
+  now returns both 12 and 13 September; actual private HTTPS deployment checks
+  and JS/CSS hashes passed. Close/reopen an existing phone client to load the
+  new shell; PC windows and drafts were preserved.
+- Before any future phone restart, validate `load_phone_server_config` while the
+  old service is still running. The pinned Codex desktop hash path had expired
+  after an update and prevented startup; this deployment repaired only that
+  local configuration value via `resolve_codex_executable`. Keep the origin,
+  identity allow-list and all unrelated settings intact when resolving it.
+
 ## 2026-09-11 Calendar month navigation
 
 - Desktop Previous/Next now use calendar-month arithmetic. Adding 30 days and

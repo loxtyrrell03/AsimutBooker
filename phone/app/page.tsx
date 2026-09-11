@@ -1,5 +1,6 @@
 'use client';
 
+import { ClosedDayCross } from '../components/closed-day-cross';
 import {
   AlertTriangle,
   Bot,
@@ -863,7 +864,8 @@ function ScheduleView({
             const sessions = day ? selectedPlanSessions(day) : [];
             const plannedMinutes = day ? selectedPlanMinutes(day) : 0;
             return (
-              <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed' : ''}`} key={date}>
+              <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed closed-day-surface' : ''}`} key={date}>
+                {booker.agenda.closed_dates?.includes(date) && <ClosedDayCross />}
                 <h3>{dateLabel(date, true)}</h3>
                 {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
                 {events.map((event, index) => (
