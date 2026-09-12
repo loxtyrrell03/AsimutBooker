@@ -1,7 +1,7 @@
 """Execution tests for the real tools with temporary files and a fake CLI only."""
 import json
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -65,6 +65,51 @@ class DatedWindowTests(unittest.TestCase):
 
 
 class AvailabilityWindowTests(unittest.TestCase):
+    def test_rolling_duration_is_elapsed_time_across_clock_changes(self):
+        for now in (
+            datetime(2026, 3, 28, 12, tzinfo=ZoneInfo('Europe/London')),
+            datetime(2026, 10, 24, 12, tzinfo=ZoneInfo('Europe/London')),
+        ):
+            with self.subTest(now=now):
+                query = resolve_query({'next_minutes': 1440}, now)
+                self.assertEqual(datetime.fromisoformat(query['end']) - now.astimezone(timezone.utc), timedelta(hours=24))
+
+    def test_scan_rows_use_each_dates_local_offset(self):
+        now = datetime(2026, 3, 28, 12, tzinfo=ZoneInfo('Europe/London'))
+        query = resolve_query({'next_minutes': 1440}, now)
+        scan = {'observed_at': now.isoformat(), 'scanned_dates': query['dates'],
+                'rows': [{'date': '2026-03-29', 'room': 'B0.29', 'start': '12:00', 'end': '14:00'}]}
+        result = filter_scan(scan, query, now=now)
+        self.assertEqual(result['rows'], [{'date': '2026-03-29', 'room': 'B0.29',
+                         'start_time': '12:00', 'end_time': '13:00', 'minutes': 60}])
+
+    def test_scan_that_outlasts_request_reports_elapsed_window(self):
+        query = resolve_query({'next_minutes': 5}, self.now)
+        result = filter_scan(self.scan, query, now=self.now + timedelta(minutes=6))
+        self.assertTrue(result['window_elapsed'])
+        self.assertEqual(result['rows'], [])
+
+    def test_rolling_hour_uses_real_instants_during_clock_changes(self):
+        for now in (
+            datetime(2026, 3, 29, 0, 30, tzinfo=ZoneInfo('Europe/London')),
+            datetime(2026, 10, 25, 1, 30, tzinfo=ZoneInfo('Europe/London')),
+        ):
+            with self.subTest(now=now):
+                query = resolve_query({'next_minutes': 60}, now)
+                self.assertEqual(datetime.fromisoformat(query['end']) - datetime.fromisoformat(query['start']), timedelta(hours=1))
+
+    def test_ambiguous_or_skipped_room_times_cannot_establish_availability(self):
+        for day in ('2026-03-29', '2026-10-25'):
+            now = datetime.fromisoformat(day).replace(tzinfo=ZoneInfo('Europe/London'))
+            with self.subTest(day=day):
+                with self.assertRaisesRegex(ValueError, 'clock change'):
+                    resolve_query({'date': day, 'start_time': '01:30', 'end_time': '02:30'}, now)
+                query = resolve_query({'next_minutes': 180}, now)
+                scan = {'observed_at': now.isoformat(), 'scanned_dates': [day],
+                        'rows': [{'date': day, 'room': 'B0.29', 'start': '01:30', 'end': '02:30'}]}
+                with self.assertRaisesRegex(ValueError, 'clock change'):
+                    filter_scan(scan, query, now=now)
+
     def setUp(self):
         self.now = datetime(2026, 8, 31, 10, 7, tzinfo=ZoneInfo('Europe/London'))
         self.scan = {'observed_at': self.now.isoformat(), 'scanned_dates': ['2026-08-31'],

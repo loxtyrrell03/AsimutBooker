@@ -120,3 +120,50 @@ synthetic. The prompt fix reduces the demonstrated ambiguity failure; it does
 not make natural-language interpretation deterministic. No transaction engine,
 model router or extra production retry layer was added. Production remains
 Terra/medium/Fast and existing hosts were not restarted.
+
+## Availability boundaries and final coverage audit
+
+Production time-handling tests reproduced two more gaps. A rolling 24-hour query
+covered 23/25 elapsed hours across the spring/autumn clock changes, and scan
+rows on the following date could inherit the wrong offset. Rolling arithmetic
+and clipping now use UTC instants; each date's wall times use the London zone.
+The adapter refuses skipped/repeated local boundaries whose offset is unknown.
+This is deterministic time handling, not another model instruction for calendar
+arithmetic.
+
+A short query that expired during the scan previously returned an ordinary empty
+list. The result now includes `window_elapsed`, and the assistant explains the
+expired interval without claiming current rooms are fully booked or free. Both
+the elapsed-window and ordinary-empty-window Luna/high/standard checks passed
+(9.6 and 11.7 seconds), each using exactly one availability query and no mutations.
+Evidence: `evaluations/2026-09-12/availability-boundaries-luna.json`.
+
+The reusable model suite now contains 84 scenarios. All 938 offline tests passed
+after the final production changes (68.1 seconds). The following audit inspected
+the saved traces and current execution tests; it does not imply another full
+84-case model run was performed.
+
+| Requested behavior | Inspected evidence |
+| --- | --- |
+| Book a specified duration tomorrow afternoon/evening while preserving usual preferences | `audit_book_temporary`, `audit_book_combined`, `audit_book_exact` in the full/matched reports; actual atomic date-window handlers in `test_assistant_request_scope.py` |
+| Use saved duration for “book me practice this afternoon/evening” | Both default-daypart cases pass in the Terra and Luna high full reports; dated/default target and existing-booking arithmetic tests |
+| Cancel Wednesday and Friday without touching intervening days | `audit_cancel_separated` passes in final matched/full runs; exact-ID selection, complete coverage and batch-veto production tests |
+| Report next-hour room availability | `audit_availability_hour` passes in both models' aligned runs; production read-only worker, clipping, minimum-duration, unknown coverage and clock-boundary tests |
+| Avoid the empty-Sunday/Monday substitution | Four final calendar scenarios pass; all 49 weekday-pair veto tests and mixed-batch pre-mutation checks |
+| Handle trick wording and subsequent corrections | Exclusions, quotations, qualified weeks and session exceptions in the trick reports; clarification, withdrawal, target adjustment and date correction in the conversation reports |
+| Report failures without claiming success or retrying uncertain writes | Failed-prerequisite, pending-receipt, zero-action and uncertain-Save cases; replacement-failure cases retain the original |
+| Keep dated times effective through execution | `test_date_time_preferences.py` checks actual planner filtering, horizon Save, extension rejection, and preference changes stopping a prepared Save |
+| Compare cheaper/faster models and reasoning settings | Saved paired 22-case Terra medium/Luna high/Luna xhigh runs, complete 54-case Terra/Luna high runs, and the earlier low/medium probes; timings and failures remain recorded |
+| Keep testing bounded and configuration scoped | Latest follow-up uses two Luna standard turns only; CLI overrides are process-local; current production constants are Terra/medium/Fast |
+
+The model decision remains unchanged: the measured Luna configurations did not
+show equal reliability with lower latency. Higher reasoning did not consistently
+improve results. Requested Fast tiers in older experiments are not proof of
+served-tier latency, and these runs do not measure monetary savings on the user's
+Codex account. No billing claim or automatic model switch is justified.
+
+This completes the source/evaluation audit of the requested behavior. It does
+not prove every possible utterance correct. The tests deliberately use synthetic
+state and isolated production-handler fixtures; no real reservation was created
+or cancelled for testing, and no host was restarted or deployed. Existing hosts
+must reload Python to receive the final prompt/tools and explicit Fast setting.

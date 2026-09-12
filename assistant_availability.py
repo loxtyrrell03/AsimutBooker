@@ -2,10 +2,19 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 from pathlib import Path
 import re
+
+
+def _local_boundary(day, clock, tz):
+    value = datetime.fromisoformat(f'{day}T{clock}').replace(tzinfo=tz)
+    # The room grid supplies wall times without a fold/offset. Do not invent
+    # an instant for a skipped or repeated local time at a clock change.
+    if value.utcoffset() != value.replace(fold=1).utcoffset():
+        raise ValueError('Availability boundary is ambiguous at a clock change')
+    return value
 
 
 def resolve_query(arguments, now):
@@ -24,7 +33,8 @@ def resolve_query(arguments, now):
             raise ValueError('Rolling window must be between one and 1440 minutes')
         if {'date', 'start_time', 'end_time'} & set(arguments):
             raise ValueError('Use either a rolling window or a dated window')
-        start, end = now, now + timedelta(minutes=minutes)
+        start = now
+        end = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
     else:
         if not {'date', 'start_time', 'end_time'} <= set(arguments):
             raise ValueError('Supply date, start_time and end_time')
@@ -34,8 +44,8 @@ def resolve_query(arguments, now):
         day = arguments['date']
         if not isinstance(day, str) or datetime.strptime(day, '%Y-%m-%d').date().isoformat() != day:
             raise ValueError('Use YYYY-MM-DD')
-        start = datetime.fromisoformat(f'{day}T{arguments["start_time"]}').replace(tzinfo=now.tzinfo)
-        end = datetime.fromisoformat(f'{day}T{arguments["end_time"]}').replace(tzinfo=now.tzinfo)
+        start = _local_boundary(day, arguments['start_time'], now.tzinfo)
+        end = _local_boundary(day, arguments['end_time'], now.tzinfo)
         if end <= start:
             raise ValueError('End time must follow start time')
         if end <= now:
@@ -60,30 +70,32 @@ def filter_scan(scan, query, *, now):
     scanned = scan['scanned_dates']
     if not isinstance(scanned, list) or any(not isinstance(day, str) for day in scanned):
         raise ValueError('Invalid scan coverage')
-    start = max(datetime.fromisoformat(query['start']), now)
-    end = datetime.fromisoformat(query['end'])
+    start = max(datetime.fromisoformat(query['start']).astimezone(timezone.utc), now.astimezone(timezone.utc))
+    end = datetime.fromisoformat(query['end']).astimezone(timezone.utc)
     rows = []
     for row in scan['rows']:
         if row['date'] not in query['dates'] or row['date'] not in scanned:
             continue
         if query['room'] and row['room'].casefold() != query['room'].casefold():
             continue
-        left = datetime.fromisoformat(f'{row["date"]}T{row["start"]}').replace(tzinfo=start.tzinfo)
+        left = _local_boundary(row['date'], row['start'], now.tzinfo).astimezone(timezone.utc)
         # The existing scan can represent midnight as 24:00.
-        right = (datetime.fromisoformat(row['date']).replace(tzinfo=start.tzinfo) + timedelta(days=1)
+        right = (datetime.fromisoformat(row['date']).replace(tzinfo=now.tzinfo) + timedelta(days=1)
                  if row['end'] == '24:00' else
-                 datetime.fromisoformat(f'{row["date"]}T{row["end"]}').replace(tzinfo=start.tzinfo))
+                 _local_boundary(row['date'], row['end'], now.tzinfo)).astimezone(timezone.utc)
         left, right = max(left, start), min(right, end)
         # Do not offer elapsed time or a non-bookable partial minute after a slow scan.
         midnight = left.replace(hour=0, minute=0, second=0, microsecond=0)
         left = midnight + timedelta(minutes=15 * math.ceil((left - midnight).total_seconds() / 900))
         minutes = int((right - left).total_seconds() // 60)
         if minutes >= query['minimum_block_minutes']:
+            left, right = left.astimezone(now.tzinfo), right.astimezone(now.tzinfo)
             rows.append({'date': row['date'], 'room': row['room'],
                          'start_time': left.strftime('%H:%M'), 'end_time': right.strftime('%H:%M'),
                          'minutes': minutes})
     rows.sort(key=lambda row: (row['date'], row['start_time'], row['room']))
     return {'read_only': True, 'observed_at': scan['observed_at'], 'window': query,
+            'window_elapsed': end <= start,
             'rows': rows[:200], 'truncated': len(rows) > 200,
             'unavailable_dates': sorted(set(query['dates']) - set(scanned)),
             'scope': 'Visible free room intervals; personal conflicts, quotas and booking horizons still require checking.'}

@@ -94,6 +94,8 @@ Grounding and trust:
   booking eligibility. Questions about availability do not authorize mutations.
   Use the room filter when a room is named. Trust a successful empty scan;
   do not repeat the same query merely because it returned no gaps.
+  If window_elapsed is true, explain that the requested interval passed during
+  the scan; an elapsed interval does not establish current room availability.
 - Resolve calendar phrases against the actual local calendar and verify every
   weekday/date mapping before replying or acting. The agenda's calendar_dates
   and event weekday fields are computed by the host; use those facts instead of

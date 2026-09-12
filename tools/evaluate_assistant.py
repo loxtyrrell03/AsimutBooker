@@ -932,9 +932,10 @@ class SyntheticBookerDispatcher:
             for day in query['dates']
             for room, start, end in [('B0.29', '10:00', '14:00'), ('B1.09', '14:00', '22:00')]
         ]
+        finished = now + timedelta(minutes=6) if self._active_case == 'audit_availability_elapsed' else now
         return {'synthetic': True, 'dry_run': True, 'production_effect': 'none',
                 **filter_scan({'observed_at': EVAL_LOCAL_NOW, 'rows': rows,
-                               'scanned_dates': [] if missing else query['dates']}, query, now=now)}
+                               'scanned_dates': [] if missing else query['dates']}, query, now=finished)}
 
     def _find_reservations(self, arguments: dict[str, Any], _prompt: str) -> dict[str, Any]:
         allowed = {
@@ -2482,10 +2483,13 @@ def evaluate_request_contract(case, calls, final):
             issues.append('follow-up adjustment reported the wrong resulting saved target')
     if expected.get('failed_outcome') and not re.search(r'no (?:booking|room|move)|no currently bookable|zero|unconfirm|uncertain|not (?:booked|confirmed)|couldn.t|could not be verified|unable|didn.t', final, re.I):
         issues.append('final did not disclose the unsuccessful outcome')
+    if expected.get('elapsed') and not re.search(r'elapsed|expired|(?:window|interval).*(?:passed|ended)|passed.*(?:scan|check)', final, re.I | re.S):
+        issues.append('elapsed scan window was not explained')
     return issues
 
 
 AUDIT_CASES = (
+    EvalCase('audit_availability_elapsed', 'What is free in the next five minutes?', 'A slow scan must disclose that the requested interval has already passed.', expected={'read_only': True, 'availability': {'next_minutes': 5}, 'elapsed': True}),
     EvalCase('conversation_cancel_singular', 'Cancel my afternoon booking tomorrow.', 'A singular request cannot choose between multiple reservations.', expected={'read_only': True, 'clarify': True}),
     EvalCase('conversation_cancel_earlier', 'Cancel the earlier of my two bookings tomorrow afternoon.', 'A comparative selector makes one match unambiguous.', expected={'cancel_ids': [41002]}),
     EvalCase('conversation_cancel_all', 'Cancel both my bookings tomorrow afternoon.', 'An explicit plural request cancels the complete daypart set.', expected={'cancel_ids': [41001, 41002]}),

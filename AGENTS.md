@@ -25,6 +25,26 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-12 Availability clock boundaries and completed coverage audit
+
+- Rolling availability durations now advance in elapsed UTC time and convert
+  back to London time. Each scanned date resolves its own local offset; clipping
+  and duration arithmetic use UTC. Previously a 24-hour request could span
+  23/25 actual hours across a clock change and omit a valid following-day gap.
+  Skipped/repeated wall-time boundaries without an offset fail closed.
+- Availability returns `window_elapsed` when the requested interval expires
+  during scanning. The prompt distinguishes this from confirmed empty coverage,
+  preventing a slow scan from establishing false current availability.
+- Five new offline regressions and the full 938-test suite pass. Two focused
+  Luna/high/standard turns distinguish elapsed and empty scans without retries;
+  the model suite now has 84 scenarios. No new Terra inference was used.
+- The reliability report maps the user's requested examples to saved model
+  traces and real-handler/planner tests, and records the model decision and
+  evidence limits. Source/evaluation work is verified; existing hosts and live
+  state were preserved. Reload hosts to activate these changes. No claim of
+  exhaustive language reliability, live mutation proof or measured Terra Fast
+  production latency is supported by this audit.
+
 ## 2026-09-12 Conversation continuity and ambiguous cancellation
 
 - A focused Luna/high/standard evaluation exposed a real semantic failure:
