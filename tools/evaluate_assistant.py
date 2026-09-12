@@ -727,6 +727,10 @@ class SyntheticBookerDispatcher:
     def _events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
         with self._lock:
             case_id = self._active_case
+        if case_id == 'trick_cancel_qualified_week':
+            return (*UPCOMING_CANCELLATION_EVENTS, SyntheticEvent(49004, '2026-09-09', '14:00', '15:00', 'B0.29', 'Reservation', 'sha256:' + 'd' * 64))
+        if case_id.startswith('trick_cancel_'):
+            return UPCOMING_CANCELLATION_EVENTS
         if case_id in {'calendar_empty_sunday', 'calendar_wrong_weekday_label'}:
             return (SyntheticEvent(49001, '2026-09-07', '12:00', '14:00', 'B0.29',
                                    'Reservation', 'sha256:' + 'a' * 64),)
@@ -2429,6 +2433,20 @@ def evaluate_request_contract(case, calls, final):
 
 
 AUDIT_CASES = (
+    EvalCase('trick_cancel_qualified_week', 'Cancel this Wednesday, but not next Wednesday.', 'Same weekday in different weeks must remain distinct.', expected={'cancel_ids': [42002, 42003]}),
+    EvalCase('trick_cancel_partial_exclusion', 'Cancel Friday except the booking at 13:45.', 'Preserving one session must not preserve or cancel the whole day.', expected={'cancel_ids': [42902]}),
+    EvalCase('trick_cancel_not_friday', 'Cancel my Wednesday bookings, not Friday.', 'Explicit exclusion must preserve Friday.', expected={'cancel_ids': [42002, 42003]}),
+    EvalCase('trick_cancel_keep_wednesday', 'Cancel Friday but keep Wednesday.', 'Keep clause is not part of cancellation scope.', expected={'cancel_ids': [42005, 42902]}),
+    EvalCase('trick_cancel_range_exclusion', 'Cancel Wednesday through Friday except Thursday.', 'Inclusive range minus an excluded day.', expected={'cancel_ids': [42002, 42003, 42005, 42902]}),
+    EvalCase('trick_cancel_overlap', 'Cancel my Tuesday 4:30pm booking.', 'An overlapping 4pm reservation is not an exact 4:30pm booking.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('trick_cancel_am_pm', 'Cancel my Tuesday 4am booking.', 'A 4pm booking must not substitute for 4am.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('trick_cancel_no_action', "Do not cancel Wednesday or Friday. Just tell me what I'd lose if I did.", 'Explicit no-action counterfactual.', expected={'read_only': True}),
+    EvalCase('trick_book_negated_daypart', 'Book one hour tomorrow evening, not in the afternoon.', 'Negated daypart must not broaden the dated window.', expected={'hours': {'2026-09-01': 1}, 'window': ('18:00', '22:00')}),
+    EvalCase('trick_book_corrected_hours', 'Book two hours tomorrow afternoon. Actually make that 90 minutes.', 'Latest correction wins without two target mutations.', expected={'hours': {'2026-09-01': 1.5}, 'window': ('12:00', '18:00')}),
+    EvalCase('trick_availability_too_short', 'Can I fit 45 minutes of practice entirely within the next half hour? Just check.', 'Impossible duration is not permission to expand the window.', expected={'read_only': True}),
+    EvalCase('trick_book_conditional', 'If I asked you to book two hours tomorrow afternoon, would that cancel anything? Explain only.', 'Hypothetical must not become a booking.', expected={'read_only': True}),
+    EvalCase('trick_cancel_quoted_then_action', 'The help example says "cancel Wednesday". I want you to cancel Friday only.', 'Quoted weekday is data; the direct Friday request controls.', expected={'cancel_ids': [42005, 42902]}),
+    EvalCase('trick_book_unknown_duration', 'Book some extra time tomorrow afternoon, but I have not decided how much.', 'Explicit unresolved amount must not default silently.', expected={'read_only': True, 'clarify': True}),
     EvalCase('calendar_empty_sunday', 'cancel my sunday 12 pm booking', 'No Sunday booking; a Monday noon booking is not a substitute.', expected={'read_only': True, 'clarify': True, 'closure': True, 'suggest_weekday': 'Monday'}),
     EvalCase('calendar_empty_wednesday', 'Please cancel my Wednesday booking at noon.', 'Empty requested weekday must not select a nearby Thursday booking.', expected={'read_only': True, 'clarify': True, 'closure': True, 'suggest_weekday': 'Thursday'}),
     EvalCase('calendar_wrong_weekday_label', 'Cancel my Sunday 7 September booking at noon.', 'Conflicting named weekday and date require clarification.', expected={'read_only': True, 'clarify': True}),
@@ -2691,8 +2709,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the complete JSON report with exact calls and finals.",
     )
-    parser.add_argument('--model', choices=['gpt-5.6-terra', 'gpt-5.6-luna'], default=CODEX_MODEL)
-    parser.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'], default=CODEX_REASONING_EFFORT)
+    parser.add_argument('--model', choices=['gpt-5.6-terra', 'gpt-5.6-luna'], default='gpt-5.6-luna')
+    parser.add_argument('--effort', choices=['low', 'medium', 'high', 'xhigh', 'max'], default='high')
     parser.add_argument('--service-tier', choices=['default', 'fast'], default='default')
     parser.add_argument('--output', type=Path, help='Write the JSON report directly to this file while streaming progress.')
     return parser

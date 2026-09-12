@@ -186,6 +186,8 @@ for raw in sys.stdin:
             and params.get("approvalPolicy") == "never"
             and params.get("sandbox") == "read-only"
             and config.get("model_reasoning_effort") == "medium"
+            and config.get("service_tier") == "fast"
+            and config.get("features", {}).get("fast_mode") is True
             and config.get("features", {}).get("shell_tool") is False
             and config.get("features", {}).get("multi_agent") is False
             and config.get("tools", {}).get("web_search") is False
@@ -212,6 +214,8 @@ for raw in sys.stdin:
             and params.get("approvalPolicy") == "never"
             and params.get("sandbox") == "read-only"
             and config.get("model_reasoning_effort") == "medium"
+            and config.get("service_tier") == "fast"
+            and config.get("features", {}).get("fast_mode") is True
             and config.get("features", {}).get("shell_tool") is False
             and config.get("features", {}).get("multi_agent") is False
             and config.get("tools", {}).get("web_search") is False
@@ -525,7 +529,13 @@ class CodexChatProtocolTests(_FakeServerCase):
         with patch.multiple('codex_chat', CODEX_MODEL='gpt-5.6-luna',
                             CODEX_REASONING_EFFORT='high', CODEX_SERVICE_TIER='fast'):
             self.assertEqual(configured_model_label(), 'GPT-5.6 Luna · high · Fast')
-        self.assertEqual(configured_model_label(), 'GPT-5.6 Terra · medium')
+        self.assertEqual(configured_model_label(), 'GPT-5.6 Terra · medium · Fast')
+
+    def test_eval_standard_tier_explicitly_disables_fast_mode(self):
+        with patch.multiple('codex_chat', CODEX_MODEL='gpt-5.6-luna', CODEX_SERVICE_TIER='default'):
+            config = CodexChatController.effective_thread_config()
+            self.assertEqual(config['service_tier'], 'default')
+            self.assertFalse(config['features']['fast_mode'])
 
     async def test_force_shutdown_kills_and_releases_the_owned_process(self):
         class FakeStdin:

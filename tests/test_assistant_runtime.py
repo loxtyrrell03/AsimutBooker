@@ -556,7 +556,7 @@ class AssistantRuntimeTests(unittest.TestCase):
         self.assertEqual(controller.kwargs["dynamic_tools"], self.surface.tool_specs)
         self.assertEqual(controller.kwargs["tool_timeout"], 25 * 60)
         self.assertIn("only authorized data and action surface", controller.kwargs["developer_instructions"])
-        self.assertEqual(self.runtime.model_label, "GPT-5.6 Terra · medium")
+        self.assertEqual(self.runtime.model_label, "GPT-5.6 Terra · medium · Fast")
         self.assertEqual(self.surface.turns_started, 1)
         self.assertEqual(self.surface.refresh_calls, ["agenda"])
         live_preflight = json.loads(

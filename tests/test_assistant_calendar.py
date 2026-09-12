@@ -39,6 +39,32 @@ class CalendarConstraintTests(unittest.TestCase):
             validate_cancellation_weekdays(request, [{'date': '2026-09-16'}])
         self.assertEqual(calendar_day('2028-02-29')['weekday'], 'Tuesday')
 
+    def test_plural_negative_and_preserved_days_are_not_authorized(self):
+        for request, allowed, denied in [
+            ('Cancel my Sundays', '2026-09-13', '2026-09-14'),
+            ('Cancel Wednesday, not Friday', '2026-09-16', '2026-09-18'),
+            ('Cancel Friday but keep Wednesday', '2026-09-18', '2026-09-16'),
+            ('Cancel Wednesday through Friday except Thursday', '2026-09-18', '2026-09-17'),
+            ('Cancel from Monday onward except Friday', '2026-09-17', '2026-09-18'),
+            ("Don't cancel Wednesday; cancel Friday", '2026-09-18', '2026-09-16'),
+            ('The example says "cancel Wednesday". Cancel Friday only.', '2026-09-18', '2026-09-16'),
+        ]:
+            with self.subTest(request=request):
+                validate_cancellation_weekdays(request, [{'date': allowed}])
+                with self.assertRaises(ValueError):
+                    validate_cancellation_weekdays(request, [{'date': denied}])
+
+    def test_finer_exclusion_does_not_prohibit_the_entire_weekday(self):
+        # This veto only checks weekdays; date/time selection has a separate role.
+        for request, target in [
+            ('Cancel this Wednesday but not next Wednesday', '2026-09-16'),
+            ('Cancel Wednesday this week, not Wednesday next week', '2026-09-16'),
+            ('Cancel all bookings except Friday at noon', '2026-09-18'),
+            ('Cancel all bookings except Friday afternoon', '2026-09-18'),
+        ]:
+            with self.subTest(request=request):
+                validate_cancellation_weekdays(request, [{'date': target, 'start_time': '09:00'}])
+
 
 class CancellationWeekdayIntegrationTests(unittest.TestCase):
     setUp = fixtures.AssistantToolSurfaceTests.setUp

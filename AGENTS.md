@@ -25,6 +25,31 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-12 Focused Luna tests and Terra Fast production
+
+- Production now explicitly requests Terra/medium/Fast, including the Codex Fast
+  feature flag. Model labels derive from these shared constants. The evaluation
+  CLI defaults to Luna/high/standard and explicitly disables Fast in that path;
+  overrides are process-local and never change account-wide Codex settings.
+- Fourteen new scenarios bring the suite to 72. Twelve initial and six final
+  Luna standard turns passed, with 17.8s/19.4s median turn times. No Terra inference
+  turn was run; a real app-server startup accepted the production model/reasoning
+  and Fast configuration without a user message. Do not treat that as measured
+  production latency or a served-tier receipt. Details and synthetic evidence:
+  `docs/assistant-reliability-2026-09-12.md`.
+- The weekday veto now handles plurals, negative/preserved weekdays, exclusions
+  within ranges and quoted examples. It no longer abandons exclusions after an
+  open-ended boundary. Seven demonstrated unsafe variants have offline coverage.
+  Qualified dates and session-specific exclusions must not become whole-weekday
+  exclusions; the finer date/time selector still owns those scopes. This remains
+  a limited contradiction veto, not natural-language mutation authorization.
+- All 926 offline tests passed after the final changes, including real tool
+  handlers, calendar constraints and start/resume configuration checks.
+- Existing hosts, bookings and settings were preserved. Reopen/reload hosts to
+  activate the new contract and Terra Fast setting. Earlier model comparisons
+  below are historical; their inherited/default production-tier notes are
+  superseded by this explicit user-requested setting.
+
 ## 2026-09-11 Cancellation weekday contradiction guard
 
 - An incorrect weekday interpretation exposed a gap: exact reservation identity

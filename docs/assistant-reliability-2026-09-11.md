@@ -1,5 +1,9 @@
 # Assistant reliability and model comparison — 11 September 2026
 
+For the newer production configuration and focused Luna standard tests, see the
+[12 September follow-up](assistant-reliability-2026-09-12.md). Model defaults
+described below record the decisions made on 11 September.
+
 ## Follow-up: empty weekday must not select a neighboring booking
 
 A real incident after the initial evaluation exposed a missing scenario: an

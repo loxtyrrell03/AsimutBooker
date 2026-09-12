@@ -1,0 +1,21 @@
+{
+  "requested_model": "gpt-5.6-terra",
+  "returned_model": "gpt-5.6-terra",
+  "returned_reasoning_effort": "medium",
+  "requested_config": {
+    "model_reasoning_effort": "medium",
+    "service_tier": "fast",
+    "features": {
+      "fast_mode": true,
+      "shell_tool": false,
+      "multi_agent": false
+    },
+    "tools": {
+      "web_search": false
+    },
+    "agents": {
+      "enabled": false
+    }
+  },
+  "user_turns": 0
+}
