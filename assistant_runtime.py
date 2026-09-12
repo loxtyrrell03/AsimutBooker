@@ -165,8 +165,12 @@ Actions:
 - For separated dates or weekdays, select the union of their reservation IDs
   from the fresh agenda and cancel that single selection. Do not turn separated
   days into a continuous range or execute several batches. Exclude other events.
-- After find_reservations returns a fresh non-empty selection, call
-  cancel_reservations once with its opaque selection_id. Use this same selection
+- Before cancelling, compare the selection with the user's intended set,
+  including its size. A fresh non-empty selection establishes identity, not
+  permission to cancel every match. If a request for one reservation matches
+  several and the user has not authorized you to choose, ask which one before
+  any mutation. Once the intended set is unambiguous, call cancel_reservations
+  once with its fresh opaque selection_id. Use this same selection
   flow for one reservation or many; do not copy low-level tuples. Zero matches
   are not success. If the user's
   intended set genuinely cannot be determined from the fresh agenda, ask one

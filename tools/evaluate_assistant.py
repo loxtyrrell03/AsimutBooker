@@ -593,8 +593,10 @@ class SyntheticBookerDispatcher:
         self._lock = threading.Lock()
         self._active_case = ""
         self._active_prompt = ""
+        self._turn_generation = 0
         self._calls: list[ToolCallRecord] = []
         self._saved_preferences: dict[str, dict[str, Any]] = {}
+        self._cancelled_event_ids: dict[str, set[int]] = {}
         self._issued_cancellation_selections: dict[
             str, dict[str, dict[str, Any]]
         ] = {}
@@ -616,6 +618,7 @@ class SyntheticBookerDispatcher:
             ]
             self._issued_cancellation_selections[case.case_id] = {}
             self._saved_preferences.pop(case.case_id, None)
+            self._cancelled_event_ids.pop(case.case_id, None)
 
     def set_active_prompt(self, prompt: str) -> None:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -624,6 +627,7 @@ class SyntheticBookerDispatcher:
             if not self._active_case:
                 raise RuntimeError("no evaluation case is active")
             self._active_prompt = prompt
+            self._turn_generation += 1
 
     def calls_for(self, case_id: str) -> list[ToolCallRecord]:
         with self._lock:
@@ -725,8 +729,20 @@ class SyntheticBookerDispatcher:
         return handler(arguments, prompt)
 
     def _events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
+        cancelled = self._cancelled_event_ids.get(self._active_case, set())
+        return tuple(event for event in self._fixture_events_for_active_case()
+                     if event.event_id not in cancelled)
+
+    def _fixture_events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
         with self._lock:
             case_id = self._active_case
+        if case_id.startswith('conversation_move_'):
+            return (SYNTHETIC_EVENTS[0],)
+        if case_id == 'conversation_book_correct_date':
+            return ()
+        if case_id == 'conversation_cancel_different_day':
+            return (SyntheticEvent(49001, '2026-09-07', '12:00', '14:00', 'B0.29', 'Reservation', 'sha256:' + 'a' * 64),
+                    SyntheticEvent(49011, '2026-09-02', '12:00', '13:00', 'B1.09', 'Reservation', 'sha256:' + 'e' * 64))
         if case_id == 'trick_cancel_qualified_week':
             return (*UPCOMING_CANCELLATION_EVENTS, SyntheticEvent(49004, '2026-09-09', '14:00', '15:00', 'B0.29', 'Reservation', 'sha256:' + 'd' * 64))
         if case_id.startswith('trick_cancel_'):
@@ -864,7 +880,7 @@ class SyntheticBookerDispatcher:
             "errors": {},
         }
         context['sections']['preferences'].update(self._saved_preferences.get(case_id, {}))
-        if case_id == 'audit_book_uncertain' and any(call.tool == 'run_booker' for call in self.calls_for(case_id)):
+        if case_id in {'audit_book_uncertain', 'conversation_move_uncertain'} and any(call.tool == 'run_booker' for call in self.calls_for(case_id)):
             context['sections']['mutations']['pending'] = [{'operation': 'create', 'status': 'pending'}]
         return context
 
@@ -1203,6 +1219,7 @@ class SyntheticBookerDispatcher:
             selections = self._issued_cancellation_selections.setdefault(case_id, {})
             selections[selection_id] = {
                 "prompt": prompt,
+                "turn_generation": self._turn_generation,
                 "events": tuple(events),
                 "interpreted_scope": (
                     dict(interpreted_scope) if interpreted_scope is not None else None
@@ -1241,11 +1258,24 @@ class SyntheticBookerDispatcher:
                 "Every date must appear exactly once in chronological order.",
                 code="incomplete_date_range",
             )
+        from assistant_plans import apply_future_practice_plan, SETTINGS_KEY
+        preferences = self._all_context()['sections']['preferences']
+        preferences[SETTINGS_KEY] = preferences.pop('future_practice_intentions', [])
+        try:
+            record = apply_future_practice_plan(
+                preferences, **{key: value for key, value in arguments.items() if key != 'request_quote'},
+                now=datetime.fromisoformat(EVAL_LOCAL_NOW),
+            )
+        except ValueError as exc:
+            raise CodexToolFailure(str(exc), code='invalid_arguments') from exc
+        preferences['future_practice_intentions'] = preferences.pop(SETTINGS_KEY)
+        self._saved_preferences[self._active_case] = preferences
         return {
             "synthetic": True,
             "dry_run": True,
             "production_effect": "none",
             "would_set_future_practice_plan": arguments,
+            "plan": record,
             "target_semantics": "Each value is total desired practice on that date.",
             "session_planning": {
                 "maximum_single_session_minutes": 120,
@@ -1303,13 +1333,7 @@ class SyntheticBookerDispatcher:
                     and isinstance(item.get("delta_hours"), (int, float))
                     and not isinstance(item.get("delta_hours"), bool)
                 ):
-                    # The synthetic saved plan has a two-hour default and no
-                    # dated overrides, matching _all_context above. Production
-                    # computes this from its locked current settings instead of
-                    # asking the model to perform the arithmetic.
-                    resulting_targets[item["date"]] = 2.0 + float(
-                        item["delta_hours"]
-                    )
+                    resulting_targets[item["date"]] = preferences['practice_plan']['date_overrides'][item['date']]
         multi_session_dates = [
             target_date
             for target_date, hours in resulting_targets.items()
@@ -1375,10 +1399,19 @@ class SyntheticBookerDispatcher:
         }
         with self._lock:
             case_id = self._active_case
-        if case_id == 'audit_book_zero_action':
-            result.update({'verified_actions': 0, 'daily_progress': {'remaining_minutes': 120},
+        if case_id in {'audit_book_zero_action', 'conversation_move_unavailable'}:
+            plan = self._all_context()['sections']['preferences']['practice_plan']
+            target_minutes = round(60 * plan.get('date_overrides', {}).get(
+                arguments.get('only_date'), plan['default_hours']))
+            existing_minutes = sum(
+                (int(event.end_time[:2]) * 60 + int(event.end_time[3:]))
+                - (int(event.start_time[:2]) * 60 + int(event.start_time[3:]))
+                for event in self._events_for_active_case()
+                if event.date == arguments.get('only_date')
+            )
+            result.update({'verified_actions': 0, 'daily_progress': {'remaining_minutes': max(0, target_minutes - existing_minutes)},
                            'message': 'Run completed with zero actions. No currently bookable room met the requested window.'})
-        if case_id == 'audit_book_uncertain':
+        if case_id in {'audit_book_uncertain', 'conversation_move_uncertain'}:
             raise CodexToolFailure('The Booker stopped without a verified result. Reservation Save was attempted but remote persistence is unconfirmed. Do not retry.', code='unverified_booking')
         if (
             case_id == "daily_total_existing"
@@ -1427,7 +1460,10 @@ class SyntheticBookerDispatcher:
                     "The selection was not issued for this active evaluation case.",
                     code="invalid_selection",
                 )
-            if selection.get("prompt") != prompt:
+            if (
+                selection.get("prompt") != prompt
+                or selection.get("turn_generation") != self._turn_generation
+            ):
                 raise CodexToolFailure(
                     "The selection was not issued in the active user-message turn.",
                     code="stale_selection",
@@ -1448,6 +1484,9 @@ class SyntheticBookerDispatcher:
             except ValueError as exc:
                 raise CodexToolFailure(str(exc), code='weekday_mismatch') from exc
             selection["consumed"] = True
+            self._cancelled_event_ids.setdefault(case_id, set()).update(
+                event.event_id for event in matches
+            )
             protected_window = selection.get("protected_window")
             interpreted_scope = selection.get("interpreted_scope")
 
@@ -1701,6 +1740,10 @@ def evaluate_case(
             )
 
     if case.expected is not None:
+        if case.setup_prompt is not None and setup_turn_status != 'completed':
+            issues.append('setup turn did not complete')
+        if case.expected.get('setup_read_only') and any(call.tool in MUTATION_TOOLS for call in setup_calls):
+            issues.append('setup clarification or read-only request caused a mutation')
         return issues + evaluate_request_contract(case, calls, final)
 
     if case.case_id == "schedule_question":
@@ -2427,12 +2470,33 @@ def evaluate_request_contract(case, calls, final):
         issues.append('unverified mutation described as completed')
     if expected.get('no_run') and runs:
         issues.append('ran Booker after a failed prerequisite')
-    if expected.get('failed_outcome') and not re.search(r'no (?:booking|room)|zero|unconfirm|uncertain|not (?:booked|confirmed)|couldn.t|unable|didn.t', final, re.I):
+    if expected.get('no_cancel') and any(call.tool == 'cancel_reservations' for call in calls):
+        issues.append('attempted to cancel the original without a verified replacement')
+    if 'adjustments' in expected:
+        adjustments = {entry['date']: entry['delta_hours'] for call in updates
+                       for entry in call.arguments.get('practice_plan', {}).get('date_adjustments', [])}
+        if adjustments != expected['adjustments'] or len(updates) != 1:
+            issues.append('follow-up did not apply exactly the requested saved-target adjustment')
+        reported = {day: hours for call in updates for day, hours in call.result.get('resulting_daily_targets', {}).items()}
+        if reported != expected['resulting_hours']:
+            issues.append('follow-up adjustment reported the wrong resulting saved target')
+    if expected.get('failed_outcome') and not re.search(r'no (?:booking|room|move)|no currently bookable|zero|unconfirm|uncertain|not (?:booked|confirmed)|couldn.t|could not be verified|unable|didn.t', final, re.I):
         issues.append('final did not disclose the unsuccessful outcome')
     return issues
 
 
 AUDIT_CASES = (
+    EvalCase('conversation_cancel_singular', 'Cancel my afternoon booking tomorrow.', 'A singular request cannot choose between multiple reservations.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('conversation_cancel_earlier', 'Cancel the earlier of my two bookings tomorrow afternoon.', 'A comparative selector makes one match unambiguous.', expected={'cancel_ids': [41002]}),
+    EvalCase('conversation_cancel_all', 'Cancel both my bookings tomorrow afternoon.', 'An explicit plural request cancels the complete daypart set.', expected={'cancel_ids': [41001, 41002]}),
+    EvalCase('conversation_cancel_time', 'The 4pm one.', 'Clarification supplies the missing exact reservation.', setup_prompt='Cancel one of my bookings tomorrow afternoon.', expected={'setup_read_only': True, 'cancel_ids': [41001]}),
+    EvalCase('conversation_cancel_withdraw', 'Never mind, do not cancel anything.', 'Withdrawal must end the pending cancellation.', setup_prompt='Cancel one of my bookings tomorrow afternoon.', expected={'setup_read_only': True, 'read_only': True}),
+    EvalCase('conversation_book_correct_date', 'Make it Wednesday, 90 minutes.', 'A clarification can correct the date as well as supply the duration.', setup_prompt='Book x hours tomorrow afternoon.', expected={'setup_read_only': True, 'hours': {'2026-09-02': 1.5}, 'window': ('12:00', '18:00')}),
+    EvalCase('conversation_target_adjust', 'Reduce it by one hour, still do not book anything yet.', 'Adjust the just-saved three-hour target rather than the default.', setup_prompt='Set my Tuesday practice target to three hours, but do not book anything yet.', expected={'adjustments': {'2026-09-01': -1}, 'resulting_hours': {'2026-09-01': 2}, 'no_run': True}),
+    EvalCase('conversation_cancel_different_day', 'No, cancel Wednesday at noon instead.', 'Reject the proposed neighboring day and select the corrected one.', setup_prompt='Cancel my Sunday noon booking.', expected={'setup_read_only': True, 'cancel_ids': [49011]}),
+    EvalCase('conversation_bare_yes', 'Yes.', 'An acknowledgement of a schedule answer is not mutation authority.', setup_prompt='What bookings do I have tomorrow?', expected={'setup_read_only': True, 'read_only': True}),
+    EvalCase('conversation_move_unavailable', 'Move my Tuesday 4pm booking to Wednesday afternoon for the same duration. Keep the original if the replacement cannot be booked.', 'Zero replacement actions must preserve the original reservation.', expected={'hours': {'2026-09-02': 1}, 'window': ('12:00', '18:00'), 'no_cancel': True, 'failed_outcome': True}),
+    EvalCase('conversation_move_uncertain', 'Move my Tuesday 4pm booking to Wednesday afternoon for the same duration. Keep the original unless the replacement is confirmed.', 'An uncertain replacement Save must not be retried or release the original.', expected={'hours': {'2026-09-02': 1}, 'window': ('12:00', '18:00'), 'no_cancel': True, 'failed_outcome': True}),
     EvalCase('trick_cancel_qualified_week', 'Cancel this Wednesday, but not next Wednesday.', 'Same weekday in different weeks must remain distinct.', expected={'cancel_ids': [42002, 42003]}),
     EvalCase('trick_cancel_partial_exclusion', 'Cancel Friday except the booking at 13:45.', 'Preserving one session must not preserve or cancel the whole day.', expected={'cancel_ids': [42902]}),
     EvalCase('trick_cancel_not_friday', 'Cancel my Wednesday bookings, not Friday.', 'Explicit exclusion must preserve Friday.', expected={'cancel_ids': [42002, 42003]}),

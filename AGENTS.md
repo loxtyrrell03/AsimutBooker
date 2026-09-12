@@ -25,6 +25,28 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-12 Conversation continuity and ambiguous cancellation
+
+- A focused Luna/high/standard evaluation exposed a real semantic failure:
+  "one of my bookings" caused cancellation of both afternoon matches before
+  clarification. The prompt now requires the selected set and its size to match
+  the user's intent before cancellation; a non-empty selection is identity
+  evidence, not permission to cancel every match. This is a prompt repair, not
+  a deterministic natural-language authorization guarantee.
+- Eleven additional scenarios bring the reusable suite to 83. Eight initial
+  conversations used 14 model turns; seven passed after reviewing two overly
+  narrow wording checks. Five final ambiguity/clarification/plural/comparative
+  checks used seven turns and all passed. Replacement failure and uncertain Save
+  preserved the original reservation. No Terra inference turns were used.
+- The evaluator now persists future plans and cancelled reservations across
+  messages, computes adjustment/remainder results from saved state, invalidates
+  selections per turn even for identical text, and grades setup mutations.
+  Production pure plan validation is reused; all effects remain synthetic.
+- All 933 offline tests passed. Evidence and limitations are in
+  `docs/assistant-reliability-2026-09-12.md`. Production remains Terra/medium/Fast;
+  existing hosts, live bookings and preferences were preserved. Hosts need to
+  reload Python to activate the revised prompt contract.
+
 ## 2026-09-12 Focused Luna tests and Terra Fast production
 
 - Production now explicitly requests Terra/medium/Fast, including the Codex Fast

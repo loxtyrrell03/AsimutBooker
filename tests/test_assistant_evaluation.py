@@ -9,6 +9,7 @@ from tools.evaluate_assistant import (
     CLARIFIED_DATE_RANGE_EVENT_IDS,
     DAILY_TOTAL_EXISTING_EVENTS,
     EVAL_CASES,
+    EvalCase,
     EventRecorder,
     ProductionEffectGuard,
     ROLLING_SEVEN_DAY_EVENT_IDS,
@@ -18,6 +19,7 @@ from tools.evaluate_assistant import (
     ToolCallRecord,
     UPCOMING_CANCELLATION_EVENTS,
     evaluate_case,
+    evaluate_request_contract,
     run_evaluation,
 )
 
@@ -71,6 +73,84 @@ class _ScriptedEvalController:
 
 
 class SyntheticBookerDispatcherTests(unittest.TestCase):
+    def test_cancelled_reservation_stays_absent_in_followup_context(self):
+        case = _case('conversation_cancel_time')
+        self.dispatcher.begin_case(case)
+        selection = self.dispatcher.dispatch(None, 'find_reservations', {'event_ids': [41001]}, {})
+        self.dispatcher.dispatch(None, 'cancel_reservations', {'selection_id': selection['selection_id']}, {})
+        self.dispatcher.set_active_prompt('What bookings remain tomorrow?')
+        agenda = self.dispatcher._all_context()['sections']['agenda']
+        self.assertEqual({event['event_id'] for event in agenda['events']}, {41002, 41003, 41004})
+        self.dispatcher.reset_case_attempt(case)
+        self.assertIn(41001, {event.event_id for event in self.dispatcher._events_for_active_case()})
+
+    def test_zero_action_result_uses_the_saved_target(self):
+        self.dispatcher.begin_case(_case('conversation_move_unavailable'))
+        self.dispatcher.dispatch(None, 'update_booker_preferences', {
+            'practice_plan': {'date_overrides': [{'date': '2026-09-02', 'hours': 1}]},
+        }, {})
+        result = self.dispatcher.dispatch(None, 'run_booker', {'only_date': '2026-09-02', 'max_actions': 1}, {})
+        self.assertEqual(result['verified_actions'], 0)
+        self.assertEqual(result['daily_progress']['remaining_minutes'], 60)
+
+    def test_failure_grader_accepts_verified_synonyms_but_not_success_claims(self):
+        case = EvalCase('failure_copy', 'Book tomorrow.', 'Outcome check', expected={'failed_outcome': True})
+        for final in ('No move was made.', 'No currently bookable room met the request.',
+                      'Remote persistence could not be verified.'):
+            with self.subTest(final=final):
+                self.assertEqual(evaluate_request_contract(case, [], final), [])
+        self.assertTrue(evaluate_request_contract(case, [], 'The replacement was booked.'))
+
+    def test_read_only_setup_is_checked_even_when_the_followup_is_safe(self):
+        case = _case('conversation_cancel_withdraw')
+        call = ToolCallRecord(case.case_id, 1, None, 'cancel_reservations', {}, {})
+        issues = evaluate_case(case, [], 'Nothing will be cancelled.', 'completed', [],
+                              setup_calls=[call], setup_turn_status='completed')
+        self.assertIn('setup clarification or read-only request caused a mutation', issues)
+
+    def test_repeated_user_text_does_not_reuse_an_earlier_turn_selection(self):
+        case = _case('conversation_cancel_time')
+        self.dispatcher.begin_case(case)
+        self.dispatcher.set_active_prompt(case.prompt)
+        selection = self.dispatcher.dispatch(None, 'find_reservations', {
+            'event_ids': [41001],
+        }, {})
+        self.dispatcher.set_active_prompt(case.prompt)
+        with self.assertRaisesRegex(CodexToolFailure, 'active user-message turn'):
+            self.dispatcher.dispatch(None, 'cancel_reservations', {
+                'selection_id': selection['selection_id'],
+            }, {})
+
+    def test_saved_future_plan_and_followup_adjustment_report_the_same_state(self):
+        self.dispatcher.begin_case(_case('explicit_future_week'))
+        self.dispatcher.dispatch(None, 'set_future_practice_plan', {
+            'title': 'Dated goal', 'intent_summary': 'Three hours on the requested day',
+            'start_date': '2026-09-01', 'end_date': '2026-09-01',
+            'daily_targets': [{'date': '2026-09-01', 'hours': 3}], 'replace_overlapping': False,
+        }, {})
+        saved = self.dispatcher._all_context()['sections']['preferences']
+        self.assertEqual(saved['practice_plan']['date_overrides']['2026-09-01'], 3)
+        self.assertEqual(saved['future_practice_intentions'][0]['resolved_targets']['2026-09-01'], 3)
+        self.dispatcher.set_active_prompt('Add another hour, without booking yet.')
+        result = self.dispatcher.dispatch(None, 'update_booker_preferences', {
+            'practice_plan': {'date_adjustments': [{'date': '2026-09-01', 'delta_hours': 1}]},
+        }, {})
+        self.assertEqual(result['resulting_daily_targets'], {'2026-09-01': 4})
+        self.assertEqual(self.dispatcher._all_context()['sections']['preferences']['practice_plan']['date_overrides']['2026-09-01'], 4)
+
+    def test_failed_combined_edit_preserves_prior_simulated_state(self):
+        self.dispatcher.begin_case(_case('audit_book_temporary'))
+        self.dispatcher.dispatch(None, 'update_booker_preferences', {
+            'practice_plan': {'date_overrides': [{'date': '2026-09-01', 'hours': 3}]},
+        }, {})
+        before = self.dispatcher._all_context()['sections']['preferences']
+        with self.assertRaises(CodexToolFailure):
+            self.dispatcher.dispatch(None, 'update_booker_preferences', {
+                'practice_plan': {'date_overrides': [{'date': '2026-09-01', 'hours': 5}]},
+                'date_time_preferences': [{'date': '2026-09-01', 'window': {'enabled': True}}],
+            }, {})
+        self.assertEqual(self.dispatcher._all_context()['sections']['preferences'], before)
+
     def test_simulated_target_and_window_survive_subsequent_context_reads(self):
         case = _case('audit_book_temporary')
         self.dispatcher.begin_case(case)

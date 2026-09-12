@@ -71,3 +71,52 @@ does not claim a live booking/cancellation test or physical-device verification.
 The Fast configuration follows the official
 [Codex speed documentation](https://learn.chatgpt.com/docs/agent-configuration/speed).
 No account-wide settings or billing credits were changed.
+
+## Conversation continuity follow-up
+
+Added eleven scenarios, bringing the suite to 83, covering focused answers,
+withdrawal, date corrections, saved-target adjustments, bare acknowledgements,
+singular versus plural cancellation, comparative selectors, and replacement
+booking failures. This follow-up used Luna/high/standard only: 14 model turns in
+eight initial conversations, then seven turns in five final cases. It did not
+rerun the entire model suite or use Terra inference.
+
+The initial run exposed a real unsafe interpretation: after "Cancel one of my
+bookings tomorrow afternoon", Luna selected and called cancellation for both
+afternoon reservations, then asked which one was intended in its final text.
+The follow-up "The 4pm one" was correct, but could not undo the setup error.
+The evaluator now checks mutations in clarification/setup turns as well as the
+final turn. The prompt's unconditional instruction to cancel a fresh non-empty
+selection has been replaced with a requirement to check the intended set and
+its size first. An unresolved singular request must ask which booking; explicit
+plural and comparative requests still proceed.
+
+The initial machine score was 5/8. Reviewing the full tool traces showed 7/8
+behavioral passes: the two replacement failures preserved the original and
+correctly reported "No move was made" and "could not be verified". These were
+false negatives in the wording check, now covered by an offline grader test.
+The failure evidence retains both the original score and this review.
+
+All five final cancellation cases passed: the original clarification case,
+withdrawal, a separate singular ambiguity, the earlier of two bookings, and
+both bookings. Their median final-message turn was 13.1 seconds; the initial
+set's was 13.7 seconds. These figures exclude setup messages, thread startup
+and real Asimut operations, so they are not end-to-end conversation latency.
+They are not a paired model speed comparison or evidence of equal Luna quality.
+
+The conversation tests also exposed simulator fidelity gaps. Future plans now
+use the production pure validator and persist in memory. Follow-up adjustments
+and zero-action remainders use saved targets rather than a fixed two-hour
+baseline. Cancelled reservations remain absent in later agenda reads, and
+opaque selections expire across turns even when the user repeats identical
+text. A failed combined-edit rollback check already passed; no production
+rollback change was necessary. These are simulator improvements, not claims
+that production had those state bugs.
+
+All 933 offline tests passed in 71.4 seconds. The new evidence files are
+`evaluations/2026-09-12/conversations-luna-initial.json` and
+`evaluations/2026-09-12/conversations-luna-final.json`. Model mutations remain
+synthetic. The prompt fix reduces the demonstrated ambiguity failure; it does
+not make natural-language interpretation deterministic. No transaction engine,
+model router or extra production retry layer was added. Production remains
+Terra/medium/Fast and existing hosts were not restarted.
