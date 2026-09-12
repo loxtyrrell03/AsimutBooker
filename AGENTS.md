@@ -1,3 +1,13 @@
+<!-- USER-BROWSER-COMPUTER-POLICY -->
+## Chrome plugin and Computer Use
+
+- Chrome plugin use and Chrome browser control are allowed at will for the user's tasks; no separate request or permission is required.
+- Computer Use (native desktop/app control) remains prohibited unless the user explicitly asks for it in the current prompt. Chrome plugin permission does not authorize Computer Use.
+- Do not infer Computer Use permission from a task needing a GUI, an application or webpage being mentioned, an existing session, or permission in an earlier prompt. Use Chrome plugin tools, commands, scripts, APIs, connectors, or direct file operations where appropriate; if Computer Use is essential, explain the limitation and ask before invoking it.
+
+Updated at the user's request on 2026-09-12.
+<!-- /USER-BROWSER-COMPUTER-POLICY -->
+
 <!-- USER-UI-DESIGN-POLICY -->
 ## UI and app design: standing user requirements
 
