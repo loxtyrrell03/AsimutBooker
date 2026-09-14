@@ -1,3 +1,9 @@
+## 2026-09-14 permanent phone hostname repair
+
+- The permanent phone origin is `https://lox-pc.tail89d19b.ts.net:10443/`, served through the existing Tailscale route to `127.0.0.1:8794`. The universal contract in `C:/Users/Lox/.codex/AGENTS.md` supersedes historical `windows-t8v5137` guidance below. Never rename the shared host or move a route/runtime to repair Booker; an owner-requested migration is required to change the contract.
+- The former server configuration and PWA were still bound to the obsolete Windows-name origin: the new hostname served a shell but session creation rejected its Origin. Both are now aligned to `lox-pc`; isolated shell build `20260914-lox-pc` passed offline/install validation and was deployed through the existing `AsimutBooker_Phone` task. Its obsolete Codex executable path was refreshed to the installed executable before restarting. Keep the allowed tailnet identity and every other configuration field intact during an origin repair.
+- The actual private HTTPS session now returns 200 with bootstrap data, the exact deployment verifier passes, and Chrome renders Today with the saved schedule. Booking/settings/history files and independent desktop/booking processes were retained. No booking/cancellation was submitted, and physical iPhone verification was not performed. The previous shell/config are retained under local app data `PhoneServiceRepair/20260914` for recovery; do not commit private configuration or generated builds.
+
 <!-- USER-BROWSER-COMPUTER-POLICY -->
 ## Chrome plugin and Computer Use
 
