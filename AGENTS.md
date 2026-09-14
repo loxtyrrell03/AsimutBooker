@@ -46,6 +46,22 @@ Adopted as cross-repository user guidance on 2026-09-08. Project-specific archit
 
 # AsimutBooker
 
+## 2026-09-14 Phone-style desktop My Week
+
+- My Week uses a phone-style time column and labelled cards: blue for personal
+  reservations, the existing amber palette for college events, and dotted blue
+  outlines for unbooked plans (including explicitly labelled extensions).
+  Reservation identity determines the colour; titles are not used to infer
+  lesson categories. Booked and planned sessions share chronological ordering.
+- Exact booking-detail callbacks, closure/off-day labels, freshness warnings
+  and target summaries remain available. Wrapped labels remove their resize
+  bindings when destroyed, preventing errors during repeated view refreshes.
+- All 16 Quiet Focus/Open canvas checks pass. `tools/render_my_week.py` verifies
+  isolated 760/1040px renders, long titles, chronology, dotted outlines, booking
+  actions and unavailable/stale/off/closed/empty states using invented data.
+  Existing desktop sessions and live state were preserved; reopen the desktop
+  to load the change. The phone app and its deployment are unchanged.
+
 ## 2026-09-12 Availability clock boundaries and completed coverage audit
 
 - Rolling availability durations now advance in elapsed UTC time and convert

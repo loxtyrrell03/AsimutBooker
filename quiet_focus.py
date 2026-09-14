@@ -42,15 +42,20 @@ def label(parent, text='', size=15, color=INK, bold=False, **kwargs):
                       bg=parent.cget('background'), fg=color, anchor='w', justify='left', **kwargs)
     if 'wraplength' in kwargs:
         maximum = kwargs['wraplength']
-        parent.bind('<Configure>', lambda event: widget.configure(wraplength=max(40, min(maximum, event.width - 8))), add='+')
+        binding = parent.bind('<Configure>', lambda event: widget.configure(wraplength=max(40, min(maximum, event.width - 8))), add='+')
+        # Refreshing a page destroys its old labels while retaining the parent.
+        # Remove their resize callbacks along with them.
+        widget.bind('<Destroy>', lambda _event: parent.unbind('<Configure>', binding)
+                    if parent.winfo_exists() else None, add='+')
     return widget
 
 
 class RoundedCard(tk.Canvas):
     """Resizable rounded surface containing ordinary accessible Tk widgets."""
-    def __init__(self, parent, fill=SURFACE, padding=24, **kwargs):
+    def __init__(self, parent, fill=SURFACE, padding=24, border='', dotted=False, **kwargs):
         super().__init__(parent, bg=parent.cget('background') if isinstance(parent,tk.Frame) else PAGE, highlightthickness=0, bd=0, **kwargs)
         self.fill, self.padding = fill, padding
+        self.border, self.dotted = border, dotted
         self.content = tk.Frame(self, bg=fill)
         self.window = self.create_window(padding, padding, window=self.content, anchor='nw')
         self.bind('<Configure>', self._layout)
@@ -64,9 +69,12 @@ class RoundedCard(tk.Canvas):
     def _layout(self, event):
         w, h, r = event.width, event.height, 22
         self.delete('surface')
-        points = [r,0,w-r,0,w,0,w,r,w,h-r,w,h,w-r,h,r,h,0,h,0,h-r,0,r,0,0]
+        inset = 2 if self.border else 0
+        right, bottom = w - inset, h - inset
+        points = [r,inset,w-r,inset,right,inset,right,r,right,h-r,right,bottom,w-r,bottom,r,bottom,inset,bottom,inset,h-r,inset,r,inset,inset]
         self.create_polygon(points, smooth=True, splinesteps=24, fill=self.fill,
-                            outline='', tags='surface')
+                            outline=self.border, width=2 if self.dotted else 1,
+                            dash=(1, 3) if self.dotted else (), tags='surface')
         self.tag_lower('surface')
         self.itemconfigure(self.window, width=max(1, w - self.padding * 2))
 
@@ -207,6 +215,31 @@ class TodayPanel(ScrollPage):
         if not rows: label(self.events,'Nothing else coming up in your checked agenda today.' if available else 'Refresh to check the rest of your day.',size=14,color=MUTED).pack(anchor='w',pady=10)
 
 
+class WeekEventCard(RoundedCard):
+    """Phone-style time column and labelled event colour; plans stay unbooked."""
+    def __init__(self, parent, *, start, end, title, state, room='', planned=False,
+                 reservation=False, on_details=None):
+        accent = BLUE if planned or reservation else '#93620C'
+        fill = '#F2F6FC' if planned else TINT if reservation else '#FFF8ED'
+        super().__init__(parent, fill=fill, padding=16,
+                         border='#94ACCD' if planned else '#B8D5F8' if reservation else '#E9D4AE',
+                         dotted=planned)
+        self.content.columnconfigure(1, weight=1)
+        times=tk.Frame(self.content,bg=fill)
+        times.grid(row=0,column=0,sticky='nw',padx=(0,20))
+        label(times,start,size=17,bold=True,color=accent).pack(anchor='w')
+        label(times,end,size=13,color=MUTED).pack(anchor='w',pady=(4,0))
+        copy=tk.Frame(self.content,bg=fill)
+        copy.grid(row=0,column=1,sticky='new')
+        label(copy,state,size=12,color=accent).pack(anchor='w',fill='x')
+        label(copy,title,size=18,bold=True,wraplength=740).pack(anchor='w',fill='x',pady=(5,0))
+        if room:
+            label(copy,room,size=13,color=MUTED,wraplength=740).pack(anchor='w',fill='x',pady=(5,0))
+        if on_details:
+            ttk.Button(copy,text='View booking',command=on_details,
+                       style='QuietLink.TButton').pack(anchor='w',pady=(6,0))
+
+
 class WeekPanel(ScrollPage):
     def __init__(self,parent,*,on_calendar,on_refresh,on_details):
         super().__init__(parent)
@@ -242,18 +275,21 @@ class WeekPanel(ScrollPage):
             heading.pack(anchor='w',pady=(20,10))
             if day in closed_dates or day in off_dates:
                 label(self.rows,'Practice rooms closed' if day in closed_dates else 'Booking off',color='#B73332' if day in closed_dates else MUTED,size=13).pack(anchor='w',pady=(0,6))
-            for event in sorted(day_events,key=lambda e:e['startTime']):
-                card=RoundedCard(self.rows,fill=SURFACE if event.get('isReservation') else '#F1F4F8',padding=17);card.pack(fill='x',pady=5)
-                title=f"Room {event.get('room','')}" if event.get('isReservation') else event.get('title','College event')
-                if event.get('isReservation'):ttk.Button(card.content,text='View booking',command=lambda e=event:self.on_details(e)).pack(side='right')
-                label(card.content,f"{event['startTime']}–{event['endTime']}   {title}",size=17,bold=True,wraplength=580).pack(anchor='w')
-                label(card.content,'Booked' if event.get('isReservation') else event.get('room','College event'),size=13,color=MUTED).pack(anchor='w',pady=(6,0))
-            for candidate in planned:
-                if candidate.date!=day:continue
-                card=RoundedCard(self.rows,fill='#F6F8FB',padding=17);card.pack(fill='x',pady=5)
-                label(card.content,f'{candidate.start_time}–{candidate.end_time}   {candidate.room}',size=17,bold=True).pack(anchor='w')
-                state = f'Planned extension · {candidate.confirmed_minutes} min already booked' if candidate.confirmed_minutes else 'Planned · not booked yet'
-                label(card.content,state,size=13,color=MUTED).pack(anchor='w',pady=(6,0))
+            sessions=[(event['startTime'],0,event) for event in day_events]
+            sessions.extend((candidate.start_time,1,candidate) for candidate in planned if candidate.date==day)
+            for _,is_plan,item in sorted(sessions,key=lambda entry:entry[:2]):
+                if is_plan:
+                    state = f'Planned extension · {item.confirmed_minutes} min already booked' if item.confirmed_minutes else 'Planned · not booked yet'
+                    card=WeekEventCard(self.rows,start=item.start_time,end=item.end_time,
+                                       title=item.room,state=state,planned=True)
+                else:
+                    reservation=bool(item.get('isReservation'))
+                    title=f"Room {item.get('room') or 'not shown'}" if reservation else item.get('title') or 'College event'
+                    card=WeekEventCard(self.rows,start=item['startTime'],end=item['endTime'],
+                                       title=title,state='Booked' if reservation else 'College event',
+                                       room='' if reservation else item.get('room',''),reservation=reservation,
+                                       on_details=(lambda e=item:self.on_details(e)) if reservation else None)
+                card.pack(fill='x',pady=5)
             plan_day=next((item for item in plan_days if item.date==day),None)
             if plan_day:
                 label(self.rows,f'Daily target: {plan_day.target_minutes/60:g} hours',size=13,color=MUTED).pack(anchor='w',pady=8)
