@@ -5424,6 +5424,19 @@ class AsimutBookerGUI(QuietFocusGUI):
         else:  # 3days
             self._render_days_view(3, today, available_height)
 
+        # Day contents can extend below the viewport. Scroll while hovering any
+        # booking, heading or day surface, without taking over other app pages.
+        def scroll_calendar(event):
+            self.calendar_canvas.yview_scroll(int(-event.delta / 120), 'units')
+            return 'break'
+
+        def bind_calendar_scroll(widget):
+            widget.bind('<MouseWheel>', scroll_calendar)
+            for child in widget.winfo_children():
+                bind_calendar_scroll(child)
+
+        bind_calendar_scroll(self.calendar_frame)
+
     def _render_month_view(self, today, available_height):
         """Render month view calendar."""
         start_date = self.calendar_start_date
@@ -5849,9 +5862,21 @@ class AsimutBookerGUI(QuietFocusGUI):
             ),
             bg=bg_color,
             fg=fg_color,
-            anchor="w"
+            anchor="w",
+            justify="left",
+            width=1,
+            wraplength=80,
         )
         day_label.pack(fill=tk.X, padx=5, pady=(5, 2))
+        wrapped_labels = [day_label]
+
+        def wrap_day_text(event):
+            width = max(20, event.width - 18)
+            for label in wrapped_labels:
+                if int(label.cget('wraplength')) != width:
+                    label.configure(wraplength=width)
+
+        cell.bind('<Configure>', wrap_day_text, add='+')
         if not is_past:
             time_override = (getattr(self, 'calendar_date_time_preferences', None) or {}).get(date_str)
             time_label = (f"{time_override['start_time']}–{time_override['end_time']}" if time_override['enabled'] else 'Any time') if time_override else 'Edit'
@@ -5873,14 +5898,9 @@ class AsimutBookerGUI(QuietFocusGUI):
                 anchor="w",
             ).pack(fill=tk.X, padx=5, pady=(0, 1))
 
-        # Calculate how many events can fit based on cell height
-        # Header takes ~25px, each event line ~18px, "+more" line ~16px
-        header_space = (46 if not is_past and not is_in_live_window else 30) + (24 if not is_past else 0)
-        event_line_height = 18
-        available_for_events = cell_height - header_space
-        max_events_to_show = max(1, (available_for_events - 16) // event_line_height)
-
-        displayed_plan_count = min(len(plan_candidates), 2, max_events_to_show)
+        # Potential plans must never consume the space for existing bookings.
+        # Grid rows grow with their contents; the outer calendar scrolls.
+        displayed_plan_count = min(len(plan_candidates), 2)
         if displayed_plan_count:
             plan_frame = tk.Frame(cell, bg=bg_color)
             plan_frame.pack(fill=tk.X, padx=5, pady=(1, 0))
@@ -5892,47 +5912,35 @@ class AsimutBookerGUI(QuietFocusGUI):
                     bg_color,
                     events,
                 )
-        remaining_lines = max(0, max_events_to_show - displayed_plan_count)
-
         # Events display
-        if events and remaining_lines:
+        if events:
             events_frame = tk.Frame(cell, bg=bg_color)
-            events_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
+            events_frame.pack(fill=tk.X, padx=5, pady=2)
 
-            events_to_display = min(len(events), remaining_lines)
-            for event in events[:events_to_display]:
-                time_str = f"{event['startTime']}-{event['endTime']}"
+            for event in events:
+                time_str = f"{event['startTime']}–{event['endTime']}"
                 title = calendar_event_display_name(event)
-                if len(title) > 15:
-                    title = title[:14] + "…"
 
                 is_reservation = event.get('isReservation', False)
                 event_color = "#667080" if not is_reservation else "#0868D9"
 
                 event_lbl = tk.Label(
                     events_frame,
-                    text=f"• {time_str} {title}",
+                    text=f"• {time_str}\n{title}",
                     font=("Segoe UI", 9),
                     bg=bg_color,
                     fg=event_color,
-                    anchor="w"
+                    anchor="w",
+                    justify="left",
+                    width=1,
+                    wraplength=80,
                 )
-                event_lbl.pack(fill=tk.X)
+                event_lbl.pack(fill=tk.X, pady=(1, 4))
+                wrapped_labels.append(event_lbl)
                 if is_reservation:
                     event_lbl.configure(cursor='hand2',takefocus=True)
                     event_lbl.bind('<Button-1>',lambda _e,item=event:self._show_quiet_booking(item))
                     event_lbl.bind('<Return>',lambda _e,item=event:self._show_quiet_booking(item))
-
-            if len(events) > events_to_display:
-                more_lbl = tk.Label(
-                    events_frame,
-                    text=f"  +{len(events) - events_to_display} more",
-                    font=("Segoe UI", 8, "italic"),
-                    bg=bg_color,
-                    fg=fg_color,
-                    anchor="w"
-                )
-                more_lbl.pack(fill=tk.X)
 
         # Click handler for day selection (only for future days)
         if not is_past and is_available:

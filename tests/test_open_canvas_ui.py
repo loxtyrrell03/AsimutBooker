@@ -91,6 +91,49 @@ class OpenCanvasTests(unittest.TestCase):
                            if isinstance(w, tk.Canvas) and w.find_withtag('closed-day-cross')]
                 self.assertEqual(len(crossed), 2, mode)
 
+    def test_calendar_shows_every_event_wrapped_and_scrollable_in_all_day_grids(self):
+        from datetime import datetime, timezone
+        from booking_plan import BookingPlanReadResult, PlanCandidate
+        day = date.today().isoformat()
+        candidate = PlanCandidate('B0.11', day, '18:00', '19:00', datetime.now(timezone.utc),
+                                  60, 60, 0, 'waiting', 'Example potential session')
+        events = [dict(date=day, eventId=100+i, startTime=f'{8+i:02d}:00',
+                       endTime=f'{9+i:02d}:00', room=f'Weston Gallery practice room {i}',
+                       title='Ensemble rehearsal with a long event title',
+                       isReservation=i != 4) for i in range(9)]
+        errors = []
+        self.root.report_callback_exception = lambda *error: errors.append(str(error[1]))
+        with patch.object(self.app, '_load_cached_events'), patch.object(
+            self.app, '_read_booking_plan_for_display', return_value=BookingPlanReadResult(None, False, '')
+        ), patch('room_catalog.closed_practice_dates', return_value=()), patch(
+            'gui.visible_plan_candidates', side_effect=lambda _plan, key, _events: ((candidate, True),) if key == day else ()
+        ):
+            for mode in ('month', 'fortnight', 'week', '3days'):
+                self.app.show_calendar_dialog(mode)
+                self.app.calendar_events = {day: events}
+                self.app._refresh_calendar()
+                for width in (760, 1200, 1040):
+                    with self.subTest(mode=mode, width=width):
+                        self.root.geometry(f'{width}x740'); self.root.update()
+                        labels = [w for w in descendants(self.app.calendar_frame)
+                                  if isinstance(w, tk.Label) and str(w.cget('text')).startswith('• ')]
+                        self.assertEqual(len(labels), len(events))
+                        for label, event in zip(labels, events):
+                            self.assertIn(event['room'] if event['isReservation'] else event['title'], label.cget('text'))
+                            self.assertGreaterEqual(label.winfo_height(), label.winfo_reqheight())
+                            cell = label.master.master
+                            self.assertLessEqual(label.winfo_rooty()+label.winfo_height(), cell.winfo_rooty()+cell.winfo_height())
+                            self.assertLessEqual(label.winfo_rootx()+label.winfo_width(), self.app.calendar_canvas.winfo_rootx()+self.app.calendar_canvas.winfo_width())
+                        last = labels[-1]
+                        self.app.calendar_canvas.yview_moveto(0)
+                        last.event_generate('<MouseWheel>', delta=-120)
+                        self.root.update()
+                        self.assertGreater(self.app.calendar_canvas.yview()[0], 0)
+                        with patch.object(self.app, '_show_quiet_booking') as details:
+                            last.event_generate('<Button-1>')
+                            details.assert_called_once_with(events[-1])
+            self.assertEqual(errors, [])
+
     def test_room_editor_draft_survives_navigation_and_cancel_does_not_save(self):
         original = self.fixture.settings.read_bytes()
         self.app.show_room_preferences_dialog()

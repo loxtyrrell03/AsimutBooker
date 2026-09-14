@@ -1,3 +1,18 @@
+## 2026-09-14 complete desktop calendar booking lists
+
+- Month, fortnight, week and three-day cells render every existing event;
+  the non-interactive `+N more` label and height-based event limit are removed.
+  Potential plan chips no longer consume the booking display allowance.
+- Booking names and day headings wrap to the cell width. Rows grow to fit
+  content and the outer calendar scrolls, including when the pointer is over
+  a booking or day surface. Reservation click/Enter detail actions are retained.
+- All 25 focused desktop/calendar/settings checks pass, including nine events
+  plus a potential plan at 760/1040/1200px across all four day grids. Owned
+  fixture renders from `tools/render_calendar_bookings.py` verified busy days,
+  narrow headings and retained bookings on closed dates. Existing desktop
+  sessions, live bookings/settings and phone hosting were preserved; reopen
+  the desktop app to load the change.
+
 ## 2026-09-14 permanent phone hostname repair
 
 - The permanent phone origin is `https://lox-pc.tail89d19b.ts.net:10443/`, served through the existing Tailscale route to `127.0.0.1:8794`. The universal contract in `C:/Users/Lox/.codex/AGENTS.md` supersedes historical `windows-t8v5137` guidance below. Never rename the shared host or move a route/runtime to repair Booker; an owner-requested migration is required to change the contract.
