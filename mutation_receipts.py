@@ -46,6 +46,7 @@ _OPTIONAL_RECEIPT_KEYS = {
     "resolution",
     "original",
     "originals",
+    "bridges",
 }
 
 
@@ -176,8 +177,8 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
                     raise ValueError("Invalid originals")
                 group = tuple(Reservation(r["event_id"], date.fromisoformat(r["date"]), r["room"],
                                           _time_minutes(r["start"], "start"), _time_minutes(r["end"], "end")) for r in records)
-                RoomConsolidation(group, Reservation(event_id, date.fromisoformat(receipt["date"]), receipt["room"],
-                                                     start_minutes, end_minutes))
+                from room_upgrades import consolidation_from_receipt
+                consolidation_from_receipt(receipt)
                 if original not in records:
                     raise ValueError("Anchor missing from originals")
             except (KeyError, TypeError, ValueError) as exc:
@@ -186,6 +187,14 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
         raise MutationReceiptError("Only an upgrade receipt can contain an original reservation")
     if "originals" in receipt and receipt["kind"] != "consolidation":
         raise MutationReceiptError("Only a consolidation receipt can contain several originals")
+    if "bridges" in receipt and receipt["kind"] != "consolidation":
+        raise MutationReceiptError("Only a consolidation receipt can contain intermediate reservations")
+    if 'bridges' in receipt:
+        bridges = receipt['bridges']
+        if (not isinstance(bridges, list) or any(not isinstance(b, dict) or set(b) != {'original', 'replacement'}
+                or any(not isinstance(r, dict) or set(r) != {'event_id', 'room', 'date', 'start', 'end'}
+                       for r in b.values()) for b in bridges)):
+            raise MutationReceiptError('Invalid exact staging records')
     if receipt["kind"] == "cancel":
         if "event_url" not in receipt:
             raise MutationReceiptError(
@@ -285,6 +294,7 @@ def record_pending(
     event_url: str | None = None,
     original: dict[str, Any] | None = None,
     originals: list[dict[str, Any]] | None = None,
+    bridges: list[dict[str, Any]] | None = None,
     path: Path = RECEIPTS_FILE,
 ) -> dict[str, Any]:
     """Atomically append one supported pending mutation receipt."""
@@ -312,6 +322,8 @@ def record_pending(
             receipt["original"] = copy.deepcopy(original)
         if originals is not None:
             receipt["originals"] = copy.deepcopy(originals)
+        if bridges is not None:
+            receipt["bridges"] = copy.deepcopy(bridges)
         _validate_receipt(receipt, receipt_id)
         document["receipts"][receipt_id] = receipt
         return receipt

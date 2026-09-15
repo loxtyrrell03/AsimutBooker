@@ -1,3 +1,26 @@
+## 2026-09-15 staged consolidation after live preview
+
+- The real no-Save sweep proved that Asimut rejects an enlarged anchor while a
+  donor overlaps it. `consolidation_staging.py` now plans intermediate exact-ID,
+  same-duration edits into superior rooms before the anchor Save. Strict hours
+  remain hard constraints; soft hours are preferred for intermediate bookings.
+  Final schedule quality and booked minutes retain the original guarantees.
+- The existing consolidation journal optionally records every intermediate
+  state. Only those exact forward/reverse edits and the prepared anchor are
+  allowed beneath that pending parent. Rejected anchors restore moved donors;
+  unavailable restoration retains all intermediate minutes and blocks mutations.
+  Recovery restores originals before anchor Save or retires donors after full
+  replacement proof. Unknown responses never cause an automatic repeated Save.
+- Temporary peak usage, personal conflicts, destination spacing and complete
+  horizons constrain staging. Rejected intermediate slots yield alternatives.
+  Each intermediate edit and verified restoration counts toward explicit limits.
+  Read-only scans never perform recovery mutations, and isolated room/extension/
+  horizon modes cannot silently retire a pending transaction's donors.
+- Full regression run: 1,057 Python tests passed; focused staging/editor tests
+  cover strict windows, exact parent scope, rejection, lost responses, restoration
+  failure and three peak fragments. Source/fixture checks precede the live staged
+  sweep; do not infer successful real consolidation from an approved bridge preview.
+
 ## 2026-09-15 comprehensive upgrade planning and consolidation
 
 - Upgrade runs scan every eligible date in the live booking window before any

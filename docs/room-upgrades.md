@@ -42,18 +42,29 @@ An independently loaded persisted event page must prove the result.
 A consolidation follows this order:
 
 1. Verify every exact original reservation and the complete proposed day plan.
-2. Ask Asimut to approve the longer anchor while all smaller bookings still exist.
-3. Record every original in one durable transaction, Save the enlarged anchor,
+2. Account for Asimut's prohibition on overlapping personal bookings. If a donor
+   would block the enlarged anchor, find an available superior room and move its
+   exact reservation there temporarily, preserving its duration and date. Prefer
+   the saved hours; an explicitly strict window is never relaxed. All original,
+   intermediate and final states are journalled before the first Save.
+3. Ask Asimut to freshly approve the longer anchor with every donor still held,
+   Save the enlarged anchor,
    and independently verify its full room, date and times.
 4. Before each redundant booking is retired, refresh the complete agenda and
    independently prove that the full replacement still exists.
 5. Verify every donor absent and the full anchor present before declaring success.
 
-If Asimut rejects temporary overlapping quota or another rule, keep the originals.
+If staging or the anchor is rejected, restore any moved donors to their exact
+original slots. A failed restoration retains the full intermediate booking and
+leaves a pending transaction requiring attention; it never cancels that fallback.
+Peak limits apply during staging and anchor Save as well as to the final schedule.
+If no safe intermediate slot exists or the site rejects temporary weekly quota,
+keep the originals.
 Never cancel first in the hope that the longer booking will subsequently succeed.
 A lost response, changed identity, missing anchor or incomplete proof leaves the
-transaction pending and blocks further changes. Recovery resumes only unfinished
-retirement; it never repeats an uncertain anchor Save. Read-only scans do not
+transaction pending and blocks further changes. Before anchor Save, recovery
+restores exact originals. After the anchor is secured, it resumes unfinished
+retirement; it never repeats an uncertain Save. Read-only scans do not
 retire bookings. Removing redundant upgrade bookings does not create a blackout.
 
 The site's normal provisional-booking reconfirmation requirement still applies.
@@ -76,7 +87,8 @@ Full upgrade sweep:
 
 Optional `--only-date`, `--only-room`, `--upgrade-event-id`, `--max-actions` and
 `--max-action-minutes` restrict scope. Each consolidation uses one action for
-its anchor Save and one for each donor retirement, so an explicit action cap
+each intermediate edit, its anchor Save and each donor retirement. Restorations
+also consume the action allowance, so an explicit action cap
 cannot be exceeded by hiding multiple writes inside one group operation.
 
 ## Verification
@@ -89,5 +101,7 @@ user-ranked Weston preference, retained daily capacity, explicit freeze values,
 real Chromium editor requests, rejected checks, lost Save responses, donor
 retirement guards and recovery after partial completion.
 
-These are source/fixture checks. The real-booking sweep, full before/after agenda
-comparison and publication evidence are recorded after live validation.
+The staging refinement passed a full 1,057-test Python run, with further focused
+checks for rejected-slot alternatives and multi-donor peak coverage. The real
+no-Save preview exposed Asimut's overlapping-person rejection and motivated this
+refinement. Final live outcomes and publication evidence follow separately.

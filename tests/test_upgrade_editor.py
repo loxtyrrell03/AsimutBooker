@@ -194,6 +194,47 @@ class UpgradeEditorTests(unittest.TestCase):
         return b.edit_reservation_room_time(self.page, self.upgrade,
                                             revalidate=lambda: True, **kwargs)
 
+    def stage_parent(self):
+        def record(r):
+            return dict(event_id=r.event_id, room=r.room, date=str(r.day),
+                        start=r.as_booking()['startTime'], end=r.as_booking()['endTime'])
+        anchor = Reservation(43, self.original.day, 'Weston', 660, 720)
+        return receipts.record_pending_consolidation(room='Weston', booking_date=str(anchor.day),
+            start='11:00', end='14:00', event_url=anchor.event_url, original=record(anchor),
+            originals=[record(anchor), record(self.original)],
+            bridges=[dict(original=record(self.original), replacement=record(self.new))], path=self.path)
+
+    def test_recorded_bridge_uses_parent_and_preserves_pending_transaction(self):
+        parent = self.stage_parent()
+        self.assertTrue(self.run_edit(transaction_receipt=parent))
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(receipts.list_pending(self.path), [parent])
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertFalse(self.other_mutations)
+
+    def test_rejected_bridge_save_cannot_resolve_its_whole_parent(self):
+        parent = self.stage_parent()
+        self.mode = 'save_rejected'
+        self.assertFalse(self.run_edit(transaction_receipt=parent))
+        self.assertEqual(self.persisted, self.original)
+        self.assertEqual(receipts.list_pending(self.path), [parent])
+
+    def test_lost_bridge_save_keeps_exact_parent_and_never_repeats(self):
+        parent = self.stage_parent()
+        self.mode = 'lost_response'
+        with self.assertRaises(b.BookingVerificationError):
+            self.run_edit(transaction_receipt=parent)
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(receipts.list_pending(self.path), [parent])
+        self.assertEqual(len(self.save_calls), 1)
+
+    def test_parent_cannot_authorize_different_bridge_time(self):
+        parent = self.stage_parent()
+        self.upgrade = RoomUpgrade(self.original, Reservation(42, self.original.day, 'Best', 900, 1020))
+        with self.assertRaises(b.BookingVerificationError):
+            self.run_edit(transaction_receipt=parent)
+        self.assertFalse(self.save_calls)
+
     def test_real_fields_and_network_change_one_reservation_once(self):
         self.assertTrue(self.run_edit())
         self.assertEqual(self.persisted, self.new)

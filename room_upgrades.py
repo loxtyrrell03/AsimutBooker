@@ -108,6 +108,7 @@ class RoomConsolidation:
     originals: tuple[Reservation, ...]
     replacement: Reservation
     rank: tuple = ()
+    bridges: tuple[RoomUpgrade, ...] = ()
 
     def __post_init__(self):
         group = self.originals
@@ -124,6 +125,18 @@ class RoomConsolidation:
         ordered = sorted(group, key=lambda r: r.start)
         if any(a.end > b.start for a, b in zip(ordered, ordered[1:])):
             raise ValueError("Overlapping originals cannot establish distinct practice hours")
+        if (not isinstance(self.bridges, tuple)
+                or any(not isinstance(b, RoomUpgrade) or b.original not in group
+                       or b.original.event_id == self.replacement.event_id for b in self.bridges)
+                or len({b.original.event_id for b in self.bridges}) != len(self.bridges)):
+            raise ValueError("Staging must retain exact distinct donor identities and durations")
+        staged = self.staged_originals
+        ordered = sorted(staged, key=lambda r: r.start)
+        if any(a.end > b.start for a, b in zip(ordered, ordered[1:])):
+            raise ValueError("Staging cannot overlap another retained original")
+        if any(_overlaps(b.replacement.start, b.replacement.end,
+                         self.replacement.start, self.replacement.end) for b in self.bridges):
+            raise ValueError("Staging must clear the complete final session")
 
     @property
     def original(self):
@@ -131,7 +144,20 @@ class RoomConsolidation:
 
     @property
     def retired(self):
-        return tuple(r for r in self.originals if r.event_id != self.replacement.event_id)
+        return tuple(r for r in self.staged_originals if r.event_id != self.replacement.event_id)
+
+    @property
+    def staged_originals(self):
+        moved = {b.original.event_id: b.replacement for b in self.bridges}
+        return tuple(moved.get(r.event_id, r) for r in self.originals)
+
+    @property
+    def prepared(self):
+        return RoomConsolidation(self.staged_originals, self.replacement, self.rank)
+
+    @property
+    def action_count(self):
+        return len(self.originals) + len(self.bridges)
 
 
 def apply_upgrade_to_events(events, upgrade):
@@ -193,7 +219,9 @@ def consolidation_from_receipt(receipt):
         return Reservation(value["event_id"], date.fromisoformat(value["date"]), value["room"],
                            clock_minutes(value["start"]), clock_minutes(value["end"]))
     originals = tuple(record(r) for r in receipt["originals"])
-    return RoomConsolidation(originals, record({**receipt, "event_id": receipt["original"]["event_id"]}))
+    bridges = tuple(RoomUpgrade(record(b["original"]), record(b["replacement"]))
+                    for b in receipt.get("bridges", ()))
+    return RoomConsolidation(originals, record({**receipt, "event_id": receipt["original"]["event_id"]}), bridges=bridges)
 
 
 def classify_consolidation_outcome(events, receipt):
@@ -207,8 +235,13 @@ def classify_consolidation_outcome(events, receipt):
                 return "uncertain"
             actual[event["eventId"]] = Reservation.from_event(event)
     anchor = actual.get(group.original.event_id)
-    if anchor == group.original and all(actual.get(r.event_id) == r for r in group.retired):
-        return "untouched"
+    if anchor == group.original:
+        if all(actual.get(r.event_id) == r for r in group.originals):
+            return "untouched"
+        if all(actual.get(old.event_id) in (old, staged)
+               for old, staged in zip(group.originals, group.staged_originals)):
+            return "staged"
+        return "uncertain"
     if anchor != group.replacement:
         return "uncertain"
     if any(r.event_id in actual and actual[r.event_id] != r for r in group.retired):
@@ -220,7 +253,7 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
                        time_preferences, planning, peak_start=540, peak_end=960,
                        peak_limit=120, same_room_gap=60, freeze_minutes=DEFAULT_FREEZE_MINUTES,
                        blocked_intervals=(), protected_extensions=(), ignored_event_ids=(),
-                       _originals=None, _ignore_room_horizon=False):
+                       _originals=None, _ignore_room_horizon=False, _allow_room_downgrade=False):
     """Rank superior rooms at all legal quarter-hour starts, keeping coverage.
 
     ``events`` is a complete fresh agenda, with optional ``blocksConflict=False``
@@ -283,7 +316,8 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
         if room not in policy.room_order:
             continue
         room_rank = policy.room_order.index(room)
-        if room_rank > old_rank or (room_rank == old_rank and len(originals) == 1):
+        if ((room_rank > old_rank and not _allow_room_downgrade)
+                or (room_rank == old_rank and len(originals) == 1)):
             continue
         horizon = timedelta(minutes=policy.horizon_minutes_for(room))
         # Earliest plausible site time prevents a fast local clock opening a room early.

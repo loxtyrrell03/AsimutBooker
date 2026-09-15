@@ -17,6 +17,7 @@ from room_upgrades import (Reservation, find_room_upgrades, local_instant, time_
                           apply_upgrade_to_events, select_upgrade_portfolio, RoomConsolidation, find_room_consolidations,
                           availability_after_upgrade, find_upgrade_opportunities)
 from upgrade_plan import publish_upgrade_plan
+from consolidation_staging import prepare_consolidation, execute_staged_consolidation
 
 
 def planning_events(engine, tracker, ignored_events):
@@ -121,6 +122,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
     ignored_events = engine.load_ignored_events(settings)
     blackouts = engine.load_rebooking_blackouts(settings)
     attempts = set()
+    rejected_bridges = set()
     previewed_ids = set()
     dry_run = bool(getattr(args, "upgrade_dry_run", False))
 
@@ -165,12 +167,13 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                      and (getattr(args, "max_action_minutes", None) is None or candidate.original.duration <= args.max_action_minutes))
 
     def consolidations_for(day, fresh, gaps, extensions, at, allowed_ids):
-        found = find_room_consolidations(eligible_event_ids=allowed_ids,
-                                        **planner_arguments(day, fresh, gaps, extensions, at))
-        return tuple(c for c in found if c.original.day == day
+        arguments = planner_arguments(day, fresh, gaps, extensions, at)
+        found = find_room_consolidations(eligible_event_ids=allowed_ids, **arguments)
+        found = (prepare_consolidation(c, excluded_steps=rejected_bridges, **arguments) for c in found)
+        return tuple(c for c in found if c is not None and c.original.day == day
                      and (not getattr(args, "only_room", None) or c.replacement.room == args.only_room)
                      and (getattr(args, "max_action_minutes", None) is None or c.replacement.duration <= args.max_action_minutes)
-                     and (max_actions is None or total_actions + len(c.originals) <= max_actions))
+                     and (max_actions is None or total_actions + c.action_count <= max_actions))
 
     def eligible_originals(events, at):
         return [e for e in events if e.get("isReservation") is True and e["eventId"] not in previewed_ids
@@ -187,7 +190,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         # Retry only after the actual day's agenda changes, never a blind loop.
         day_state = tuple(sorted((e["eventId"], e["room"] or "", e["startTime"], e["endTime"])
                                 for e in agenda_events if e["date"] == choice.original.day.isoformat()))
-        return (choice.originals, choice.original, choice.replacement, day_state)
+        return (choice.originals, choice.original, choice.replacement, getattr(choice, 'bridges', ()), day_state)
 
     tracker = fresh_agenda(page)
     scanned = {}
@@ -274,7 +277,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                                                   {r.event_id for r in candidate.originals})
                 else:
                     possible = candidates_for(current[0], fresh, gaps, extensions, at)
-                if not any(c.originals == candidate.originals and c.replacement == candidate.replacement for c in possible):
+                if not any(c.originals == candidate.originals and c.replacement == candidate.replacement
+                           and getattr(c, 'bridges', ()) == getattr(candidate, 'bridges', ()) for c in possible):
                     return False
                 fresh_events, _ = planning_events(engine, fresh, ignored_events)
                 return preserves_remaining_day_plan(engine, candidate, events=fresh_events, gaps=gaps,
@@ -282,16 +286,22 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             finally:
                 check_page.close()
 
-        changed = engine.edit_reservation_room_time(page, candidate, revalidate=revalidate,
-                                                    dry_run=dry_run, freeze_minutes=freeze_minutes)
+        if isinstance(candidate, RoomConsolidation) and candidate.bridges:
+            changed = execute_staged_consolidation(engine, page, candidate, revalidate=revalidate,
+                                                   dry_run=dry_run, freeze_minutes=freeze_minutes)
+        else:
+            changed = engine.edit_reservation_room_time(page, candidate, revalidate=revalidate,
+                                                        dry_run=dry_run, freeze_minutes=freeze_minutes)
         if changed:
+            rejected_bridges.difference_update({pair for pair in rejected_bridges
+                                                if pair[0].day == candidate.original.day})
             if isinstance(candidate, RoomConsolidation):
                 pending = engine.list_pending_mutation_receipts()
                 if len(pending) != 1 or pending[0]["kind"] != "consolidation":
                     raise engine.BookingVerificationError("Secured consolidation lacks its exact pending transaction")
                 if engine.finish_consolidation(page, pending[0]) is not True:
                     raise engine.BookingVerificationError("Consolidation could not be verified complete")
-            total_actions += len(candidate.originals)
+            total_actions += candidate.action_count if isinstance(candidate, RoomConsolidation) else 1
             old, new = candidate.original, candidate.replacement
             if isinstance(candidate, RoomConsolidation):
                 booking_details.append(f"CONSOLIDATED: {old.day} {len(candidate.originals)} bookings "
@@ -302,6 +312,11 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             tracker = tracker_for_events(engine, apply_upgrade_to_events(events, candidate), blackouts)
         elif dry_run and getattr(changed, "preview_ready", False):
             previewed_ids.update(r.event_id for r in candidate.originals)
+        else:
+            total_actions += getattr(changed, 'actions_used', 0)
+            failed = getattr(changed, 'failed_step', None)
+            if failed is not None and len(failed.originals) == 1:
+                rejected_bridges.add((failed.original, failed.replacement))
         try:
             tracker = fresh_agenda(page)
             # The edited date may have gained or lost gaps; the next plan must
