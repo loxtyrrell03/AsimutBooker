@@ -17,6 +17,9 @@
 - The existing private phone build is `20260915-comprehensive-upgrades`, on the
   unchanged canonical `lox-pc` route. Scheduled workers load the canonical source;
   existing desktop windows retain their sessions and reload new controls on reopen.
+- The idle phone backend was reloaded after the final source activation. Exact
+  private HTTPS deployment/session checks and a rendered 390px My Week confirmed
+  the final reservations. This is PC browser evidence, not physical-phone proof.
 
 ## 2026-09-15 staged consolidation after live preview
 
