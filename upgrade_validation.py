@@ -63,3 +63,31 @@ def upgrade_response_success(document, event_id):
                 and type(params[0]["value"]) is int)
     except (TypeError, KeyError, AttributeError):
         return False
+
+
+def upgrade_save_acknowledgement_consistent(document, event_id):
+    """Reject contradictory Save replies; persisted readback proves success.
+
+    Save need not repeat the check response's booking rules, forms or success
+    marker. Missing acknowledgement fields alone do not override an exact,
+    independently reloaded reservation. Explicit errors or a different event
+    still require reconciliation, even if HTTP succeeded.
+    """
+    try:
+        response = document['response']
+        if not isinstance(response, dict) or document.get('messages', {}).get('errors'):
+            return False
+        if 'success' in response and response['success'] is not True:
+            return False
+        # Reuse the strict check validator after supplying only omitted fields.
+        # Present contradictory or malformed values are never replaced.
+        normalized = dict(response)
+        normalized.setdefault('success', True)
+        normalized.setdefault('event_ids', [event_id])
+        normalized.setdefault('forms', [])
+        normalized.setdefault('bookingrules', {'issues': []})
+        normalized.setdefault('save_resolution', {'uri': '/arrangement',
+            'query_params': [{'key': 'eventId', 'value': event_id}]})
+        return upgrade_response_success({**document, 'response': normalized}, event_id)
+    except (TypeError, KeyError, AttributeError):
+        return False

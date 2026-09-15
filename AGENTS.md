@@ -36,10 +36,18 @@
   unused `[1]` recurrence default on other weekdays; exact single mode, event ID
   and timestamps establish scope. Stop and preference drift prevent Save.
   See `docs/room-upgrades.md` for behavior and recovery details.
-- This source milestone is not yet deployed. The original checkout, active
-  desktop/phone sessions and live reservations remain intact; activation and
-  one bounded verified live edit are the remaining delivery checks. Older loaded hosts
-  must reload before using upgrade journal records or the new settings fields.
+- Activated the source and private phone build `20260915-room-upgrades` through
+  the existing idle phone task under the Booker lock. Exact HTTPS deployment,
+  session/preferences and rendered controls passed; no route or hostname changed.
+  Existing desktop windows remain open and need reopening for the new controls.
+- The first bounded live edit retained all 18 observed event IDs, dates, times
+  and durations, changing only the selected room. Its Save response differed
+  from the check schema; the pending receipt correctly stopped further changes
+  and the queued agenda refresh independently reconciled it as applied.
+  Save acknowledgement validation now rejects explicit contradictions while
+  permitting omitted check-only fields; independent persisted readback is still
+  required before success. All 24 focused editor/recovery checks pass, including
+  compact replies with and without a persisted change. No pending receipt remains.
 
 ## 2026-09-14 complete desktop calendar booking lists
 

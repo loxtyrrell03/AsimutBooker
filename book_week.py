@@ -112,7 +112,8 @@ from mutation_receipts import (
 )
 from room_upgrades import (Reservation, RoomUpgrade, classify_upgrade_outcome, time_text,
                            local_instant, DEFAULT_FREEZE_MINUTES)
-from upgrade_validation import upgrade_request_matches, upgrade_response_success
+from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
+                                upgrade_save_acknowledgement_consistent)
 from room_upgrade_runtime import process_room_upgrades
 from live_room_policy import (
     LiveRoomPolicy,
@@ -3502,8 +3503,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             resolve_mutation_receipt(receipt["id"], resolution="Room upgrade rejected; exact original reservation verified intact")
             print("UPGRADE NOT APPLIED: original reservation verified intact")
             return False
-        if not upgrade_response_success(payload, original.event_id):
-            raise BookingVerificationError("Room-upgrade Save did not return exact success evidence")
+        if not upgrade_save_acknowledgement_consistent(payload, original.event_id):
+            raise BookingVerificationError("Room-upgrade Save returned contradictory or malformed evidence")
         # Verify in another owned page: Angular may still be navigating the
         # editor after the Save response. Competing navigation must not obscure
         # an otherwise confirmed edit or trigger a repeated Save.

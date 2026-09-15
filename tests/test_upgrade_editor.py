@@ -160,10 +160,13 @@ class UpgradeEditorTests(unittest.TestCase):
                 self.persisted = self.new
                 route.abort()
             else:
-                self.persisted = self.new
+                if self.mode != 'compact_reply_without_change':
+                    self.persisted = self.new
                 payload = result()
                 if self.mode == "wrong_success_id":
                     payload["response"]["event_ids"] = [99]
+                if self.mode in {'compact_reply', 'compact_reply_without_change'}:
+                    payload = {'response': {'event_ids': [42]}}
                 route.fulfill(json=payload)
         elif request.method != "GET":
             self.other_mutations.append(request.url)
@@ -248,6 +251,21 @@ class UpgradeEditorTests(unittest.TestCase):
         self.mode = "wrong_success_id"
         with self.assertRaises(b.BookingVerificationError):
             self.run_edit()
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertEqual(len(receipts.list_pending(self.path)), 1)
+
+    def test_compact_save_reply_requires_independent_persisted_success(self):
+        self.mode = 'compact_reply'
+        self.assertTrue(self.run_edit())
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertFalse(receipts.list_pending(self.path))
+
+    def test_compact_save_reply_without_persisted_change_stays_pending(self):
+        self.mode = 'compact_reply_without_change'
+        with self.assertRaises(b.BookingVerificationError):
+            self.run_edit()
+        self.assertEqual(self.persisted, self.original)
         self.assertEqual(len(self.save_calls), 1)
         self.assertEqual(len(receipts.list_pending(self.path)), 1)
 

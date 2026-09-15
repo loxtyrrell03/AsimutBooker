@@ -46,6 +46,11 @@ verifying the original reservation intact. A lost response, unexpected event,
 partial change or missing reservation remains pending and blocks further
 mutations until reconciliation establishes the exact outcome.
 
+Asimut's Save reply can omit fields present in its validation reply. Omitted
+fields do not prove success; an independent reload of the exact changed
+reservation must establish it. Explicit errors or a different event ID still
+require reconciliation.
+
 Asimut's normal provisional-booking reconfirmation requirement still applies.
 Upgrades preserve reserved duration; they do not establish that an unbooked
 daily target can always be filled when rooms are unavailable.
