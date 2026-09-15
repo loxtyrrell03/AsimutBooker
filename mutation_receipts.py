@@ -22,10 +22,10 @@ APP_DIR = Path(__file__).resolve().parent
 RECEIPTS_FILE = APP_DIR / "data" / "mutation_receipts.json"
 SCHEMA_VERSION = 1
 
-ReceiptKind = Literal["create", "extension", "upgrade", "consolidation", "cancel", "uncertain"]
+ReceiptKind = Literal["create", "extension", "upgrade", "consolidation", "transfer", "cancel", "uncertain"]
 ReceiptStatus = Literal["pending", "verified", "resolved"]
 
-_KINDS = {"create", "extension", "upgrade", "consolidation", "cancel", "uncertain"}
+_KINDS = {"create", "extension", "upgrade", "consolidation", "transfer", "cancel", "uncertain"}
 _STATUSES = {"pending", "verified", "resolved"}
 _DOCUMENT_KEYS = {"schema_version", "receipts"}
 _REQUIRED_RECEIPT_KEYS = {
@@ -47,6 +47,9 @@ _OPTIONAL_RECEIPT_KEYS = {
     "original",
     "originals",
     "bridges",
+    "transfer",
+    "parent_id",
+    "transfer_role",
 }
 
 
@@ -151,6 +154,23 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
 
     for field in ("event_url", "resolution"):
         _validate_optional_text(receipt, field)
+    if receipt['kind'] == 'transfer':
+        from progressive_transactions import validate_transfer
+        try:
+            t = validate_transfer(receipt.get('transfer'))
+            expected = t['replacement']
+            if any(receipt[k] != expected[k] for k in ('room', 'date', 'start', 'end')):
+                raise ValueError('Transfer envelope differs from its exact prefix')
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MutationReceiptError('Invalid exact progressive transfer') from exc
+    elif 'transfer' in receipt:
+        raise MutationReceiptError('Only a transfer receipt may own a transfer')
+    if 'parent_id' in receipt or 'transfer_role' in receipt:
+        _validate_uuid(receipt.get('parent_id'))
+        role = receipt.get('transfer_role')
+        if (receipt['kind'] != 'create' or not isinstance(role, str)
+                or not (role == 'seed' or role.startswith('restore:') and role[8:].isdigit())):
+            raise MutationReceiptError('Only exact transfer creations may have a parent')
     if receipt["kind"] in {"upgrade", "consolidation"}:
         original = receipt.get("original")
         if not isinstance(original, dict) or set(original) != {"event_id", "room", "date", "start", "end"}:
@@ -249,6 +269,21 @@ def _validate_document(document: Any, path: Path) -> dict[str, Any]:
         if not isinstance(key, str):
             raise MutationReceiptError("Receipt journal keys must be strings")
         _validate_receipt(receipt, key)
+    for receipt in receipts.values():
+        if 'parent_id' not in receipt:
+            continue
+        parent = receipts.get(receipt['parent_id'])
+        if parent is None or parent['kind'] != 'transfer':
+            raise MutationReceiptError('Transfer creation has no exact parent')
+        t = parent['transfer']
+        role = receipt['transfer_role']
+        expected = (t['replacement'] if role == 'seed' and t['seed_before'] is None else next(
+            (r for r in t['originals'] if role == f"restore:{r['event_id']}"
+             and r['event_id'] not in {v['event_id'] for v in t['remaining']}), None))
+        if expected is None or any(receipt[k] != expected[k] for k in ('date', 'room', 'start', 'end')):
+            raise MutationReceiptError('Transfer child is outside its exact creation scope')
+        if receipt.get('event_url') and parse_confirmed_event_id(receipt['event_url']) in t['baseline_ids']:
+            raise MutationReceiptError('Transfer creation cannot claim a pre-existing event ID')
     return document
 
 
@@ -295,6 +330,9 @@ def record_pending(
     original: dict[str, Any] | None = None,
     originals: list[dict[str, Any]] | None = None,
     bridges: list[dict[str, Any]] | None = None,
+    transfer: dict[str, Any] | None = None,
+    parent_id: str | None = None,
+    transfer_role: str | None = None,
     path: Path = RECEIPTS_FILE,
 ) -> dict[str, Any]:
     """Atomically append one supported pending mutation receipt."""
@@ -324,6 +362,11 @@ def record_pending(
             receipt["originals"] = copy.deepcopy(originals)
         if bridges is not None:
             receipt["bridges"] = copy.deepcopy(bridges)
+        if transfer is not None:
+            receipt['transfer'] = copy.deepcopy(transfer)
+        if parent_id is not None:
+            receipt['parent_id'] = parent_id
+            receipt['transfer_role'] = transfer_role
         _validate_receipt(receipt, receipt_id)
         document["receipts"][receipt_id] = receipt
         return receipt
@@ -335,6 +378,22 @@ def record_pending_create(**kwargs: Any) -> dict[str, Any]:
     """Convenience wrapper for a pending reservation creation."""
 
     return record_pending("create", **kwargs)
+
+
+def mark_transfer_step(receipt: dict[str, Any], step: str, *, path: Path = RECEIPTS_FILE):
+    """Persist exact operation intent before a paired transfer effect."""
+    def mark(document):
+        current = document['receipts'].get(receipt['id'])
+        if current != receipt or current['kind'] != 'transfer' or current['status'] != 'pending':
+            raise MutationReceiptError('Progressive transaction changed before its next operation')
+        if step not in current['transfer']['started_steps']:
+            current['transfer']['started_steps'].append(step)
+        current['updated_at'] = _utc_timestamp()
+        return current
+    updated = _update_journal(mark, Path(path))
+    receipt.clear()
+    receipt.update(updated)
+    return receipt
 
 
 def record_pending_extension(**kwargs: Any) -> dict[str, Any]:

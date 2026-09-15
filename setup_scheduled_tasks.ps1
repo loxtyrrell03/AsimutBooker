@@ -9,8 +9,9 @@ $PythonPath = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 $WorkingDir = $PSScriptRoot
 $FirstRunTime = "07:13"
 $RepeatMinutes = 15
-# 07:13 + 59 repetitions = 21:58. The next repetition (22:13) is excluded.
-$RepeatDurationIso = "PT14H46M"
+# 07:13 + 63 repetitions = 22:58, preparing the final 23:00 room edge.
+# The next repetition (23:13) is excluded.
+$RepeatDurationIso = "PT15H46M"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "AsimutBooker Task Scheduler Setup" -ForegroundColor Cyan
@@ -305,7 +306,7 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "AsimutBooker automatic booking every 15 minutes from 07:13 through 21:58." `
+        -Description "AsimutBooker automatic booking every 15 minutes from 07:13 through 22:58." `
         -Force |
         Out-Null
 
@@ -443,7 +444,7 @@ try {
 }
 
 Write-Host "Created: $TaskName" -ForegroundColor Green
-Write-Host "  Repeats every 15 minutes from 07:13 through 21:58." -ForegroundColor White
+Write-Host "  Repeats every 15 minutes from 07:13 through 22:58." -ForegroundColor White
 Write-Host "  Runs headless, requests wake on AC or battery, catches up after a missed start, and ignores overlapping starts." -ForegroundColor White
 Write-Host "  Actual wake-from-sleep still depends on Windows, firmware, and hardware support." -ForegroundColor White
 

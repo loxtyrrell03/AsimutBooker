@@ -40,6 +40,7 @@ data/booking_plan.json.lock
 data/booking_plan.json.bak
 data/upgrade_plan.json
 data/upgrade_plan.json.lock
+data/progressive_upgrades.json*
 data/agenda_snapshot.json
 data/agenda_snapshot.json.lock
 data/agenda_snapshot.json.bak

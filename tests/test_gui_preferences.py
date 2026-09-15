@@ -133,7 +133,7 @@ class GuiSchedulerHelpersTests(unittest.TestCase):
             "DaysInterval": 1,
             "StartLocalTime": "07:13",
             "Interval": "PT15M",
-            "Duration": "PT14H46M",
+            "Duration": "PT15H46M",
             "StopAtDurationEnd": False,
             "WakeToRun": True,
             "StartWhenAvailable": True,

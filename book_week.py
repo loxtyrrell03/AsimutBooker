@@ -117,7 +117,10 @@ from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation, classify
                            local_instant, DEFAULT_FREEZE_MINUTES, consolidation_from_receipt,
                            classify_consolidation_outcome, consolidation_summary)
 from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
-                                upgrade_save_acknowledgement_consistent)
+                                upgrade_save_acknowledgement_consistent,
+                                RoomPermissionRefusal, room_permission_refusal_text,
+                                response_room_permission_refusal, session_or_service_error_text,
+                                check_response_has_explicit_success)
 from room_upgrade_runtime import process_room_upgrades
 from live_room_policy import (
     LiveRoomPolicy,
@@ -885,6 +888,25 @@ def verify_persisted_booking_page(page, room, target_date, start_time, end_time)
     )
 
 
+def _visible_room_permission_refusal(page, room):
+    """Read explicit visible permission text without scanning unrelated body copy."""
+    selectors = (
+        "text=/not allowed|not permitted|not authorized|not authorised/i",
+        "text=/permission to|cannot be booked|can't be booked/i",
+        ".mat-error", ".error-message", "[role='alert']",
+    )
+    for selector in selectors:
+        try:
+            element = page.locator(selector).first
+            if element.count() > 0 and element.is_visible():
+                reason = room_permission_refusal_text(element.text_content())
+                if reason:
+                    return RoomPermissionRefusal(room, reason)
+        except Exception:
+            continue
+    return None
+
+
 def _visible_save_rejection(page):
     """Return a concrete post-Save rejection message, if one is visible."""
 
@@ -900,7 +922,12 @@ def _visible_save_rejection(page):
         try:
             element = page.locator(selector).first
             if element.count() > 0 and element.is_visible():
-                return (element.text_content() or selector).strip()[:200]
+                text = element.text_content()
+                if not isinstance(text, str) or session_or_service_error_text(text):
+                    continue
+                if (room_permission_refusal_text(text) or re.search(
+                        r"\b(?:conflicting events|resolve the conflicts|booking clashes)\b", text, re.I)):
+                    return text.strip()[:200]
         except Exception:
             continue
     return None
@@ -940,6 +967,12 @@ def refresh_new_booking_validation(page, expected_end_time):
         response = pending.value
         if not is_exact_event_check(response) or not response.ok:
             return False, "event validation response was not trusted HTTP success"
+        document = response.json()
+        refusal = response_room_permission_refusal(document)
+        if refusal:
+            return False, refusal
+        if not check_response_has_explicit_success(document):
+            return False, "Asimut did not approve the fresh event validation"
         page.wait_for_timeout(300)
     except Exception as exc:
         return False, f"fresh event validation did not complete: {exc}"
@@ -990,10 +1023,19 @@ def refresh_extension_validation(page, end_input, booking, expected_end_time):
         if not matches_check(response) or not response.ok:
             return False, "exact extension validation did not return HTTP success"
         response.body()
+        document = response.json()
+        refusal = response_room_permission_refusal(document)
+        if refusal:
+            return False, refusal
+        if not check_response_has_explicit_success(document):
+            return False, "Asimut did not approve the exact extension validation"
         # HTTP headers can arrive before Angular has applied the response and
         # enabled Save. Poll the real control; never force a disabled click.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
+            refusal = _visible_room_permission_refusal(page, booking.get("room", ""))
+            if refusal is not None:
+                return False, refusal.reason
             save = page.locator("button:has-text('Save')").first
             if save.count() == 1 and save.is_visible() and save.is_enabled():
                 return True, "exact extension validation completed and Save is enabled"
@@ -1123,6 +1165,15 @@ def wait_for_created_booking_outcome(
                     ) from exc
                 return True
 
+            refusal = _visible_room_permission_refusal(page, room)
+            if refusal is not None:
+                # A message can arrive after a Save that actually succeeded.
+                # A new event has no original ID to prove intact; preserve the
+                # intent until complete agenda/identity reconciliation.
+                raise BookingVerificationError(
+                    f"Room permission was refused after Save (receipt {receipt_id}), "
+                    "but the create outcome is not proven. The receipt remains pending."
+                )
             rejection = _visible_save_rejection(page)
             if rejection:
                 try:
@@ -1172,6 +1223,12 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
 
     print(f"\nReconciling {len(pending)} interrupted booking mutation(s)...")
     for receipt in pending:
+        if receipt.get("kind") == "transfer":
+            # The progressive runtime owns the complete trim/create/extend
+            # transaction. Reconcile its individual child writes below first;
+            # generic expiry or single-booking classification cannot establish
+            # whether the transfer still needs restoration.
+            continue
         event_url = receipt.get("event_url")
         if event_url is not None and not is_confirmed_post_save_url(event_url):
             raise BookingVerificationError(
@@ -3275,9 +3332,19 @@ def cancel_reservation_exact(
     live_dates,
     ignored_events,
     consolidation_receipt=None,
+    transfer_receipt=None,
+    transfer_revalidate=None,
 ):
     """Cancel one exact reservation and prove its absence in a complete agenda."""
 
+    if transfer_receipt is not None:
+        from progressive_transactions import transfer_allows_cancel
+        exact = Reservation(event_id, date.fromisoformat(date_str), room,
+                            int(start_time[:2]) * 60 + int(start_time[3:]), int(end_time[:2]) * 60 + int(end_time[3:]))
+        if (consolidation_receipt is not None or not callable(transfer_revalidate)
+                or not transfer_allows_cancel(transfer_receipt, exact)):
+            raise BookingVerificationError('Cancellation is not an exact authorized transfer step')
+    parent_receipt = transfer_receipt or consolidation_receipt
     target = resolve_exact_cancellation_target(
         reservations,
         event_id=event_id,
@@ -3330,8 +3397,8 @@ def cancel_reservation_exact(
         ) from exc
 
     try:
-        receipt = ({**consolidation_receipt, "room": room, "date": date_str, "start": start_time,
-                    "end": end_time, "event_url": event_url} if consolidation_receipt is not None else record_pending_cancel(
+        receipt = ({**parent_receipt, "room": room, "date": date_str, "start": start_time,
+                    "end": end_time, "event_url": event_url} if parent_receipt is not None else record_pending_cancel(
             room=room,
             booking_date=date_str,
             start=start_time,
@@ -3366,7 +3433,11 @@ def cancel_reservation_exact(
                     raise BookingVerificationError("Full replacement must be independently verified before retirement")
             finally:
                 proof_page.close()
-        with booking_save_boundary() if consolidation_receipt is not None else nullcontext():
+        if transfer_receipt is not None:
+            if (list_pending_mutation_receipts() != [transfer_receipt]
+                    or transfer_revalidate() is not True):
+                raise BookingVerificationError('Transfer cancellation lost its fresh boundary proof')
+        with booking_save_boundary() if parent_receipt is not None else nullcontext():
             cancel_option.click(no_wait_after=True, timeout=5000)
             page.wait_for_timeout(750)
             confirmation = _optional_cancel_confirmation(page)
@@ -3422,7 +3493,7 @@ def cancel_reservation_exact(
                 "from an action that was not applied."
             )
         remove_extendable_booking_by_event_id(event_id)
-        if consolidation_receipt is None:
+        if parent_receipt is None:
             add_rebooking_blackout(date_str, start_time, end_time, path=settings_file)
             verify_mutation_receipt(receipt["id"], event_url=event_url)
     except BookingVerificationError:
@@ -3507,8 +3578,11 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
     the settings lock. No dirty editor is left open during the lengthy scan.
     Dry runs follow the same checks but never write a receipt or click Save.
     """
-    if not isinstance(upgrade, (RoomUpgrade, RoomConsolidation)) or not callable(revalidate):
+    from progressive_transactions import TransferEdit, transfer_allows_step
+    if not isinstance(upgrade, (RoomUpgrade, RoomConsolidation, TransferEdit)) or not callable(revalidate):
         raise TypeError("An exact upgrade and fresh revalidation callback are required")
+    if isinstance(upgrade, TransferEdit) and transaction_receipt is None:
+        raise TypeError('Duration-changing transfers require their exact durable parent')
     original, replacement = upgrade.original, upgrade.replacement
     consolidation = isinstance(upgrade, RoomConsolidation)
     location_id = require_live_room_policy().all_room_location_ids[replacement.room]
@@ -3527,7 +3601,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             return not pending
         from consolidation_staging import transaction_allows_step
         return (len(pending) == 1 and pending[0] == transaction_receipt
-                and transaction_allows_step(transaction_receipt, upgrade))
+                and (transfer_allows_step(transaction_receipt, upgrade)
+                     if isinstance(upgrade, TransferEdit) else transaction_allows_step(transaction_receipt, upgrade)))
 
     def verify(record):
         safe_goto(page, record.event_url)
@@ -3613,7 +3688,16 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         finally:
             page.remove_listener("request", note_check)
         response = pending.value
-        if not response.ok or not exact_check(response) or not upgrade_response_success(response.json(), original.event_id):
+        if not response.ok or not exact_check(response):
+            raise ValueError("Asimut did not approve the exact room/time change")
+        check_payload = response.json()
+        refusal = response_room_permission_refusal(check_payload)
+        if refusal:
+            for record in upgrade.originals:
+                verify(record)
+            print(f"ROOM SKIPPED: {replacement.room}: {refusal}")
+            return RoomPermissionRefusal(replacement.room, refusal)
+        if not upgrade_response_success(check_payload, original.event_id):
             raise ValueError("Asimut did not approve the exact room/time change")
         validated_payload = copy.deepcopy(response.request.post_data_json)
         location.press("Escape")
@@ -3673,6 +3757,9 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             if transaction_receipt is None:
                 resolve_mutation_receipt(receipt["id"], resolution="Room upgrade rejected; exact original reservation verified intact")
             print("UPGRADE NOT APPLIED: original reservation verified intact")
+            refusal = response_room_permission_refusal(payload)
+            if refusal:
+                return RoomPermissionRefusal(replacement.room, refusal)
             return False
         if not upgrade_save_acknowledgement_consistent(payload, original.event_id):
             raise BookingVerificationError("Room-upgrade Save returned contradictory or malformed evidence")
@@ -4050,6 +4137,9 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
             if not validation_ok:
                 print(f"    Extension not saved: {validation_detail}")
                 safe_goto(page, ASIMUT_AGENDA_URL)
+                refusal = room_permission_refusal_text(validation_detail)
+                if refusal:
+                    return RoomPermissionRefusal(room, refusal)
                 return False
             actual_end = end_input.input_value()
             if not booking_times_match(start_time, new_end_time, start_time, actual_end):
@@ -4078,6 +4168,11 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
 
             # 6. Check for yellow warning boxes before saving
             # Look for warning/error/conflict elements that indicate extension isn't allowed
+            refusal = _visible_room_permission_refusal(page, room)
+            if refusal is not None:
+                print(f"    Room skipped: {room}: {refusal.reason}")
+                safe_goto(page, ASIMUT_AGENDA_URL)
+                return refusal
             warning_elements = page.locator(".warning, .error, [class*='conflict'], [class*='clash'], [class*='warning']").all()
             has_warning = False
             for warn in warning_elements:
@@ -4152,6 +4247,19 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                 deadline = time.monotonic() + 30
                 editor_closed = False
                 while time.monotonic() < deadline:
+                    refusal = _visible_room_permission_refusal(page, room)
+                    if refusal is not None:
+                        # A late warning is not proof of a failed write. Only
+                        # independently reloading the exact original permits
+                        # resolving this rejection and trying another option.
+                        safe_goto(page, event_url)
+                        verify_persisted_booking_page(
+                            page, room, date_str, start_time, booking["endTime"])
+                        resolve_mutation_receipt(
+                            receipt["id"], resolution=(
+                                "Extension permission refused; exact original reservation verified intact"))
+                        safe_goto(page, ASIMUT_AGENDA_URL)
+                        return refusal
                     rejection = _visible_save_rejection(page)
                     if rejection:
                         try:
@@ -5934,6 +6042,11 @@ def try_book_slot(
     if reservations_found > 0:
         print(f"  [DEBUG] Added {reservations_found} new conflict(s) from booking form")
 
+    refusal = _visible_room_permission_refusal(page, room)
+    if refusal is not None:
+        print(f"  Room skipped: {room}: {refusal.reason}")
+        go_back(page, days_ahead)
+        return refusal
     error_msg = page.locator("text=You are not allowed").first
     if error_msg.count() > 0 and error_msg.is_visible():
         # Get the full error text for debugging
@@ -8405,6 +8518,9 @@ def try_horizon_snipe(
             f"{validation_detail}; aborting"
         )
         go_back(page, days_ahead)
+        refusal = room_permission_refusal_text(validation_detail)
+        if refusal:
+            return RoomPermissionRefusal(room, refusal)
         return False
     print("  [SNIPE] Fresh boundary-time validation completed")
 
@@ -8453,6 +8569,11 @@ def try_horizon_snipe(
         print(f"  [SNIPE] Could not prove Save is enabled: {exc}")
         go_back(page, days_ahead)
         return False
+    refusal = _visible_room_permission_refusal(page, room)
+    if refusal is not None:
+        print(f"  [SNIPE] Room skipped: {room}: {refusal.reason}")
+        go_back(page, days_ahead)
+        return refusal
     rejection = _visible_save_rejection(page)
     if rejection:
         print(f"  [SNIPE] Booking form rejects the Save: {rejection}")
@@ -9146,14 +9267,22 @@ _run_verified_details = ContextVar('run_verified_booking_details', default=None)
 def verify_mutation_receipt(receipt_id, *, event_url=None):
     """Publish confirmed changes before subsequent scanning or boundary waits."""
     receipt = _mark_mutation_verified(receipt_id, event_url=event_url)
-    if receipt["kind"] not in {"create", "extension", "upgrade", "consolidation"} or receipt_id in _published_receipts:
+    if receipt["kind"] not in {"create", "extension", "upgrade", "consolidation", "transfer"} or receipt_id in _published_receipts:
         return receipt
     _published_receipts.add(receipt_id)
     try:
-        apply_verified_reservation(receipt)
+        if receipt['kind'] != 'transfer':
+            apply_verified_reservation(receipt)
     except Exception as exc:
         print(f"Warning: Confirmed booking display update failed: {exc}")
-    if receipt["kind"] == "consolidation":
+    if receipt.get('parent_id'):
+        # The parent publishes one completed transfer after all paired effects
+        # are proved. Intermediate seed/rollback creates are not extra upgrades.
+        return receipt
+    if receipt['kind'] == 'transfer':
+        from progressive_transactions import transfer_summary
+        detail = transfer_summary(receipt)
+    elif receipt["kind"] == "consolidation":
         detail = consolidation_summary(consolidation_from_receipt(receipt))
         try:
             clear_booking_plan()
@@ -9181,7 +9310,7 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
     # Reserve before sending: a lost HTTP response must not cause a duplicate.
     _notified_booking_details.add(formatted)
     try:
-        title = "Practice room upgraded" if receipt["kind"] in {"upgrade", "consolidation"} else "Booked 1 room"
+        title = "Practice room upgraded" if receipt["kind"] in {"upgrade", "consolidation", "transfer"} else "Booked 1 room"
         send_notification(title, f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
     except Exception as exc:
         print(f"Warning: Confirmed booking notification failed: {exc}")
@@ -9260,7 +9389,7 @@ def save_history(
     try:
         if outcome not in {"completed", "reconciliation_required", "failed"}:
             raise ValueError(f"Unsupported booking history outcome: {outcome!r}")
-        if outcome == 'completed' and any(detail.startswith('CONSOLIDATED:') for detail in booking_details):
+        if outcome == 'completed' and any(detail.startswith(('CONSOLIDATED:', 'UPGRADED PART:')) for detail in booking_details):
             # The runtime allowance counts intermediate edits and retirements;
             # history counts the completed reservation operations described here.
             bookings_made = len(booking_details)
@@ -9607,6 +9736,8 @@ def process_pending_extensions(
     if not extendable_bookings:
         return total_booked, False
 
+    from progressive_runtime import protected_event_ids
+    transfer_event_ids = protected_event_ids()
     only_date = getattr(args, "only_date", None)
     only_room = getattr(args, "only_room", None)
     live_window_date_strings = {
@@ -9616,6 +9747,7 @@ def process_pending_extensions(
         booking
         for booking in extendable_bookings
         if booking["room"] in PRIORITY_ROOMS
+        and booking.get("eventId") not in transfer_event_ids
         and booking["date"] in live_window_date_strings
         and (not only_date or booking["date"] == only_date)
         and (not only_room or booking["room"] == only_room)
@@ -10214,6 +10346,27 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             context.close()
             browser.close()
             return 0
+
+        # Saved progressive transfers are competitive horizon work. Prepare
+        # their next exact step before ordinary extensions can wait for a
+        # boundary and before quota/target completion skips new booking work.
+        # Their persisted plans select what to recheck, never authorize Save.
+        from progressive_runtime import process_progressive_upgrades
+        previous_tracker, previous_actions = tracker, total_booked
+        total_booked, tracker = process_progressive_upgrades(
+            sys.modules[__name__], page, settings, practice_plan, args,
+            tracker, total_booked, booking_details)
+        if any(receipt.get("kind") == "transfer"
+               for receipt in list_pending_mutation_receipts()):
+            raise BookingVerificationError(
+                "Progressive room transfer remains pending; unrelated booking "
+                "changes are blocked until its exact state is recovered")
+        if tracker is not previous_tracker or total_booked != previous_actions:
+            all_reservations = [event for event in tracker.agenda_events
+                                if event.get("isReservation") is True]
+            refresh_extension_capacity_holds(
+                planning_context, tracker, practice_plan, disabled_dates,
+                time_prefs=time_prefs)
 
         if getattr(args, "upgrades_only", False):
             total_booked, tracker = process_room_upgrades(
@@ -12042,6 +12195,8 @@ def _load_and_validate_runtime_settings():
 
 
 def main(argv=None):
+    global _booker_run_started_monotonic
+    _booker_run_started_monotonic = time.monotonic()
     configure_utf8_stdio()
     parser = build_argument_parser()
     args = parser.parse_args(argv)

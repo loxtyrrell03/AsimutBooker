@@ -15,7 +15,7 @@ class ScheduledRuntimeQueueTests(unittest.TestCase):
             mock.patch.object(b, "SingleInstanceLock", return_value=lock),
             mock.patch.object(b, "_scheduled_target_time", return_value=None),
             mock.patch.object(b, "_load_and_validate_runtime_settings", side_effect=loader),
-            mock.patch.object(b.time, "monotonic", side_effect=clock),
+            mock.patch.object(b.time, "monotonic", side_effect=[0, *clock]),
             mock.patch.object(b.time, "sleep"),
             mock.patch.object(b, "booking_preference_run", return_value=contextlib.nullcontext()),
             mock.patch.object(b, "run_booking", return_value=0) as run,

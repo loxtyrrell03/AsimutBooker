@@ -88,10 +88,10 @@ SETTINGS_FILE = APP_DIR / "data" / "settings.json"
 GUI_INSTANCE_LOCK_FILE = APP_DIR / "data" / "gui-runtime.lock"
 RECURRING_TASK_NAME = "AsimutBooker_Recurring"
 RECURRING_TASK_PATH = "\\"
-RECURRING_SCHEDULE_TEXT = "Every 15 minutes, 07:13-21:58"
+RECURRING_SCHEDULE_TEXT = "Every 15 minutes, 07:13-22:58"
 RECURRING_FIRST_RUN_LOCAL = "07:13"
 RECURRING_INTERVAL_ISO = "PT15M"
-RECURRING_DURATION_ISO = "PT14H46M"
+RECURRING_DURATION_ISO = "PT15H46M"
 RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
 RECURRING_RESTART_INTERVAL_ISO = "PT1M"
 MANUAL_RECONFIRMATION_NOTICE = (
@@ -3166,7 +3166,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             main_frame,
             text=(
                 "A single non-overlapping task checks for bookings every 15 minutes "
-                "from 07:13 through 21:58. Use Install / Repair to create the correct "
+                "from 07:13 through 22:58. Use Install / Repair to create the correct "
                 "schedule and replace obsolete per-time tasks."
             ),
             foreground="gray",
@@ -3406,7 +3406,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             "Install or repair the automatic booking schedule?\n\n"
             "This will:\n"
             "• Replace obsolete AsimutBooker tasks with one recurring task\n"
-            "• Run every 15 minutes from 07:13 through 21:58\n"
+            "• Run every 15 minutes from 07:13 through 22:58\n"
             "• Ignore overlapping starts and catch up after missed starts\n"
             "• Enable AC/DC wake-timer requests and plugged-in lid-close operation\n\n"
             "Wake-from-sleep still depends on Windows, firmware, and hardware support.\n\n"
@@ -3469,7 +3469,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             messagebox.showinfo(
                 "Schedule Ready",
                 "The automatic schedule is installed and verified.\n\n"
-                "It will run every 15 minutes from 07:13 through 21:58. "
+                "It will run every 15 minutes from 07:13 through 22:58. "
                 "AC/DC wake timers were requested; actual wake support depends on "
                 "Windows and the PC hardware.",
             )

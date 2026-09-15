@@ -18,6 +18,9 @@ from room_upgrades import (Reservation, find_room_upgrades, local_instant, time_
                           availability_after_upgrade, find_upgrade_opportunities, consolidation_summary)
 from upgrade_plan import publish_upgrade_plan
 from consolidation_staging import prepare_consolidation, execute_staged_consolidation
+from progressive_state import (protected_event_ids, remember_opportunities,
+                               load_state, denial_key, remember_denial)
+from upgrade_validation import RoomPermissionRefusal
 
 
 def planning_events(engine, tracker, ignored_events):
@@ -51,19 +54,35 @@ def tracker_for_events(engine, events, blackouts):
 def preserves_remaining_day_plan(engine, upgrade, *, events, gaps, settings,
                                   practice_plan, policy, now, extensions):
     """An improved room may not consume the only useful remaining practice slot."""
-    day = upgrade.original.day
+    return preserves_day_transition(engine, day=upgrade.original.day, before_events=events,
+        after_events=apply_upgrade_to_events(events, upgrade), before_gaps=gaps,
+        after_gaps=availability_after_upgrade(gaps, upgrade), settings=settings,
+        practice_plan=practice_plan, policy=policy, now=now, extensions=extensions)
+
+
+def preserves_day_transition(engine, *, day, before_events, after_events,
+                             before_gaps, after_gaps, settings, practice_plan,
+                             policy, now, extensions):
+    """Compare remaining target capacity for any exact, equal-duration change.
+
+    The ordinary planner, extension holds, fragmentation, same-room spacing and
+    time quality apply equally to a single upgrade or a mixed partial transfer.
+    Callers supply complete before/after observations; synthetic identities must
+    be unique and never escape into a live mutation.
+    """
     prefs = resolve_time_preferences(engine.load_time_preferences(settings), day)
     planning = load_booking_strategy(settings).daily_planning
     blackouts = engine.load_rebooking_blackouts(settings)
-    before = tracker_for_events(engine, events, blackouts)
+    before = tracker_for_events(engine, before_events, blackouts)
+    after = tracker_for_events(engine, after_events, blackouts)
+    if abs(before.get_hours_for_day(day) - after.get_hours_for_day(day)) > 1e-8:
+        return False
     disabled_dates = engine.load_disabled_dates(settings)
     enabled_dates = [d for d in policy.booking_dates(now.date()) if not engine.is_date_disabled(d, disabled_dates)]
     remaining_hours, _ = engine.calculate_target_hours_for_day(
         day, enabled_dates, before, practice_plan=practice_plan)
     if remaining_hours < policy.minimum_block_minutes / 60:
         return True
-    after_events = apply_upgrade_to_events(events, upgrade)
-    after = tracker_for_events(engine, after_events, blackouts)
 
     def coverage(tracker, available):
         holds = engine.calculate_extension_capacity_holds(
@@ -88,8 +107,8 @@ def preserves_remaining_day_plan(engine, upgrade, *, events, gaps, settings,
         return (held + sum(item.potential_minutes for item in chosen),
                 held + sum(engine.soft_time_value(item.start_minutes, item.potential_minutes, window) for item in chosen))
 
-    old_coverage, old_quality = coverage(before, gaps)
-    new_coverage, new_quality = coverage(after, availability_after_upgrade(gaps, upgrade))
+    old_coverage, old_quality = coverage(before, before_gaps)
+    new_coverage, new_quality = coverage(after, after_gaps)
     return new_coverage >= old_coverage and new_quality + 1e-8 >= old_quality
 
 
@@ -123,6 +142,12 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
     blackouts = engine.load_rebooking_blackouts(settings)
     attempts = set()
     rejected_bridges = set()
+    refused_rooms = set()
+    for key, until in load_state()['denials'].items():
+        if datetime.fromisoformat(until) > now:
+            import json
+            room, day = json.loads(key)
+            refused_rooms.add((room, day))
     previewed_ids = set()
     dry_run = bool(getattr(args, "upgrade_dry_run", False))
 
@@ -163,6 +188,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             return ()
         found = find_room_upgrades(Reservation.from_event(event), **planner_arguments(day, fresh, gaps, extensions, at))
         return tuple(candidate for candidate in found
+                     if (candidate.replacement.room, day.isoformat()) not in refused_rooms
                      if (not getattr(args, "only_room", None) or candidate.replacement.room == args.only_room)
                      and (getattr(args, "max_action_minutes", None) is None or candidate.original.duration <= args.max_action_minutes))
 
@@ -171,12 +197,15 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         found = find_room_consolidations(eligible_event_ids=allowed_ids, **arguments)
         found = (prepare_consolidation(c, excluded_steps=rejected_bridges, **arguments) for c in found)
         return tuple(c for c in found if c is not None and c.original.day == day
+                     and (c.replacement.room, day.isoformat()) not in refused_rooms
                      and (not getattr(args, "only_room", None) or c.replacement.room == args.only_room)
                      and (getattr(args, "max_action_minutes", None) is None or c.replacement.duration <= args.max_action_minutes)
                      and (max_actions is None or total_actions + c.action_count <= max_actions))
 
     def eligible_originals(events, at):
+        protected = protected_event_ids()
         return [e for e in events if e.get("isReservation") is True and e["eventId"] not in previewed_ids
+                and e['eventId'] not in protected
                 and e["room"] in policy.room_order
                 and (getattr(args, "upgrade_event_id", None) is None or e["eventId"] == args.upgrade_event_id)
                 and (not getattr(args, "only_date", None) or e["date"] == args.only_date)
@@ -223,6 +252,12 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                 allowed_ids = {e["eventId"] for e in originals if e["date"] == day.isoformat()}
                 prospects = find_upgrade_opportunities(eligible_event_ids=allowed_ids,
                     **planner_arguments(day, tracker, scanned[day], extensions, at))
+                # Persist routing hints for next run's early boundary work.
+                # Scoped previews must not replace autonomous planning state.
+                if not dry_run and not any(getattr(args, k, None) for k in
+                        ('only_date', 'only_room', 'upgrade_event_id', 'max_actions', 'max_action_minutes')):
+                    remember_opportunities(prospects, settings=settings, policy=policy, now=at,
+                                           checked_dates={day.isoformat()})
                 plan_days[day] = {"date": day.isoformat(), "observed_at": at.isoformat(),
                     "opportunities": [{"status": "waiting" if p.opens_at > at else "ready",
                         "opens_at": p.opens_at.isoformat(), "originals": [r.as_booking() for r in p.change.originals],
@@ -313,6 +348,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             previewed_ids.update(r.event_id for r in candidate.originals)
         else:
             total_actions += getattr(changed, 'actions_used', 0)
+            if isinstance(changed, RoomPermissionRefusal):
+                refused_rooms.add((changed.room, candidate.original.day.isoformat()))
+                remember_denial(changed.room, candidate.original.day, now=datetime.now().astimezone())
             failed = getattr(changed, 'failed_step', None)
             if failed is not None and len(failed.originals) == 1:
                 rejected_bridges.add((failed.original, failed.replacement))

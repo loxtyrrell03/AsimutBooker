@@ -1,9 +1,117 @@
 """Exact network contract for one room/time edit; no network or file effects."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from urllib.parse import urlsplit
 
 from room_upgrades import local_instant
+
+
+@dataclass(frozen=True)
+class RoomPermissionRefusal:
+    """A definite room-specific refusal, never an uncertain mutation result.
+
+    False-valued so existing callers continue to their next candidate. Callers
+    may remember the room for a bounded retry delay, without changing its saved
+    ranking or treating this observation as a permanent policy.
+    """
+
+    room: str
+    reason: str
+
+    def __bool__(self):
+        return False
+
+
+_SESSION_OR_SERVICE_ERROR = re.compile(
+    r"\b(?:log\s*in|sign\s*in|log(?:ged)?\s*out|session|authenticat\w*|"
+    r"csrf|network|server\s+error|service\s+unavailable|timed?\s*out|timeout)\b",
+    re.IGNORECASE,
+)
+_ROOM_TARGET = r"(?:this|the(?:\s+selected)?|that|selected)\s+(?:room|location)"
+_BOOK_ROOM_ACTION = r"(?:(?:book|reserve|use)(?:\s+in)?|make\s+(?:a\s+)?(?:booking|reservation)\s+(?:in|for))"
+_ROOM_PERMISSION = re.compile(
+    r"\b(?:you\s+(?:are\s+not|aren['’]t|(?:do\s+not|don['’]t)\s+have\s+permission)"
+    rf"(?:\s+(?:allowed|permitted|authori[sz]ed))?\s+to\s+{_BOOK_ROOM_ACTION}\s+{_ROOM_TARGET}"
+    rf"|you['’]re\s+not\s+(?:allowed|permitted|authori[sz]ed)\s+to\s+{_BOOK_ROOM_ACTION}\s+{_ROOM_TARGET}"
+    rf"|(?:booking|reservation)(?:s)?\s+(?:in|of|for)\s+{_ROOM_TARGET}\s+(?:is|are)\s+not\s+(?:allowed|permitted)"
+    rf"|{_ROOM_TARGET}\s+(?:cannot|can['’]t)"
+    r"\s+be\s+(?:booked|reserved)\s+by\s+you)\b",
+    re.IGNORECASE,
+)
+
+
+def room_permission_refusal_text(value):
+    """Recognize explicit room permissions, excluding login/service failures.
+
+    A generic 403, 'access denied', quota limit or 'not allowed' does not prove
+    a room permission. The caller must bind the text to its exact editor/check.
+    This classifier alone is never evidence that a Save did not take effect.
+    """
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text or _SESSION_OR_SERVICE_ERROR.search(text) or not _ROOM_PERMISSION.search(text):
+        return None
+    return text[:500]
+
+
+def session_or_service_error_text(value):
+    """Recognize diagnostics that cannot establish a safe booking-rule rejection."""
+    return isinstance(value, str) and bool(_SESSION_OR_SERVICE_ERROR.search(value))
+
+
+def response_room_permission_refusal(document):
+    """Return the reason from a rejected exact check, not from HTTP status.
+
+    Inspect only known message fields. Malformed or mixed service-error
+    evidence remains unclassified; callers retain their ordinary failure guard.
+    """
+    if not isinstance(document, dict):
+        return None
+    response = document.get("response")
+    if not isinstance(response, dict) or response.get("success") is not False:
+        return None
+    messages = []
+
+    def collect(value):
+        if isinstance(value, str):
+            messages.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, dict):
+            for key in ("message", "text", "description", "title", "reason"):
+                if key in value:
+                    collect(value[key])
+
+    rules = response.get("bookingrules", {})
+    if not isinstance(rules, dict):
+        return None
+    collect(rules.get("issues", []))
+    collect(response.get("message"))
+    top_messages = document.get("messages", {})
+    if not isinstance(top_messages, dict):
+        return None
+    collect(top_messages.get("errors", []))
+    if any(_SESSION_OR_SERVICE_ERROR.search(text) for text in messages):
+        return None
+    return next((reason for text in messages if (reason := room_permission_refusal_text(text))), None)
+
+
+def check_response_has_explicit_success(document):
+    """A stale enabled Save cannot override a rejected or malformed check."""
+    try:
+        response = document["response"]
+        issues = response.get("bookingrules", {}).get("issues", [])
+        return (response["success"] is True
+                and not document.get("messages", {}).get("errors")
+                and not response.get("forms")
+                and isinstance(issues, list)
+                and all(isinstance(issue, dict) and issue.get("class") == "message-info" for issue in issues))
+    except (TypeError, KeyError, AttributeError):
+        return False
 
 
 def upgrade_request_matches(request, upgrade, location_id, *, operation="check"):

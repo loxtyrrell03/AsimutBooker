@@ -18,6 +18,7 @@ class ExtensionValidationTests(unittest.TestCase):
         )
         self.response.request.method = "PATCH"
         self.response.request.post_data_json = self.data
+        self.response.json.return_value = {"response": {"success": True}}
         self.page.expect_response.return_value.__enter__.return_value.value = self.response
         self.save = self.page.locator.return_value.first
         self.save.count.return_value = 1
@@ -71,6 +72,25 @@ class ExtensionValidationTests(unittest.TestCase):
     def test_incomplete_response_body_stops(self):
         self.response.body.side_effect = RuntimeError("network failure")
         self.assertFalse(self.validate()[0])
+        self.save.is_enabled.assert_not_called()
+
+    def test_permission_response_skips_even_if_save_is_incorrectly_enabled(self):
+        self.response.json.return_value = {"response": {"success": False, "bookingrules": {
+            "issues": [{"class": "message-warning", "message": "You are not allowed to book this room"}]}}}
+        ok, detail = self.validate()
+        self.assertFalse(ok)
+        self.assertIn("not allowed to book this room", detail)
+        self.save.is_enabled.assert_not_called()
+        self.save.click.assert_not_called()
+
+    def test_rejected_malformed_or_auth_response_cannot_use_stale_enabled_save(self):
+        for payload in ({"response": {"success": False}}, {}, [],
+                        {"response": {"success": True}, "messages": {"errors": ["Session expired"]}},
+                        {"response": {"success": True, "bookingrules": {
+                            "issues": [{"class": "message-warning", "message": "Booking not allowed"}]}}}):
+            with self.subTest(payload=payload):
+                self.response.json.return_value = payload
+                self.assertFalse(self.validate()[0])
         self.save.is_enabled.assert_not_called()
 
     def test_permanently_disabled_save_is_never_forced(self):

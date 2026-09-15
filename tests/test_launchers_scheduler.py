@@ -1,6 +1,7 @@
 """Static safety checks for the Windows launchers and scheduler installer."""
 
 from pathlib import Path
+from datetime import datetime, timedelta
 import re
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
 from gui import AsimutBookerGUI, build_scheduler_remove_command
+import gui
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +77,32 @@ class SchedulerInstallerTests(unittest.TestCase):
         self.assertIn('$Trigger.Repetition = $Repetition', self.text)
         self.assertIn('ClassName "MSFT_TaskRepetitionPattern"', self.text)
         self.assertIn('Interval = "PT${RepeatMinutes}M"', self.text)
-        self.assertIn('$RepeatDurationIso = "PT14H46M"', self.text)
+        self.assertIn('$RepeatDurationIso = "PT15H46M"', self.text)
+
+    def test_two_minute_preparation_covers_every_late_edge_through_2300(self):
+        first = re.search(r'\$FirstRunTime = "([0-9:]+)"', self.text).group(1)
+        step = int(re.search(r'\$RepeatMinutes = ([0-9]+)', self.text).group(1))
+        duration = re.search(r'\$RepeatDurationIso = "PT([0-9]+)H([0-9]+)M"', self.text)
+        start = datetime.strptime(first, '%H:%M')
+        stop = start + timedelta(hours=int(duration.group(1)), minutes=int(duration.group(2)))
+        launches = []
+        value = start
+        while value < stop:
+            launches.append(value)
+            value += timedelta(minutes=step)
+        self.assertEqual(len(launches), 64)
+        self.assertEqual(launches[-1].strftime('%H:%M'), '22:58')
+        self.assertTrue(all(value.minute % 15 == 13 for value in launches))
+        edges = {(value + timedelta(minutes=2)).strftime('%H:%M') for value in launches}
+        self.assertTrue({'22:00', '22:15', '22:30', '22:45', '23:00'}.issubset(edges))
+        self.assertNotIn('23:15', edges)
+
+    def test_installer_and_gui_validate_and_display_same_daily_duration(self):
+        duration = re.search(r'\$RepeatDurationIso = "([^"]+)"', self.text).group(1)
+        first = re.search(r'\$FirstRunTime = "([^"]+)"', self.text).group(1)
+        self.assertEqual(gui.RECURRING_DURATION_ISO, duration)
+        self.assertEqual(gui.RECURRING_FIRST_RUN_LOCAL, first)
+        self.assertIn('07:13-22:58', gui.RECURRING_SCHEDULE_TEXT)
 
     def test_action_uses_headless_scheduled_launcher_mode(self):
         self.assertIn("--scheduled", self.text)

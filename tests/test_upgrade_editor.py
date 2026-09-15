@@ -14,7 +14,7 @@ import book_week as b
 import mutation_receipts as receipts
 from room_upgrades import Reservation, RoomUpgrade, RoomConsolidation
 from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
-                                upgrade_save_acknowledgement_consistent)
+                                upgrade_save_acknowledgement_consistent, RoomPermissionRefusal)
 from booking_preferences_guard import booking_preference_run
 from operation_control import OperationStopped
 
@@ -159,13 +159,21 @@ class UpgradeEditorTests(unittest.TestCase):
     def site(self, route):
         request = route.request
         if ";type=check" in request.url:
-            route.fulfill(json=result(self.mode != "check_rejected"))
+            payload = result(self.mode not in {"check_rejected", "check_permission"})
+            if self.mode == "check_permission":
+                payload["response"]["bookingrules"]["issues"] = [
+                    {"class": "message-warning", "message": "You do not have permission to book this room"}]
+            route.fulfill(json=payload)
         elif ";type=save" in request.url:
             self.save_calls.append(request.post_data_json)
-            if self.mode in {"save_rejected", "rejected_but_original_changed"}:
-                if self.mode == "rejected_but_original_changed":
+            if self.mode in {"save_rejected", "rejected_but_original_changed", "save_permission", "permission_but_changed"}:
+                if self.mode in {"rejected_but_original_changed", "permission_but_changed"}:
                     self.persisted = self.new
-                route.fulfill(json=result(False))
+                payload = result(False)
+                if self.mode in {"save_permission", "permission_but_changed"}:
+                    payload["response"]["bookingrules"]["issues"] = [
+                        {"class": "message-warning", "message": "You are not allowed to book this room"}]
+                route.fulfill(json=payload)
             elif self.mode == "lost_response":
                 self.persisted = self.new
                 route.abort()
@@ -312,6 +320,35 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertEqual(len(self.save_calls), 1)
         receipt, = receipts.load_journal(self.path)["receipts"].values()
         self.assertEqual(receipt["status"], "resolved")
+        self.assertFalse(self.other_mutations)
+
+    def test_permission_denied_check_retains_original_and_allows_later_candidate(self):
+        self.mode = "check_permission"
+        outcome = self.run_edit()
+        self.assertIsInstance(outcome, RoomPermissionRefusal)
+        self.assertFalse(outcome)
+        self.assertEqual(outcome.room, "Best")
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.path.exists())
+        self.assertFalse(self.save_calls)
+        self.mode = "success"
+        self.assertTrue(self.run_edit())
+        self.assertEqual(len(self.save_calls), 1)
+
+    def test_permission_denied_save_proves_original_before_safe_skip(self):
+        self.mode = "save_permission"
+        outcome = self.run_edit()
+        self.assertIsInstance(outcome, RoomPermissionRefusal)
+        self.assertEqual(self.persisted, self.original)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertFalse(receipts.list_pending(self.path))
+
+    def test_permission_message_cannot_hide_a_changed_original_after_save(self):
+        self.mode = "permission_but_changed"
+        with self.assertRaises(b.BookingVerificationError):
+            self.run_edit()
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertEqual(len(receipts.list_pending(self.path)), 1)
         self.assertFalse(self.other_mutations)
 
     def test_lost_save_response_never_retries_or_cancels(self):

@@ -32,6 +32,81 @@ prospects and shorter-horizon rooms that open later. It reaches across the full
 observed booking window rather than the ordinary seven-hour foresight period.
 A future gap can be taken by someone else; these records never authorize Save.
 
+## Progressive upgrades at a rolling horizon
+
+`data/progressive_upgrades.json` stores separate planning hints for the next
+run: exact source bookings, any verified upgraded prefix, the desired full
+session, the next opening boundary and the relevant preference fingerprint.
+The recurring worker uses these hints before its ordinary broad scan. It
+prepares within three minutes of the boundary, using freshly observed horizons
+and conservative site-clock evidence; preparation never permits early trimming.
+The existing recurring task starts every 15 minutes from 07:13 through 22:58,
+leaving preparation time before quarter-hour boundaries through 23:00. A missed
+run recalculates the largest currently useful prefix from fresh availability.
+
+Once a minimum useful prefix is available, a coordinated transfer can shorten
+or move the fallback and create that prefix in the better room. Subsequent runs
+grow the prefix in legal quarter-hour increments while retaining useful fallback
+bookings. The final minimum-sized fallback is transferred together. Shifted
+times and several original bookings are handled by interval planning rather
+than assuming their boundaries line up. The completed mixed arrangement must
+preserve booked minutes, time preferences, quotas and attainable missing daily
+target hours. The solver can try another fallback layout before rejecting a
+candidate. A normal extension needed to fill missing target time has priority
+over waiting for a room-only upgrade at the same boundary.
+
+The original full-session upgrade/consolidation path remains preferred when the
+whole replacement is available. If a teacher occupies the later part of an
+aspirational session, a still-free earlier prefix can nevertheless improve.
+If no further useful growth remains, the completed partial bookings are retained
+and released for ordinary future planning. New lessons, closures, relevant
+preference edits, changed booking identities and ignored/disabled dates require
+fresh planning. Window geometry and unrelated UI state do not invalidate plans.
+
+### Transfer risk and recovery
+
+Asimut does not provide an atomic transfer across two reservations. A
+shorten-first transfer briefly releases time before securing its replacement.
+Fresh preflight accepts only the exact destination with approved rules or the
+specific personal-overlap/compensated peak-quota warnings that the planned
+source changes will remove. Unknown, permission, horizon and other rule errors
+stop the transfer before release. Both new and existing destination editors
+receive this preflight, and the actual post-trim Save requires fresh approval.
+
+A strict `transfer` parent receipt records every before/after interval, the
+source adjustment order and each attempted operation before its remote effect.
+Create receipts are tied to that parent and their exact seed/restoration role.
+Progressive IDs cannot be independently moved by ordinary upgrades/extensions.
+Each completed transfer is independently proved from the full agenda and exact
+event pages. On a known failure, recovery reverses the recorded source order;
+a cancelled fallback may need recreation under a newly verified event ID.
+An unattempted source changed by the user is not silently recreated.
+
+Unknown Save outcomes, changed originals or unsuccessful restoration retain the
+pending transaction and block unrelated mutations. If another student takes the
+released fallback before restoration, booked time can remain missing until
+recovery; the system cannot guarantee an atomic handover. Saved state survives
+process interruption, including a crash after continuation publication but
+before receipt finalization. Read-only and isolated create/extension modes do
+not perform transfer recovery. Explicit action caps reserve rollback capacity.
+Scheduled transfers reserve time beneath the existing task hard limit, including
+authentication/lock waiting, and recheck this allowance after preparation.
+
+Known room-specific permission refusals skip the room/date for the current
+pass and a bounded 30-minute retry delay; they do not permanently blacklist the
+room. Authentication, service failures and uncertain Saves are not treated as
+room refusals. Invalid planning hints may be quarantined and rebuilt only with
+a valid journal and no pending transfer; invalid mutation evidence still stops
+autonomous changes.
+
+Offline tests include repeated restarts through seed/extension/final transfer,
+rejected and lost responses, last-donor recreation, unrelated/manual changes,
+teacher occupancy, shifted/fragmented hours, preference/closure changes, full
+quotas, capacity-preserving alternative layouts, and exact Chromium form checks.
+These are simulation/browser-fixture evidence until a real eligible horizon
+transfer is independently verified. The earlier live whole-room upgrades below
+do not establish live proof of this new progressive path.
+
 ## Safe execution and recovery
 
 A single-room upgrade retains its exact event ID, date and duration. Both times
@@ -94,6 +169,12 @@ also consume the action allowance, so an explicit action cap
 cannot be exceeded by hiding multiple writes inside one group operation.
 
 ## Verification
+
+The progressive transfer implementation passed all **1,218 Python tests**,
+including 278 deterministic crowded-calendar simulations and intercepted
+Chromium checks. Authenticated read-only inspection confirmed the live new-form
+request and conflict/quota warning format with all non-check mutations blocked.
+This verifies form compatibility, not a completed real progressive transfer.
 
 The initial comprehensive implementation passed all **1,042 Python tests**, 19
 phone Node tests, TypeScript, lint and the private static phone build. Tests

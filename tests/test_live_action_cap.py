@@ -331,7 +331,7 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
                 "_load_and_validate_runtime_settings",
                 return_value=({}, book_week.PracticePlan(), mock.Mock()),
             ),
-            mock.patch.object(book_week.time, "monotonic", side_effect=[0.0, 0.0]),
+            mock.patch.object(book_week.time, "monotonic", side_effect=[0.0, 0.0, 0.0]),
             mock.patch.object(book_week.time, "sleep") as sleep,
             mock.patch.object(book_week, "run_booking", return_value=0) as run,
             contextlib.redirect_stdout(io.StringIO()),

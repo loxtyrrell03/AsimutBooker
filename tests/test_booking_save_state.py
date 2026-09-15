@@ -401,6 +401,42 @@ class BookingSaveStateTests(unittest.TestCase):
         receipt.assert_not_called()
         page.locator("button:has-text('Save')").first.click.assert_not_called()
 
+    def test_late_extension_permission_refusal_verifies_exact_original_before_resolving(self):
+        page = self._extension_edit_page(post_save_visible_polls=2)
+        booking = {"room": self.ROOM, "date": self.BOOKING_DATE.isoformat(),
+                   "startTime": self.START, "endTime": "10:30",
+                   "eventId": 4242, "event_url": self.EVENT_URL}
+        refusal = book_week.RoomPermissionRefusal(self.ROOM, "You are not allowed to book this room")
+        ordering = []
+        with (mock.patch.object(book_week, "safe_goto"),
+              mock.patch.object(book_week, "record_pending_extension", return_value={"id": "pending"}),
+              mock.patch.object(book_week, "_visible_room_permission_refusal", side_effect=[None, refusal]),
+              mock.patch.object(book_week, "verify_persisted_booking_page",
+                                side_effect=lambda *_args: ordering.append("verify")) as verify,
+              mock.patch.object(book_week, "resolve_mutation_receipt",
+                                side_effect=lambda *_args, **_kw: ordering.append("resolve"))):
+            outcome = book_week.edit_reservation_end_time(page, booking, self.END)
+        self.assertIs(outcome, refusal)
+        self.assertEqual(ordering, ["verify", "resolve"])
+        verify.assert_called_once_with(page, self.ROOM, self.BOOKING_DATE.isoformat(), self.START, "10:30")
+        page.locator("button:has-text('Save')").first.click.assert_called_once()
+
+    def test_late_extension_permission_refusal_without_intact_original_keeps_pending(self):
+        page = self._extension_edit_page(post_save_visible_polls=2)
+        booking = {"room": self.ROOM, "date": self.BOOKING_DATE.isoformat(),
+                   "startTime": self.START, "endTime": "10:30",
+                   "eventId": 4242, "event_url": self.EVENT_URL}
+        refusal = book_week.RoomPermissionRefusal(self.ROOM, "You are not allowed to book this room")
+        with (mock.patch.object(book_week, "safe_goto"),
+              mock.patch.object(book_week, "record_pending_extension", return_value={"id": "pending"}),
+              mock.patch.object(book_week, "_visible_room_permission_refusal", side_effect=[None, refusal]),
+              mock.patch.object(book_week, "verify_persisted_booking_page",
+                                side_effect=book_week.BookingVerificationError("original is not intact")),
+              mock.patch.object(book_week, "resolve_mutation_receipt") as resolve,
+              self.assertRaises(book_week.BookingVerificationError)):
+            book_week.edit_reservation_end_time(page, booking, self.END)
+        resolve.assert_not_called()
+
     def test_extension_post_save_page_error_is_never_returned_as_retryable(self):
         page = self._extension_edit_page(
             polling_error=RuntimeError("event editor disappeared unexpectedly")

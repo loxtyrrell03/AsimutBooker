@@ -1,3 +1,43 @@
+## 2026-09-15 progressive horizon transfers and room refusals
+
+- `progressive_planner.py` plans a bookable superior-room prefix plus useful
+  same-room fallback remainders, including shifted/fragmented originals. Every
+  completed step preserves minutes, time fit, quotas and attainable daily-target
+  capacity. Later teacher occupancy does not discard a still-available prefix;
+  alternate remainder layouts are searched with bounded work. Whole-session
+  upgrades retain their existing path when fully available.
+- `progressive_state.py` persists routing hints and exact verified continuation
+  identities separately from display-only `upgrade_plan.json`. The normal runner
+  prepares due transfers before broad scanning; missing-target extensions retain
+  priority. Actual room policy, agenda, grid and preference checks remain Save
+  authority. No source is trimmed before the conservative live horizon boundary.
+- A strict `transfer` parent in `mutation_receipts.py` records exact intervals,
+  adjustment order and attempted operations. Parent-scoped seed/restoration
+  creates cannot claim existing IDs. Recovery reverses actual source order,
+  verifies newly recreated donor IDs when necessary, and never automatically
+  restores an unattempted source changed externally. Unknown/failed restoration
+  blocks unrelated mutations. Ordinary paths protect active transfer IDs.
+- Asimut cannot atomically transfer across reservations: shortening first can
+  expose released time to competitors. Preflight checks both new/existing editors
+  before release and permits only approved or exactly compensated personal/peak
+  warnings. Post-trim Save is freshly validated; recovery cannot promise that a
+  released fallback remains available. Action/time budgets reserve rollback work.
+- Explicit room-permission refusals continue to other candidates with scoped,
+  expiring room/date backoff. Auth/service errors and uncertain responses remain
+  separate. UI geometry does not invalidate planning; booking-control changes do.
+  Corrupt hints may rebuild only with a valid journal and no pending transfer.
+- See `docs/room-upgrades.md` for the transaction boundary and evidence limits.
+  The former live whole-room/consolidation audit below does not prove a live
+  progressive transfer. Source, simulation and exact browser checks are verified
+  separately from live activation and real booking outcomes.
+- All 1,218 Python tests pass, including 278 deterministic crowded-calendar
+  simulations, restart/recovery cases and intercepted Chromium form checks.
+  Authenticated new-booking checks confirmed the actual request/warning format
+  with every non-check mutation blocked. No real progressive transfer is claimed
+  by those checks. Recurring launch coverage now extends to 22:58 (07:13 start,
+  15-minute interval, PT15H46M duration), preparing final edges through 23:00;
+  installer and desktop task validation share the same schedule contract.
+
 ## 2026-09-15 completed live upgrade audit
 
 - Three real staged consolidations and one ordinary room upgrade were completed.

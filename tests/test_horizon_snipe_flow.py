@@ -787,6 +787,7 @@ class FreshBoundaryValidationTests(unittest.TestCase):
         response = mock.MagicMock()
         response.url = "https://rwcmd.asimut.net/services/v2/event/type=check"
         response.ok = True
+        response.json.return_value = {"response": {"success": True}}
         pending = mock.MagicMock()
         pending.value = response
         response_context = mock.MagicMock()
