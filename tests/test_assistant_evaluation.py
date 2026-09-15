@@ -73,6 +73,12 @@ class _ScriptedEvalController:
 
 
 class SyntheticBookerDispatcherTests(unittest.TestCase):
+    def test_failed_outcome_grader_accepts_plain_did_not_confirm_without_accepting_success(self):
+        from tools import evaluate_assistant as harness
+        case = harness.EvalCase('wording', '', '', expected={'failed_outcome': True})
+        self.assertEqual(harness.evaluate_request_contract(case, [], 'The dry run did not confirm the edit.'), [])
+        self.assertTrue(harness.evaluate_request_contract(case, [], 'I changed the booking as requested.'))
+
     def test_cancelled_reservation_stays_absent_in_followup_context(self):
         case = _case('conversation_cancel_time')
         self.dispatcher.begin_case(case)

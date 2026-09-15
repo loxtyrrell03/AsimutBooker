@@ -65,3 +65,18 @@ booking selection and time arguments.
 
 Source tests, model simulation, served phone verification and real booking
 mutations are separate evidence. No real booking is needed to test this feature.
+
+### 15 September 2026 result
+
+- Full offline suite: 1,289 tests passed. After final tool-schema corrections,
+  all 165 focused assistant/editor/recovery checks passed.
+- All nine final Luna/high/standard model scenarios passed. An initial failure
+  for the truthful phrase "did not confirm" was a wording-grader omission;
+  the existing trace was regraded, and 43 evaluator tests pass. No production
+  model setting changed and no real reservation was edited for testing.
+- Canonical source and the existing idle phone backend were activated. Private
+  HTTPS session/bootstrap and the rendered connected Assistant passed. The
+  existing phone shell, private route, all unrelated Serve handlers, settings,
+  history and desktop sessions were retained. Reopen existing desktop windows
+  to load the new Python code. Physical-phone and real time-edit proof remain
+  separate from these checks.

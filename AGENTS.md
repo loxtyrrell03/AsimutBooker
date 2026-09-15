@@ -15,8 +15,24 @@
   must expose all edit fields in one plain object: `oneOf`, including inside
   `allOf`, hid common arguments from the model. The host enforces mode-specific
   argument sets independently. Contract revision 3 refreshes stale reasoning
-  context while retaining transcript history. Live activation is recorded below
-  when completed; these tests made no real bookings or edits.
+  context while retaining transcript history. These tests made no real bookings
+  or edits. The final 165 focused checks passed after schema correction.
+- All nine final synthetic model scenarios pass: trims, relative/absolute later
+  shifts, explicitly later forward wording, clashes, ambiguous identity and
+  direction, uncertain Save and read-only questions. The accurate phrase
+  "did not confirm" initially failed a narrow wording grader; the saved trace
+  passes the corrected grader, which has its own regression. Forty-three
+  evaluator checks pass; production remains Terra/medium/Fast.
+- Activated in the canonical worker checkout and reloaded only the existing
+  idle phone task after the scheduled run finished, holding the Booker and
+  assistant mutation locks. Settings/history hashes and every Serve handler
+  were preserved. Exact private HTTPS/session/bootstrap and rendered Assistant
+  "Booker ready" plus the contract-refresh banner passed on the unchanged
+  `https://lox-pc.tail89d19b.ts.net:10443/` origin. The existing phone shell and
+  desktop sessions were retained; reopen desktop windows to load the feature.
+  This is PC-browser evidence, not physical-phone or live time-edit proof.
+  Synthetic reports and local verification logs are ignored under
+  `artifacts/assistant-time-edits/`.
 
 ## 2026-09-15 verified live progressive upgrades
 

@@ -2548,7 +2548,7 @@ def evaluate_request_contract(case, calls, final):
         reported = {day: hours for call in updates for day, hours in call.result.get('resulting_daily_targets', {}).items()}
         if reported != expected['resulting_hours']:
             issues.append('follow-up adjustment reported the wrong resulting saved target')
-    if expected.get('failed_outcome') and not re.search(r'no (?:booking|room|move)|no currently bookable|zero|unconfirm|uncertain|not (?:booked|confirmed)|couldn.t|could not be verified|unable|didn.t', final, re.I):
+    if expected.get('failed_outcome') and not re.search(r'no (?:booking|room|move)|no currently bookable|zero|unconfirm|uncertain|not (?:booked|confirmed)|did not (?:confirm|verify)|couldn.t|could not be verified|unable|didn.t', final, re.I):
         issues.append('final did not disclose the unsuccessful outcome')
     if expected.get('elapsed') and not re.search(r'elapsed|expired|(?:window|interval).*(?:passed|ended)|passed.*(?:scan|check)', final, re.I | re.S):
         issues.append('elapsed scan window was not explained')
