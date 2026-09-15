@@ -119,6 +119,22 @@ class StagingTests(unittest.TestCase):
         wrong = RoomUpgrade(self.donor, replace(self.bridge.replacement, start=1095, end=1155))
         self.assertFalse(staging.transaction_allows_step(self.receipt, wrong))
 
+    def test_fresh_step_validation_proves_bridge_anchor_and_exact_restoration(self):
+        engine = self.engine()
+        page = mock.MagicMock()
+        def arguments(*args, **kwargs):
+            self.assertIsNotNone(kwargs['verified_tracker'])
+            return {**self.args, 'events': copy.deepcopy(self.events)}
+        with mock.patch.object(staging, 'fresh_staging_arguments', side_effect=arguments):
+            self.assertTrue(staging.revalidate_staging_step(engine, page, self.receipt, self.bridge))
+            self.events = apply_upgrade_to_events(self.events, self.bridge)
+            self.assertTrue(staging.revalidate_staging_step(engine, page, self.receipt, self.staged.prepared))
+            reverse = RoomUpgrade(self.bridge.replacement, self.donor)
+            self.args['available_data'].append(dict(room='Fallback', slots=[dict(startHour=17, endHour=18)]))
+            self.assertTrue(staging.revalidate_staging_step(engine, page, self.receipt, reverse, restoring=True))
+            self.args['available_data'] = []
+            self.assertFalse(staging.revalidate_staging_step(engine, page, self.receipt, reverse, restoring=True))
+
     def engine(self):
         engine = mock.MagicMock()
         engine.BookingVerificationError = b.BookingVerificationError

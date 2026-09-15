@@ -1,9 +1,9 @@
-"""Fresh scan, whole-day comparison and bounded execution of reservation upgrades.
+"""Fresh scan, whole-day comparison and verified execution of reservation upgrades.
 
 The existing booking engine is passed explicitly because its CLI also runs as
 ``__main__``. Importing it here would create a second set of live-policy globals.
-Normal creates/extensions finish first; this phase never reserves speculative
-capacity or cancels any reservation.
+Normal creates/extensions finish first. Exact transaction recovery protects
+every original until the full replacement is independently verified.
 """
 
 import copy

@@ -3229,7 +3229,7 @@ def verify_consolidation_state(page, receipt, *, agenda_events=None):
 
 
 def finish_consolidation(page, receipt):
-    """Resume only donor retirement; never repeat the anchor Save after a crash."""
+    """Recover exact staging or donor retirement without repeating an uncertain Save."""
     pending = list_pending_mutation_receipts()
     if len(pending) != 1 or pending[0] != receipt or receipt["kind"] != "consolidation":
         raise BookingVerificationError("Consolidation cleanup requires its sole exact pending transaction")
@@ -3657,6 +3657,12 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
     except (BookingPreferencesChanged, BookingVerificationError, OperationStopped):
         raise
     except Exception as exc:
+        try:
+            dialogs = page.get_by_role('dialog').all_inner_texts()
+            if dialogs:
+                print('Upgrade blocked by dialog: ' + ' | '.join(dialogs))
+        except Exception:
+            pass
         if receipt is not None or save_started:
             raise BookingVerificationError(
                 f"Room-upgrade outcome requires reconciliation (receipt {receipt['id'] if receipt else 'unknown'}): {exc}"

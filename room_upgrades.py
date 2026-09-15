@@ -1,8 +1,8 @@
 """Pure, coverage-preserving room/time upgrades from fresh site observations.
 
-A candidate is one edit of one existing reservation, on the same date and for
-the same duration. It never authorizes cancellation, shrinking or a new Save.
-The runtime must refresh the agenda/grid and validate the exact edit with Asimut.
+Candidates retain the date and total duration, including when several exact
+reservations are consolidated. The runtime must refresh the agenda/grid and
+validate each exact edit with Asimut before any covered donor is retired.
 """
 
 from dataclasses import dataclass

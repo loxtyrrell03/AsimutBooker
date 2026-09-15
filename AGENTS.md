@@ -20,6 +20,11 @@
   cover strict windows, exact parent scope, rejection, lost responses, restoration
   failure and three peak fragments. Source/fixture checks precede the live staged
   sweep; do not infer successful real consolidation from an approved bridge preview.
+- Staging reuses the complete agenda already returned by independent transaction
+  proof, then refreshes the room grid; it no longer scans the same agenda twice
+  while leaving the editor open. Forty-two focused staging/editor checks pass,
+  including real step revalidation and exact restoration. Blocking editor dialogs
+  are reported for diagnosis; unknown overlays never authorize a forced click.
 
 ## 2026-09-15 comprehensive upgrade planning and consolidation
 

@@ -93,7 +93,7 @@ def transaction_allows_step(receipt, step):
     return False
 
 
-def fresh_staging_arguments(engine, page, day):
+def fresh_staging_arguments(engine, page, day, *, verified_tracker=None):
     from booking_strategy import load_booking_strategy
     from date_time_preferences import resolve_time_preferences
     from room_upgrade_runtime import planning_events
@@ -102,10 +102,11 @@ def fresh_staging_arguments(engine, page, day):
     ignored = engine.load_ignored_events(settings)
     blackouts = engine.load_rebooking_blackouts(settings)
     policy = engine.require_live_room_policy()
-    tracker = engine.BookingTracker()
+    tracker = verified_tracker if verified_tracker is not None else engine.BookingTracker()
     now = datetime.now().astimezone()
-    engine.scan_agenda(page, tracker, now.date(), ignored_events=ignored,
-                      window_dates=policy.booking_dates(now.date()), snapshot_path=engine.AGENDA_SNAPSHOT_FILE)
+    if verified_tracker is None:
+        engine.scan_agenda(page, tracker, now.date(), ignored_events=ignored,
+                          window_dates=policy.booking_dates(now.date()), snapshot_path=engine.AGENDA_SNAPSHOT_FILE)
     events, ignored_ids = planning_events(engine, tracker, ignored)
     engine.open_practice_room_overview(page, now.date())
     if day != now.date():
@@ -127,11 +128,11 @@ def revalidate_staging_step(engine, page, receipt, step, *, restoring=False):
         return False
     check = page.context.new_page()
     try:
-        outcome, _ = engine.verify_consolidation_state(check, receipt)
+        outcome, verified_tracker = engine.verify_consolidation_state(check, receipt)
         if outcome not in {'untouched', 'staged'}:
             return False
         group = consolidation_from_receipt(receipt)
-        args = fresh_staging_arguments(engine, check, step.original.day)
+        args = fresh_staging_arguments(engine, check, step.original.day, verified_tracker=verified_tracker)
         if isinstance(step, RoomConsolidation):
             possible = find_room_upgrades(step.original, _originals=step.originals, **args)
             # The planner accounts for the final state; ensure that the actual
