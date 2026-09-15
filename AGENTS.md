@@ -1,3 +1,23 @@
+## 2026-09-15 completed live upgrade audit
+
+- Three real staged consolidations and one ordinary room upgrade were completed.
+  Every enlarged anchor was independently verified before donor retirement. The
+  final separate agenda/grid scan covered 31 rooms across all five eligible dates
+  and 260 observed gaps; no further candidate met the saved constraints. Exact
+  receipt-to-agenda comparison accounted for every removed ID, preserved each
+  date's total minutes and unrelated events, and found no pending receipt.
+- Earlier blocked attempts were reconciled against the original reservations;
+  they did not lose booked time. Private before/after agendas, network-check
+  evidence, interrupted-attempt diagnostics and the full audit remain ignored
+  under `artifacts/comprehensive-upgrades/`; do not commit personal schedules.
+- A later uncertain action now retains earlier verified successes in its run
+  history, scoped to the current run with a context variable. Ten focused
+  publication/scheduled-queue checks pass. The broad 1,062-test run and additional
+  focused reporting checks distinguish booking operations from internal actions.
+- The existing private phone build is `20260915-comprehensive-upgrades`, on the
+  unchanged canonical `lox-pc` route. Scheduled workers load the canonical source;
+  existing desktop windows retain their sessions and reload new controls on reopen.
+
 ## 2026-09-15 staged consolidation after live preview
 
 - The real no-Save sweep proved that Asimut rejects an enlarged anchor while a

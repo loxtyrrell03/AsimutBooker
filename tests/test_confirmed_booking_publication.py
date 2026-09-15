@@ -86,6 +86,26 @@ class ConfirmedBookingPublicationTests(unittest.TestCase):
             self.assertEqual(history['runs'][0]['bookings_made'], 1)
             self.assertEqual(history['runs'][0]['details'], detail)
 
+    def test_later_uncertain_action_does_not_erase_earlier_verified_success(self):
+        def interrupted(*args):
+            book_week.verify_mutation_receipt(self.receipt['id'])
+            raise book_week.BookingVerificationError('Later edit needs reconciliation')
+        with mock.patch.object(book_week, '_load_and_validate_runtime_settings', return_value=({}, None, None)), \
+             mock.patch.object(book_week, 'SingleInstanceLock') as lock, \
+             mock.patch.object(book_week, 'run_booking', side_effect=interrupted), \
+             mock.patch.object(book_week, '_mark_mutation_verified', return_value=self.receipt), \
+             mock.patch.object(book_week, 'apply_verified_reservation'), \
+             mock.patch.object(book_week, 'send_notification'), \
+             mock.patch.object(book_week, '_published_receipts', set()), \
+             mock.patch.object(book_week, '_notified_booking_details', set()), \
+             mock.patch.object(book_week, 'save_history') as history:
+            lock.return_value.acquire.return_value = True
+            self.assertEqual(book_week.main(['--headless', '--upgrades-only']), 5)
+            self.assertEqual(history.call_args.args[0], 1)
+            self.assertIn('EXTENDED: Weston Gallery 2026-09-16 12:00-14:00', history.call_args.args[2])
+            self.assertEqual(history.call_args.kwargs['outcome'], 'reconciliation_required')
+            self.assertIsNone(book_week._run_verified_details.get())
+
     def test_display_failure_does_not_hide_verified_success_or_notification(self):
         with mock.patch.object(book_week, '_mark_mutation_verified', return_value=self.receipt), \
              mock.patch.object(book_week, 'apply_verified_reservation', side_effect=OSError('disk')), \

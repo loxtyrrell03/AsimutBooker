@@ -103,7 +103,19 @@ user-ranked Weston preference, retained daily capacity, explicit freeze values,
 real Chromium editor requests, rejected checks, lost Save responses, donor
 retirement guards and recovery after partial completion.
 
-The staging refinement passed a full 1,057-test Python run, with further focused
-checks for rejected-slot alternatives and multi-donor peak coverage. The real
-no-Save preview exposed Asimut's overlapping-person rejection and motivated this
-refinement. Final live outcomes and publication evidence follow separately.
+After the live-path refinements, the full **1,062-test Python suite** passed.
+Additional publication, runtime, recovery and scheduled-queue checks cover
+accurate consolidation counts, notification deduplication and retaining earlier
+verified successes when a later action requires reconciliation.
+
+The real preview exposed Asimut's overlapping-person rejection. Staging solved
+that constraint; live testing also exposed a sticky time picker. The editor now
+dismisses only the identified picker through its own backdrop, verifies the
+times unchanged, and stops before Save if an unknown overlay blocks it.
+
+Three real staged consolidations and one ordinary upgrade completed. A separate
+final scan covered all five eligible dates, 31 rooms and 260 observed gaps, with
+no further candidate meeting the saved constraints. Exact receipt-to-agenda
+comparison preserved every date's booked minutes and unrelated events, accounted
+for every removed donor and found no pending transaction. The private evidence
+is retained locally in the ignored `artifacts/comprehensive-upgrades/` folder.

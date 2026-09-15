@@ -23,6 +23,7 @@ import argparse
 import os
 import copy
 from contextlib import nullcontext
+from contextvars import ContextVar
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, replace
@@ -9139,6 +9140,7 @@ def scan_agenda(
 
 _published_receipts = set()
 _notified_booking_details = set()
+_run_verified_details = ContextVar('run_verified_booking_details', default=None)
 
 
 def verify_mutation_receipt(receipt_id, *, event_url=None):
@@ -9172,6 +9174,9 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
         end_hour, end_minute = map(int, receipt['end'].split(':'))
         minutes = (end_hour - start_hour) * 60 + end_minute - start_minute
         detail = f"{receipt['date']} {receipt['room']} {receipt['start']} {receipt['end']} {minutes}"
+    completed = _run_verified_details.get()
+    if completed is not None and detail not in completed:
+        completed.append(detail)
     formatted = format_booking_notification_detail(detail)
     # Reserve before sending: a lost HTTP response must not cause a duplicate.
     _notified_booking_details.add(formatted)
@@ -12114,6 +12119,8 @@ def main(argv=None):
         return 3
 
     runtime_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
+    completed_details = []
+    completed_token = _run_verified_details.set(completed_details)
     try:
         acquired = runtime_lock.acquire()
         wait_seconds = (
@@ -12155,9 +12162,9 @@ def main(argv=None):
         message = f"RECONCILIATION REQUIRED: {exc}"
         print(f"ERROR: {message}")
         save_history(
+            len(completed_details),
             0,
-            0,
-            [message],
+            [message, *completed_details],
             notify=False,
             outcome="reconciliation_required",
         )
@@ -12172,6 +12179,7 @@ def main(argv=None):
         return 1
     finally:
         runtime_lock.release()
+        _run_verified_details.reset(completed_token)
 
 
 if __name__ == "__main__":
