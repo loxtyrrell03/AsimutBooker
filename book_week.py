@@ -3438,6 +3438,11 @@ def cancel_reservation_exact(
                     or transfer_revalidate() is not True):
                 raise BookingVerificationError('Transfer cancellation lost its fresh boundary proof')
         with booking_save_boundary() if parent_receipt is not None else nullcontext():
+            if transfer_receipt is not None:
+                # Record attempt only after exact target proof and the final
+                # preference/Stop guard, immediately before the destructive click.
+                from mutation_receipts import mark_transfer_step
+                mark_transfer_step(transfer_receipt, f'source:{event_id}')
             cancel_option.click(no_wait_after=True, timeout=5000)
             page.wait_for_timeout(750)
             confirmation = _optional_cancel_confirmation(page)
@@ -3742,6 +3747,10 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
                     original=receipt_original(original),
                     **({"originals": [receipt_original(r) for r in upgrade.originals]} if consolidation else {}),
                 )
+                if isinstance(upgrade, TransferEdit):
+                    from mutation_receipts import mark_transfer_step
+                    from progressive_transactions import transfer_edit_marker
+                    mark_transfer_step(receipt, transfer_edit_marker(receipt, upgrade))
                 save_started = True  # A throwing click can still have reached Asimut.
                 save.click(no_wait_after=True, timeout=5000)
         saved = pending_save.value

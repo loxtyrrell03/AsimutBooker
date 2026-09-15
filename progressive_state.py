@@ -122,6 +122,7 @@ def protected_event_ids():
 
 def remember_opportunities(prospects, *, settings, policy, now, checked_dates):
     """A cache routes the next scan; every tuple and rule is freshly revalidated."""
+    from progressive_discovery import PartialUpgradeOpportunity
     digest = fingerprint(settings)
     def update(data):
         active = [p for p in data['plans'] if p['seed'] is not None]
@@ -138,9 +139,17 @@ def remember_opportunities(prospects, *, settings, policy, now, checked_dates):
             horizon = timedelta(minutes=policy.horizon_minutes_for(target.room),
                                 seconds=policy.site_clock_offset_bounds[0])
             full_at = local_instant(target.day, target.end) - horizon
-            if full_at <= now or target.duration <= policy.minimum_block_minutes:
+            if target.duration <= policy.minimum_block_minutes:
                 continue
-            first = local_instant(target.day, target.start + policy.minimum_block_minutes) - horizon
+            if isinstance(prospect, PartialUpgradeOpportunity):
+                # A real sparse gap can justify a partial upgrade even after
+                # the full target is temporally open. Only this planner-proved
+                # marker admits it; the tail is never represented as free.
+                first = prospect.first_step.opens_at
+            else:
+                if full_at <= now:
+                    continue
+                first = local_instant(target.day, target.start + policy.minimum_block_minutes) - horizon
             key = (c.originals, target.room, target.start, target.end)
             if key in seen:
                 continue

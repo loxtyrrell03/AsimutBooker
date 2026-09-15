@@ -58,6 +58,11 @@ over waiting for a room-only upgrade at the same boundary.
 The original full-session upgrade/consolidation path remains preferred when the
 whole replacement is available. If a teacher occupies the later part of an
 aspirational session, a still-free earlier prefix can nevertheless improve.
+Discovery also considers short free gaps without requiring any full-session
+gap in that room. Its bounded search validates the actual prefix and fallback;
+it never treats the aspirational remainder as observed free time.
+New partial prospects receive one bounded execution pass when the ordinary
+full-session sweep finishes, avoiding an unnecessary wait for the next run.
 If no further useful growth remains, the completed partial bookings are retained
 and released for ordinary future planning. New lessons, closures, relevant
 preference edits, changed booking identities and ignored/disabled dates require
@@ -81,6 +86,11 @@ Each completed transfer is independently proved from the full agenda and exact
 event pages. On a known failure, recovery reverses the recorded source order;
 a cancelled fallback may need recreation under a newly verified event ID.
 An unattempted source changed by the user is not silently recreated.
+Attempt markers are written at the final guarded click after exact identity
+proof, so a manual deletion during preparation is not treated as the booker's
+own cancellation. Recovery first checks the current disabled dates, blackouts,
+ignored bookings, enabled zero targets and strict hours. Incompatible recovery
+requires user attention instead of overriding those controls.
 
 Unknown Save outcomes, changed originals or unsuccessful restoration retain the
 pending transaction and block unrelated mutations. If another student takes the
@@ -95,7 +105,8 @@ authentication/lock waiting, and recheck this allowance after preparation.
 Known room-specific permission refusals skip the room/date for the current
 pass and a bounded 30-minute retry delay; they do not permanently blacklist the
 room. Authentication, service failures and uncertain Saves are not treated as
-room refusals. Invalid planning hints may be quarantined and rebuilt only with
+room refusals. A duration, horizon or quota rejection still permits other valid
+shorter/earlier candidates. Invalid planning hints may be quarantined and rebuilt only with
 a valid journal and no pending transfer; invalid mutation evidence still stops
 autonomous changes.
 
@@ -169,6 +180,12 @@ also consume the action allowance, so an explicit action cap
 cannot be exceeded by hiding multiple writes inside one group operation.
 
 ## Verification
+
+After sparse discovery and recovery refinements, all **1,246 Python tests**
+passed, including guarded cancellation timing, changed recovery controls,
+same-run partial dispatch and preserving a final 15-minute extension's peak
+allowance. A fresh five-date live whole-session preview found no further eligible
+whole-session improvement and retained all 13 existing reservations unchanged.
 
 The progressive transfer implementation passed all **1,218 Python tests**,
 including 278 deterministic crowded-calendar simulations and intercepted

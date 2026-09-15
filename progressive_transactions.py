@@ -121,6 +121,17 @@ def transfer_allows_step(receipt, step):
     return any((step.original, step.replacement) in {(a, b), (b, a)} for a, b in pairs)
 
 
+def transfer_edit_marker(receipt, step):
+    """Identify an exact edit only when its final guarded Save is ready."""
+    if not transfer_allows_step(receipt, step):
+        raise ValueError('Edit is outside its exact transfer parent')
+    t = receipt['transfer']
+    if t['seed_before'] and step.original.event_id == t['seed_before']['event_id']:
+        return 'destination'
+    original = next(reservation(r) for r in t['originals'] if r['event_id'] == step.original.event_id)
+    return f"{'restore' if step.replacement == original else 'source'}:{original.event_id}"
+
+
 def transfer_allows_cancel(receipt, target):
     if receipt.get('kind') != 'transfer':
         return False

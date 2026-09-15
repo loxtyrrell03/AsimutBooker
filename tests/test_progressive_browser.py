@@ -44,6 +44,9 @@ class ProgressiveSeedGuardTests(unittest.TestCase):
         patch = mock.patch.object(receipts, "record_pending_create", return_value=self.child)
         self.record = patch.start()
         self.addCleanup(patch.stop)
+        patch = mock.patch.object(receipts, 'mark_transfer_step')
+        self.mark = patch.start()
+        self.addCleanup(patch.stop)
 
     def test_preparation_sets_exact_times_but_never_saves_or_journals(self):
         prepared = prepare_seed(self.engine, self.page, self.desired)
@@ -68,6 +71,7 @@ class ProgressiveSeedGuardTests(unittest.TestCase):
         self.assertEqual(self.save.click.call_args_list,
                          [mock.call(trial=True, timeout=3000), mock.call(no_wait_after=True, timeout=5000)])
         self.engine.wait_for_created_booking_outcome.assert_called_once()
+        self.mark.assert_called_once_with(self.parent, 'destination')
 
     def test_wrong_parent_role_or_desired_tuple_never_reaches_save(self):
         changes = [
@@ -81,6 +85,7 @@ class ProgressiveSeedGuardTests(unittest.TestCase):
                 save_seed(self.engine, prepared, parent, role=role)
         self.record.assert_not_called()
         self.save.click.assert_not_called()
+        self.mark.assert_not_called()
 
     def test_existing_anchor_cannot_be_recreated_as_a_new_seed(self):
         self.parent["transfer"] = transfer_fixture("extending")
@@ -335,6 +340,67 @@ class ProgressiveDestinationPreflightTests(unittest.TestCase):
         self.assertFalse(preflight_transfer_destination(self.engine, self.prepared, self.plan))
 
 
+class ProgressiveCancelBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.parent = {'id': 'parent', 'kind': 'transfer', 'transfer': transfer_fixture('complete')}
+        self.original = reservation(self.parent['transfer']['originals'][0])
+        self.page, self.cancel = mock.MagicMock(), mock.Mock()
+        self.order = []
+        self.prove = self.stack.enter_context(mock.patch.object(b, 'verify_persisted_booking_page',
+                                                               side_effect=lambda *args: self.order.append('proof')))
+        self.mark = self.stack.enter_context(mock.patch.object(receipts, 'mark_transfer_step',
+                                                              side_effect=lambda *args: self.order.append('marker')))
+        self.cancel.click.side_effect = lambda **kwargs: self.order.append('click')
+        @contextlib.contextmanager
+        def guard():
+            self.order.append('guard')
+            yield
+        self.stack.enter_context(mock.patch.object(b, 'booking_save_boundary', guard))
+        for name in ('safe_goto', 'remove_extendable_booking_by_event_id', 'clear_booking_plan'):
+            self.stack.enter_context(mock.patch.object(b, name))
+        self.stack.enter_context(mock.patch.object(b, '_find_exact_cancellation_card', return_value=mock.Mock()))
+        self.stack.enter_context(mock.patch.object(b, '_unique_visible_control', return_value=mock.Mock()))
+        self.stack.enter_context(mock.patch.object(b, '_cancel_menu_option', return_value=self.cancel))
+        self.stack.enter_context(mock.patch.object(b, '_optional_cancel_confirmation', return_value=None))
+        self.stack.enter_context(mock.patch.object(b, 'list_pending_mutation_receipts', return_value=[self.parent]))
+        def scan(_page, tracker, *_args, **_kwargs):
+            tracker.agenda_events = []
+            return 0, []
+        self.stack.enter_context(mock.patch.object(b, 'scan_agenda', side_effect=scan))
+
+    def cancel_original(self):
+        r = self.original
+        return b.cancel_reservation_exact(self.page, [r.as_booking()], event_id=r.event_id,
+            room=r.room, date_str=r.day.isoformat(), start_time=r.as_booking()['startTime'],
+            end_time=r.as_booking()['endTime'], today=date(2026, 9, 16), live_dates=(r.day,),
+            ignored_events=set(), transfer_receipt=self.parent, transfer_revalidate=lambda: True)
+
+    def test_marker_is_after_proof_and_settings_guard_immediately_before_click(self):
+        self.assertTrue(self.cancel_original()[0])
+        self.assertEqual(self.order, ['proof', 'guard', 'marker', 'click'])
+        self.mark.assert_called_once_with(self.parent, 'source:42')
+
+    def test_manual_deletion_before_persisted_proof_does_not_record_attempt(self):
+        self.prove.side_effect = ValueError('Reservation was manually deleted')
+        with self.assertRaises(b.BookingCancellationError):
+            self.cancel_original()
+        self.mark.assert_not_called()
+        self.cancel.click.assert_not_called()
+
+    def test_changed_preferences_at_guard_do_not_record_attempt(self):
+        @contextlib.contextmanager
+        def changed_preferences():
+            raise b.BookingPreferencesChanged('Date disabled during preparation')
+            yield
+        with mock.patch.object(b, 'booking_save_boundary', changed_preferences):
+            with self.assertRaises(b.BookingVerificationError):
+                self.cancel_original()
+        self.mark.assert_not_called()
+        self.cancel.click.assert_not_called()
+
+
 class ProgressiveTransferEditorTests(unittest.TestCase):
     setUpClass = classmethod(editor_fixture.UpgradeEditorTests.setUpClass.__func__)
     tearDownClass = classmethod(editor_fixture.UpgradeEditorTests.tearDownClass.__func__)
@@ -343,6 +409,11 @@ class ProgressiveTransferEditorTests(unittest.TestCase):
     def setUp(self):
         editor_fixture.UpgradeEditorTests.setUp(self)
         self.check_document = None
+        original_mark = receipts.mark_transfer_step
+        patch = mock.patch.object(receipts, 'mark_transfer_step',
+                                  side_effect=lambda parent, step: original_mark(parent, step, path=self.path))
+        self.mark = patch.start()
+        self.addCleanup(patch.stop)
 
     def site(self, route):
         if ';type=check' in route.request.url and self.check_document is not None:
@@ -379,6 +450,7 @@ class ProgressiveTransferEditorTests(unittest.TestCase):
         self.assertIn("T14:00:00", self.save_calls[0]["event"]["en"])
         self.assertEqual(receipts.list_pending(self.path), [parent])
         self.assertFalse(self.other_mutations)
+        self.assertEqual(parent['transfer']['started_steps'], ['source:42'])
 
     def test_existing_seed_extends_without_creating_a_second_receipt(self):
         parent = self.parent("extending")
@@ -388,6 +460,23 @@ class ProgressiveTransferEditorTests(unittest.TestCase):
         self.assertIn("T12:45:00", self.save_calls[0]["event"]["en"])
         self.assertEqual(receipts.list_pending(self.path), [parent])
         self.assertEqual(len(receipts.load_journal(self.path)["receipts"]), 1)
+        self.assertEqual(parent['transfer']['started_steps'], ['destination'])
+
+    def test_changed_preferences_after_preparation_leave_no_attempt_marker(self):
+        parent = self.parent('initial')
+        @contextlib.contextmanager
+        def changed_preferences():
+            self.assertEqual(parent['transfer']['started_steps'], [])
+            self.assertEqual(self.page.get_by_role('textbox', name='Start time', exact=True).input_value(), '12:30')
+            raise b.BookingPreferencesChanged('Preferences changed during preparation')
+            yield
+        with mock.patch.object(b, 'booking_save_boundary', changed_preferences):
+            with self.assertRaises(b.BookingPreferencesChanged):
+                self.run_edit(transaction_receipt=parent)
+        self.mark.assert_not_called()
+        self.assertFalse(self.save_calls)
+        self.assertEqual(self.persisted, self.original)
+        self.assertEqual(parent['transfer']['started_steps'], [])
 
     def test_unrecorded_duration_cannot_use_valid_parent(self):
         parent = self.parent("initial")

@@ -40,19 +40,34 @@ _ROOM_PERMISSION = re.compile(
     r"\s+be\s+(?:booked|reserved)\s+by\s+you)\b",
     re.IGNORECASE,
 )
+_SLOT_CONSTRAINT = re.compile(
+    r"\b(?:(?:more|less|longer|shorter)\s+than\s+"
+    r"(?:\d+(?:[.,]\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s*"
+    r"(?:minute|hour|day|week)s?"
+    r"|(?:maximum|minimum)\s+(?:booking\s+)?(?:duration|length)"
+    r"|(?:booking\s+)?(?:duration|length)\s+(?:exceeds?|is\s+(?:too|over|under))"
+    r"|quota"
+    r"|(?:reached|exceeded)\s+(?:(?:your|the)\s+)?(?:(?:daily|weekly|booking|peak)\s+)?limit"
+    r"|(?:outside|beyond)\s+(?:(?:the|your)\s+)?booking\s+(?:horizon|window|period)"
+    r"|(?:at\s+(?:this|that|the\s+selected)\s+time|on\s+(?:this|that|the\s+selected)\s+date)"
+    r"|during\s+(?:the\s+)?peak\s+(?:hours|period))\b",
+    re.IGNORECASE,
+)
 
 
 def room_permission_refusal_text(value):
-    """Recognize explicit room permissions, excluding login/service failures.
+    """Recognize room permissions, excluding service failures and slot limits.
 
     A generic 403, 'access denied', quota limit or 'not allowed' does not prove
-    a room permission. The caller must bind the text to its exact editor/check.
+    a room permission. Explicit slot qualifiers must not suppress other starts
+    or durations in that room. The caller must bind text to its exact check.
     This classifier alone is never evidence that a Save did not take effect.
     """
     if not isinstance(value, str):
         return None
     text = " ".join(value.split())
-    if not text or _SESSION_OR_SERVICE_ERROR.search(text) or not _ROOM_PERMISSION.search(text):
+    if (not text or _SESSION_OR_SERVICE_ERROR.search(text)
+            or _SLOT_CONSTRAINT.search(text) or not _ROOM_PERMISSION.search(text)):
         return None
     return text[:500]
 
@@ -95,7 +110,7 @@ def response_room_permission_refusal(document):
     if not isinstance(top_messages, dict):
         return None
     collect(top_messages.get("errors", []))
-    if any(_SESSION_OR_SERVICE_ERROR.search(text) for text in messages):
+    if any(_SESSION_OR_SERVICE_ERROR.search(text) or _SLOT_CONSTRAINT.search(text) for text in messages):
         return None
     return next((reason for text in messages if (reason := room_permission_refusal_text(text))), None)
 

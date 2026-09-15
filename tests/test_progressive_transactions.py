@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from uuid import uuid4
 
 from progressive_transactions import (TransferEdit, record, reservation, validate_transfer,
-                                       transfer_allows_step, transfer_allows_cancel)
+                                       transfer_allows_step, transfer_allows_cancel, transfer_edit_marker)
 from room_upgrades import Reservation
 
 
@@ -52,6 +52,9 @@ class ProgressiveTransactionTests(unittest.TestCase):
         unrecorded = Reservation(old.event_id, old.day, old.room, 780, 840)
         self.assertFalse(transfer_allows_step(parent, TransferEdit(old, unrecorded)))
         self.assertFalse(transfer_allows_step({**parent, "kind": "create"}, TransferEdit(old, kept)))
+        self.assertEqual(transfer_edit_marker(parent, TransferEdit(old, kept)), 'source:42')
+        self.assertEqual(transfer_edit_marker(parent, TransferEdit(kept, old)), 'restore:42')
+        self.assertEqual(transfer_edit_marker(parent, TransferEdit(seed, prefix)), 'destination')
 
     def test_only_fully_retired_original_may_be_cancelled(self):
         t = transfer_fixture("complete")

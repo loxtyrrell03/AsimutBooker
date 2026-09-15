@@ -99,4 +99,4 @@ def preserves_transfer_capacity(engine, plan, *, events, gaps, settings,
     return preserves_day_transition(engine, day=plan.target.day, before_events=events,
         after_events=after_events, before_gaps=gaps, after_gaps=after_gaps,
         settings=settings, practice_plan=practice_plan, policy=policy, now=at,
-        extensions=extensions)
+        extensions=extensions, observation_now=now.astimezone(SITE_TIMEZONE))

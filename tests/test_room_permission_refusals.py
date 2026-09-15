@@ -38,6 +38,35 @@ class PermissionClassificationTests(unittest.TestCase):
             with self.subTest(wording=wording):
                 self.assertIsNone(room_permission_refusal_text(wording))
 
+    def test_slot_qualifiers_do_not_establish_a_room_wide_permission_refusal(self):
+        for suffix in (" for more than 30 minutes.", " more than five days in advance.",
+                       " for longer than two hours.", " at this time.",
+                       " on the selected date.", " during peak hours.",
+                       ": maximum booking duration exceeded.",
+                       ": your booking length is too short.",
+                       ": you have reached your daily limit.",
+                       ": your weekly quota is exhausted.",
+                       " outside the booking horizon."):
+            wording = DENIED.rstrip('.') + suffix
+            with self.subTest(wording=wording):
+                self.assertIsNone(room_permission_refusal_text(wording))
+                self.assertIsNone(response_room_permission_refusal(denial_document(wording)))
+
+    def test_room_restrictions_with_reason_explanations_remain_permissions(self):
+        for suffix in (" This room is reserved for teaching staff.",
+                       " Only authorised recital organisers may reserve it.",
+                       " Your course does not have access to this location."):
+            wording = DENIED + suffix
+            with self.subTest(wording=wording):
+                self.assertEqual(room_permission_refusal_text(wording), wording)
+                self.assertEqual(response_room_permission_refusal(denial_document(wording)), wording)
+
+    def test_separate_slot_rule_prevents_room_wide_backoff(self):
+        document = denial_document()
+        document['response']['bookingrules']['issues'].append({
+            'class': 'message-warning', 'message': 'Maximum booking duration is 30 minutes.'})
+        self.assertIsNone(response_room_permission_refusal(document))
+
     def test_response_requires_explicit_failure_and_known_fields(self):
         self.assertEqual(response_room_permission_refusal(denial_document()), DENIED)
         for document in ({}, None, {"error": DENIED},

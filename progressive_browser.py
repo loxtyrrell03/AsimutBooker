@@ -297,7 +297,7 @@ def prepare_seed(engine, page, desired):
 
 
 def save_seed(engine, prepared, receipt, *, role='seed'):
-    from mutation_receipts import record_pending_create
+    from mutation_receipts import record_pending_create, mark_transfer_step
     page, desired = prepared.page, prepared.desired
     if prepared.existing_seed is not None:
         raise engine.BookingVerificationError('An existing destination must be edited, never created again')
@@ -338,6 +338,7 @@ def save_seed(engine, prepared, receipt, *, role='seed'):
                     desired.day, time_text(desired.start), time_text(desired.end))
                 or save.count() != 1 or not save.is_enabled()):
             raise engine.BookingVerificationError('Transfer parent, exact editor or Save changed before creation')
+        mark_transfer_step(receipt, 'destination' if role == 'seed' else role)
         child = record_pending_create(room=desired.room, booking_date=desired.day.isoformat(),
             start=time_text(desired.start), end=time_text(desired.end),
             parent_id=receipt['id'], transfer_role=role)

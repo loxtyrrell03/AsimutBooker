@@ -1,3 +1,24 @@
+## 2026-09-15 progressive discovery and recovery refinements
+
+- Sparse better-room gaps can seed a partial upgrade even if no full-session
+  gap exists. `progressive_discovery.py` bounds source-group/target evaluation;
+  its typed prospects carry an actual planner-verified prefix, never free-tail
+  evidence. Full-gap prospects keep the existing full-session upgrade path.
+  After the whole-session sweep, one bounded dispatch can use newly discovered
+  partial opportunities immediately. Read-only and scoped sweeps cannot do so.
+- Attempt markers now persist at the final guarded click, after exact identity
+  proof. A manual deletion during preparation cannot be mistaken for the
+  worker's cancellation. Recovery checks current disabled dates, cancellation
+  blackouts, ignored bookings, enabled zero targets and strict hours before any
+  restoring write; incompatible recovery remains pending for user attention.
+- Future-prefix capacity previews retain the current observed window for held
+  extensions. Even a final 15-minute target deficit protects its extension's
+  peak allowance. Timing/duration/quota refusals do not impose room-wide backoff.
+- All 1,246 Python tests pass after these refinements, including the real
+  tracker/extension-hold regression, exact cancellation-click checks and sparse
+  discovery/dispatch. Actual source activation and booking results are recorded
+  separately; the earlier live preview left all 13 reservations unchanged.
+
 ## 2026-09-15 progressive horizon transfers and room refusals
 
 - `progressive_planner.py` plans a bookable superior-room prefix plus useful

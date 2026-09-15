@@ -5,6 +5,7 @@ replacement's conservative live opening boundary. A failed known step restores
 the previous completed state; uncertain writes keep the parent pending.
 """
 import copy
+import json
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 
 from booking_strategy import load_booking_strategy
 from date_time_preferences import resolve_time_preferences
-from mutation_receipts import record_pending, load_journal, mark_transfer_step
+from mutation_receipts import record_pending, load_journal
 from progressive_browser import (PreparedSeed, prepare_seed, save_seed,
                                  preflight_transfer_destination, prepare_transfer_destination)
 from progressive_planner import plan_progressive_transfer, ordered_adjustments
@@ -189,6 +190,47 @@ def _created_record(engine, receipt, role, actual):
     return r
 
 
+def require_recovery_preferences(ctx, originals):
+    """Compensation cannot override the user's currently protected intervals."""
+    from booking_blackouts import load_rebooking_blackouts, interval_overlaps_blackout
+    from event_identity import is_v2_event_identity_key
+    e, settings = ctx.engine, ctx.settings
+    disabled = e.load_disabled_dates(settings)
+    ignored = e.load_ignored_events(settings)
+    blackouts = load_rebooking_blackouts(settings)
+    time_preferences = e.load_time_preferences(settings)
+    for r in originals:
+        reason = None
+        if e.is_date_disabled(r.day, disabled):
+            reason = 'the date is now disabled'
+        elif ctx.practice_plan.enabled and ctx.practice_plan.target_for(r.day) <= 0:
+            reason = 'the daily practice target is now zero'
+        elif interval_overlaps_blackout(blackouts, r.day, r.start, r.end):
+            reason = 'the interval is now protected by a cancellation blackout'
+        elif not e.interval_is_strictly_preferred(r.start / 60, r.end / 60,
+                                                resolve_time_preferences(time_preferences, r.day)):
+            reason = 'the interval is outside the current strict time window'
+        else:
+            # Historical titles are deliberately absent from the transaction.
+            # Matching a saved reservation's exact tuple is used only as a
+            # conservative veto, never to authorize an edit or ignore a clash.
+            for key in ignored:
+                if key == f'{r.day.isoformat()}_{time_text(r.start)}_{time_text(r.end)}':
+                    reason = 'the reservation is now ignored'
+                    break
+                if is_v2_event_identity_key(key):
+                    value = json.loads(key[3:])
+                    if (value.get('isReservation') is True and value.get('date') == r.day.isoformat()
+                            and value.get('room') == r.room.upper()
+                            and value.get('start') == time_text(r.start) and value.get('end') == time_text(r.end)):
+                        reason = 'the reservation is now ignored'
+                        break
+        if reason:
+            raise e.BookingVerificationError(
+                f'Transfer recovery requires user attention: {r.day} {time_text(r.start)}-{time_text(r.end)} '
+                f'cannot be restored because {reason}. The transaction remains pending; no preference is overridden.')
+
+
 def recover_transfer(ctx, receipt):
     """Classify actual progress; finalize a secured prefix or restore its before-state."""
     e, t = ctx.engine, validate_transfer(receipt['transfer'])
@@ -240,20 +282,23 @@ def recover_transfer(ctx, receipt):
     restore_order = [next(r for r in old if r.event_id == event_id)
                      for event_id in reversed(t['adjustment_order'])]
     restore_order += [r for r in old if r.event_id not in t['adjustment_order']]
+    restoring = [r for r in restore_order if actual.get(r.event_id) != r
+                 and (r.event_id in actual or _created_record(e, receipt, f'restore:{r.event_id}', actual) is None)]
+    # Check every planned restoration before the first write. An ignored
+    # retained fragment also protects its original from being enlarged.
+    require_recovery_preferences(ctx, [*restoring, *(actual[r.event_id] for r in restoring if r.event_id in actual)])
     for r in restore_order:
         current = actual.get(r.event_id)
         if current == r:
             ctx.prove(r)
             continue
         if current is not None:
-            mark_transfer_step(receipt, f'restore:{r.event_id}')
             if not ctx.write_edit(receipt, current, r, restoring=True):
                 raise e.BookingVerificationError('Fallback restoration was refused; transfer remains pending')
             actual[r.event_id] = r
         else:
             restored = _created_record(e, receipt, f'restore:{r.event_id}', actual)
             if restored is None:
-                mark_transfer_step(receipt, f'restore:{r.event_id}')
                 prepared_page = ctx.page.context.new_page()
                 try:
                     prepared = prepare_seed(e, prepared_page, r)
@@ -360,13 +405,11 @@ def execute_transfer(ctx, plan, saved, args):
         parent = record_pending('transfer', room=plan.replacement.room, booking_date=plan.target.day.isoformat(),
             start=time_text(plan.replacement.start), end=time_text(plan.replacement.end), transfer=t)
         for old, new in adjustments:
-            mark_transfer_step(parent, f'source:{old.event_id}')
             if new is None:
                 ctx.write_cancel(parent, old)
             elif not ctx.write_edit(parent, old, new):
                 recover_transfer(ctx, parent)
                 return False
-        mark_transfer_step(parent, 'destination')
         if plan.seed is None:
             result = save_seed(e, prepared, parent)
             if result:

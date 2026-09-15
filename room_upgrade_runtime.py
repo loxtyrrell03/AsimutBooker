@@ -20,6 +20,7 @@ from upgrade_plan import publish_upgrade_plan
 from consolidation_staging import prepare_consolidation, execute_staged_consolidation
 from progressive_state import (protected_event_ids, remember_opportunities,
                                load_state, denial_key, remember_denial)
+from progressive_discovery import find_partial_upgrade_opportunities
 from upgrade_validation import RoomPermissionRefusal
 
 
@@ -62,7 +63,7 @@ def preserves_remaining_day_plan(engine, upgrade, *, events, gaps, settings,
 
 def preserves_day_transition(engine, *, day, before_events, after_events,
                              before_gaps, after_gaps, settings, practice_plan,
-                             policy, now, extensions):
+                             policy, now, extensions, observation_now=None):
     """Compare remaining target capacity for any exact, equal-duration change.
 
     The ordinary planner, extension holds, fragmentation, same-room spacing and
@@ -81,12 +82,18 @@ def preserves_day_transition(engine, *, day, before_events, after_events,
     enabled_dates = [d for d in policy.booking_dates(now.date()) if not engine.is_date_disabled(d, disabled_dates)]
     remaining_hours, _ = engine.calculate_target_hours_for_day(
         day, enabled_dates, before, practice_plan=practice_plan)
-    if remaining_hours < policy.minimum_block_minutes / 60:
+    # A final 15min can still be filled by an existing horizon extension.
+    # Compare its holds even when there is too little left for a new booking.
+    if remaining_hours <= 0:
         return True
 
     def coverage(tracker, available):
+        # Holds describe reservations in the currently observed live window.
+        # Future prefix previews may use a later date for opportunity timing,
+        # but cannot relabel that observation as tomorrow's installed window.
         holds = engine.calculate_extension_capacity_holds(
-            extensions, tracker, practice_plan, disabled_dates, time_prefs=prefs, now=now.replace(tzinfo=None))
+            extensions, tracker, practice_plan, disabled_dates, time_prefs=prefs,
+            now=(observation_now or now).replace(tzinfo=None))
         target_holds, peak_holds, _ = holds
         held = target_holds.get(day.isoformat(), 0)
         held_peak = peak_holds.get(day.isoformat(), 0)
@@ -256,7 +263,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                 # Scoped previews must not replace autonomous planning state.
                 if not dry_run and not any(getattr(args, k, None) for k in
                         ('only_date', 'only_room', 'upgrade_event_id', 'max_actions', 'max_action_minutes')):
-                    remember_opportunities(prospects, settings=settings, policy=policy, now=at,
+                    partial_prospects = find_partial_upgrade_opportunities(eligible_event_ids=allowed_ids,
+                        **planner_arguments(day, tracker, scanned[day], extensions, at))
+                    remember_opportunities((*prospects, *partial_prospects), settings=settings, policy=policy, now=at,
                                            checked_dates={day.isoformat()})
                 plan_days[day] = {"date": day.isoformat(), "observed_at": at.isoformat(),
                     "opportunities": [{"status": "waiting" if p.opens_at > at else "ready",
@@ -289,7 +298,15 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                 same_room_gap=engine.SAME_ROOM_GAP_MINUTES, peak_start=int(engine.PEAK_START * 60),
                 peak_end=int(engine.PEAK_END * 60), peak_limit=int(engine.MAX_PEAK_HOURS * 60)))
         if not portfolios:
-            description = "validated previews; no bookings changed" if dry_run else "no further eligible improvements"
+            if not dry_run and not any(getattr(args, k, None) for k in
+                    ('only_date', 'only_room', 'upgrade_event_id', 'max_actions', 'max_action_minutes')):
+                # Fresh sparse opportunities should not wait another scheduled
+                # quarter-hour merely because full-session discovery just ended.
+                # This is a single bounded dispatch, never another sweep loop.
+                from progressive_runtime import process_progressive_upgrades
+                total_actions, tracker = process_progressive_upgrades(engine, page, settings,
+                    practice_plan, args, tracker, total_actions, booking_details)
+            description = "validated previews; no bookings changed" if dry_run else "no further eligible whole-session improvements"
             print(f"UPGRADE SWEEP COMPLETE: {len(plan_days)} dates scanned; {description}")
             publish("complete")
             break

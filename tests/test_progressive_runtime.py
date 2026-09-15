@@ -16,13 +16,14 @@ from unittest import mock
 from uuid import uuid4
 
 import mutation_receipts as journal
+import book_week as b
 import progressive_runtime as runtime
 import progressive_state as state
 from app_settings import SettingsError
 from booking_strategy import DailyPlanningPreferences
 from progressive_browser import PreparedSeed
 from progressive_planner import TransferPlan, plan_progressive_transfer as real_planner
-from progressive_transactions import record, transaction_payload
+from progressive_transactions import record, transaction_payload, TransferEdit, transfer_edit_marker
 from room_upgrades import Reservation
 from runtime_guard import parse_confirmed_event_id
 from upgrade_validation import RoomPermissionRefusal
@@ -68,7 +69,11 @@ class SimContext:
             SAME_ROOM_GAP_MINUTES=0, PEAK_START=9, PEAK_END=17,
             load_extendable_bookings=lambda: [],
             require_live_room_policy=lambda: self.policy,
-            load_disabled_dates=lambda settings: set(), is_date_disabled=lambda day, disabled: False)
+            load_disabled_dates=lambda settings: set(settings.get('disabled_dates', [])),
+            is_date_disabled=lambda day, disabled: day.isoformat() in disabled,
+            load_ignored_events=lambda settings: set(settings.get('ignored_events', [])),
+            load_time_preferences=b.load_time_preferences,
+            interval_is_strictly_preferred=b.interval_is_strictly_preferred)
         self.scan(DAY)
 
     def scan(self, day, **_kwargs):
@@ -93,6 +98,7 @@ class SimContext:
         if any(r.event_id != old.event_id and r.day == new.day and r.start < new.end and new.start < r.end
                for r in self.actual.values()):
             return False
+        journal.mark_transfer_step(receipt, transfer_edit_marker(receipt, TransferEdit(old, new)))
         self.actual[old.event_id] = new
         if self.lose_edit == old.event_id:
             self.lose_edit = None
@@ -103,6 +109,7 @@ class SimContext:
     def write_cancel(self, receipt, r):
         self.prove(r)
         self.cancels.append(r)
+        journal.mark_transfer_step(receipt, f'source:{r.event_id}')
         del self.actual[r.event_id]
         self.actions += 1
 
@@ -115,6 +122,7 @@ class SimContext:
         self.creates.append((desired, role))
         if mode == 'denied':
             return RoomPermissionRefusal(desired.room, 'You are not allowed to book this room')
+        journal.mark_transfer_step(parent, 'destination' if role == 'seed' else role)
         child = journal.record_pending_create(room=desired.room, booking_date=desired.day.isoformat(),
             start=record(desired)['start'], end=record(desired)['end'], parent_id=parent['id'], transfer_role=role)
         made = replace(desired, event_id=self.next_id)
@@ -145,7 +153,7 @@ class ProgressiveRuntimeTests(unittest.TestCase):
             return invoke
         for name, function in originals.items():
             self.stack.enter_context(mock.patch.object(journal, name, side_effect=local_call(function)))
-        for name in ('record_pending', 'load_journal', 'mark_transfer_step'):
+        for name in ('record_pending', 'load_journal'):
             self.stack.enter_context(mock.patch.object(runtime, name, side_effect=local_call(originals[name])))
         self.stack.enter_context(mock.patch.object(state, 'STATE_FILE', Path(self.tmp)/'plans.json'))
         self.stack.enter_context(mock.patch.object(runtime, 'datetime', FixedDatetime))
@@ -381,6 +389,91 @@ class ProgressiveRuntimeTests(unittest.TestCase):
         self.assertFalse(self.ctx.edits)
         self.assertEqual(self.ctx.actual, {70: seed})
         self.assertEqual(len(journal.list_pending()), 1)
+
+    def test_user_deletes_donor_after_preparation_before_exact_cancel_guard(self):
+        seed, donor = self.final_plan()
+        cancel = self.ctx.write_cancel
+        def deleted_before_guard(parent, original):
+            del self.ctx.actual[original.event_id]
+            cancel(parent, original)  # Exact persisted proof must fail first.
+        with mock.patch.object(self.ctx, 'write_cancel', side_effect=deleted_before_guard):
+            with self.assertRaisesRegex(VerificationError, 'Persisted reservation differs'):
+                self.execute()
+        self.prepare_destination.assert_called_once()
+        parent = self.pending_parent()
+        self.assertEqual(parent['transfer']['started_steps'], [])
+        with self.assertRaisesRegex(VerificationError, 'unattempted fallback'):
+            runtime.recover_transfer(self.ctx, parent)
+        self.assertEqual(self.ctx.actual, {seed.event_id: seed})
+        self.assertFalse(self.ctx.creates)
+        self.assertFalse(self.ctx.cancels)
+
+    def test_changed_recovery_preferences_never_restore_protected_minutes(self):
+        from event_identity import event_identity_v2
+        blocked_settings = [
+            {'disabled_dates': [DAY.isoformat()]},
+            {'rebooking_blackouts': [{'date': DAY.isoformat(), 'start_time': '12:00', 'end_time': '12:30'}]},
+            {'ignored_events': [event_identity_v2({**self.remaining.as_booking(), 'isReservation': True, 'title': 'Practice'})]},
+            {'ignored_events': [f'{DAY.isoformat()}_12:00_14:00']},
+            {'time_preferences': {'enabled': True, 'strict_mode': True, 'preset': 'afternoon_evening'}},
+            {'date_time_preferences': {DAY.isoformat(): {'enabled': True, 'strict_mode': True,
+                                                        'start_time': '13:00', 'end_time': '15:00'}}},
+        ]
+        self.ctx.lose_edit = 42
+        with self.assertRaises(VerificationError):
+            self.execute()
+        parent = self.pending_parent()
+        writes = len(self.ctx.edits)
+        for settings in blocked_settings:
+            with self.subTest(settings=settings):
+                self.ctx.settings = settings
+                with self.assertRaisesRegex(VerificationError, 'requires user attention'):
+                    runtime.recover_transfer(self.ctx, parent)
+                self.assertEqual(len(self.ctx.edits), writes)
+                self.assertFalse(self.ctx.creates)
+                self.assertEqual(self.ctx.actual[42], self.remaining)
+                self.assertEqual(journal.list_pending(), [parent])
+        # A later explicit removal of the restriction permits exact recovery.
+        self.ctx.settings = {}
+        self.assertFalse(runtime.recover_transfer(self.ctx, parent))
+        self.assertEqual(self.ctx.actual[42], self.original)
+
+    def test_recovery_zero_target_requires_enabled_plan_and_preserves_soft_preferences(self):
+        self.ctx.lose_edit = 42
+        with self.assertRaises(VerificationError):
+            self.execute()
+        parent = self.pending_parent()
+        self.ctx.practice_plan = SimpleNamespace(enabled=True, target_for=lambda day: 0)
+        with self.assertRaisesRegex(VerificationError, 'daily practice target is now zero'):
+            runtime.recover_transfer(self.ctx, parent)
+        self.assertEqual(self.ctx.actual[42], self.remaining)
+        self.assertEqual(len(self.ctx.edits), 1)
+        self.ctx.practice_plan.enabled = False
+        self.ctx.settings = {'window_geometry': 'updated', 'time_preferences': {
+            'enabled': True, 'strict_mode': False, 'preset': 'afternoon_evening'}}
+        self.assertFalse(runtime.recover_transfer(self.ctx, parent))
+        self.assertEqual(self.ctx.actual[42], self.original)
+
+    def test_new_blackout_or_ignore_prevents_recreating_a_retired_donor(self):
+        from event_identity import event_identity_v2
+        seed, donor = self.final_plan()
+        def lost_destination(*args, **kwargs):
+            raise VerificationError('Destination was not saved')
+        with mock.patch.object(self.ctx, 'write_edit', side_effect=lost_destination):
+            with self.assertRaises(VerificationError):
+                self.execute()
+        parent = self.pending_parent()
+        self.assertEqual(parent['transfer']['started_steps'], ['source:42'])
+        for settings in (
+            {'rebooking_blackouts': [{'date': DAY.isoformat(), 'start_time': '13:30', 'end_time': '14:00'}]},
+            {'ignored_events': [event_identity_v2({**donor.as_booking(), 'isReservation': True, 'title': 'Practice'})]},
+        ):
+            with self.subTest(settings=settings):
+                self.ctx.settings = settings
+                with self.assertRaisesRegex(VerificationError, 'requires user attention'):
+                    runtime.recover_transfer(self.ctx, parent)
+                self.assertFalse(self.ctx.creates)
+                self.assertEqual(self.ctx.actual, {seed.event_id: seed})
 
     def test_action_limit_reserves_failure_recovery_before_any_write(self):
         self.assertFalse(self.execute(max_actions=3))

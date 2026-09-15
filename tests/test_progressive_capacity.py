@@ -68,6 +68,34 @@ class ProgressiveCapacityTests(unittest.TestCase):
         self.practice = PracticePlan(enabled=True, default_hours=2)
         self.assertTrue(self.capacity())
 
+    def test_partial_target_still_preserves_fifteen_minute_extension_peak_capacity(self):
+        self.day = date(2026, 9, 18)
+        self.old = Reservation(42, self.day, 'Fallback', 480, 585)
+        self.target = replace(self.old, room='Best', start=495, end=600)
+        self.now = local_instant(self.day, 525) - timedelta(days=5) + timedelta(seconds=1)
+        self.transfer = TransferPlan((self.old,), self.target, replace(self.target, end=525),
+            (replace(self.old, start=525, end=600),), self.now)
+        anchor = Reservation(43, self.day, 'Spare', 780, 840)
+        self.events = [{**r.as_booking(), 'isReservation': True} for r in (self.old, anchor)]
+        extensions = [{**anchor.as_booking(), 'target_end': '14:15'}]
+        self.gaps = [{'room': 'Best', 'slots': [{'startHour': 8.25, 'endHour': 10}]},
+                     {'room': 'Fallback', 'slots': [{'startHour': 9.75, 'endHour': 10}]},
+                     {'room': 'Spare', 'slots': [{'startHour': 14, 'endHour': 14.25}]}]
+        self.settings = {}
+        self.practice = PracticePlan(enabled=True, default_hours=3)
+        with (mock.patch.multiple(engine, PEAK_START=9, PEAK_END=16, MAX_PEAK_HOURS=2),
+              mock.patch.object(engine, 'build_day_booking_opportunities') as new_search):
+            # Existing bookings total 165min; the held 15min extension fills
+            # the 3h target. The shift consumes the final 15min peak allowance.
+            self.assertFalse(self.capacity(extensions=extensions))
+            new_search.assert_not_called()
+
+        # A little more peak allowance makes that same extension attainable.
+        with (mock.patch.multiple(engine, PEAK_START=9, PEAK_END=16, MAX_PEAK_HOURS=2.25),
+              mock.patch.object(engine, 'build_day_booking_opportunities') as new_search):
+            self.assertTrue(self.capacity(extensions=extensions))
+            new_search.assert_not_called()
+
     def test_transition_releases_sources_and_subtracts_every_partial_destination(self):
         seed = Reservation(99, self.day, 'Best', 720, 750)
         fallback = replace(self.old, start=750)
@@ -118,6 +146,19 @@ class ProgressiveCapacityTests(unittest.TestCase):
         self.events.append({'eventId': 200, 'date': str(self.day), 'room': 'Lesson',
             'startTime': '12:00', 'endTime': '12:30', 'isReservation': False})
         self.assertFalse(self.capacity())
+
+    def test_future_day_preview_keeps_current_live_window_for_extension_holds(self):
+        # Enforce the installed-window date guard; the earlier fixture accepted
+        # every synthetic 'today' and masked next-day preview failures.
+        original_dates = engine.booking_window_dates.side_effect
+        live_dates = original_dates(self.now.date())
+        def observed_window(today=None):
+            self.assertEqual(today, self.now.date())
+            return live_dates
+        with mock.patch.object(engine, 'booking_window_dates', side_effect=observed_window):
+            self.transfer = replace(self.transfer, opens_at=self.now + timedelta(days=1))
+            self.gaps.append({'room': 'Spare', 'slots': [{'startHour': 12, 'endHour': 12.5}]})
+            self.assertTrue(self.capacity())
 
     def test_stale_or_duplicate_exact_sources_fail_before_accounting(self):
         for events in ([], self.events * 2, [{**self.events[0], 'endTime': '13:00'}]):
