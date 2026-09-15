@@ -18,8 +18,12 @@ def upgrade_request_matches(request, upgrade, location_id, *, operation="check")
         if data.get("booking_type") != "single" or type(data.get("time_period_id")) is not int or data["time_period_id"] != 0:
             return False
         weekdays = data.get("weekdays")
-        if (not isinstance(weekdays, list) or len(weekdays) != 1
-                or type(weekdays[0]) is not int or weekdays != [expected.day.isoweekday() % 7]):
+        # Asimut retains its recurrence editor's default [1] even for a
+        # Thursday single booking. The single mode and exact event timestamps
+        # establish scope; this inactive field is preserved through Save.
+        if (not isinstance(weekdays, list) or not weekdays
+                or any(type(day) is not int or not 0 <= day <= 6 for day in weekdays)
+                or len(set(weekdays)) != len(weekdays)):
             return False
         event = data["event"]
         if type(event["id"]) is not int or event["id"] != expected.event_id:

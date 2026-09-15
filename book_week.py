@@ -13,7 +13,7 @@ Usage:
 """
 
 from date_time_preferences import with_date_overrides, resolve_time_preferences
-from operation_control import operation_stage, report_available_gaps
+from operation_control import OperationStopped, operation_stage, report_available_gaps
 
 import re
 import sys
@@ -3364,7 +3364,7 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
 
     ``revalidate`` must freshly prove the original agenda, complete destination
     gap and whole-day constraints using a separate owned page. It runs after
-    preparing the editor, before the final exact server check and settings lock.
+    preparing the times, before room selection, exact server check and settings lock.
     Dry runs follow the same checks but never write a receipt or click Save.
     """
     if not isinstance(upgrade, RoomUpgrade) or not callable(revalidate):
@@ -3425,27 +3425,29 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             raise ValueError("The editor no longer matches the original reservation")
         # Times can update one another while the user types. Set both, then
         # select a real location option; typed autocomplete text is not identity.
-        start.fill(time_text(replacement.start))
-        start.press("Tab")
-        end.fill(time_text(replacement.end))
-        end.press("Tab")
-        location.fill(replacement.room)
-        options = page.get_by_role("option").filter(
-            has_text=re.compile(r"^\s*" + re.escape(replacement.room) + r"(?:\s*\([^\n]*\))?\s*$")
-        )
-        options.first.wait_for(state="visible", timeout=5000)
-        if options.count() != 1:
-            raise ValueError("Destination room option is ambiguous")
-        options.click()
+        if start.input_value() != time_text(replacement.start):
+            start.fill(time_text(replacement.start))
+            start.press("Tab")
+        if end.input_value() != time_text(replacement.end):
+            end.fill(time_text(replacement.end))
+            end.press("Tab")
+        # The Material option contains an aria-hidden icon whose raw text is
+        # "place". Match its accessible name, which is the actual room label.
+        options = page.get_by_role("option", name=re.compile(
+            r"^\s*" + re.escape(replacement.room) + r"(?:\s*\([^\n]*\))?\s*$"))
         location.press("Escape")
         if revalidate() is not True:
             raise ValueError("The fresh day plan no longer permits this upgrade")
-        # Force a fresh check after all fields and live availability are settled.
+        # Selecting the changed room triggers a fresh check. Re-filling an
+        # unchanged time does not: Asimut suppresses unchanged form values.
         page.on("request", note_check)
         try:
             with page.expect_response(exact_check, timeout=10000) as pending:
-                end.fill(time_text(replacement.end))
-                end.press("Tab")
+                location.fill(replacement.room)
+                options.first.wait_for(state="visible", timeout=5000)
+                if options.count() != 1:
+                    raise ValueError("Destination room option is ambiguous")
+                options.click()
         finally:
             page.remove_listener("request", note_check)
         response = pending.value
@@ -3518,7 +3520,7 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         print(f"UPGRADED: {original.room} {time_text(original.start)}-{time_text(original.end)} "
               f"-> {replacement.room} {time_text(replacement.start)}-{time_text(replacement.end)}")
         return True
-    except (BookingPreferencesChanged, BookingVerificationError):
+    except (BookingPreferencesChanged, BookingVerificationError, OperationStopped):
         raise
     except Exception as exc:
         if receipt is not None or save_started:

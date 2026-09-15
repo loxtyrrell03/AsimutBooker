@@ -17,21 +17,28 @@
   preserves remaining target coverage and time quality. Runtime work is bounded;
   `--upgrades-only --only-date DATE --max-actions N` supports controlled execution,
   with `--upgrade-dry-run` and optional `--upgrade-event-id` for inspection.
-- The editor prepares both times and an actual dropdown selection, rescans the
-  agenda/grid, requires fresh exact server approval, journals before one Save,
+- The editor prepares changed times, rescans the agenda/grid, then selects an
+  actual room option and requires fresh exact server approval. It journals before one Save
   and allows only the checked single-event payload through its request guard.
   It never cancels, recreates, shrinks, changes date, or retries an uncertain Save.
   Verify successful edits on a separate page to avoid Angular navigation races.
-- All 998 Python tests, 19 Node checks, TypeScript, lint and isolated phone build
+- All 1002 Python tests, 19 Node checks, TypeScript, lint and isolated phone build
   pass. Chromium/WebKit settings persistence and 320/390px layouts pass; owned
   desktop renders preserve navigation and controls at 760px. Chrome inspection confirmed
   exact-event PATCH validation carries the chosen location ID and both times;
   HTTP 200 can contain `success:false`, clashes and horizon warnings. Never use
   HTTP status alone as permission to Save. Personal-event clashes can be merely
   informational, so the booker's fresh agenda remains an independent veto.
+- Complete live no-Save execution now reaches fresh approved validation and
+  verifies the original intact. Match dropdown accessible names (raw text has
+  an aria-hidden `place` icon). Select the room after fresh revalidation; unchanged
+  time fields do not reliably trigger a check. Single-event edits retain an
+  unused `[1]` recurrence default on other weekdays; exact single mode, event ID
+  and timestamps establish scope. Stop and preference drift prevent Save.
+  See `docs/room-upgrades.md` for behavior and recovery details.
 - This source milestone is not yet deployed. The original checkout, active
-  desktop/phone sessions and live reservations remain intact; live no-Save
-  preview and activation are the remaining delivery checks. Older loaded hosts
+  desktop/phone sessions and live reservations remain intact; activation and
+  one bounded verified live edit are the remaining delivery checks. Older loaded hosts
   must reload before using upgrade journal records or the new settings fields.
 
 ## 2026-09-14 complete desktop calendar booking lists

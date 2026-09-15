@@ -14,6 +14,8 @@ import book_week as b
 import mutation_receipts as receipts
 from room_upgrades import Reservation, RoomUpgrade
 from upgrade_validation import upgrade_request_matches, upgrade_response_success
+from booking_preferences_guard import booking_preference_run
+from operation_control import OperationStopped
 
 
 def result(success=True):
@@ -44,9 +46,20 @@ class UpgradeValidationTests(unittest.TestCase):
                 self.request.post_data_json = data
                 self.assertFalse(upgrade_request_matches(self.request, self.upgrade, 1))
         for key, value in [("booking_type", "weekly"), ("time_period_id", 1),
-                           ("time_period_id", False), ("weekdays", [1, 2]), ("weekdays", [True])]:
+                           ("time_period_id", False), ("weekdays", [1, 1]), ("weekdays", [True]),
+                           ("weekdays", []), ("weekdays", [-1])]:
             self.request.post_data_json = {**self.payload, key: value}
             self.assertFalse(upgrade_request_matches(self.request, self.upgrade, 1))
+
+    def test_single_thursday_edit_keeps_unused_monday_recurrence_default(self):
+        thursday = date(2026, 9, 17)
+        upgrade = RoomUpgrade(Reservation(42, thursday, 'Fallback', 720, 840),
+                              Reservation(42, thursday, 'Best', 840, 960))
+        self.request.post_data_json['event'].update(st='2026-09-17T14:00:00.000+01:00',
+                                                     en='2026-09-17T16:00:00.000+01:00')
+        self.assertTrue(upgrade_request_matches(self.request, upgrade, 1))
+        self.request.post_data_json['booking_type'] = 'weekly'
+        self.assertFalse(upgrade_request_matches(self.request, upgrade, 1))
 
     def test_http_success_without_exact_approved_result_is_not_enough(self):
         self.assertTrue(upgrade_response_success(result(), 42))
@@ -68,7 +81,7 @@ EDITOR = r'''<!doctype html><app-event-editor><form>
 <input id="startDate" aria-label="Start time" value="12:00">
 <input id="endDate" aria-label="End time" value="14:00">
 <input role="combobox" aria-label="Event location" value="Fallback" id="location">
-<div id="options" role="listbox" hidden><div role="option">Best (Practice: Grand Piano)</div></div>
+<div id="options" role="listbox" hidden><div role="option"><span aria-hidden="true">place</span><span>Best (Practice: Grand Piano)</span></div></div>
 <button type="button" aria-label="Cancel event" id="cancel">Cancel event</button>
 <button type="button" aria-label="Save event" id="save">Save</button>
 </form></app-event-editor><script>
@@ -81,7 +94,7 @@ const payload=()=>({event:{id:42,st:`2026-09-21T${start.value}:00+01:00`,
 async function check(){save.disabled=true;let r=await fetch('/services/v2/event/event_id=42;type=check',
  {method:'PATCH',body:JSON.stringify(payload()),headers:{'Content-Type':'application/json'}});
  let data=await r.json();save.disabled=!data.response.success;}
-start.addEventListener('blur',check);end.addEventListener('blur',check);
+start.addEventListener('change',check);end.addEventListener('change',check);
 loc.addEventListener('input',()=>options.hidden=false);
 options.firstElementChild.addEventListener('click',()=>{locationId=1;loc.value='Best (Practice: Grand Piano)';options.hidden=true;check();});
 save.addEventListener('click',async()=>{let body=payload(); SAVE_DRIFT
@@ -183,6 +196,15 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertFalse(self.save_calls)
         self.assertFalse(self.path.exists())
 
+    def test_same_time_room_change_preserves_both_editor_times(self):
+        self.new = Reservation(42, self.original.day, 'Best', self.original.start, self.original.end)
+        self.upgrade = RoomUpgrade(self.original, self.new)
+        self.assertTrue(self.run_edit())
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertIn('T12:00:00', self.save_calls[0]['event']['st'])
+        self.assertIn('T14:00:00', self.save_calls[0]['event']['en'])
+
     def test_live_revalidation_failure_prevents_save(self):
         self.assertFalse(b.edit_reservation_room_time(self.page, self.upgrade, revalidate=lambda: False))
         self.assertEqual(self.persisted, self.original)
@@ -240,5 +262,25 @@ class UpgradeEditorTests(unittest.TestCase):
         self.persisted = self.new
         with self.assertRaises(b.BookingVerificationError):
             self.run_edit()
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.path.exists())
+
+    def test_preference_change_at_save_boundary_keeps_original(self):
+        settings = Path(self.tmp.name) / 'settings.json'
+        settings.write_text('{}')
+        def changed_preferences():
+            settings.write_text(json.dumps({'booking_strategy': {'daily_planning': {'upgrade_rooms': False}}}))
+            return True
+        with booking_preference_run(settings, {}), self.assertRaises(b.BookingPreferencesChanged):
+            b.edit_reservation_room_time(self.page, self.upgrade, revalidate=changed_preferences)
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.path.exists())
+
+    def test_stop_before_save_preserves_original_without_receipt(self):
+        with mock.patch('booking_preferences_guard.check_operation_stop', side_effect=OperationStopped('Stopped')):
+            with self.assertRaises(OperationStopped):
+                self.run_edit()
+        self.assertEqual(self.persisted, self.original)
         self.assertFalse(self.save_calls)
         self.assertFalse(self.path.exists())
