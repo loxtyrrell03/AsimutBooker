@@ -4824,6 +4824,8 @@ class AsimutBookerGUI(QuietFocusGUI):
         foresight_var = tk.StringVar(value=str(daily.foresight_minutes))
         later_var = tk.StringVar(value=str(daily.minimum_later_options))
         fallback_var = tk.StringVar(value=str(daily.fallback_lead_minutes))
+        upgrade_var = tk.BooleanVar(value=daily.upgrade_rooms)
+        upgrade_freeze_var = tk.StringVar(value=str(daily.upgrade_freeze_hours))
         after_peak_choices = {'Longest gaps first':'longest_first', 'Earliest starts first':'earliest_first', 'Room priority first':'room_first'}
         priority_choices = {'Preferred time first':'time_first', 'Room priority first':'room_first'}
         after_peak_var = tk.StringVar(value=next(k for k,v in after_peak_choices.items() if v==daily.after_peak_mode))
@@ -4842,13 +4844,14 @@ class AsimutBookerGUI(QuietFocusGUI):
         row = 0
         controls = []
 
-        def add_row(label, widget, help_text):
+        def add_row(label, widget, help_text, *, planning_control=True):
             nonlocal row
             ttk.Label(form, text=label, font=(self.ui_font_family,-14,'bold')).grid(
                 row=row,column=0,sticky='w',padx=(0,16),pady=8)
             widget.grid(row=row,column=1,sticky='w',pady=8)
             HelpTip(form,help_text).grid(row=row,column=2,sticky='e',padx=8)
-            controls.append(widget)
+            if planning_control:
+                controls.append(widget)
             row += 1
 
         quarter_times = [
@@ -4936,6 +4939,15 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         add_row("Primary priority", priority_combo, "Prefer the session time first, or preserve room ranking first.")
 
+        upgrade_cb = ttk.Checkbutton(form, text="Improve booked rooms", variable=upgrade_var)
+        add_row("Room upgrades", upgrade_cb,
+                "Keep booked hours while changing to a better room, at the same or another suitable time on that day. An upgrade never cancels a reservation.",
+                planning_control=False)
+        upgrade_freeze = ttk.Spinbox(form, from_=0, to=168, textvariable=upgrade_freeze_var, width=10)
+        add_row("Stop upgrades before start (hours)", upgrade_freeze,
+                "Keep the schedule settled this many hours before either the current or proposed start. This does not stop filling missing practice hours.",
+                planning_control=False)
+
         def update_enabled_state(*_args):
             state = tk.NORMAL if enabled_var.get() else tk.DISABLED
             for control in controls:
@@ -4969,6 +4981,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                         "fallback_lead_minutes": int(fallback_var.get()),
                         "after_peak_mode": after_peak_choices[after_peak_var.get()],
                         "priority_mode": priority_choices[priority_var.get()],
+                        "upgrade_rooms": upgrade_var.get(),
+                        "upgrade_freeze_hours": int(upgrade_freeze_var.get()),
                     }
                 }
                 preview_document = {

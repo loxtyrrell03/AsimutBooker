@@ -159,6 +159,8 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
 
 function StrategyFields({ value, onChange }: { value: DailyPlanning; onChange: (value: DailyPlanning) => void }) {
   return <>
+    <div><label><input type="checkbox" checked={value.upgrade_rooms ?? true} onChange={event => onChange({ ...value, upgrade_rooms: event.target.checked })} />Improve booked rooms</label><HelpTip label="Room upgrades">Keep booked hours while moving to a better room at the same or another suitable time that day. An upgrade never cancels a reservation.</HelpTip></div>
+    <div><label>Stop upgrades before start (hours)<input aria-label="Stop upgrades before start (hours)" type="number" min="0" max="168" step="1" value={value.upgrade_freeze_hours ?? 24} onChange={event => onChange({ ...value, upgrade_freeze_hours: Number(event.target.value) })} /></label><HelpTip label="Settled schedule">Keep the schedule settled this many hours before either the current or proposed start. Missing practice hours can still be booked.</HelpTip></div>
     <label><input type="checkbox" checked={value.enabled} onChange={event => onChange({ ...value, enabled: event.target.checked })} />Plan before booking</label>
     <label>Preferred peak start<input type="time" step="900" value={value.preferred_peak_start} onChange={event => onChange({ ...value, preferred_peak_start: event.target.value })} /></label>
     <label>Preferred peak end<input type="time" step="900" value={value.preferred_peak_end} onChange={event => onChange({ ...value, preferred_peak_end: event.target.value })} /></label>

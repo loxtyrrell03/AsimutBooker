@@ -65,6 +65,19 @@ def _refresh_test_live_policy(call_order=None, *, window_days=8):
 
 
 class LiveActionCliBoundaryTests(unittest.TestCase):
+    def test_upgrade_mode_requires_bounded_date_and_rejects_other_operations(self):
+        base = ['--upgrades-only', '--only-date', '2026-09-21']
+        self.assert_rejected(base)
+        self.assertTrue(self.parse_validated(base + ['--upgrade-dry-run']).upgrade_dry_run)
+        args = self.parse_validated(base + ['--max-actions', '1', '--upgrade-event-id', '42'])
+        self.assertEqual(args.upgrade_event_id, 42)
+        for flags in (['--upgrade-dry-run'], ['--upgrade-event-id', '42'],
+                      base + ['--max-actions', '1', '--upgrade-event-id', '-1']):
+            self.assert_rejected(flags)
+        for mode in ('--check-only', '--plan-only', '--agenda-only', '--horizon-only',
+                     '--extensions-only', '--scheduled', '--setup-login', '--login-only'):
+            self.assert_rejected(base + ['--max-actions', '1', mode])
+
     def test_scoped_grid_scan_is_read_only_and_validates_dates(self):
         args = self.parse_validated(['--check-only', '--check-dates', '2026-09-01', '2026-09-03'])
         self.assertEqual(args.check_dates, ['2026-09-01', '2026-09-03'])

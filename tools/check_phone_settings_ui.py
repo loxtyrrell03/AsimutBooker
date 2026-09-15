@@ -138,6 +138,23 @@ def check(dist):
             assert saved['practice_plan']['default_hours'] == 6
             assert saved['practice_plan']['date_overrides']['2026-10-03'] == 3
             assert '2026-10-02' in saved['disabled_dates']
+            page.get_by_role('button', name='Booking strategy', exact=True).tap()
+            expect(page.get_by_label('Improve booked rooms', exact=True)).to_be_checked()
+            expect(page.get_by_label('Stop upgrades before start (hours)', exact=True)).to_have_value('24')
+            page.get_by_label('Improve booked rooms', exact=True).uncheck()
+            page.get_by_label('Stop upgrades before start (hours)', exact=True).fill('48')
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
+            daily = read_phone_preferences(settings)['booking_strategy']['daily_planning']
+            assert daily['upgrade_rooms'] is False and daily['upgrade_freeze_hours'] == 48
+            page.get_by_role('button', name='Booking strategy', exact=True).tap()
+            expect(page.get_by_label('Improve booked rooms', exact=True)).not_to_be_checked()
+            expect(page.get_by_label('Stop upgrades before start (hours)', exact=True)).to_have_value('48')
+            for width in (320, 390):
+                page.set_viewport_size({'width': width, 'height': 844})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            shot = dist.parent / f'upgrade-settings-{engine}.png'
+            page.screenshot(path=shot, full_page=True)
             assert not errors, errors
             browser.close()
             print(f'PASS {engine}: all four editors, persistence, Cancel, stale-save rejection, reload; no live actions')

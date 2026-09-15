@@ -34,6 +34,8 @@ _DAILY_PLANNING_FIELDS = {
     "fallback_lead_minutes",
     "after_peak_mode",
     "priority_mode",
+    "upgrade_rooms",
+    "upgrade_freeze_hours",
 }
 
 
@@ -55,6 +57,8 @@ class DailyPlanningPreferences:
     fallback_lead_minutes: int = 120
     after_peak_mode: str = "longest_first"
     priority_mode: str = "time_first"
+    upgrade_rooms: bool = True
+    upgrade_freeze_hours: int = 24
 
     def to_dict(self) -> dict[str, Any]:
         return daily_planning_to_dict(self)
@@ -206,6 +210,10 @@ def _parse_daily_planning(raw: Mapping[str, Any]) -> DailyPlanningPreferences:
             "booking_strategy.daily_planning.priority_mode",
             PRIORITY_MODES,
         ),
+        upgrade_rooms=_require_bool(raw.get("upgrade_rooms", True),
+                                    "booking_strategy.daily_planning.upgrade_rooms"),
+        upgrade_freeze_hours=_require_step_int(raw.get("upgrade_freeze_hours", 24),
+            "booking_strategy.daily_planning.upgrade_freeze_hours", minimum=0, maximum=168),
     )
 
 
@@ -258,6 +266,8 @@ def daily_planning_to_dict(value: DailyPlanningPreferences) -> dict[str, Any]:
         "fallback_lead_minutes": value.fallback_lead_minutes,
         "after_peak_mode": value.after_peak_mode,
         "priority_mode": value.priority_mode,
+        "upgrade_rooms": value.upgrade_rooms,
+        "upgrade_freeze_hours": value.upgrade_freeze_hours,
     }
 
 

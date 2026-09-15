@@ -58,6 +58,8 @@ class BookingStrategyValidationTests(unittest.TestCase):
                 "fallback_lead_minutes": 45,
                 "after_peak_mode": "earliest_first",
                 "priority_mode": "room_first",
+                "upgrade_rooms": True,
+                "upgrade_freeze_hours": 24,
             },
         }
 

@@ -1,18 +1,38 @@
-## 2026-09-15 room-upgrade planner and recovery records
+## 2026-09-15 duration-preserving room upgrades
 
 - `room_upgrades.py` ranks single-reservation room/time replacements from fresh
   room gaps. Event ID, date and confirmed duration are invariant; superior rooms
   cannot worsen time fit. Full destination horizons, conflicts, peak allowance,
   same-room spacing, blackouts and pending extensions constrain candidates.
-  Both old/new start times must be more than 24 hours away by default.
+  Both old/new start times must be more than 24 hours away by default. Desktop,
+  phone and assistant settings expose independent upgrade enablement and a
+  0-168 hour settling deadline; missing target hours can still be booked.
 - Upgrade receipts persist both exact states before Save. Missing, duplicate,
   partially changed or wrong-ID outcomes remain uncertain. Date/duration/ID
-  changes are rejected before writing the journal. This milestone is pure
-  planning/journal support; runtime execution and UI integration are still pending.
-- 38 focused planner/journal tests pass. Chrome no-Save inspection confirmed
+  changes are rejected before writing the journal. Recovery requires both a
+  fresh complete agenda and independent exact-event page proof. A failed scan
+  after a verified edit preserves success and stops further upgrades.
+- Normal creates/extensions run before upgrades, including on target-met and
+  quota-full dates. The whole-day solver checks that moving an existing session
+  preserves remaining target coverage and time quality. Runtime work is bounded;
+  `--upgrades-only --only-date DATE --max-actions N` supports controlled execution,
+  with `--upgrade-dry-run` and optional `--upgrade-event-id` for inspection.
+- The editor prepares both times and an actual dropdown selection, rescans the
+  agenda/grid, requires fresh exact server approval, journals before one Save,
+  and allows only the checked single-event payload through its request guard.
+  It never cancels, recreates, shrinks, changes date, or retries an uncertain Save.
+  Verify successful edits on a separate page to avoid Angular navigation races.
+- All 998 Python tests, 19 Node checks, TypeScript, lint and isolated phone build
+  pass. Chromium/WebKit settings persistence and 320/390px layouts pass; owned
+  desktop renders preserve navigation and controls at 760px. Chrome inspection confirmed
   exact-event PATCH validation carries the chosen location ID and both times;
   HTTP 200 can contain `success:false`, clashes and horizon warnings. Never use
-  HTTP status alone as permission to Save. No live reservation was changed.
+  HTTP status alone as permission to Save. Personal-event clashes can be merely
+  informational, so the booker's fresh agenda remains an independent veto.
+- This source milestone is not yet deployed. The original checkout, active
+  desktop/phone sessions and live reservations remain intact; live no-Save
+  preview and activation are the remaining delivery checks. Older loaded hosts
+  must reload before using upgrade journal records or the new settings fields.
 
 ## 2026-09-14 complete desktop calendar booking lists
 

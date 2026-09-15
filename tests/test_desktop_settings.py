@@ -19,6 +19,27 @@ def descendants(widget):
 
 
 class DesktopSettingsTests(unittest.TestCase):
+    def test_room_upgrade_controls_save_independently_of_planning(self):
+        self.app.show_booking_strategy_dialog()
+        dialog = next(w for w in self.app._detail_pages.values() if w.title() == 'Daily Booking Strategy')
+        widgets = list(descendants(dialog))
+        checkboxes = {w.cget('text'): w for w in widgets if isinstance(w, ttk.Checkbutton)}
+        checkboxes['Plan ahead before choosing rooms'].invoke()
+        upgrade = checkboxes['Improve booked rooms']
+        self.assertNotIn('disabled', upgrade.state())
+        upgrade.invoke()
+        label = next(w for w in widgets if isinstance(w, ttk.Label) and w.cget('text') == 'Stop upgrades before start (hours)')
+        spin = label.master.grid_slaves(row=label.grid_info()['row'], column=1)[0]
+        self.assertNotIn('disabled', spin.state())
+        spin.set('48')
+        next(w for w in widgets if isinstance(w, ttk.Button) and w.cget('text') == 'Save Strategy').invoke()
+        saved = json.loads(self.settings.read_text())
+        daily = saved['booking_strategy']['daily_planning']
+        self.assertFalse(daily['enabled'])
+        self.assertFalse(daily['upgrade_rooms'])
+        self.assertEqual(daily['upgrade_freeze_hours'], 48)
+        self.assertEqual(saved['unrelated'], {'keep': True})
+
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)

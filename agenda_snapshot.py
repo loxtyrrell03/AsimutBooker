@@ -282,7 +282,7 @@ def apply_verified_reservation(receipt: Mapping[str, Any], *, path: Path = AGEND
     from runtime_guard import parse_confirmed_event_id
 
     event_id = parse_confirmed_event_id(receipt.get("event_url", ""))
-    if receipt.get("status") != "verified" or receipt.get("kind") not in {"create", "extension"} or not event_id:
+    if receipt.get("status") != "verified" or receipt.get("kind") not in {"create", "extension", "upgrade"} or not event_id:
         return False
     path = Path(path)
     with InterProcessFileLock(path.with_suffix(path.suffix + ".lock")):
@@ -291,7 +291,12 @@ def apply_verified_reservation(receipt: Mapping[str, Any], *, path: Path = AGEND
             return False
         events = current.event_dicts()
         matches = [event for event in events if event["eventId"] == event_id]
-        if len(matches) > 1 or any(
+        if receipt.get("kind") == "upgrade":
+            from room_upgrades import classify_upgrade_outcome
+            original = receipt.get("original", {})
+            if original.get("event_id") != event_id or (matches and classify_upgrade_outcome(matches, receipt) == "uncertain"):
+                return False
+        elif len(matches) > 1 or any(
             not event["isReservation"] or event["date"] != receipt["date"]
             or event["room"] != receipt["room"] or event["startTime"] != receipt["start"]
             for event in matches

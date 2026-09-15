@@ -108,7 +108,12 @@ from mutation_receipts import (
     record_pending_cancel,
     record_pending_create,
     record_pending_extension,
+    record_pending_upgrade,
 )
+from room_upgrades import (Reservation, RoomUpgrade, classify_upgrade_outcome, time_text,
+                           local_instant, DEFAULT_FREEZE_MINUTES)
+from upgrade_validation import upgrade_request_matches, upgrade_response_success
+from room_upgrade_runtime import process_room_upgrades
 from live_room_policy import (
     LiveRoomPolicy,
     LiveRoomPolicyError,
@@ -1172,6 +1177,9 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
             f"{receipt['date']} {receipt['end']}",
             "%Y-%m-%d %H:%M",
         )
+        if receipt.get("kind") == "upgrade":
+            receipt_end = max(receipt_end, datetime.strptime(
+                f"{receipt['original']['date']} {receipt['original']['end']}", "%Y-%m-%d %H:%M"))
         if receipt_end <= datetime.now():
             # Once the intended slot has ended, retrying it is impossible and
             # the receipt can no longer protect against a duplicate future
@@ -1183,6 +1191,24 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
                 event_url=receipt.get("event_url"),
             )
             print(f"  Closed expired receipt {receipt['id']}: booking slot has ended")
+            continue
+
+        if receipt.get("kind") == "upgrade":
+            outcome = classify_upgrade_outcome(agenda_records, receipt)
+            if outcome == "uncertain":
+                raise BookingVerificationError(
+                    f"Room-upgrade receipt {receipt['id']} matches neither exact state uniquely; "
+                    "the receipt remains pending and no further mutation is allowed")
+            expected = receipt if outcome == "applied" else receipt["original"]
+            safe_goto(page, receipt["event_url"])
+            verify_persisted_booking_page(page, expected["room"], expected["date"],
+                                          expected["start"], expected["end"])
+            if outcome == "applied":
+                remove_extendable_booking_by_event_id(receipt["original"]["event_id"])
+                verify_mutation_receipt(receipt["id"], event_url=receipt["event_url"])
+            else:
+                resolve_mutation_receipt(receipt["id"], resolution="Interrupted upgrade not applied; exact original reservation verified intact")
+            print(f"  Reconciled room upgrade: {outcome}")
             continue
 
         if receipt.get("kind") == "cancel":
@@ -3328,6 +3354,188 @@ def cancel_reservation_exact(
 # =============================================================================
 # BOOKING EXTENSION FUNCTIONS
 # =============================================================================
+
+UPGRADE_SAVE_TIMEOUT_MS = 30000
+
+
+def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
+                               freeze_minutes=DEFAULT_FREEZE_MINUTES):
+    """Edit one exact reservation once; never cancel, recreate, shrink or retry Save.
+
+    ``revalidate`` must freshly prove the original agenda, complete destination
+    gap and whole-day constraints using a separate owned page. It runs after
+    preparing the editor, before the final exact server check and settings lock.
+    Dry runs follow the same checks but never write a receipt or click Save.
+    """
+    if not isinstance(upgrade, RoomUpgrade) or not callable(revalidate):
+        raise TypeError("An exact upgrade and fresh revalidation callback are required")
+    original, replacement = upgrade.original, upgrade.replacement
+    location_id = require_live_room_policy().all_room_location_ids[replacement.room]
+    receipt = None
+    save_started = False
+    route_installed = False
+    blocked_requests = []
+    allowed_save_count = 0
+    validated_payload = None
+    fresh_check_requests = []
+    route_pattern = "**/services/v2/event/**"
+
+    def verify(record):
+        safe_goto(page, record.event_url)
+        verify_persisted_booking_page(page, record.room, record.day,
+                                      time_text(record.start), time_text(record.end))
+
+    def form_matches(record):
+        return (parse_event_editor_id(page.url) == record.event_id
+                and booking_summary_matches(page_booking_snapshot(page), record.room,
+                                             record.day, time_text(record.start), time_text(record.end)))
+
+    def exact_check(response):
+        return (response.request in fresh_check_requests
+                and upgrade_request_matches(response.request, upgrade, location_id))
+
+    def note_check(request):
+        if upgrade_request_matches(request, upgrade, location_id):
+            fresh_check_requests.append(request)
+
+    def guard_save(route):
+        nonlocal allowed_save_count
+        request = route.request
+        if request.method in {"GET", "HEAD", "OPTIONS"} or upgrade_request_matches(request, upgrade, location_id):
+            route.fallback()
+        elif (save_started and allowed_save_count == 0
+              and upgrade_request_matches(request, upgrade, location_id, operation="save")
+              and request.post_data_json == validated_payload):
+            allowed_save_count += 1
+            route.fallback()
+        else:
+            blocked_requests.append("Unexpected or duplicate mutation request was blocked")
+            route.abort()
+
+    try:
+        if list_pending_mutation_receipts():
+            raise BookingVerificationError("An unresolved mutation blocks room upgrades")
+        verify(original)
+        safe_goto(page, f"{ASIMUT_BASE_URL}/event?eventId={original.event_id}")
+        start = page.get_by_role("textbox", name="Start time", exact=True)
+        end = page.get_by_role("textbox", name="End time", exact=True)
+        location = page.get_by_role("combobox", name="Event location", exact=True)
+        start.wait_for(state="visible", timeout=10000)
+        if not form_matches(original):
+            raise ValueError("The editor no longer matches the original reservation")
+        # Times can update one another while the user types. Set both, then
+        # select a real location option; typed autocomplete text is not identity.
+        start.fill(time_text(replacement.start))
+        start.press("Tab")
+        end.fill(time_text(replacement.end))
+        end.press("Tab")
+        location.fill(replacement.room)
+        options = page.get_by_role("option").filter(
+            has_text=re.compile(r"^\s*" + re.escape(replacement.room) + r"(?:\s*\([^\n]*\))?\s*$")
+        )
+        options.first.wait_for(state="visible", timeout=5000)
+        if options.count() != 1:
+            raise ValueError("Destination room option is ambiguous")
+        options.click()
+        location.press("Escape")
+        if revalidate() is not True:
+            raise ValueError("The fresh day plan no longer permits this upgrade")
+        # Force a fresh check after all fields and live availability are settled.
+        page.on("request", note_check)
+        try:
+            with page.expect_response(exact_check, timeout=10000) as pending:
+                end.fill(time_text(replacement.end))
+                end.press("Tab")
+        finally:
+            page.remove_listener("request", note_check)
+        response = pending.value
+        if not response.ok or not exact_check(response) or not upgrade_response_success(response.json(), original.event_id):
+            raise ValueError("Asimut did not approve the exact room/time change")
+        validated_payload = copy.deepcopy(response.request.post_data_json)
+        location.press("Escape")
+        save = page.get_by_role("button", name="Save event", exact=True)
+        save.wait_for(state="visible", timeout=5000)
+        deadline = time.monotonic() + 5
+        while not save.is_enabled() and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        if save.count() != 1 or not save.is_enabled() or not form_matches(replacement):
+            raise ValueError("The exact validated editor or enabled Save control changed")
+        if dry_run:
+            verify(original)
+            print("UPGRADE READY (not saved): full original reservation retained")
+            return False
+
+        page.route(route_pattern, guard_save)
+        route_installed = True
+        with page.expect_response(
+            lambda result: upgrade_request_matches(result.request, upgrade, location_id, operation="save"),
+            timeout=UPGRADE_SAVE_TIMEOUT_MS,
+        ) as pending_save:
+            with booking_save_boundary():
+                if list_pending_mutation_receipts() or not form_matches(replacement) or not save.is_enabled():
+                    raise BookingVerificationError("Room upgrade changed or became blocked before Save")
+                settled_at = datetime.now().astimezone() + timedelta(minutes=freeze_minutes)
+                if min(local_instant(original.day, original.start),
+                       local_instant(replacement.day, replacement.start)) <= settled_at:
+                    raise BookingPreferencesChanged("The booking reached its settled window; keeping the original")
+                receipt = record_pending_upgrade(
+                    room=replacement.room, booking_date=replacement.day.isoformat(),
+                    start=time_text(replacement.start), end=time_text(replacement.end),
+                    event_url=original.event_url,
+                    original={"event_id": original.event_id, "room": original.room,
+                              "date": original.day.isoformat(), "start": time_text(original.start),
+                              "end": time_text(original.end)},
+                )
+                save_started = True  # A throwing click can still have reached Asimut.
+                save.click(no_wait_after=True, timeout=5000)
+        saved = pending_save.value
+        if blocked_requests or allowed_save_count != 1:
+            raise BookingVerificationError("The room-upgrade request did not match its recorded intent")
+        if not saved.ok:
+            raise BookingVerificationError("Room-upgrade Save returned an uncertain HTTP failure")
+        payload = saved.json()
+        # A rejection can be resolved only after reloading the exact original.
+        if payload.get("response", {}).get("success") is False:
+            verify(original)
+            resolve_mutation_receipt(receipt["id"], resolution="Room upgrade rejected; exact original reservation verified intact")
+            print("UPGRADE NOT APPLIED: original reservation verified intact")
+            return False
+        if not upgrade_response_success(payload, original.event_id):
+            raise BookingVerificationError("Room-upgrade Save did not return exact success evidence")
+        # Verify in another owned page: Angular may still be navigating the
+        # editor after the Save response. Competing navigation must not obscure
+        # an otherwise confirmed edit or trigger a repeated Save.
+        proof_page = page.context.new_page()
+        try:
+            safe_goto(proof_page, replacement.event_url)
+            verify_persisted_booking_page(proof_page, replacement.room, replacement.day,
+                                          time_text(replacement.start), time_text(replacement.end))
+        finally:
+            proof_page.close()
+        # A completed/abandoned extension record must never edit the former room.
+        remove_extendable_booking_by_event_id(original.event_id)
+        verify_mutation_receipt(receipt["id"], event_url=original.event_url)
+        print(f"UPGRADED: {original.room} {time_text(original.start)}-{time_text(original.end)} "
+              f"-> {replacement.room} {time_text(replacement.start)}-{time_text(replacement.end)}")
+        return True
+    except (BookingPreferencesChanged, BookingVerificationError):
+        raise
+    except Exception as exc:
+        if receipt is not None or save_started:
+            raise BookingVerificationError(
+                f"Room-upgrade outcome requires reconciliation (receipt {receipt['id'] if receipt else 'unknown'}): {exc}"
+            ) from exc
+        print(f"Upgrade not attempted: {exc}")
+        # Leave no dirty editor behind; never invoke Cancel event.
+        safe_goto(page, original.event_url)
+        return False
+    finally:
+        if route_installed:
+            try:
+                page.unroute(route_pattern, guard_save)
+            except Exception as exc:
+                print(f"Upgrade route cleanup failed: {exc}")
+
 
 def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=None):
     """Edit an existing reservation to extend its end time.
@@ -8752,14 +8960,22 @@ _notified_booking_details = set()
 def verify_mutation_receipt(receipt_id, *, event_url=None):
     """Publish confirmed changes before subsequent scanning or boundary waits."""
     receipt = _mark_mutation_verified(receipt_id, event_url=event_url)
-    if receipt["kind"] not in {"create", "extension"} or receipt_id in _published_receipts:
+    if receipt["kind"] not in {"create", "extension", "upgrade"} or receipt_id in _published_receipts:
         return receipt
     _published_receipts.add(receipt_id)
     try:
         apply_verified_reservation(receipt)
     except Exception as exc:
         print(f"Warning: Confirmed booking display update failed: {exc}")
-    if receipt["kind"] == "extension":
+    if receipt["kind"] == "upgrade":
+        old = receipt["original"]
+        detail = (f"UPGRADED: {receipt['date']} {old['room']} {old['start']}-{old['end']} "
+                  f"-> {receipt['room']} {receipt['start']}-{receipt['end']}")
+        try:
+            clear_booking_plan()
+        except BookingPlanError as exc:
+            print(f"Warning: Room changed, but the display plan could not be cleared: {exc}")
+    elif receipt["kind"] == "extension":
         detail = f"EXTENDED: {receipt['room']} {receipt['date']} {receipt['start']}-{receipt['end']}"
     else:
         start_hour, start_minute = map(int, receipt['start'].split(':'))
@@ -8770,7 +8986,8 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
     # Reserve before sending: a lost HTTP response must not cause a duplicate.
     _notified_booking_details.add(formatted)
     try:
-        send_notification("Booked 1 room", f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
+        title = "Practice room upgraded" if receipt["kind"] == "upgrade" else "Booked 1 room"
+        send_notification(title, f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
     except Exception as exc:
         print(f"Warning: Confirmed booking notification failed: {exc}")
     return receipt
@@ -9778,7 +9995,17 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             browser.close()
             return 0
 
-        # Check if we can make any bookings at all
+        if getattr(args, "upgrades_only", False):
+            total_booked, tracker = process_room_upgrades(
+                sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
+            if not getattr(args, "upgrade_dry_run", False):
+                save_history(total_booked, events_detected, booking_details)
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0
+
+        # A same-duration room edit does not consume additional weekly quota.
         if tracker.is_quota_full():
             used_hours = tracker.get_total_booking_hours()
             print("\n" + "="*60)
@@ -9788,10 +10015,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             print("Cannot make new bookings until existing ones expire.")
             print("="*60)
 
+            total_booked, tracker = process_room_upgrades(
+                sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
             save_history(
-                0,
+                total_booked,
                 events_detected,
-                [f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)"],
+                [f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)", *booking_details],
             )
 
             send_notification("AsimutBooker - Quota Full",
@@ -11154,11 +11383,15 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
             print(f"\n  Day summary: {day_booked} bookings made, {attempts} attempts total")
 
+        # Fill targets and finish due extensions before optional improvements.
+        total_booked, tracker = process_room_upgrades(
+            sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
+
         # Final summary
         print("\n" + "="*60)
         print("BOOKING COMPLETE")
         print("="*60)
-        print(f"Total bookings made: {total_booked}")
+        print(f"Total reservation changes: {total_booked}")
         if tracker.peak_hours_by_day:
             print("Peak hours used (per day):")
             for date_key, mins in sorted(tracker.peak_hours_by_day.items()):
@@ -11234,6 +11467,12 @@ def build_argument_parser():
     )
     parser.add_argument("--check-dates", nargs="+", metavar="YYYY-MM-DD",
                         help="Limit read-only room-grid checks to these dates in the live window")
+    parser.add_argument("--upgrades-only", action="store_true",
+                        help="Only improve existing reservations; no creates or extensions")
+    parser.add_argument("--upgrade-dry-run", action="store_true",
+                        help="With --upgrades-only, validate proposed edits without saving")
+    parser.add_argument("--upgrade-event-id", type=int,
+                        help="With --upgrades-only, inspect/change only this exact reservation")
     parser.add_argument(
         "--agenda-only",
         action="store_true",
@@ -11274,7 +11513,7 @@ def build_argument_parser():
         "--max-actions",
         type=int,
         metavar="N",
-        help="Stop after N successful creates/extensions during this run",
+        help="Stop after N successful creates, extensions or upgrades during this run",
     )
     parser.add_argument(
         "--max-action-minutes",
@@ -11350,6 +11589,17 @@ def _cancellation_requested(args):
 
 
 def _validate_cli_args(parser, args):
+    if getattr(args, "upgrade_dry_run", False) and not getattr(args, "upgrades_only", False):
+        parser.error("--upgrade-dry-run requires --upgrades-only")
+    if getattr(args, "upgrade_event_id", None) is not None:
+        if not getattr(args, "upgrades_only", False) or args.upgrade_event_id <= 0:
+            parser.error("--upgrade-event-id requires --upgrades-only and a positive event ID")
+    if getattr(args, "upgrades_only", False):
+        if (args.check_only or args.target_time or args.scheduled or args.setup_login
+                or args.configure_autonomous_login or args.login_only):
+            parser.error("--upgrades-only cannot be combined with other operation modes")
+        if not args.only_date or (not getattr(args, "upgrade_dry_run", False) and args.max_actions is None):
+            parser.error("--upgrades-only requires --only-date and, unless a dry run, --max-actions")
     cancellation_fields = {
         "--cancel-event-id": args.cancel_event_id,
         "--cancel-date": args.cancel_date,
@@ -11421,6 +11671,7 @@ def _validate_cli_args(parser, args):
         for value in (
             args.horizon_only,
             args.extensions_only,
+            getattr(args, "upgrades_only", False),
             args.agenda_only,
             args.plan_only,
             cancellation_requested,
@@ -11428,7 +11679,7 @@ def _validate_cli_args(parser, args):
     )
     if isolated_modes > 1:
         parser.error(
-            "--horizon-only, --extensions-only, --agenda-only, --plan-only, and exact "
+            "--horizon-only, --extensions-only, --upgrades-only, --agenda-only, --plan-only, and exact "
             "cancellation are mutually exclusive"
         )
 

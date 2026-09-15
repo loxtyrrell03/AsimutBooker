@@ -602,6 +602,9 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                                         "multipleOf": 15,
                                     },
                                     "hold_early_peak_edges": {"type": "boolean"},
+                                    "upgrade_rooms": {"type": "boolean", "description": "Improve existing reservations without cancelling or reducing booked duration."},
+                                    "upgrade_freeze_hours": {"type": "integer", "minimum": 0, "maximum": 168,
+                                        "description": "Stop room/time upgrades this many hours before either start; missing target hours may still be booked."},
                                     "foresight_minutes": {
                                         "type": "integer",
                                         "minimum": 0,

@@ -4,6 +4,7 @@ export type DailyPlanning = {
   desired_peak_block_minutes: number; hold_early_peak_edges: boolean; foresight_minutes: number;
   minimum_later_options: number; fallback_lead_minutes: number;
   after_peak_mode: 'longest_first' | 'earliest_first' | 'room_first'; priority_mode: 'time_first' | 'room_first';
+  upgrade_rooms: boolean; upgrade_freeze_hours: number;
 };
 export type Preferences = {
   revision: string;
