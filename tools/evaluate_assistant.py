@@ -27,7 +27,7 @@ import time
 import statistics
 from unittest.mock import patch
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -59,6 +59,7 @@ MUTATION_TOOLS = frozenset(
         "update_booker_preferences",
         "run_booker",
         "cancel_reservations",
+        "edit_reservation_time",
         "reopen_booking_window",
     }
 )
@@ -597,6 +598,7 @@ class SyntheticBookerDispatcher:
         self._calls: list[ToolCallRecord] = []
         self._saved_preferences: dict[str, dict[str, Any]] = {}
         self._cancelled_event_ids: dict[str, set[int]] = {}
+        self._edited_events: dict[str, dict[int, SyntheticEvent]] = {}
         self._issued_cancellation_selections: dict[
             str, dict[str, dict[str, Any]]
         ] = {}
@@ -619,6 +621,7 @@ class SyntheticBookerDispatcher:
             self._issued_cancellation_selections[case.case_id] = {}
             self._saved_preferences.pop(case.case_id, None)
             self._cancelled_event_ids.pop(case.case_id, None)
+            self._edited_events.pop(case.case_id, None)
 
     def set_active_prompt(self, prompt: str) -> None:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -722,6 +725,7 @@ class SyntheticBookerDispatcher:
             "update_booker_preferences": self._update_preferences,
             "run_booker": self._run_booker,
             "cancel_reservations": self._cancel_reservations,
+            "edit_reservation_time": self._edit_reservation_time,
         }
         handler = handlers.get(tool)
         if handler is None:
@@ -730,12 +734,20 @@ class SyntheticBookerDispatcher:
 
     def _events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
         cancelled = self._cancelled_event_ids.get(self._active_case, set())
-        return tuple(event for event in self._fixture_events_for_active_case()
+        edited = self._edited_events.get(self._active_case, {})
+        return tuple(edited.get(event.event_id, event) for event in self._fixture_events_for_active_case()
                      if event.event_id not in cancelled)
 
     def _fixture_events_for_active_case(self) -> tuple[SyntheticEvent, ...]:
         with self._lock:
             case_id = self._active_case
+        if case_id.startswith('time_edit_'):
+            original = SyntheticEvent(49501, '2026-09-01', '12:45', '14:45', 'Weston Gallery', 'Reservation', 'sha256:' + 'a' * 64)
+            if case_id == 'time_edit_multiple':
+                return (original, SyntheticEvent(49502, '2026-09-01', '17:00', '18:00', 'B0.13', 'Reservation', 'sha256:' + 'b' * 64))
+            if case_id == 'time_edit_clash':
+                return (original, SyntheticEvent(49503, '2026-09-01', '15:00', '16:00', 'B0.13', 'Reservation', 'sha256:' + 'c' * 64))
+            return (original,)
         if case_id.startswith('conversation_move_'):
             return (SYNTHETIC_EVENTS[0],)
         if case_id == 'conversation_book_correct_date':
@@ -1433,6 +1445,38 @@ class SyntheticBookerDispatcher:
                 "existing_plus_remaining_minutes": existing_minutes + remaining_minutes,
             }
         return result
+
+    def _edit_reservation_time(self, arguments, prompt):
+        from booking_time_edits import requested_time_edit
+        from room_upgrades import Reservation, clock_minutes, time_text
+        _authorized_quote('edit_reservation_time', arguments, prompt)
+        selection = self._issued_cancellation_selections.get(self._active_case, {}).get(arguments.get('selection_id'))
+        if (selection is None or selection.get('prompt') != prompt or selection.get('turn_generation') != self._turn_generation
+                or selection.get('consumed') or len(selection.get('events', [])) != 1):
+            raise CodexToolFailure('Select exactly one current booking', code='invalid_selection')
+        event = selection['events'][0]
+        try:
+            validate_cancellation_weekdays(prompt, [event.payload()])
+            edit = requested_time_edit(Reservation(event.event_id, date.fromisoformat(event.date), event.room,
+                       clock_minutes(event.start_time), clock_minutes(event.end_time)), mode=arguments.get('mode'),
+                       new_start_time=arguments.get('new_start_time'), minutes=arguments.get('minutes'))
+        except (ValueError, TypeError) as exc:
+            raise CodexToolFailure(str(exc), code='invalid_time_edit') from exc
+        selection['consumed'] = True
+        new = edit.replacement
+        clash = any(other.event_id != event.event_id and other.date == event.date
+                    and clock_minutes(other.start_time) < new.end and new.start < clock_minutes(other.end_time)
+                    for other in self._events_for_active_case())
+        status = ('not_applied' if clash or new.duration < 30 else
+                  'unconfirmed' if self._active_case == 'time_edit_uncertain' else 'verified_changed')
+        if status == 'verified_changed':
+            self._edited_events.setdefault(self._active_case, {})[event.event_id] = replace(event,
+                start_time=time_text(new.start), end_time=time_text(new.end))
+        return dict(synthetic=True, dry_run=True, production_effect='none', status=status,
+            verified_changed=status == 'verified_changed', original=event.payload(),
+            requested=dict(start_time=time_text(new.start), end_time=time_text(new.end), duration_minutes=new.duration, mode=edit.mode),
+            reconciliation_required=status == 'unconfirmed',
+            result_note='Simulated result. Existing-event clash; booking unchanged.' if clash else 'Simulated result; no real booking was edited.')
 
     def _cancel_reservations(
         self, arguments: dict[str, Any], prompt: str
@@ -2402,6 +2446,29 @@ def evaluate_request_contract(case, calls, final):
     mutations = [call for call in calls if call.tool in MUTATION_TOOLS]
     updates = [call for call in calls if call.tool == 'update_booker_preferences']
     runs = [call for call in calls if call.tool == 'run_booker']
+    if expected.get('conditional_time_edit'):
+        edits = [call for call in mutations if call.tool == 'edit_reservation_time']
+        if any(call.tool != 'edit_reservation_time' for call in mutations) or len(edits) > 1:
+            issues.append('conditional shift caused unrelated changes or repeated an edit')
+        if edits and (edits[0].arguments.get('mode') != 'shift_later' or edits[0].arguments.get('minutes') != 45
+                      or edits[0].result.get('status') != 'not_applied'):
+            issues.append('conditional shift did not stop at the known clash')
+        if not re.search(r'clash|overlap|conflict', final, re.I):
+            issues.append('later clash was not explained')
+    if 'time_edit' in expected:
+        edits = [call for call in calls if call.tool == 'edit_reservation_time']
+        if len(edits) != 1:
+            issues.append('expected exactly one booking time edit')
+        else:
+            call = edits[0]
+            if any(call.arguments.get(k) != v for k, v in expected['time_edit'].items()):
+                issues.append('time edit did not preserve the requested mode and exact amount/time')
+            if call.result.get('original', {}).get('event_id') != 49501:
+                issues.append('time edit selected the wrong booking')
+            if call.result.get('status') != expected.get('edit_status', 'verified_changed'):
+                issues.append('time edit had an unexpected outcome')
+        if any(call.tool != 'edit_reservation_time' for call in mutations):
+            issues.append('time edit caused an unrelated preference, booking or cancellation action')
     if expected.get('read_only') and mutations:
         issues.append('read-only or ambiguous request caused a mutation')
     if expected.get('no_tools') and calls:
@@ -2489,6 +2556,16 @@ def evaluate_request_contract(case, calls, final):
 
 
 AUDIT_CASES = (
+    EvalCase('time_edit_trim', 'Trim my 12:45 booking tomorrow Tuesday to start at 1:30 instead, keep the same end time.', 'Keep 14:45 fixed while moving the start to 13:30.', expected={'time_edit': {'mode': 'trim_start', 'new_start_time': '13:30'}}),
+    EvalCase('time_edit_shift', 'Push my 12:45 booking tomorrow back by 45 minutes, keeping its full duration, if nothing clashes later.', 'Both endpoints move by 45 minutes.', expected={'time_edit': {'mode': 'shift_later', 'minutes': 45}}),
+    EvalCase('time_edit_forward_later', 'Push my 12:45 booking tomorrow forward by 45 minutes, so I start later, if nothing clashes later on.', 'Later direction is explicit even with forward wording.', expected={'time_edit': {'mode': 'shift_later', 'minutes': 45}}),
+    EvalCase('time_edit_absolute_shift', 'Move my 12:45 booking tomorrow to 13:30, keeping the same duration.', 'Compute the 45-minute later shift from fresh identity.', expected={'time_edit': {'mode': 'shift_later', 'minutes': 45}}),
+    EvalCase('time_edit_clash', 'Push my 12:45 booking tomorrow back by 45 minutes, keeping the same duration, only if nothing clashes.', 'Clashing later booking must remain untouched.', expected={'conditional_time_edit': True}),
+    EvalCase('time_edit_multiple', 'Trim my booking tomorrow to start later but keep the end.', 'Ambiguous booking and start time require clarification.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('time_edit_forward_ambiguous', 'Move my 12:45 booking tomorrow forward by 30 minutes.', 'Unclear earlier/later direction requires clarification.', expected={'read_only': True, 'clarify': True}),
+    EvalCase('time_edit_uncertain', 'Trim my 12:45 booking tomorrow to start at 13:30, keeping the end.', 'Uncertain Save cannot trigger retry or cancel/rebook.', expected={'time_edit': {'mode': 'trim_start', 'new_start_time': '13:30'}, 'edit_status': 'unconfirmed', 'failed_outcome': True}),
+    EvalCase('time_edit_read_only', 'Could my 12:45 booking tomorrow be trimmed to start at 13:30? Just explain; do not change it.', 'Read-only explanation must not mutate.', expected={'read_only': True}),
+
     EvalCase('audit_availability_elapsed', 'What is free in the next five minutes?', 'A slow scan must disclose that the requested interval has already passed.', expected={'read_only': True, 'availability': {'next_minutes': 5}, 'elapsed': True}),
     EvalCase('conversation_cancel_singular', 'Cancel my afternoon booking tomorrow.', 'A singular request cannot choose between multiple reservations.', expected={'read_only': True, 'clarify': True}),
     EvalCase('conversation_cancel_earlier', 'Cancel the earlier of my two bookings tomorrow afternoon.', 'A comparative selector makes one match unambiguous.', expected={'cancel_ids': [41002]}),

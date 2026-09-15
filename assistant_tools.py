@@ -67,6 +67,7 @@ MUTATING_TOOLS = frozenset(
         "update_booker_preferences",
         "run_booker",
         "cancel_reservations",
+        "edit_reservation_time",
         "reopen_booking_window",
     }
 )
@@ -325,6 +326,16 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
             },
         },
     ]
+    time_edit_schema = _object_schema({
+        "selection_id": cancellation_selection_id,
+        "mode": {"type": "string", "enum": ["trim_start", "shift_later"]},
+        "new_start_time": {**clock, "description": "Required only for trim_start: the exact later start, keeping the original end."},
+        "minutes": {"type": "integer", "minimum": 15, "maximum": 1425, "multipleOf": 15,
+                    "description": "Required only for shift_later: add this many minutes to both times."},
+    }, required=("selection_id", "mode"))
+    # Keep all fields in one object: App Server's model-facing projection of
+    # oneOf (even nested in allOf) can hide shared selection/time fields. The
+    # handler independently enforces the exact mode-dependent argument set.
     cancel_reservations_schema = _object_schema(
         {
             "selection_id": cancellation_selection_id,
@@ -711,6 +722,20 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
         },
         {
             "type": "function",
+            "name": "edit_reservation_time",
+            "description": (
+                "Edit exactly one fresh find_reservations selection in place, retaining its ID, room and date. "
+                "trim_start starts later at new_start_time and keeps the original end. "
+                "shift_later adds positive minutes to both times, preserving duration. "
+                "Use for a direct request to trim, delay or push a booking later. The worker checks every "
+                "other personal event, room availability and live site limits before a single verified Save. "
+                "Released original time is protected from automatic rebooking. Never cancel/rebook as a fallback. "
+                "A multi-match selection requires clarification; this tool changes one booking only."
+            ),
+            "inputSchema": time_edit_schema,
+        },
+        {
+            "type": "function",
             "name": "cancel_reservations",
             "description": (
                 "Cancel a bounded explicit set of exact existing reservations. Resolve every "
@@ -946,6 +971,7 @@ class BookerToolSurface:
             "update_booker_preferences": self._update_preferences,
             "run_booker": self._run_booker,
             "cancel_reservations": self._cancel_reservations,
+            "edit_reservation_time": self._edit_reservation_time,
             "reopen_booking_window": self._reopen_booking_window,
         }
         handler = handlers.get(tool)
@@ -2095,6 +2121,66 @@ class BookerToolSurface:
             for identity in identities
         ]
         return targets, protected_windows
+
+    def _edit_reservation_time(self, arguments, *, user_request, progress):
+        from booking_time_edits import requested_time_edit, time_edit_from_receipt
+        from room_upgrades import Reservation, clock_minutes, time_text
+        from mutation_receipts import load_journal
+
+        authorize_tool_mutation("edit_reservation_time", arguments, user_request)
+        mode = arguments.get("mode")
+        detail = "new_start_time" if mode == "trim_start" else "minutes"
+        if (mode not in {"trim_start", "shift_later"}
+                or set(arguments) != {"request_quote", "selection_id", "mode", detail}):
+            raise AssistantToolError("Use trim_start with new_start_time, or shift_later with minutes")
+        targets, _ = self._resolve_cancellation_selection(arguments["selection_id"])
+        if len(targets) != 1:
+            raise AssistantToolError("Select exactly one booking before changing its time; clarify multiple matches")
+        target = targets[0]
+        try:
+            edit = requested_time_edit(Reservation(target["event_id"], date.fromisoformat(target["date"]),
+                target["room"], clock_minutes(target["start_time"]), clock_minutes(target["end_time"])),
+                mode=mode, new_start_time=arguments.get("new_start_time"), minutes=arguments.get("minutes"))
+            validate_cancellation_weekdays(user_request, targets)
+        except (ValueError, TypeError) as exc:
+            raise AssistantToolError(str(exc)) from exc
+        before = load_journal(self.paths.receipts)["receipts"]
+        if any(r["status"] == "pending" for r in before.values()):
+            raise AssistantToolError("An unresolved mutation blocks the time edit; refresh to reconcile it first")
+        _, observed_at = self._validate_cancellation_targets(targets, require_exact_batch=True)
+        flags = ["--headless", "--edit-event-id", str(target["event_id"]),
+                 "--edit-date", target["date"], "--edit-room", target["room"],
+                 "--edit-start", target["start_time"], "--edit-end", target["end_time"]]
+        flags += (["--trim-start", time_text(edit.replacement.start)] if mode == "trim_start"
+                  else ["--shift-minutes", str(arguments["minutes"])])
+        progress("Checking booking time", "Checking the exact booking, later clashes and Asimut approval")
+        command = self._run_booker_command(flags, progress=progress, timeout=15 * 60, allow_nonzero=True)
+        journal = load_journal(self.paths.receipts)["receipts"]
+        receipts = [r for rid, r in journal.items() if rid not in before and r["kind"] == "time_edit"
+                    and time_edit_from_receipt(r) == edit]
+        verified = len(receipts) == 1 and receipts[0]["status"] == "verified"
+        snapshot = read_agenda_snapshot(self.paths.agenda)
+        agenda_verified = False
+        if snapshot.snapshot is not None and not snapshot.stale and snapshot.snapshot.observed_at > observed_at:
+            matches = [e for e in snapshot.snapshot.events if e.event_id == target["event_id"]]
+            agenda_verified = (len(matches) == 1 and matches[0].is_reservation
+                and (str(matches[0].date), matches[0].room, matches[0].start_time, matches[0].end_time)
+                    == (target["date"], target["room"], time_text(edit.replacement.start), time_text(edit.replacement.end)))
+        pending = any(r["status"] == "pending" for r in journal.values())
+        status = ("verified_changed" if verified and agenda_verified else "verified_saved_refresh_required" if verified
+                  else "not_applied" if command.get("exit_code") == 7 and not pending else "unconfirmed")
+        return {
+            "status": status, "verified_changed": verified and agenda_verified,
+            "original": {k: v for k, v in target.items() if k != "match_token"},
+            "requested": {"start_time": time_text(edit.replacement.start), "end_time": time_text(edit.replacement.end),
+                          "duration_minutes": edit.replacement.duration, "mode": mode},
+            "released_window": dict(zip(("date", "start_time", "end_time"), edit.released_window)) if verified else None,
+            "reconciliation_required": pending, "command": command,
+            "result_note": "Only verified_changed confirms both exact persisted Save and the refreshed agenda. "
+                           "A verified_saved_refresh_required result confirms Save but needs read-only agenda refresh. "
+                           "Never retry an unconfirmed mutation or cancel/rebook as a fallback.",
+            "post_run_context": build_assistant_context(["agenda", "mutations", "history"], paths=self.paths),
+        }
 
     def _cancel_reservations(
         self,

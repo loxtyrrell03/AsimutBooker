@@ -177,6 +177,7 @@ class AssistantToolSurfaceTests(unittest.TestCase):
                 "update_booker_preferences",
                 "run_booker",
                 "cancel_reservations",
+                "edit_reservation_time",
                 "reopen_booking_window",
             },
         )

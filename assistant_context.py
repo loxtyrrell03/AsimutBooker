@@ -72,6 +72,8 @@ APP_CAPABILITIES = {
         "Save high-level future intentions only after resolving a numeric target for every date",
         "Run one plan-selected autonomous booking action under the ordinary live safeguards",
         "Let Terra select and cancel an exact date range, upcoming scope, or arbitrary bounded set while the host revalidates every positive event ID",
+        "Trim one booking to start later with the same end, or shift both times later by a positive amount, after clash and exact Save checks",
+        "Time edits retain the booking ID, date and room and protect released original time from automatic rebooking",
     ],
     "manual_or_gui_boundaries": [
         "Initial credential setup uses the masked private prompt and Windows Credential Manager, never chat",

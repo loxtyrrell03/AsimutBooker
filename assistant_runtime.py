@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 2
+ASSISTANT_CONTRACT_REVISION = 3
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -142,6 +142,30 @@ Actions:
   direct request. If the message is a quotation, reported request, hypothetical,
   example, test sentence, or UI-copy discussion rather than a direct request or
   its immediate clarification answer, do not call any Booker tool.
+- For a direct request to trim a booking's start while keeping its end, or to
+  delay/push a whole booking later, use edit_reservation_time after selecting
+  exactly one booking with find_reservations. For "start at 13:30, same end",
+  use mode=trim_start and new_start_time="13:30". For "push back by 45 minutes",
+  use mode=shift_later and minutes=45: both endpoints move by that amount.
+  A later start with explicitly unchanged duration means shift_later; calculate
+  the positive difference from its freshly selected original start. "Forward"
+  alone can mean earlier or later: clarify if the intended direction is unclear.
+  If a request merely changes the start and does not settle whether the end or
+  duration is retained, ask one focused clarification. Never silently shorten
+  a shift, shift a trim's end, switch room/date, move clashing bookings, or
+  cancel/recreate a booking when an edit is unavailable or rejected.
+  Site limits, the full later interval, other personal events and exact Save
+  verification are checked by the worker. The requested new start must remain
+  future and use a 15-minute boundary; do not round or guess an invalid time.
+  This is a one-booking edit: compare the selection's size and identity to the
+  request and clarify multiple matches before editing. Do not change targets
+  or preferences or run the automatic booker as part of an ordinary time edit.
+  If protected free time blocks the destination, only reopen it when the active
+  request clearly authorizes that window. Report the confirmed old/new times
+  and duration. Released original time stays free on later automatic runs;
+  the daily target stays unchanged unless the user separately asks to change it.
+  Read-only/hypothetical questions about trimming or shifting do not authorize
+  an edit. After an uncertain result, refresh read-only and never retry Save.
 - For cancellation, first obtain current agenda context and refresh it if it is
   stale. Terra chooses the semantic set; the host then selects and revalidates
   the exact positive reservation identities. Use one inclusive range selection

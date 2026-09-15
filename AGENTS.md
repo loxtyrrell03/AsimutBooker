@@ -1,3 +1,23 @@
+## 2026-09-15 assistant booking time edits
+
+- `edit_reservation_time` consumes one fresh exact `find_reservations` selection.
+  `trim_start` keeps the end; `shift_later` moves both endpoints equally. The
+  worker retains event ID/date/room, requires a future new start, checks every
+  other personal event and any newly occupied room time, and uses the guarded
+  single-Save editor. Existing automatic upgrade invariants remain separate.
+- Strict `time_edit` receipts persist both states. Independent persisted proof
+  precedes retiring stale extension tracking and protecting only released
+  original time against automatic rebooking. Recovery finishes these steps
+  before receipt completion; uncertain edits never trigger cancellation/retry.
+  Saved targets/preferences remain unchanged. See `docs/assistant-booking-time-edits.md`.
+- All 1,289 Python tests pass, including intercepted Chromium editor checks;
+  the two core Luna/high/standard synthetic trim/shift turns pass. Tool schemas
+  must expose all edit fields in one plain object: `oneOf`, including inside
+  `allOf`, hid common arguments from the model. The host enforces mode-specific
+  argument sets independently. Contract revision 3 refreshes stale reasoning
+  context while retaining transcript history. Live activation is recorded below
+  when completed; these tests made no real bookings or edits.
+
 ## 2026-09-15 verified live progressive upgrades
 
 - Two real partial transfers upgraded 90 booked minutes. Independent fresh

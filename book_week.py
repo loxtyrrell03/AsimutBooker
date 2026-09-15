@@ -111,6 +111,7 @@ from mutation_receipts import (
     record_pending_create,
     record_pending_extension,
     record_pending_upgrade,
+    record_pending_time_edit,
     record_pending_consolidation,
 )
 from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation, classify_upgrade_outcome, time_text,
@@ -1239,7 +1240,7 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
             f"{receipt['date']} {receipt['end']}",
             "%Y-%m-%d %H:%M",
         )
-        if receipt.get("kind") in {"upgrade", "consolidation"}:
+        if receipt.get("kind") in {"upgrade", "time_edit", "consolidation"}:
             receipt_end = max(receipt_end, datetime.strptime(
                 f"{receipt['original']['date']} {receipt['original']['end']}", "%Y-%m-%d %H:%M"))
             for original in receipt.get("originals", ()):
@@ -1273,7 +1274,7 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
                 print("Consolidation replacement is secured; redundant originals await a mutation-capable run")
             continue
 
-        if receipt.get("kind") == "upgrade":
+        if receipt.get("kind") in {"upgrade", "time_edit"}:
             outcome = classify_upgrade_outcome(agenda_records, receipt)
             if outcome == "uncertain":
                 raise BookingVerificationError(
@@ -1285,6 +1286,8 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
                                           expected["start"], expected["end"])
             if outcome == "applied":
                 remove_extendable_booking_by_event_id(receipt["original"]["event_id"])
+                if receipt["kind"] == "time_edit":
+                    reconciled_blackouts.extend(protect_time_edit_release(receipt))
                 verify_mutation_receipt(receipt["id"], event_url=receipt["event_url"])
             else:
                 resolve_mutation_receipt(receipt["id"], resolution="Interrupted upgrade not applied; exact original reservation verified intact")
@@ -3575,7 +3578,7 @@ def dismiss_reservation_time_picker(page):
 
 def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
                                freeze_minutes=DEFAULT_FREEZE_MINUTES, transaction_receipt=None):
-    """Edit one exact reservation once; never cancel, recreate, shrink or retry Save.
+    """Edit one exact reservation once; never cancel, recreate or retry Save.
 
     ``revalidate`` must freshly prove the original agenda, complete destination
     gap and whole-day constraints using a separate owned page. It runs before
@@ -3584,10 +3587,14 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
     Dry runs follow the same checks but never write a receipt or click Save.
     """
     from progressive_transactions import TransferEdit, transfer_allows_step
-    if not isinstance(upgrade, (RoomUpgrade, RoomConsolidation, TransferEdit)) or not callable(revalidate):
+    from booking_time_edits import BookingTimeEdit
+    if not isinstance(upgrade, (RoomUpgrade, RoomConsolidation, TransferEdit, BookingTimeEdit)) or not callable(revalidate):
         raise TypeError("An exact upgrade and fresh revalidation callback are required")
     if isinstance(upgrade, TransferEdit) and transaction_receipt is None:
         raise TypeError('Duration-changing transfers require their exact durable parent')
+    time_edit = isinstance(upgrade, BookingTimeEdit)
+    if time_edit and transaction_receipt is not None:
+        raise TypeError("Assistant time edits must own their single-booking receipt")
     original, replacement = upgrade.original, upgrade.replacement
     consolidation = isinstance(upgrade, RoomConsolidation)
     location_id = require_live_room_policy().all_room_location_ids[replacement.room]
@@ -3737,13 +3744,16 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
                 if not pending_allows_step() or not form_matches(replacement) or not save.is_enabled():
                     raise BookingVerificationError("Room upgrade changed or became blocked before Save")
                 settled_at = datetime.now().astimezone() + timedelta(minutes=freeze_minutes)
-                if min(*(local_instant(r.day, r.start) for r in upgrade.originals),
-                       local_instant(replacement.day, replacement.start)) <= settled_at:
+                starts = [local_instant(replacement.day, replacement.start)]
+                if not time_edit:
+                    starts.extend(local_instant(r.day, r.start) for r in upgrade.originals)
+                if min(starts) <= settled_at:
                     raise BookingPreferencesChanged("The booking reached its settled window; keeping the original")
                 def receipt_original(record):
                     return {"event_id": record.event_id, "room": record.room, "date": record.day.isoformat(),
                             "start": time_text(record.start), "end": time_text(record.end)}
-                journal = record_pending_consolidation if consolidation else record_pending_upgrade
+                journal = (record_pending_time_edit if time_edit else
+                           record_pending_consolidation if consolidation else record_pending_upgrade)
                 receipt = transaction_receipt or journal(
                     room=replacement.room, booking_date=replacement.day.isoformat(),
                     start=time_text(replacement.start), end=time_text(replacement.end),
@@ -3793,8 +3803,11 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             # redundant original can establish a completed consolidation.
             print("CONSOLIDATION STEP VERIFIED: exact reservation retained; transaction remains pending")
             return True
+        if time_edit:
+            protect_time_edit_release(receipt)
         verify_mutation_receipt(receipt["id"], event_url=original.event_url)
-        print(f"UPGRADED: {original.room} {time_text(original.start)}-{time_text(original.end)} "
+        label = "EDITED" if time_edit else "UPGRADED"
+        print(f"{label}: {original.room} {time_text(original.start)}-{time_text(original.end)} "
               f"-> {replacement.room} {time_text(replacement.start)}-{time_text(replacement.end)}")
         return True
     except (BookingPreferencesChanged, BookingVerificationError, OperationStopped):
@@ -9277,10 +9290,19 @@ _notified_booking_details = set()
 _run_verified_details = ContextVar('run_verified_booking_details', default=None)
 
 
+def protect_time_edit_release(receipt):
+    """Persist released time before receipt completion, including crash recovery."""
+    from booking_time_edits import time_edit_from_receipt
+    edit = time_edit_from_receipt(receipt)
+    windows = add_rebooking_blackout(*edit.released_window, path=settings_file)
+    clear_booking_plan()
+    return windows
+
+
 def verify_mutation_receipt(receipt_id, *, event_url=None):
     """Publish confirmed changes before subsequent scanning or boundary waits."""
     receipt = _mark_mutation_verified(receipt_id, event_url=event_url)
-    if receipt["kind"] not in {"create", "extension", "upgrade", "consolidation", "transfer"} or receipt_id in _published_receipts:
+    if receipt["kind"] not in {"create", "extension", "upgrade", "time_edit", "consolidation", "transfer"} or receipt_id in _published_receipts:
         return receipt
     _published_receipts.add(receipt_id)
     try:
@@ -9309,6 +9331,11 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
             clear_booking_plan()
         except BookingPlanError as exc:
             print(f"Warning: Room changed, but the display plan could not be cleared: {exc}")
+    elif receipt["kind"] == "time_edit":
+        old = receipt["original"]
+        label = "TRIMMED" if old["end"] == receipt["end"] else "SHIFTED"
+        detail = (f"{label}: {receipt['date']} {receipt['room']} {old['start']}-{old['end']} "
+                  f"-> {receipt['start']}-{receipt['end']}")
     elif receipt["kind"] == "extension":
         detail = f"EXTENDED: {receipt['room']} {receipt['date']} {receipt['start']}-{receipt['end']}"
     else:
@@ -9324,6 +9351,8 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
     _notified_booking_details.add(formatted)
     try:
         title = "Practice room upgraded" if receipt["kind"] in {"upgrade", "consolidation", "transfer"} else "Booked 1 room"
+        if receipt["kind"] == "time_edit":
+            title = "Booking time changed"
         send_notification(title, f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
     except Exception as exc:
         print(f"Warning: Confirmed booking notification failed: {exc}")
@@ -10120,6 +10149,14 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
     """Run one authenticated booking pass with already-validated inputs."""
     today = datetime.now().date()
     room_preferences = room_preferences or load_room_preferences(settings)
+    from booking_time_edits import time_edit_requested
+    if time_edit_requested(args):
+        # This exact user edit overrides autonomous room ranking/filter defaults
+        # only in this isolated process. Saved preferences remain authoritative
+        # for later automatic runs and for detecting concurrent changes.
+        from room_preferences import RoomPreferences
+        room_preferences = RoomPreferences(ordered_rooms=(args.edit_room,),
+            minimum_block_minutes=room_preferences.minimum_block_minutes)
 
     print("="*60)
     print("ASIMUT WEEK BOOKER")
@@ -10190,6 +10227,16 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             context.close()
             browser.close()
             return 0
+
+        from booking_time_edits import time_edit_requested, run_time_edit
+        if time_edit_requested(args):
+            result = run_time_edit(sys.modules[__name__], page, args, settings, policy)
+            details = list(_run_verified_details.get() or ())
+            save_history(len(details), events_detected, details)
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return result
 
         if _cancellation_requested(args):
             try:
@@ -11956,6 +12003,11 @@ def build_argument_parser():
         metavar="HH:MM",
         help="Isolated cancellation: exact expected reservation end time",
     )
+    for flag in ("date", "room", "start", "end"):
+        parser.add_argument(f"--edit-{flag}", help=f"Isolated time edit: exact original {flag}")
+    parser.add_argument("--edit-event-id", type=int, help="Isolated time edit: exact reservation ID")
+    parser.add_argument("--trim-start", help="Start later at HH:MM, retaining the original end")
+    parser.add_argument("--shift-minutes", type=int, help="Move both booking times later by this many minutes")
     return parser
 
 
@@ -11975,6 +12027,25 @@ def _cancellation_requested(args):
 
 
 def _validate_cli_args(parser, args):
+    from booking_time_edits import time_edit_requested, edit_from_args
+    if time_edit_requested(args):
+        try:
+            if any(getattr(args, f"edit_{field}", None) is None for field in ("event_id", "date", "room", "start", "end")):
+                raise ValueError("Time edits require the complete exact original reservation")
+            if (args.trim_start is None) == (args.shift_minutes is None):
+                raise ValueError("Choose exactly one of --trim-start or --shift-minutes")
+            validate_room_name(args.edit_room, "--edit-room")
+            if date.fromisoformat(args.edit_date).isoformat() != args.edit_date:
+                raise ValueError("--edit-date must use YYYY-MM-DD")
+            edit_from_args(args)
+        except (ValueError, TypeError) as exc:
+            parser.error(str(exc))
+        if (_cancellation_requested(args) or any(getattr(args, key, None) for key in
+            ("check_only", "agenda_only", "plan_only", "horizon_only", "extensions_only", "upgrades_only",
+             "upgrade_dry_run", "upgrade_event_id", "setup_login", "configure_autonomous_login", "login_only",
+             "target_time", "scheduled", "only_date", "only_room", "max_actions", "max_action_minutes",
+             "check_dates", "wait_for_runtime_seconds"))):
+            parser.error("Time edits are isolated and cannot be combined with other operation modes")
     if getattr(args, "upgrade_dry_run", False) and not getattr(args, "upgrades_only", False):
         parser.error("--upgrade-dry-run requires --upgrades-only")
     if getattr(args, "upgrade_event_id", None) is not None:

@@ -282,7 +282,7 @@ def apply_verified_reservation(receipt: Mapping[str, Any], *, path: Path = AGEND
     from runtime_guard import parse_confirmed_event_id
 
     event_id = parse_confirmed_event_id(receipt.get("event_url", ""))
-    if receipt.get("status") != "verified" or receipt.get("kind") not in {"create", "extension", "upgrade", "consolidation"} or not event_id:
+    if receipt.get("status") != "verified" or receipt.get("kind") not in {"create", "extension", "upgrade", "time_edit", "consolidation"} or not event_id:
         return False
     path = Path(path)
     with InterProcessFileLock(path.with_suffix(path.suffix + ".lock")):
@@ -297,7 +297,7 @@ def apply_verified_reservation(receipt: Mapping[str, Any], *, path: Path = AGEND
                 return False
             retired_ids = {record["event_id"] for record in receipt["originals"] if record["event_id"] != event_id}
             events = [event for event in events if event["eventId"] not in retired_ids]
-        elif receipt.get("kind") == "upgrade":
+        elif receipt.get("kind") in {"upgrade", "time_edit"}:
             from room_upgrades import classify_upgrade_outcome
             original = receipt.get("original", {})
             if original.get("event_id") != event_id or (matches and classify_upgrade_outcome(matches, receipt) == "uncertain"):

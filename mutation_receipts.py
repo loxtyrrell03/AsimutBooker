@@ -22,10 +22,10 @@ APP_DIR = Path(__file__).resolve().parent
 RECEIPTS_FILE = APP_DIR / "data" / "mutation_receipts.json"
 SCHEMA_VERSION = 1
 
-ReceiptKind = Literal["create", "extension", "upgrade", "consolidation", "transfer", "cancel", "uncertain"]
+ReceiptKind = Literal["create", "extension", "upgrade", "time_edit", "consolidation", "transfer", "cancel", "uncertain"]
 ReceiptStatus = Literal["pending", "verified", "resolved"]
 
-_KINDS = {"create", "extension", "upgrade", "consolidation", "transfer", "cancel", "uncertain"}
+_KINDS = {"create", "extension", "upgrade", "time_edit", "consolidation", "transfer", "cancel", "uncertain"}
 _STATUSES = {"pending", "verified", "resolved"}
 _DOCUMENT_KEYS = {"schema_version", "receipts"}
 _REQUIRED_RECEIPT_KEYS = {
@@ -171,7 +171,7 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
         if (receipt['kind'] != 'create' or not isinstance(role, str)
                 or not (role == 'seed' or role.startswith('restore:') and role[8:].isdigit())):
             raise MutationReceiptError('Only exact transfer creations may have a parent')
-    if receipt["kind"] in {"upgrade", "consolidation"}:
+    if receipt["kind"] in {"upgrade", "time_edit", "consolidation"}:
         original = receipt.get("original")
         if not isinstance(original, dict) or set(original) != {"event_id", "room", "date", "start", "end"}:
             raise MutationReceiptError("Upgrade receipt requires the exact original reservation")
@@ -188,6 +188,12 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
         if receipt["kind"] == "upgrade" and (old_end - old_start != end_minutes - start_minutes
                                              or original["room"] == receipt["room"]):
             raise MutationReceiptError("Upgrade must preserve date and full duration while changing room")
+        if receipt["kind"] == "time_edit":
+            from booking_time_edits import time_edit_from_receipt
+            try:
+                time_edit_from_receipt(receipt)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise MutationReceiptError("Invalid exact booking time edit") from exc
         if receipt["kind"] == "consolidation":
             from room_upgrades import Reservation, RoomConsolidation
             from datetime import date
@@ -400,6 +406,10 @@ def record_pending_extension(**kwargs: Any) -> dict[str, Any]:
     """Convenience wrapper for a pending reservation extension."""
 
     return record_pending("extension", **kwargs)
+
+
+def record_pending_time_edit(**kwargs: Any) -> dict[str, Any]:
+    return record_pending("time_edit", **kwargs)
 
 
 def record_pending_upgrade(**kwargs: Any) -> dict[str, Any]:
