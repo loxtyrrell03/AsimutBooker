@@ -114,7 +114,7 @@ from mutation_receipts import (
 )
 from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation, classify_upgrade_outcome, time_text,
                            local_instant, DEFAULT_FREEZE_MINUTES, consolidation_from_receipt,
-                           classify_consolidation_outcome)
+                           classify_consolidation_outcome, consolidation_summary)
 from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
                                 upgrade_save_acknowledgement_consistent)
 from room_upgrade_runtime import process_room_upgrades
@@ -9152,8 +9152,7 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
     except Exception as exc:
         print(f"Warning: Confirmed booking display update failed: {exc}")
     if receipt["kind"] == "consolidation":
-        detail = (f"CONSOLIDATED: {receipt['date']} {len(receipt['originals'])} bookings "
-                  f"-> {receipt['room']} {receipt['start']}-{receipt['end']}")
+        detail = consolidation_summary(consolidation_from_receipt(receipt))
         try:
             clear_booking_plan()
         except BookingPlanError as exc:
@@ -9256,6 +9255,10 @@ def save_history(
     try:
         if outcome not in {"completed", "reconciliation_required", "failed"}:
             raise ValueError(f"Unsupported booking history outcome: {outcome!r}")
+        if outcome == 'completed' and any(detail.startswith('CONSOLIDATED:') for detail in booking_details):
+            # The runtime allowance counts intermediate edits and retirements;
+            # history counts the completed reservation operations described here.
+            bookings_made = len(booking_details)
         entry = {
             "timestamp": datetime.now().isoformat(),
             "outcome": outcome,
@@ -10150,8 +10153,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     raise BookingVerificationError("Consolidation cleanup remains pending outside this run's explicit scope")
                 if finish_consolidation(page, receipt):
                     total_booked += len(group.retired)
-                    booking_details.append(f"CONSOLIDATED: {receipt['date']} {len(group.originals)} bookings "
-                                           f"-> {receipt['room']} {receipt['start']}-{receipt['end']}")
+                    booking_details.append(consolidation_summary(group))
                 tracker = BookingTracker()
                 events_detected, all_reservations = scan_agenda(page, tracker, today,
                     ignored_events=ignored_events, window_dates=live_dates, snapshot_path=AGENDA_SNAPSHOT_FILE)

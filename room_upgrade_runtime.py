@@ -15,7 +15,7 @@ from event_identity import event_identity_v2, resolve_ignored_event_keys
 from operation_control import operation_stage
 from room_upgrades import (Reservation, find_room_upgrades, local_instant, time_text, clock_minutes,
                           apply_upgrade_to_events, select_upgrade_portfolio, RoomConsolidation, find_room_consolidations,
-                          availability_after_upgrade, find_upgrade_opportunities)
+                          availability_after_upgrade, find_upgrade_opportunities, consolidation_summary)
 from upgrade_plan import publish_upgrade_plan
 from consolidation_staging import prepare_consolidation, execute_staged_consolidation
 
@@ -304,8 +304,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             total_actions += candidate.action_count if isinstance(candidate, RoomConsolidation) else 1
             old, new = candidate.original, candidate.replacement
             if isinstance(candidate, RoomConsolidation):
-                booking_details.append(f"CONSOLIDATED: {old.day} {len(candidate.originals)} bookings "
-                                       f"-> {new.room} {time_text(new.start)}-{time_text(new.end)} ({new.duration} minutes)")
+                booking_details.append(consolidation_summary(candidate))
             else:
                 booking_details.append(f"UPGRADED: {old.day} {old.room} {time_text(old.start)}-{time_text(old.end)} "
                                        f"-> {new.room} {time_text(new.start)}-{time_text(new.end)}")

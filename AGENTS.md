@@ -36,6 +36,14 @@
   unchanged, and checks Save is unobstructed before recording Save intent. Unknown
   dark overlays fail closed. Sixty-two focused checks and an authenticated no-Save
   picker-dismissal check pass; blocked attempts were reconciled with originals intact.
+- The first real staged consolidation completed with the full anchor verified
+  before its temporary donor was retired, unchanged total practice minutes and
+  no pending receipt. The final broad Python regression run passed 1,062 tests.
+  Follow-up reporting now shares one consolidation summary between immediate
+  publication and run history, preventing duplicate notifications. Completed
+  history counts reservation operations instead of internal staging/retirement
+  steps; explicit action limits still count those steps. Thirty-two focused
+  publication/runtime/recovery checks pass after this reporting correction.
 
 ## 2026-09-15 comprehensive upgrade planning and consolidation
 

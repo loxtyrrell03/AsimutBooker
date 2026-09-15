@@ -1,4 +1,5 @@
 import tempfile
+import json
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest import mock
 import book_week
 import phone_server
 from agenda_snapshot import apply_verified_reservation, publish_agenda_snapshot, read_agenda_snapshot
+from room_upgrades import consolidation_from_receipt, consolidation_summary
 
 
 class ConfirmedBookingPublicationTests(unittest.TestCase):
@@ -63,6 +65,26 @@ class ConfirmedBookingPublicationTests(unittest.TestCase):
                 book_week.verify_mutation_receipt('unverified')
             publish.assert_not_called()
             notify.assert_not_called()
+
+    def test_consolidation_reports_one_completed_change_and_notifies_once(self):
+        original = dict(event_id=12345, room='Weston Gallery', date='2026-09-16', start='12:00', end='13:00')
+        donor = dict(event_id=67890, room='Fallback', date='2026-09-16', start='13:00', end='14:00')
+        receipt = {**self.receipt, 'kind': 'consolidation', 'original': original, 'originals': [original, donor]}
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(book_week, '_mark_mutation_verified', return_value=receipt), \
+             mock.patch.object(book_week, 'apply_verified_reservation'), \
+             mock.patch.object(book_week, 'clear_booking_plan'), \
+             mock.patch.object(book_week, 'send_notification') as notify, \
+             mock.patch.object(book_week, '_published_receipts', set()), \
+             mock.patch.object(book_week, '_notified_booking_details', set()), \
+             mock.patch.object(book_week, 'history_file', Path(directory) / 'history.json'):
+            book_week.verify_mutation_receipt(receipt['id'])
+            detail = consolidation_summary(consolidation_from_receipt(receipt))
+            book_week.save_history(3, 18, [detail])
+            notify.assert_called_once()
+            history = json.loads(book_week.history_file.read_text())
+            self.assertEqual(history['runs'][0]['bookings_made'], 1)
+            self.assertEqual(history['runs'][0]['details'], detail)
 
     def test_display_failure_does_not_hide_verified_success_or_notification(self):
         with mock.patch.object(book_week, '_mark_mutation_verified', return_value=self.receipt), \

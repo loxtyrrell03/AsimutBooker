@@ -167,6 +167,13 @@ def apply_upgrade_to_events(events, upgrade):
             for event in events if event["eventId"] not in removed or event["eventId"] == upgrade.original.event_id]
 
 
+def consolidation_summary(change):
+    """One stable description for publication, history and notification deduplication."""
+    new = change.replacement
+    return (f"CONSOLIDATED: {new.day} {len(change.originals)} bookings "
+            f"-> {new.room} {time_text(new.start)}-{time_text(new.end)}")
+
+
 def availability_after_upgrade(available_data, upgrade):
     """Model the old rooms being freed and the replacement being occupied."""
     rooms = {r["room"]: [(slot["startHour"] * 60, slot["endHour"] * 60) for slot in r.get("slots", ())]
