@@ -3461,6 +3461,41 @@ class UpgradePreview:
         return False
 
 
+def dismiss_reservation_time_picker(page):
+    """Dismiss only Asimut's observed time picker through its own backdrop.
+
+    Escape does not close this component. Never dismiss an unknown dialog or
+    force a click through it, and never let dismissal change the typed times.
+    """
+    picker = page.locator('app-as-timepicker-body [aria-label="Time picker container"]:visible')
+    if not picker.count():
+        if page.locator('.cdk-overlay-backdrop.cdk-overlay-dark-backdrop:visible').count():
+            raise ValueError('An unknown overlay blocks the reservation editor')
+        return
+    if picker.count() != 1:
+        raise ValueError('Ambiguous reservation time picker')
+    fields = [page.get_by_role('textbox', name=name, exact=True) for name in ('Start time', 'End time')]
+    before = [field.input_value() for field in fields]
+    backdrop = page.locator('.cdk-overlay-backdrop.cdk-overlay-backdrop-showing:visible')
+    if backdrop.count() != 1:
+        raise ValueError('Time picker has no unique dismissal backdrop')
+    bounds, panel = backdrop.bounding_box(), picker.bounding_box()
+    if not bounds or not panel:
+        raise ValueError('Time picker geometry is unavailable')
+    points = ((4, 4), (bounds['width'] - 4, 4), (4, bounds['height'] - 4),
+              (bounds['width'] - 4, bounds['height'] - 4))
+    for x, y in points:
+        px, py = bounds['x'] + x, bounds['y'] + y
+        if not (panel['x'] <= px <= panel['x'] + panel['width']
+                and panel['y'] <= py <= panel['y'] + panel['height']):
+            backdrop.click(position={'x': x, 'y': y}, timeout=3000)
+            picker.wait_for(state='hidden', timeout=3000)
+            if [field.input_value() for field in fields] != before:
+                raise ValueError('Dismissing the time picker changed the requested times')
+            return
+    raise ValueError('No unobstructed time picker dismissal point')
+
+
 def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
                                freeze_minutes=DEFAULT_FREEZE_MINUTES, transaction_receipt=None):
     """Edit one exact reservation once; never cancel, recreate, shrink or retry Save.
@@ -3549,11 +3584,13 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         if (not same_room or defer_start) and end.input_value() != time_text(replacement.end):
             end.fill(time_text(replacement.end))
             end.press("Tab")
+        dismiss_reservation_time_picker(page)
         # The Material option contains an aria-hidden icon whose raw text is
         # "place". Match its accessible name, which is the actual room label.
         options = page.get_by_role("option", name=re.compile(
             r"^\s*" + re.escape(replacement.room) + r"(?:\s*\([^\n]*\))?\s*$"))
         location.press("Escape")
+        dismiss_reservation_time_picker(page)
         # Selecting the changed room triggers a fresh check. Re-filling an
         # unchanged time does not: Asimut suppresses unchanged form values.
         page.on("request", note_check)
@@ -3579,6 +3616,7 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             raise ValueError("Asimut did not approve the exact room/time change")
         validated_payload = copy.deepcopy(response.request.post_data_json)
         location.press("Escape")
+        dismiss_reservation_time_picker(page)
         save = page.get_by_role("button", name="Save event", exact=True)
         save.wait_for(state="visible", timeout=5000)
         deadline = time.monotonic() + 5
@@ -3586,6 +3624,9 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             page.wait_for_timeout(100)
         if save.count() != 1 or not save.is_enabled() or not form_matches(replacement):
             raise ValueError("The exact validated editor or enabled Save control changed")
+        dismiss_reservation_time_picker(page)
+        # A remaining unknown overlay must fail before the Save intent is marked.
+        save.click(trial=True, timeout=3000)
         if dry_run:
             for record in upgrade.originals:
                 verify(record)

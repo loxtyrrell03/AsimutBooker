@@ -186,7 +186,18 @@ class UpgradeEditorTests(unittest.TestCase):
             route.fulfill(content_type="text/html", body=f'<div data-cy="event_42"><p>{p["date"]}</p><p>{p["room"]}</p><p>{p["startTime"]} - {p["endTime"]}</p></div>')
         elif "/event?eventId=42" in request.url:
             drift = "body.event.rs[0].id=9;" if self.mode == "save_drift" else ""
-            route.fulfill(content_type="text/html", body=EDITOR.replace("SAVE_DRIFT", drift))
+            html = EDITOR.replace("SAVE_DRIFT", drift)
+            if self.mode in {'sticky_time_picker', 'unknown_overlay'}:
+                component = ('<app-as-timepicker-body><div aria-label="Time picker container">minutes</div></app-as-timepicker-body>'
+                             if self.mode == 'sticky_time_picker' else '<div role="dialog">Unknown confirmation</div>')
+                html += '''<script>for(const field of [start,end]) field.addEventListener('focus',()=>{
+                  if(document.getElementById('fixture-overlay'))return;
+                  let overlay=document.createElement('div');overlay.id='fixture-overlay';
+                  overlay.innerHTML=`<div class="cdk-overlay-backdrop cdk-overlay-dark-backdrop cdk-overlay-backdrop-showing" style="position:fixed;inset:0;background:#0008;z-index:50"></div>
+                    <div style="position:fixed;left:400px;top:200px;z-index:51;background:white">COMPONENT</div>`;
+                  document.body.append(overlay);overlay.firstElementChild.onclick=()=>overlay.remove();
+                });</script>'''.replace('COMPONENT', component)
+            route.fulfill(content_type="text/html", body=html)
         else:
             route.fulfill(status=404, body="Synthetic fixture: no external requests")
 
@@ -243,6 +254,20 @@ class UpgradeEditorTests(unittest.TestCase):
         receipt, = receipts.load_journal(self.path)["receipts"].values()
         self.assertEqual(receipt["status"], "verified")
         self.assertEqual(receipt["original"]["end"], "14:00")
+
+    def test_sticky_asimut_time_picker_is_closed_without_changing_values(self):
+        self.mode = 'sticky_time_picker'
+        self.assertTrue(self.run_edit())
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertFalse(self.other_mutations)
+
+    def test_unknown_overlay_is_never_dismissed_or_clicked_through(self):
+        self.mode = 'unknown_overlay'
+        self.assertFalse(self.run_edit())
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.other_mutations)
+        self.assertFalse(self.path.exists())
 
     def test_dry_run_exercises_editor_but_keeps_original_and_no_receipt(self):
         self.assertFalse(self.run_edit(dry_run=True))

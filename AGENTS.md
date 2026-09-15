@@ -30,6 +30,12 @@
   fresh exact check, and pass the final single-Save/preference boundary. This
   avoids leaving a dirty form open throughout cross-page scans. Sixty focused
   editor/staging/runtime checks cover the sequence and existing safety guards.
+- Live failure capture identified `app-as-timepicker-body` covering the selector
+  and Save; Escape does not dismiss this Asimut component. The editor now closes
+  only that identified picker through its unique backdrop, verifies both times
+  unchanged, and checks Save is unobstructed before recording Save intent. Unknown
+  dark overlays fail closed. Sixty-two focused checks and an authenticated no-Save
+  picker-dismissal check pass; blocked attempts were reconciled with originals intact.
 
 ## 2026-09-15 comprehensive upgrade planning and consolidation
 
