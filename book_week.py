@@ -22,6 +22,7 @@ import time
 import argparse
 import os
 import copy
+from contextlib import nullcontext
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, replace
@@ -109,9 +110,11 @@ from mutation_receipts import (
     record_pending_create,
     record_pending_extension,
     record_pending_upgrade,
+    record_pending_consolidation,
 )
-from room_upgrades import (Reservation, RoomUpgrade, classify_upgrade_outcome, time_text,
-                           local_instant, DEFAULT_FREEZE_MINUTES)
+from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation, classify_upgrade_outcome, time_text,
+                           local_instant, DEFAULT_FREEZE_MINUTES, consolidation_from_receipt,
+                           classify_consolidation_outcome)
 from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
                                 upgrade_save_acknowledgement_consistent)
 from room_upgrade_runtime import process_room_upgrades
@@ -1178,9 +1181,12 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
             f"{receipt['date']} {receipt['end']}",
             "%Y-%m-%d %H:%M",
         )
-        if receipt.get("kind") == "upgrade":
+        if receipt.get("kind") in {"upgrade", "consolidation"}:
             receipt_end = max(receipt_end, datetime.strptime(
                 f"{receipt['original']['date']} {receipt['original']['end']}", "%Y-%m-%d %H:%M"))
+            for original in receipt.get("originals", ()):
+                receipt_end = max(receipt_end, datetime.strptime(
+                    f"{original['date']} {original['end']}", "%Y-%m-%d %H:%M"))
         if receipt_end <= datetime.now():
             # Once the intended slot has ended, retrying it is impossible and
             # the receipt can no longer protect against a duplicate future
@@ -1192,6 +1198,16 @@ def reconcile_pending_mutation_receipts(page, agenda_events):
                 event_url=receipt.get("event_url"),
             )
             print(f"  Closed expired receipt {receipt['id']}: booking slot has ended")
+            continue
+
+        if receipt.get("kind") == "consolidation":
+            outcome, _ = verify_consolidation_state(page, receipt, agenda_events=agenda_records)
+            if outcome == "untouched":
+                resolve_mutation_receipt(receipt["id"], resolution="Consolidation not applied; all originals verified intact")
+            elif outcome == "complete":
+                verify_mutation_receipt(receipt["id"], event_url=receipt["event_url"])
+            else:
+                print("Consolidation replacement is secured; redundant originals await a mutation-capable run")
             continue
 
         if receipt.get("kind") == "upgrade":
@@ -3182,6 +3198,59 @@ def remove_extendable_booking_by_event_id(event_id):
     update_settings(mutate, settings_file)
 
 
+def verify_consolidation_state(page, receipt, *, agenda_events=None):
+    """Fresh complete-agenda and persisted-page proof of all transaction members."""
+    tracker = None
+    if agenda_events is None:
+        tracker = BookingTracker()
+        settings = load_settings_document(settings_file)
+        scan_agenda(page, tracker, datetime.now().date(), ignored_events=load_ignored_events(settings),
+                    window_dates=require_live_room_policy().booking_dates(datetime.now().date()),
+                    snapshot_path=AGENDA_SNAPSHOT_FILE)
+        agenda_events = tracker.agenda_events
+    outcome = classify_consolidation_outcome(agenda_events, receipt)
+    if outcome == "uncertain":
+        raise BookingVerificationError("Consolidation state is uncertain; all further changes are blocked")
+    group = consolidation_from_receipt(receipt)
+    current_ids = {e.get("eventId") for e in agenda_events}
+    expected = group.originals if outcome == "untouched" else (group.replacement, *group.retired)
+    for record in expected:
+        if record.event_id in current_ids:
+            safe_goto(page, record.event_url)
+            verify_persisted_booking_page(page, record.room, record.day, time_text(record.start), time_text(record.end))
+    return outcome, tracker
+
+
+def finish_consolidation(page, receipt):
+    """Resume only donor retirement; never repeat the anchor Save after a crash."""
+    pending = list_pending_mutation_receipts()
+    if len(pending) != 1 or pending[0] != receipt or receipt["kind"] != "consolidation":
+        raise BookingVerificationError("Consolidation cleanup requires its sole exact pending transaction")
+    outcome, tracker = verify_consolidation_state(page, receipt)
+    if outcome == "untouched":
+        resolve_mutation_receipt(receipt["id"], resolution="Consolidation not applied; all originals verified intact")
+        return False
+    group = consolidation_from_receipt(receipt)
+    for donor in group.retired:
+        current_ids = {e["eventId"] for e in tracker.agenda_events}
+        if donor.event_id not in current_ids:
+            continue
+        if local_instant(donor.day, donor.start) <= datetime.now().astimezone():
+            raise BookingVerificationError("Consolidation donor has started; keeping it and the secured replacement")
+        operation_stage(f"Retiring covered booking in {donor.room} {time_text(donor.start)}–{time_text(donor.end)}")
+        cancel_reservation_exact(page, tracker.agenda_events, event_id=donor.event_id,
+            room=donor.room, date_str=donor.day.isoformat(), start_time=time_text(donor.start), end_time=time_text(donor.end),
+            today=datetime.now().date(), live_dates=require_live_room_policy().booking_dates(datetime.now().date()),
+            ignored_events=load_ignored_events(), consolidation_receipt=receipt)
+        outcome, tracker = verify_consolidation_state(page, receipt)
+    if outcome != "complete":
+        raise BookingVerificationError("Consolidation retirement remains incomplete; replacement remains protected")
+    verify_mutation_receipt(receipt["id"], event_url=receipt["event_url"])
+    print(f"CONSOLIDATION VERIFIED: {len(group.originals)} bookings -> {group.replacement.room} "
+          f"{time_text(group.replacement.start)}-{time_text(group.replacement.end)}; all practice minutes retained")
+    return True
+
+
 def cancel_reservation_exact(
     page,
     reservations,
@@ -3194,6 +3263,7 @@ def cancel_reservation_exact(
     today,
     live_dates,
     ignored_events,
+    consolidation_receipt=None,
 ):
     """Cancel one exact reservation and prove its absence in a complete agenda."""
 
@@ -3249,13 +3319,14 @@ def cancel_reservation_exact(
         ) from exc
 
     try:
-        receipt = record_pending_cancel(
+        receipt = ({**consolidation_receipt, "room": room, "date": date_str, "start": start_time,
+                    "end": end_time, "event_url": event_url} if consolidation_receipt is not None else record_pending_cancel(
             room=room,
             booking_date=date_str,
             start=start_time,
             end=end_time,
             event_url=event_url,
-        )
+        ))
     except MutationReceiptError as exc:
         raise BookingCancellationError(
             f"Cancellation stopped before the destructive control because its "
@@ -3268,12 +3339,29 @@ def cancel_reservation_exact(
     )
     try:
         print("Cancellation progress: cancelling booking", flush=True)
-        cancel_option.click(no_wait_after=True, timeout=5000)
-        page.wait_for_timeout(750)
-        confirmation = _optional_cancel_confirmation(page)
-        if confirmation is not None:
-            confirmation.click(no_wait_after=True, timeout=5000)
-            page.wait_for_timeout(1000)
+        if consolidation_receipt is not None:
+            pending = list_pending_mutation_receipts()
+            if len(pending) != 1 or pending[0] != consolidation_receipt:
+                raise BookingVerificationError("Consolidation journal changed before retirement")
+            group = consolidation_from_receipt(consolidation_receipt)
+            exact = Reservation(event_id, date.fromisoformat(date_str), room,
+                                int(start_time[:2]) * 60 + int(start_time[3:]), int(end_time[:2]) * 60 + int(end_time[3:]))
+            if exact not in group.retired or local_instant(exact.day, exact.start) <= datetime.now().astimezone():
+                raise BookingVerificationError("Only an exact future redundant original may be retired")
+            proof_page = page.context.new_page()
+            try:
+                outcome, _ = verify_consolidation_state(proof_page, consolidation_receipt)
+                if outcome != "secured":
+                    raise BookingVerificationError("Full replacement must be independently verified before retirement")
+            finally:
+                proof_page.close()
+        with booking_save_boundary() if consolidation_receipt is not None else nullcontext():
+            cancel_option.click(no_wait_after=True, timeout=5000)
+            page.wait_for_timeout(750)
+            confirmation = _optional_cancel_confirmation(page)
+            if confirmation is not None:
+                confirmation.click(no_wait_after=True, timeout=5000)
+                page.wait_for_timeout(1000)
     except BookingCancellationError as exc:
         raise BookingVerificationError(
             f"Cancellation outcome is uncertain (receipt {receipt['id']}): {exc}. "
@@ -3323,13 +3411,9 @@ def cancel_reservation_exact(
                 "from an action that was not applied."
             )
         remove_extendable_booking_by_event_id(event_id)
-        add_rebooking_blackout(
-            date_str,
-            start_time,
-            end_time,
-            path=settings_file,
-        )
-        verify_mutation_receipt(receipt["id"], event_url=event_url)
+        if consolidation_receipt is None:
+            add_rebooking_blackout(date_str, start_time, end_time, path=settings_file)
+            verify_mutation_receipt(receipt["id"], event_url=event_url)
     except BookingVerificationError:
         raise
     except Exception as exc:
@@ -3359,6 +3443,14 @@ def cancel_reservation_exact(
 UPGRADE_SAVE_TIMEOUT_MS = 30000
 
 
+class UpgradePreview:
+    """A successful no-Save validation; false because no booking was changed."""
+    preview_ready = True
+
+    def __bool__(self):
+        return False
+
+
 def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
                                freeze_minutes=DEFAULT_FREEZE_MINUTES):
     """Edit one exact reservation once; never cancel, recreate, shrink or retry Save.
@@ -3368,9 +3460,10 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
     preparing the times, before room selection, exact server check and settings lock.
     Dry runs follow the same checks but never write a receipt or click Save.
     """
-    if not isinstance(upgrade, RoomUpgrade) or not callable(revalidate):
+    if not isinstance(upgrade, (RoomUpgrade, RoomConsolidation)) or not callable(revalidate):
         raise TypeError("An exact upgrade and fresh revalidation callback are required")
     original, replacement = upgrade.original, upgrade.replacement
+    consolidation = isinstance(upgrade, RoomConsolidation)
     location_id = require_live_room_policy().all_room_location_ids[replacement.room]
     receipt = None
     save_started = False
@@ -3416,7 +3509,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
     try:
         if list_pending_mutation_receipts():
             raise BookingVerificationError("An unresolved mutation blocks room upgrades")
-        verify(original)
+        for record in upgrade.originals:
+            verify(record)
         safe_goto(page, f"{ASIMUT_BASE_URL}/event?eventId={original.event_id}")
         start = page.get_by_role("textbox", name="Start time", exact=True)
         end = page.get_by_role("textbox", name="End time", exact=True)
@@ -3426,10 +3520,12 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             raise ValueError("The editor no longer matches the original reservation")
         # Times can update one another while the user types. Set both, then
         # select a real location option; typed autocomplete text is not identity.
-        if start.input_value() != time_text(replacement.start):
+        same_room = original.room == replacement.room
+        defer_start = same_room and original.end == replacement.end
+        if not defer_start and start.input_value() != time_text(replacement.start):
             start.fill(time_text(replacement.start))
             start.press("Tab")
-        if end.input_value() != time_text(replacement.end):
+        if (not same_room or defer_start) and end.input_value() != time_text(replacement.end):
             end.fill(time_text(replacement.end))
             end.press("Tab")
         # The Material option contains an aria-hidden icon whose raw text is
@@ -3444,11 +3540,19 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         page.on("request", note_check)
         try:
             with page.expect_response(exact_check, timeout=10000) as pending:
-                location.fill(replacement.room)
-                options.first.wait_for(state="visible", timeout=5000)
-                if options.count() != 1:
-                    raise ValueError("Destination room option is ambiguous")
-                options.click()
+                if same_room:
+                    # Expanding an anchor already in the destination room must
+                    # trigger a new check after revalidation, not reuse the
+                    # earlier response from partially prepared times.
+                    trigger = start if defer_start else end
+                    trigger.fill(time_text(replacement.start if defer_start else replacement.end))
+                    trigger.press("Tab")
+                else:
+                    location.fill(replacement.room)
+                    options.first.wait_for(state="visible", timeout=5000)
+                    if options.count() != 1:
+                        raise ValueError("Destination room option is ambiguous")
+                    options.click()
         finally:
             page.remove_listener("request", note_check)
         response = pending.value
@@ -3464,9 +3568,10 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         if save.count() != 1 or not save.is_enabled() or not form_matches(replacement):
             raise ValueError("The exact validated editor or enabled Save control changed")
         if dry_run:
-            verify(original)
+            for record in upgrade.originals:
+                verify(record)
             print("UPGRADE READY (not saved): full original reservation retained")
-            return False
+            return UpgradePreview()
 
         page.route(route_pattern, guard_save)
         route_installed = True
@@ -3478,16 +3583,19 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
                 if list_pending_mutation_receipts() or not form_matches(replacement) or not save.is_enabled():
                     raise BookingVerificationError("Room upgrade changed or became blocked before Save")
                 settled_at = datetime.now().astimezone() + timedelta(minutes=freeze_minutes)
-                if min(local_instant(original.day, original.start),
+                if min(*(local_instant(r.day, r.start) for r in upgrade.originals),
                        local_instant(replacement.day, replacement.start)) <= settled_at:
                     raise BookingPreferencesChanged("The booking reached its settled window; keeping the original")
-                receipt = record_pending_upgrade(
+                def receipt_original(record):
+                    return {"event_id": record.event_id, "room": record.room, "date": record.day.isoformat(),
+                            "start": time_text(record.start), "end": time_text(record.end)}
+                journal = record_pending_consolidation if consolidation else record_pending_upgrade
+                receipt = journal(
                     room=replacement.room, booking_date=replacement.day.isoformat(),
                     start=time_text(replacement.start), end=time_text(replacement.end),
                     event_url=original.event_url,
-                    original={"event_id": original.event_id, "room": original.room,
-                              "date": original.day.isoformat(), "start": time_text(original.start),
-                              "end": time_text(original.end)},
+                    original=receipt_original(original),
+                    **({"originals": [receipt_original(r) for r in upgrade.originals]} if consolidation else {}),
                 )
                 save_started = True  # A throwing click can still have reached Asimut.
                 save.click(no_wait_after=True, timeout=5000)
@@ -3499,7 +3607,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         payload = saved.json()
         # A rejection can be resolved only after reloading the exact original.
         if payload.get("response", {}).get("success") is False:
-            verify(original)
+            for record in upgrade.originals:
+                verify(record)
             resolve_mutation_receipt(receipt["id"], resolution="Room upgrade rejected; exact original reservation verified intact")
             print("UPGRADE NOT APPLIED: original reservation verified intact")
             return False
@@ -3517,6 +3626,11 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             proof_page.close()
         # A completed/abandoned extension record must never edit the former room.
         remove_extendable_booking_by_event_id(original.event_id)
+        if consolidation:
+            # Leave the transaction pending. Only verified retirement of every
+            # redundant original can establish a completed consolidation.
+            print("CONSOLIDATION SECURED: full replacement verified; original donor bookings retained")
+            return True
         verify_mutation_receipt(receipt["id"], event_url=original.event_url)
         print(f"UPGRADED: {original.room} {time_text(original.start)}-{time_text(original.end)} "
               f"-> {replacement.room} {time_text(replacement.start)}-{time_text(replacement.end)}")
@@ -8963,14 +9077,21 @@ _notified_booking_details = set()
 def verify_mutation_receipt(receipt_id, *, event_url=None):
     """Publish confirmed changes before subsequent scanning or boundary waits."""
     receipt = _mark_mutation_verified(receipt_id, event_url=event_url)
-    if receipt["kind"] not in {"create", "extension", "upgrade"} or receipt_id in _published_receipts:
+    if receipt["kind"] not in {"create", "extension", "upgrade", "consolidation"} or receipt_id in _published_receipts:
         return receipt
     _published_receipts.add(receipt_id)
     try:
         apply_verified_reservation(receipt)
     except Exception as exc:
         print(f"Warning: Confirmed booking display update failed: {exc}")
-    if receipt["kind"] == "upgrade":
+    if receipt["kind"] == "consolidation":
+        detail = (f"CONSOLIDATED: {receipt['date']} {len(receipt['originals'])} bookings "
+                  f"-> {receipt['room']} {receipt['start']}-{receipt['end']}")
+        try:
+            clear_booking_plan()
+        except BookingPlanError as exc:
+            print(f"Warning: Consolidation verified, but display plan clearing failed: {exc}")
+    elif receipt["kind"] == "upgrade":
         old = receipt["original"]
         detail = (f"UPGRADED: {receipt['date']} {old['room']} {old['start']}-{old['end']} "
                   f"-> {receipt['room']} {receipt['start']}-{receipt['end']}")
@@ -8989,7 +9110,7 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
     # Reserve before sending: a lost HTTP response must not cause a duplicate.
     _notified_booking_details.add(formatted)
     try:
-        title = "Practice room upgraded" if receipt["kind"] == "upgrade" else "Booked 1 room"
+        title = "Practice room upgraded" if receipt["kind"] in {"upgrade", "consolidation"} else "Booked 1 room"
         send_notification(title, f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
     except Exception as exc:
         print(f"Warning: Confirmed booking notification failed: {exc}")
@@ -9946,6 +10067,26 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             context.close()
             browser.close()
             return 0
+
+        # Read-only runs can prove a secured replacement but never retire donors.
+        if not getattr(args, "plan_only", False) and not getattr(args, "upgrade_dry_run", False):
+            for receipt in list_pending_mutation_receipts():
+                if receipt["kind"] != "consolidation":
+                    continue
+                group = consolidation_from_receipt(receipt)
+                if ((getattr(args, "only_date", None) and args.only_date != receipt["date"])
+                        or getattr(args, "upgrade_event_id", None) is not None
+                        or (getattr(args, "max_actions", None) is not None
+                            and args.max_actions - total_booked < len(group.retired))):
+                    raise BookingVerificationError("Consolidation cleanup remains pending outside this run's explicit scope")
+                if finish_consolidation(page, receipt):
+                    total_booked += len(group.retired)
+                    booking_details.append(f"CONSOLIDATED: {receipt['date']} {len(group.originals)} bookings "
+                                           f"-> {receipt['room']} {receipt['start']}-{receipt['end']}")
+                tracker = BookingTracker()
+                events_detected, all_reservations = scan_agenda(page, tracker, today,
+                    ignored_events=ignored_events, window_dates=live_dates, snapshot_path=AGENDA_SNAPSHOT_FILE)
+                apply_rebooking_blackouts(tracker, load_rebooking_blackouts(settings))
 
         # Load all user planning policy before deciding whether this is a
         # mutation-capable run or a read-only plan refresh.
@@ -11601,8 +11742,6 @@ def _validate_cli_args(parser, args):
         if (args.check_only or args.target_time or args.scheduled or args.setup_login
                 or args.configure_autonomous_login or args.login_only):
             parser.error("--upgrades-only cannot be combined with other operation modes")
-        if not args.only_date or (not getattr(args, "upgrade_dry_run", False) and args.max_actions is None):
-            parser.error("--upgrades-only requires --only-date and, unless a dry run, --max-actions")
     cancellation_fields = {
         "--cancel-event-id": args.cancel_event_id,
         "--cancel-date": args.cancel_date,

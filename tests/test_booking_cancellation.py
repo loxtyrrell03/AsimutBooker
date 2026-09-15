@@ -127,7 +127,7 @@ class BookingCancellationContractTests(unittest.TestCase):
     def call_cancel(self, *, post_reservations=(), record_side_effect=None,
                     cancel_side_effect=None, confirmation=True,
                     scan_side_effects=None, post_agenda_events=None,
-                    blackout_side_effect=None):
+                    blackout_side_effect=None, consolidation_receipt=None):
         page = mock.Mock()
         card = mock.Mock()
         more_button = mock.Mock()
@@ -252,6 +252,7 @@ class BookingCancellationContractTests(unittest.TestCase):
                 today=datetime(2026, 8, 31).date(),
                 live_dates=(datetime(2026, 8, 31).date(),),
                 ignored_events=set(),
+                consolidation_receipt=consolidation_receipt,
             )
             return result, timeline, cancel_option, scan, verify, resolve
         finally:
@@ -337,6 +338,39 @@ class BookingCancellationContractTests(unittest.TestCase):
         )
         verify.assert_called_once_with("cancel-receipt", event_url=self.EVENT_URL)
         resolve.assert_not_called()
+
+    def test_consolidation_retirement_requires_secured_replacement_and_does_not_create_blackouts(self):
+        self.DATE = '2099-01-01'
+        parent = dict(id='transaction', kind='consolidation', status='pending',
+                      room='Weston', date=self.DATE, start='16:00', end='17:00',
+                      event_url='https://rwcmd.asimut.net/arrangement?eventId=42',
+                      original=dict(event_id=42, room='Fallback', date=self.DATE, start='16:30', end='17:00'),
+                      originals=[dict(event_id=42, room='Fallback', date=self.DATE, start='16:30', end='17:00'),
+                                 dict(event_id=self.EVENT_ID, room=self.ROOM, date=self.DATE, start=self.START, end=self.END)])
+        with mock.patch.object(book_week, 'list_pending_mutation_receipts', return_value=[parent]), \
+                mock.patch.object(book_week, 'verify_consolidation_state', return_value=('secured', None)) as proof:
+            result, timeline, cancel, _, verify, _ = self.call_cancel(consolidation_receipt=parent)
+        self.assertEqual(result, (True, 3))
+        proof.assert_called_once()
+        cancel.click.assert_called_once()
+        self.assertNotIn('receipt', timeline)  # Parent transaction was recorded before the anchor Save.
+        self.last_blackout.assert_not_called()
+        verify.assert_not_called()  # One removed donor is not a completed transaction.
+
+    def test_consolidation_cannot_retire_when_full_replacement_proof_is_missing(self):
+        self.DATE = '2099-01-01'
+        parent = dict(id='transaction', kind='consolidation', status='pending',
+                      room='Weston', date=self.DATE, start='16:00', end='17:00',
+                      event_url='https://rwcmd.asimut.net/arrangement?eventId=42',
+                      original=dict(event_id=42, room='Fallback', date=self.DATE, start='16:30', end='17:00'),
+                      originals=[dict(event_id=42, room='Fallback', date=self.DATE, start='16:30', end='17:00'),
+                                 dict(event_id=self.EVENT_ID, room=self.ROOM, date=self.DATE, start=self.START, end=self.END)])
+        with mock.patch.object(book_week, 'list_pending_mutation_receipts', return_value=[parent]), \
+                mock.patch.object(book_week, 'verify_consolidation_state', return_value=('untouched', None)), \
+                self.assertRaises(book_week.BookingVerificationError):
+            self.call_cancel(consolidation_receipt=parent)
+        self.last_cancel_option.click.assert_not_called()
+        self.last_blackout.assert_not_called()
 
     def test_receipt_failure_stops_before_destructive_click(self):
         with self.assertRaisesRegex(

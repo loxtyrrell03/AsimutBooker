@@ -45,7 +45,14 @@ class UpgradeRuntimeTests(unittest.TestCase):
             settings=self.settings, practice_plan=self.plan, policy=self.policy, now=self.now, extensions=[])
 
     def test_upgrade_cannot_consume_only_slot_needed_for_daily_target(self):
+        # The original slot cannot be rebooked in full under current same-room
+        # spacing, so releasing it does not compensate for consuming the gap.
+        self.events.append({**self.events[0], 'eventId': 43, 'startTime': '10:30', 'endTime': '11:30'})
+        self.plan = PracticePlan(enabled=True, default_hours=5)
         self.assertFalse(self.coverage())
+
+    def test_day_comparison_counts_the_original_room_time_freed_by_a_move(self):
+        self.assertTrue(self.coverage())
 
     def test_moving_keeps_target_possible_when_another_room_covers_freed_time(self):
         self.gaps.append({"room": "Spare", "slots": [{"startHour": 12, "endHour": 14}]})
@@ -76,6 +83,7 @@ class UpgradeRuntimeTests(unittest.TestCase):
         self.details = []
         self.stack.enter_context(mock.patch.object(b, "refresh_live_room_policy", return_value=self.policy))
         self.stack.enter_context(mock.patch.object(b, "load_extendable_bookings", return_value=[]))
+        self.published = self.stack.enter_context(mock.patch.object(runtime, "publish_upgrade_plan"))
         self.stack.enter_context(mock.patch.object(b, "open_practice_room_overview"))
         self.navigate = self.stack.enter_context(mock.patch.object(b, "navigate_to_day"))
         self.stack.enter_context(mock.patch.object(b, "wait_for_practice_room_grid"))
@@ -90,7 +98,7 @@ class UpgradeRuntimeTests(unittest.TestCase):
             self.assertTrue(revalidate())
             self.edits.append(choice)
             if dry_run:
-                return False
+                return b.UpgradePreview()
             self.events = [{**event, **choice.replacement.as_booking()} if event["eventId"] == choice.original.event_id else event
                            for event in self.events]
             return True
@@ -178,12 +186,70 @@ class UpgradeRuntimeTests(unittest.TestCase):
         self.assertEqual(self.run_runner(tracker)[0], 0)
         self.scan.assert_not_called()
 
-    def test_slow_grid_cannot_start_an_edit_after_the_phase_deadline(self):
+    def test_slow_grid_does_not_silently_truncate_the_sweep(self):
         tracker = self.prepare_runner()
-        with mock.patch.object(runtime.time, 'monotonic', return_value=100) as clock:
-            def slow_grid(page):
-                clock.return_value = 100 + runtime.UPGRADE_PHASE_SECONDS + 1
-                return copy.deepcopy(self.gaps)
-            with mock.patch.object(b, 'get_available_slots', side_effect=slow_grid):
-                self.assertEqual(self.run_runner(tracker)[0], 0)
-        self.edit.assert_not_called()
+        with mock.patch('time.monotonic', side_effect=[100, 1000, 10000]):
+            self.assertEqual(self.run_runner(tracker)[0], 1)
+        self.assertEqual(len(self.edits), 1)
+
+    def test_full_window_discovery_precedes_first_edit_and_more_than_six_upgrades_finish(self):
+        tracker = self.prepare_runner()
+        self.args.max_actions = None
+        self.settings['booking_strategy']['daily_planning']['upgrade_freeze_hours'] = 0
+        self.policy.horizon_minutes_for = lambda room: 8 * 1440
+        self.events = [{**self.original.as_booking(), 'eventId': 42 + i,
+                        'date': (date(2026, 9, 18) + timedelta(days=i)).isoformat(),
+                        'isReservation': True, 'title': 'Reservation'} for i in range(7)]
+        tracker = runtime.tracker_for_events(b, self.events, ())
+        scanned_dates = []
+        original_edit = self.edit.side_effect
+        original_wait = b.wait_for_practice_room_grid
+        def note_day(page, day):
+            scanned_dates.append(day)
+            return original_wait(page, day)
+        def verify_first_edit(*args, **kwargs):
+            self.assertEqual(set(scanned_dates[:7]), {date(2026, 9, 18) + timedelta(days=i) for i in range(7)})
+            return original_edit(*args, **kwargs)
+        self.edit.side_effect = verify_first_edit
+        with mock.patch.object(b, 'wait_for_practice_room_grid', side_effect=note_day):
+            count, updated = self.run_runner(tracker)
+        self.assertEqual(count, 7)
+        self.assertEqual(len(self.edits), 7)
+        self.assertTrue(all(e['room'] == 'Best' for e in updated.agenda_events))
+
+    def test_runner_consolidates_three_fragments_and_counts_each_remote_action(self):
+        tracker = self.prepare_runner()
+        self.args.max_actions = None
+        self.events = [{**self.events[0], 'eventId': 42 + i, 'startTime': start, 'endTime': end}
+                       for i, (start, end) in enumerate((('12:00', '12:30'), ('12:30', '13:30'), ('13:30', '14:00')))]
+        tracker = runtime.tracker_for_events(b, self.events, ())
+        def finish(page, receipt):
+            chosen = self.edits[-1]
+            self.assertEqual(Reservation.from_event(next(e for e in self.events if e['eventId'] == chosen.original.event_id)),
+                             chosen.replacement)
+            removed = {r.event_id for r in chosen.retired}
+            self.events = [e for e in self.events if e['eventId'] not in removed]
+            return True
+        with mock.patch.object(b, 'list_pending_mutation_receipts', return_value=[{'kind': 'consolidation'}]), \
+                mock.patch.object(b, 'finish_consolidation', side_effect=finish) as cleanup:
+            count, updated = self.run_runner(tracker)
+        self.assertEqual(count, 3)
+        self.assertEqual(len(self.edits), 1)
+        cleanup.assert_called_once()
+        self.assertEqual(len(updated.agenda_events), 1)
+        self.assertEqual(updated.get_hours_for_day(self.day), 2)
+        self.assertTrue(self.details[0].startswith('CONSOLIDATED:'))
+
+    def test_rejected_preview_tries_other_times_instead_of_marking_reservation_done(self):
+        tracker = self.prepare_runner()
+        self.args.upgrade_dry_run = True
+        self.gaps = [{'room': 'Best', 'slots': [{'startHour': 12, 'endHour': 16}]}]
+        normal_edit = self.edit.side_effect
+        def edit(*args, **kwargs):
+            if self.edit.call_count == 1:
+                return False
+            return normal_edit(*args, **kwargs)
+        self.edit.side_effect = edit
+        self.assertEqual(self.run_runner(tracker)[0], 0)
+        self.assertEqual(self.edit.call_count, 2)
+        self.assertEqual(len(self.edits), 1)

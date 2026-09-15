@@ -65,9 +65,10 @@ def _refresh_test_live_policy(call_order=None, *, window_days=8):
 
 
 class LiveActionCliBoundaryTests(unittest.TestCase):
-    def test_upgrade_mode_requires_bounded_date_and_rejects_other_operations(self):
+    def test_upgrade_mode_accepts_comprehensive_or_explicitly_bounded_sweeps(self):
         base = ['--upgrades-only', '--only-date', '2026-09-21']
-        self.assert_rejected(base)
+        self.assertTrue(self.parse_validated(['--upgrades-only']).upgrades_only)
+        self.assertTrue(self.parse_validated(base).upgrades_only)
         self.assertTrue(self.parse_validated(base + ['--upgrade-dry-run']).upgrade_dry_run)
         args = self.parse_validated(base + ['--max-actions', '1', '--upgrade-event-id', '42'])
         self.assertEqual(args.upgrade_event_id, 42)

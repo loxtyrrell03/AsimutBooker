@@ -1,4 +1,43 @@
-## 2026-09-15 duration-preserving room upgrades
+## 2026-09-15 comprehensive upgrade planning and consolidation
+
+- Upgrade runs scan every eligible date in the live booking window before any
+  edit. The implicit six-attempt/three-minute cutoff is removed; explicit action
+  limits and cooperative Stop still apply. A compatible whole-day portfolio is
+  selected, one change is verified, and the affected date is rescanned/replanned.
+  Rejections are not blindly retried against the same day's unchanged agenda.
+- `room_upgrades.py` supports full-duration room/time shifts and consolidating
+  multiple non-overlapping originals into one session, preserving their total
+  minutes and never downgrading a higher-ranked fragment. The user's saved room
+  order is authoritative. Freed original-room gaps participate in the remaining
+  daily-target comparison. Past/started and explicitly ignored bookings remain
+  protected, as do active extension plans and user-saved blackout windows.
+- Consolidation secures an enlarged anchor before retiring any redundant donor.
+  Its strict `consolidation` mutation receipt records every original. Each donor
+  retirement requires a fresh complete agenda and independent full-anchor proof;
+  uncertain outcomes stop further mutation. Recovery resumes only unfinished
+  donor retirement and never repeats the anchor Save. Read-only reconciliation
+  never cancels donors. Upgrade retirement creates no rebooking blackout.
+- Asimut must approve the enlarged anchor while all donors still exist. A site
+  quota/conflict rejection leaves all originals intact; never cancel first to
+  make an otherwise rejected replacement fit. Same-room expansions trigger the
+  final check with the actual changed time after live revalidation.
+- The default upgrade freeze is now zero hours, allowing future sessions today
+  to improve; any explicitly saved cutoff remains authoritative. Both old/new
+  starts must remain in the future. Desktop and phone share these defaults.
+- `data/upgrade_plan.json` is ignored, display-only full-window planning evidence,
+  including observed shorter-horizon prospects and their opening timestamps.
+  Future gaps are not promises or Save authority. Normal live checks rediscover
+  every executed candidate. `--upgrades-only` supports a complete sweep without
+  a date restriction; optional date/event/room/action limits retain exact scope.
+  Consolidation consumes one action for the anchor and one per retired donor.
+- Initial verification: 1,042 Python tests pass, plus 19 phone Node checks,
+  TypeScript, lint and the private phone static build. Exact shifted-time,
+  three-fragment, competing-slot, seven-date/seven-upgrade, future-horizon,
+  quota-rejection, same-room editor, crash/recovery and donor-protection cases
+  are covered. This milestone is source/fixture evidence; live validation,
+  publication and the full real-agenda before/after audit follow separately.
+
+## 2026-09-15 initial duration-preserving room upgrades (historical)
 
 - `room_upgrades.py` ranks single-reservation room/time replacements from fresh
   room gaps. Event ID, date and confirmed duration are invariant; superior rooms

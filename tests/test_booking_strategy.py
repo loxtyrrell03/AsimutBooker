@@ -59,7 +59,7 @@ class BookingStrategyValidationTests(unittest.TestCase):
                 "after_peak_mode": "earliest_first",
                 "priority_mode": "room_first",
                 "upgrade_rooms": True,
-                "upgrade_freeze_hours": 24,
+                "upgrade_freeze_hours": 0,
             },
         }
 

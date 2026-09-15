@@ -127,11 +127,11 @@ class RoomUpgradePlannerTests(unittest.TestCase):
         self.assertEqual(len(self.plan()), 1)
 
     def test_original_and_destination_must_both_be_outside_settled_window(self):
-        self.assertEqual(self.plan(now=local_instant(self.day, 720) - timedelta(hours=24)), ())
+        self.assertEqual(self.plan(now=local_instant(self.day, 720) - timedelta(hours=24), freeze_minutes=1440), ())
         self.original = replace(self.original, start=840, end=960)
         self.events = [{**self.original.as_booking(), "isReservation": True}]
         self.gaps[0]["slots"] = [{"startHour": 12, "endHour": 14}]
-        self.assertEqual(self.plan(now=local_instant(self.day, 720) - timedelta(hours=24)), ())
+        self.assertEqual(self.plan(now=local_instant(self.day, 720) - timedelta(hours=24), freeze_minutes=1440), ())
 
     def test_pending_extension_preserves_target_and_other_intended_sessions(self):
         self.original = replace(self.original, end=750)

@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 
 import book_week as b
 import mutation_receipts as receipts
-from room_upgrades import Reservation, RoomUpgrade
+from room_upgrades import Reservation, RoomUpgrade, RoomConsolidation
 from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
                                 upgrade_save_acknowledgement_consistent)
 from booking_preferences_guard import booking_preference_run
@@ -311,4 +311,88 @@ class UpgradeEditorTests(unittest.TestCase):
                 self.run_edit()
         self.assertEqual(self.persisted, self.original)
         self.assertFalse(self.save_calls)
+        self.assertFalse(self.path.exists())
+
+
+class ConsolidationEditorTests(unittest.TestCase):
+    setUpClass = classmethod(UpgradeEditorTests.setUpClass.__func__)
+    tearDownClass = classmethod(UpgradeEditorTests.tearDownClass.__func__)
+    run_edit = UpgradeEditorTests.run_edit
+
+    def setUp(self):
+        UpgradeEditorTests.setUp(self)
+        self.original = Reservation(42, date(2026, 9, 21), 'Fallback', 720, 750)
+        self.new = Reservation(42, self.original.day, 'Best', 720, 840)
+        self.donors = (Reservation(43, self.original.day, 'Fallback', 750, 810),
+                       Reservation(44, self.original.day, 'Fallback', 810, 840))
+        self.persisted = self.original
+        self.upgrade = RoomConsolidation((self.original, *self.donors), self.new)
+        patch = mock.patch.object(b, 'record_pending_consolidation',
+                                 side_effect=lambda **kw: receipts.record_pending_consolidation(path=self.path, **kw))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def site(self, route):
+        if '/event?eventId=42' in route.request.url:
+            html = EDITOR.replace('SAVE_DRIFT', '')
+            html = html.replace('value="12:00"', f'value="{self.original.as_booking()["startTime"]}"')
+            html = html.replace('value="14:00"', f'value="{self.original.as_booking()["endTime"]}"')
+            if self.original.room == 'Best':
+                html = html.replace('value="Fallback"', 'value="Best"').replace('let locationId=2', 'let locationId=1')
+            route.fulfill(content_type='text/html', body=html)
+            return
+        for donor in getattr(self, 'donors', ()):
+            if f'/arrangement?eventId={donor.event_id}' in route.request.url:
+                p = donor.as_booking()
+                route.fulfill(content_type='text/html', body=f'<div data-cy="event_{donor.event_id}"><p>{p["date"]}</p><p>{p["room"]}</p><p>{p["startTime"]} - {p["endTime"]}</p></div>')
+                return
+        UpgradeEditorTests.site(self, route)
+
+    def test_longer_anchor_is_secured_once_and_all_donors_remain_protected(self):
+        self.assertTrue(self.run_edit())
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        receipt, = receipts.list_pending(self.path)
+        self.assertEqual(receipt['kind'], 'consolidation')
+        self.assertEqual(len(receipt['originals']), 3)
+        self.assertFalse(self.other_mutations)
+
+    def test_same_room_expansion_triggers_fresh_check_after_revalidation(self):
+        self.original = Reservation(42, self.original.day, 'Best', 720, 750)
+        self.persisted = self.original
+        self.upgrade = RoomConsolidation((self.original, *self.donors), self.new)
+        self.assertTrue(self.run_edit())
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertFalse(self.other_mutations)
+
+    def test_same_room_earlier_start_with_unchanged_end_triggers_fresh_check(self):
+        self.original = Reservation(42, self.original.day, 'Best', 780, 840)
+        self.donors = (Reservation(43, self.original.day, 'Fallback', 720, 750),
+                       Reservation(44, self.original.day, 'Fallback', 750, 780))
+        self.persisted = self.original
+        self.upgrade = RoomConsolidation((*self.donors, self.original), self.new)
+        self.assertTrue(self.run_edit())
+        self.assertEqual(len(self.save_calls), 1)
+
+    def test_server_quota_rejection_keeps_all_originals(self):
+        self.mode = 'check_rejected'
+        self.assertFalse(self.run_edit())
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.other_mutations)
+        self.assertFalse(self.path.exists())
+
+    def test_lost_anchor_save_response_keeps_donors_and_blocks_further_mutation(self):
+        self.mode = 'lost_response'
+        with self.assertRaises(b.BookingVerificationError):
+            self.run_edit()
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(receipts.list_pending(self.path)), 1)
+        self.assertFalse(self.other_mutations)
+
+    def test_preview_preserves_anchor_donors_and_journal(self):
+        self.assertFalse(self.run_edit(dry_run=True))
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.other_mutations)
         self.assertFalse(self.path.exists())

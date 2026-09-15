@@ -1,105 +1,93 @@
-# Room upgrades
+# Comprehensive room upgrades
 
-The booker secures practice hours using its existing daily target and preferred
-time rules, then looks for better rooms. An upgrade changes one existing
-reservation. Its event ID, date and full duration stay the same.
+The booker fills daily targets using the saved time and room preferences, then
+improves the existing reservations. Saved room order is authoritative, including
+Weston Gallery above Corus when that is the user's chosen order.
 
-## Selection rules
+## Complete discovery and planning
 
-- Only a room ranked above the current room can qualify. Excluded rooms and
-  rooms that fail the saved requirements remain excluded.
-- The full session must fit an observed free gap and the destination room's
-  current booking horizon. A future opening is a reason to check on a later run,
-  never evidence that the room is currently available.
-- All suitable quarter-hour starts are considered. Time fit must be at least as
-  good as the current reservation; strict preferred windows remain strict.
-- Other bookings, non-ignored college events, peak allowances, same-room gaps,
-  cancelled-time exclusions and pending extension plans remain constraints.
-- The existing whole-day planner compares remaining target coverage before and
-  after the proposed move. An upgrade cannot consume the only useful gap for
-  missing practice hours or worsen the remaining plan's time fit.
-- By default, both the current and proposed start must be more than **24 hours**
-  away. The deadline does not prevent ordinary booking of missing target hours.
+- Scan every eligible date in the live booking window before editing anything.
+- Consider every legal quarter-hour start, including a move such as
+  12:30–13:30 in one room to 12:00–13:00 in a better room.
+- Compare compatible improvements together so one attractive choice does not
+  needlessly block another booking's upgrade. After each verified change,
+  refresh the agenda and affected room grid, then plan again.
+- Combine multiple non-overlapping bookings into one continuous session when
+  the whole duration fits. For example, 12:00–12:30, 12:30–13:30 and
+  13:30–14:00 can become one 12:00–14:00 booking.
+- Preserve the total booked minutes, date, hard constraints and time fit.
+  A consolidation cannot downgrade any of its original rooms. Remaining daily
+  target capacity is compared using both newly occupied and freed room gaps.
+- Preserve conflicts, peak and weekly quotas, room spacing, disabled dates,
+  ignored bookings, cancellation exclusions and unfinished extension plans.
+- Continue until no executable improvement remains. There is no implicit
+  six-attempt or three-minute cutoff. Explicit action limits and Stop still apply.
 
-Settings → Booking strategy exposes **Improve booked rooms** and
-**Stop upgrades before start (hours)** on desktop and phone. The shared assistant
-preference schema accepts `upgrade_rooms` and `upgrade_freeze_hours` inside
-`booking_strategy.daily_planning`. Upgrades are enabled by default; the deadline
-accepts whole hours from 0 through 168. These controls work independently of the
-existing plan-ahead toggle.
+The default **Stop upgrades before start (hours)** is zero: upcoming sessions
+on the same day can improve. A saved nonzero cutoff is retained. Started
+reservations are never rescheduled or retired by an upgrade.
 
-## Save and recovery
+The ignored local `data/upgrade_plan.json` records checked dates, current
+prospects and shorter-horizon rooms that open later. It reaches across the full
+observed booking window rather than the ordinary seven-hour foresight period.
+A future gap can be taken by someone else; these records never authorize Save.
 
-1. Verify the exact original reservation on its persisted event page.
-2. Prepare any changed times, then refresh the complete agenda and room grid and
-   recompute the candidate and whole-day constraints.
-3. Select the destination's real dropdown option and require Asimut's fresh
-   approval for that exact single-event request. HTTP 200 alone is insufficient.
-4. Recheck preferences and Stop, persist both exact reservation states in the
-   recovery journal, and allow one matching Save request.
-5. Verify the new room, date and times on a separate persisted event page before
-   reporting success or allowing another upgrade.
+## Safe execution and recovery
 
-The upgrade path never clicks Cancel, creates a replacement event, shrinks a
-session, or retries an uncertain Save. A rejected Save is resolved only after
-verifying the original reservation intact. A lost response, unexpected event,
-partial change or missing reservation remains pending and blocks further
-mutations until reconciliation establishes the exact outcome.
+A single-room upgrade retains its exact event ID, date and duration. Both times
+are changed when needed. Fresh complete agenda/grid checks, exact Asimut form
+validation and a final preference/Stop check precede the single guarded Save.
+An independently loaded persisted event page must prove the result.
 
-Asimut's Save reply omits the validation reply's empty `forms` list. Success,
-event ID, navigation resolution and booking-rule evidence are still required,
-followed by an independent reload of the exact changed reservation. Explicit
-errors or a different event ID require reconciliation.
+A consolidation follows this order:
 
-Asimut's normal provisional-booking reconfirmation requirement still applies.
-Upgrades preserve reserved duration; they do not establish that an unbooked
-daily target can always be filled when rooms are unavailable.
+1. Verify every exact original reservation and the complete proposed day plan.
+2. Ask Asimut to approve the longer anchor while all smaller bookings still exist.
+3. Record every original in one durable transaction, Save the enlarged anchor,
+   and independently verify its full room, date and times.
+4. Before each redundant booking is retired, refresh the complete agenda and
+   independently prove that the full replacement still exists.
+5. Verify every donor absent and the full anchor present before declaring success.
 
-## Operational checks
+If Asimut rejects temporary overlapping quota or another rule, keep the originals.
+Never cancel first in the hope that the longer booking will subsequently succeed.
+A lost response, changed identity, missing anchor or incomplete proof leaves the
+transaction pending and blocks further changes. Recovery resumes only unfinished
+retirement; it never repeats an uncertain anchor Save. Read-only scans do not
+retire bookings. Removing redundant upgrade bookings does not create a blackout.
 
-Normal runs perform upgrades after creates/extensions, and can improve dates
-whose target or weekly quota is already full. Each phase considers at most six
-attempts and starts no new attempt after its three-minute planning budget.
-An in-flight Save always completes its verification.
+The site's normal provisional-booking reconfirmation requirement still applies.
+An upgrade preserves booked practice time; no planner can guarantee filling an
+unbooked target when suitable rooms are unavailable.
 
-For a controlled inspection:
+## Operating modes
+
+Full preview, without Save or cancellation:
 
 ```powershell
-.venv\Scripts\python.exe book_week.py --headless --upgrades-only --only-date YYYY-MM-DD --upgrade-dry-run
+.venv\Scripts\python.exe book_week.py --headless --upgrades-only --upgrade-dry-run
 ```
 
-A mutation-capable isolated run also requires `--max-actions N`.
-`--upgrade-event-id ID` restricts either mode to one exact reservation.
-`--only-room` restricts the destination, and `--max-action-minutes` skips longer
-reservations rather than shortening them.
+Full upgrade sweep:
 
-The focused suites are `test_room_upgrades`, `test_room_upgrade_runtime`,
-`test_upgrade_editor` and `test_upgrade_recovery`. They cover actual Chromium
-form interactions against an intercepted synthetic site, including rejection,
-lost responses, wrong requests, preference changes, Stop and recovery. Shared
-journal, planner, CLI, desktop and phone tests cover the integration.
+```powershell
+.venv\Scripts\python.exe book_week.py --headless --upgrades-only
+```
 
-Live inspection established that dropdown icons contribute hidden raw text,
-unchanged values do not reliably trigger validation, and a single-event editor
-retains an unused Monday recurrence default even on another weekday. Selectors
-use accessible room names; the actual single mode, exact timestamps and event ID
-establish scope, while the complete checked payload must remain unchanged at Save.
+Optional `--only-date`, `--only-room`, `--upgrade-event-id`, `--max-actions` and
+`--max-action-minutes` restrict scope. Each consolidation uses one action for
+its anchor Save and one for each donor retirement, so an explicit action cap
+cannot be exceeded by hiding multiple writes inside one group operation.
 
-## Delivery evidence — 15 September 2026
+## Verification
 
-- **1,006 Python tests** passed, along with 19 phone Node tests, TypeScript,
-  lint, static build validation and Chromium/WebKit settings checks.
-- Two genuine live upgrades changed only the intended room. Full-agenda
-  comparisons retained all 18 observed events and every date, time and duration.
-  Both recovery receipts are verified and none remain pending.
-- The first live Save exposed the omitted `forms` field and exercised automatic
-  reconciliation. The second completed through the corrected normal path.
-  The stricter final validator accepts its captured acknowledgement.
-- Room-and-time changes, conflicts, insufficient gaps, horizons, quotas,
-  pending extensions, preference changes, Stop, lost responses, wrong identities
-  and failed post-Save scans are covered by isolated tests. The two live edits
-  kept their original times.
-- Private phone build `20260915-room-upgrades` passed the deployment verifier
-  and rendered the new controls and both bookings in PC Chrome. Physical-phone
-  verification remains separate. Existing desktop sessions were preserved;
-  reopening the desktop loads the new controls.
+The initial comprehensive implementation passed all **1,042 Python tests**, 19
+phone Node tests, TypeScript, lint and the private static phone build. Tests
+cover complete discovery before mutation, more than six upgrades, shifted times,
+three-fragment consolidation, whole-day competing choices, future horizons,
+user-ranked Weston preference, retained daily capacity, explicit freeze values,
+real Chromium editor requests, rejected checks, lost Save responses, donor
+retirement guards and recovery after partial completion.
+
+These are source/fixture checks. The real-booking sweep, full before/after agenda
+comparison and publication evidence are recorded after live validation.

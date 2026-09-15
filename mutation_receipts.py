@@ -22,10 +22,10 @@ APP_DIR = Path(__file__).resolve().parent
 RECEIPTS_FILE = APP_DIR / "data" / "mutation_receipts.json"
 SCHEMA_VERSION = 1
 
-ReceiptKind = Literal["create", "extension", "upgrade", "cancel", "uncertain"]
+ReceiptKind = Literal["create", "extension", "upgrade", "consolidation", "cancel", "uncertain"]
 ReceiptStatus = Literal["pending", "verified", "resolved"]
 
-_KINDS = {"create", "extension", "upgrade", "cancel", "uncertain"}
+_KINDS = {"create", "extension", "upgrade", "consolidation", "cancel", "uncertain"}
 _STATUSES = {"pending", "verified", "resolved"}
 _DOCUMENT_KEYS = {"schema_version", "receipts"}
 _REQUIRED_RECEIPT_KEYS = {
@@ -45,6 +45,7 @@ _OPTIONAL_RECEIPT_KEYS = {
     "resolved_at",
     "resolution",
     "original",
+    "originals",
 }
 
 
@@ -149,7 +150,7 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
 
     for field in ("event_url", "resolution"):
         _validate_optional_text(receipt, field)
-    if receipt["kind"] == "upgrade":
+    if receipt["kind"] in {"upgrade", "consolidation"}:
         original = receipt.get("original")
         if not isinstance(original, dict) or set(original) != {"event_id", "room", "date", "start", "end"}:
             raise MutationReceiptError("Upgrade receipt requires the exact original reservation")
@@ -160,12 +161,31 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
         _validate_date(original["date"])
         old_start = _time_minutes(original["start"], "original.start")
         old_end = _time_minutes(original["end"], "original.end")
-        if (original["date"] != receipt["date"] or old_end - old_start != end_minutes - start_minutes
-                or not isinstance(original["room"], str) or not original["room"].strip()
-                or original["room"] == receipt["room"]):
+        if (original["date"] != receipt["date"] or old_end <= old_start
+                or not isinstance(original["room"], str) or not original["room"].strip()):
+            raise MutationReceiptError("Upgrade original must be a valid reservation on the same date")
+        if receipt["kind"] == "upgrade" and (old_end - old_start != end_minutes - start_minutes
+                                             or original["room"] == receipt["room"]):
             raise MutationReceiptError("Upgrade must preserve date and full duration while changing room")
+        if receipt["kind"] == "consolidation":
+            from room_upgrades import Reservation, RoomConsolidation
+            from datetime import date
+            try:
+                records = receipt.get("originals")
+                if not isinstance(records, list) or any(not isinstance(r, dict) or set(r) != set(original) for r in records):
+                    raise ValueError("Invalid originals")
+                group = tuple(Reservation(r["event_id"], date.fromisoformat(r["date"]), r["room"],
+                                          _time_minutes(r["start"], "start"), _time_minutes(r["end"], "end")) for r in records)
+                RoomConsolidation(group, Reservation(event_id, date.fromisoformat(receipt["date"]), receipt["room"],
+                                                     start_minutes, end_minutes))
+                if original not in records:
+                    raise ValueError("Anchor missing from originals")
+            except (KeyError, TypeError, ValueError) as exc:
+                raise MutationReceiptError("Consolidation requires exact distinct originals and unchanged total duration") from exc
     elif "original" in receipt:
         raise MutationReceiptError("Only an upgrade receipt can contain an original reservation")
+    if "originals" in receipt and receipt["kind"] != "consolidation":
+        raise MutationReceiptError("Only a consolidation receipt can contain several originals")
     if receipt["kind"] == "cancel":
         if "event_url" not in receipt:
             raise MutationReceiptError(
@@ -264,6 +284,7 @@ def record_pending(
     end: str,
     event_url: str | None = None,
     original: dict[str, Any] | None = None,
+    originals: list[dict[str, Any]] | None = None,
     path: Path = RECEIPTS_FILE,
 ) -> dict[str, Any]:
     """Atomically append one supported pending mutation receipt."""
@@ -289,6 +310,8 @@ def record_pending(
             receipt["event_url"] = event_url
         if original is not None:
             receipt["original"] = copy.deepcopy(original)
+        if originals is not None:
+            receipt["originals"] = copy.deepcopy(originals)
         _validate_receipt(receipt, receipt_id)
         document["receipts"][receipt_id] = receipt
         return receipt
@@ -311,6 +334,11 @@ def record_pending_extension(**kwargs: Any) -> dict[str, Any]:
 def record_pending_upgrade(**kwargs: Any) -> dict[str, Any]:
     """Journal both exact states of a single reservation edit before Save."""
     return record_pending("upgrade", **kwargs)
+
+
+def record_pending_consolidation(**kwargs: Any) -> dict[str, Any]:
+    """Protect all originals until the full replacement and retirement are proved."""
+    return record_pending("consolidation", **kwargs)
 
 
 def record_pending_cancel(**kwargs: Any) -> dict[str, Any]:

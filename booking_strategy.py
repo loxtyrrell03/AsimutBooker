@@ -58,7 +58,7 @@ class DailyPlanningPreferences:
     after_peak_mode: str = "longest_first"
     priority_mode: str = "time_first"
     upgrade_rooms: bool = True
-    upgrade_freeze_hours: int = 24
+    upgrade_freeze_hours: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return daily_planning_to_dict(self)
@@ -212,7 +212,7 @@ def _parse_daily_planning(raw: Mapping[str, Any]) -> DailyPlanningPreferences:
         ),
         upgrade_rooms=_require_bool(raw.get("upgrade_rooms", True),
                                     "booking_strategy.daily_planning.upgrade_rooms"),
-        upgrade_freeze_hours=_require_step_int(raw.get("upgrade_freeze_hours", 24),
+        upgrade_freeze_hours=_require_step_int(raw.get("upgrade_freeze_hours", 0),
             "booking_strategy.daily_planning.upgrade_freeze_hours", minimum=0, maximum=168),
     )
 
