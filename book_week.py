@@ -3658,13 +3658,13 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         # Times can update one another while the user types. Set both, then
         # select a real location option; typed autocomplete text is not identity.
         same_room = original.room == replacement.room
-        defer_start = same_room and original.end == replacement.end
-        if not defer_start and start.input_value() != time_text(replacement.start):
-            start.fill(time_text(replacement.start))
-            start.press("Tab")
-        if (not same_room or defer_start) and end.input_value() != time_text(replacement.end):
-            end.fill(time_text(replacement.end))
-            end.press("Tab")
+        if not same_room:
+            if start.input_value() != time_text(replacement.start):
+                start.fill(time_text(replacement.start))
+                start.press("Tab")
+            if end.input_value() != time_text(replacement.end):
+                end.fill(time_text(replacement.end))
+                end.press("Tab")
         dismiss_reservation_time_picker(page)
         # The Material option contains an aria-hidden icon whose raw text is
         # "place". Match its accessible name, which is the actual room label.
@@ -3678,12 +3678,16 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         try:
             with page.expect_response(exact_check, timeout=10000) as pending:
                 if same_room:
-                    # Expanding an anchor already in the destination room must
-                    # trigger a new check after revalidation, not reuse the
-                    # earlier response from partially prepared times.
-                    trigger = start if defer_start else end
-                    trigger.fill(time_text(replacement.start if defer_start else replacement.end))
-                    trigger.press("Tab")
+                    # Keep both original times until the listener is installed.
+                    # Changing start can move end to preserve duration, including
+                    # directly producing the final exact check. For trims, reset
+                    # that automatically moved end to the requested value next.
+                    if start.input_value() != time_text(replacement.start):
+                        start.fill(time_text(replacement.start))
+                        start.press("Tab")
+                    if end.input_value() != time_text(replacement.end):
+                        end.fill(time_text(replacement.end))
+                        end.press("Tab")
                 else:
                     location.fill(replacement.room)
                     options.first.wait_for(state="visible", timeout=5000)

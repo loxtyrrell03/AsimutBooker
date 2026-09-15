@@ -1,3 +1,16 @@
+## 2026-09-15 live donor editor time coupling
+
+- Live no-Save inspection confirmed that changing a reservation start from
+  12:00 to 13:00 automatically moves its end from 14:00 to 15:00. Same-room
+  editors now install exact-check listeners before either time change and
+  correct the observed end afterward. Re-filling an unchanged final time must
+  not be used to trigger validation; Asimut suppresses unchanged values.
+- Both realistic Chromium regressions failed before the repair and pass after;
+  76 focused editor/progressive checks pass. Two real attempts before the fix
+  timed out before any Save, resolved their empty attempt journals and preserved
+  all 13 bookings. Private request evidence is in the ignored progressive-upgrades
+  artifact folder. Live successful transfers remain separate evidence.
+
 ## 2026-09-15 progressive discovery and recovery refinements
 
 - Sparse better-room gaps can seed a partial upgrade even if no full-session

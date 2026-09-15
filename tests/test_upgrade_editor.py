@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
 
@@ -17,6 +18,7 @@ from upgrade_validation import (upgrade_request_matches, upgrade_response_succes
                                 upgrade_save_acknowledgement_consistent, RoomPermissionRefusal)
 from booking_preferences_guard import booking_preference_run
 from operation_control import OperationStopped
+from progressive_transactions import TransferEdit, record
 
 
 def result(success=True):
@@ -112,6 +114,22 @@ save.addEventListener('click',async()=>{let body=payload(); SAVE_DRIFT
  let data=await r.json();if(data.response.success)location.href='/arrangement?eventId=42';});
 document.getElementById('cancel').onclick=()=>fetch('/services/v2/event/event_id=42;type=cancel',{method:'PATCH'});
 </script>'''
+
+# Asimut preserves the current duration when changing the start. It suppresses
+# checks for unchanged committed values, even when an input is filled again.
+AUTOFOLLOW_TIMES = r'''
+const minutes=value=>Number(value.slice(0,2))*60+Number(value.slice(3));
+const clock=value=>`${String(Math.floor(value/60)).padStart(2,'0')}:${String(value%60).padStart(2,'0')}`;
+let committedStart=start.value, committedEnd=end.value;
+start.addEventListener('change',()=>{
+ if(start.value===committedStart)return;
+ end.value=clock(minutes(end.value)+minutes(start.value)-minutes(committedStart));
+ committedStart=start.value;committedEnd=end.value;check();
+});
+end.addEventListener('change',()=>{
+ if(end.value===committedEnd)return;
+ committedEnd=end.value;check();
+});'''
 
 
 class UpgradeEditorTests(unittest.TestCase):
@@ -423,6 +441,81 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertEqual(self.persisted, self.original)
         self.assertFalse(self.save_calls)
         self.assertFalse(self.path.exists())
+
+
+class SameRoomAutofollowEditorTests(unittest.TestCase):
+    setUpClass = classmethod(UpgradeEditorTests.setUpClass.__func__)
+    tearDownClass = classmethod(UpgradeEditorTests.tearDownClass.__func__)
+    run_edit = UpgradeEditorTests.run_edit
+
+    def setUp(self):
+        UpgradeEditorTests.setUp(self)
+        self.check_calls = []
+        original_mark = receipts.mark_transfer_step
+        patches = [
+            mock.patch.object(receipts, 'mark_transfer_step',
+                side_effect=lambda parent, step: original_mark(parent, step, path=self.path)),
+            mock.patch.object(b, 'ACTIVE_ROOM_POLICY',
+                SimpleNamespace(all_room_location_ids={'Best': 1, 'Fallback': 2})),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def site(self, route):
+        if ';type=check' in route.request.url:
+            self.check_calls.append(route.request.post_data_json)
+        if '/event?eventId=42' in route.request.url:
+            html = EDITOR.replace('SAVE_DRIFT', '').replace(
+                "start.addEventListener('change',check);end.addEventListener('change',check);", AUTOFOLLOW_TIMES)
+            html = html.replace('value="12:00"', f'value="{self.original.as_booking()["startTime"]}"')
+            html = html.replace('value="14:00"', f'value="{self.original.as_booking()["endTime"]}"')
+            route.fulfill(content_type='text/html', body=html)
+        else:
+            UpgradeEditorTests.site(self, route)
+
+    def parent(self, *, shifted=False):
+        if shifted:
+            self.original = Reservation(42, self.original.day, 'Fallback', 720, 780)
+            self.persisted = self.original
+        self.new = Reservation(42, self.original.day, 'Fallback', 780, 840)
+        self.upgrade = TransferEdit(self.original, self.new)
+        originals = [self.original]
+        if shifted:
+            originals.append(Reservation(43, self.original.day, 'Other', 960, 1020))
+        prefix = Reservation(42, self.original.day, 'Best', 720, 780)
+        target = Reservation(42, self.original.day, 'Best', 720, 840)
+        payload = dict(plan_id=str(uuid4()), originals=[record(r) for r in originals],
+            seed_before=None, remaining=[record(self.new)], replacement=record(prefix),
+            target=record(target), opens_at='2026-09-15T12:00:00+00:00',
+            baseline_ids=[r.event_id for r in originals], minimum_minutes=30,
+            adjustment_order=[r.event_id for r in originals], started_steps=[])
+        return receipts.record_pending('transfer', room='Best', booking_date=str(self.original.day),
+            start='12:00', end='13:00', transfer=payload, path=self.path)
+
+    def test_trim_start_restores_requested_end_after_automatic_duration_preservation(self):
+        parent = self.parent()
+        self.assertTrue(self.run_edit(transaction_receipt=parent))
+        times = [(p['event']['st'][11:16], p['event']['en'][11:16]) for p in self.check_calls]
+        self.assertEqual(times, [('13:00', '15:00'), ('13:00', '14:00')])
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertEqual(self.save_calls[0], self.check_calls[-1])
+        self.assertEqual(parent['transfer']['started_steps'], ['source:42'])
+        self.assertEqual(receipts.list_pending(self.path), [parent])
+        self.assertFalse(self.other_mutations)
+
+    def test_same_duration_shift_listens_before_start_automatically_sets_exact_end(self):
+        parent = self.parent(shifted=True)
+        self.assertTrue(self.run_edit(transaction_receipt=parent))
+        times = [(p['event']['st'][11:16], p['event']['en'][11:16]) for p in self.check_calls]
+        self.assertEqual(times, [('13:00', '14:00')])
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertEqual(self.save_calls[0], self.check_calls[-1])
+        self.assertEqual(parent['transfer']['started_steps'], ['source:42'])
+        self.assertEqual(receipts.list_pending(self.path), [parent])
+        self.assertFalse(self.other_mutations)
 
 
 class ConsolidationEditorTests(unittest.TestCase):

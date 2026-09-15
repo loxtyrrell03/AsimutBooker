@@ -77,6 +77,9 @@ specific personal-overlap/compensated peak-quota warnings that the planned
 source changes will remove. Unknown, permission, horizon and other rule errors
 stop the transfer before release. Both new and existing destination editors
 receive this preflight, and the actual post-trim Save requires fresh approval.
+Asimut may move the end time automatically when the start changes. Same-room
+edits watch the entire change and correct the observed end before accepting the
+exact validation response; an unchanged field is not a fresh validation trigger.
 
 A strict `transfer` parent receipt records every before/after interval, the
 source adjustment order and each attempted operation before its remote effect.
