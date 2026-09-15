@@ -1,3 +1,19 @@
+## 2026-09-15 room-upgrade planner and recovery records
+
+- `room_upgrades.py` ranks single-reservation room/time replacements from fresh
+  room gaps. Event ID, date and confirmed duration are invariant; superior rooms
+  cannot worsen time fit. Full destination horizons, conflicts, peak allowance,
+  same-room spacing, blackouts and pending extensions constrain candidates.
+  Both old/new start times must be more than 24 hours away by default.
+- Upgrade receipts persist both exact states before Save. Missing, duplicate,
+  partially changed or wrong-ID outcomes remain uncertain. Date/duration/ID
+  changes are rejected before writing the journal. This milestone is pure
+  planning/journal support; runtime execution and UI integration are still pending.
+- 38 focused planner/journal tests pass. Chrome no-Save inspection confirmed
+  exact-event PATCH validation carries the chosen location ID and both times;
+  HTTP 200 can contain `success:false`, clashes and horizon warnings. Never use
+  HTTP status alone as permission to Save. No live reservation was changed.
+
 ## 2026-09-14 complete desktop calendar booking lists
 
 - Month, fortnight, week and three-day cells render every existing event;

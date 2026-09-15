@@ -22,10 +22,10 @@ APP_DIR = Path(__file__).resolve().parent
 RECEIPTS_FILE = APP_DIR / "data" / "mutation_receipts.json"
 SCHEMA_VERSION = 1
 
-ReceiptKind = Literal["create", "extension", "cancel", "uncertain"]
+ReceiptKind = Literal["create", "extension", "upgrade", "cancel", "uncertain"]
 ReceiptStatus = Literal["pending", "verified", "resolved"]
 
-_KINDS = {"create", "extension", "cancel", "uncertain"}
+_KINDS = {"create", "extension", "upgrade", "cancel", "uncertain"}
 _STATUSES = {"pending", "verified", "resolved"}
 _DOCUMENT_KEYS = {"schema_version", "receipts"}
 _REQUIRED_RECEIPT_KEYS = {
@@ -44,6 +44,7 @@ _OPTIONAL_RECEIPT_KEYS = {
     "verified_at",
     "resolved_at",
     "resolution",
+    "original",
 }
 
 
@@ -148,6 +149,23 @@ def _validate_receipt(receipt: Any, key: str) -> dict[str, Any]:
 
     for field in ("event_url", "resolution"):
         _validate_optional_text(receipt, field)
+    if receipt["kind"] == "upgrade":
+        original = receipt.get("original")
+        if not isinstance(original, dict) or set(original) != {"event_id", "room", "date", "start", "end"}:
+            raise MutationReceiptError("Upgrade receipt requires the exact original reservation")
+        event_id = parse_confirmed_event_id(receipt.get("event_url", ""))
+        if (type(original["event_id"]) is not int or original["event_id"] <= 0
+                or event_id != original["event_id"]):
+            raise MutationReceiptError("Upgrade must retain the exact positive Asimut event ID")
+        _validate_date(original["date"])
+        old_start = _time_minutes(original["start"], "original.start")
+        old_end = _time_minutes(original["end"], "original.end")
+        if (original["date"] != receipt["date"] or old_end - old_start != end_minutes - start_minutes
+                or not isinstance(original["room"], str) or not original["room"].strip()
+                or original["room"] == receipt["room"]):
+            raise MutationReceiptError("Upgrade must preserve date and full duration while changing room")
+    elif "original" in receipt:
+        raise MutationReceiptError("Only an upgrade receipt can contain an original reservation")
     if receipt["kind"] == "cancel":
         if "event_url" not in receipt:
             raise MutationReceiptError(
@@ -245,6 +263,7 @@ def record_pending(
     start: str,
     end: str,
     event_url: str | None = None,
+    original: dict[str, Any] | None = None,
     path: Path = RECEIPTS_FILE,
 ) -> dict[str, Any]:
     """Atomically append one supported pending mutation receipt."""
@@ -268,6 +287,8 @@ def record_pending(
         }
         if event_url is not None:
             receipt["event_url"] = event_url
+        if original is not None:
+            receipt["original"] = copy.deepcopy(original)
         _validate_receipt(receipt, receipt_id)
         document["receipts"][receipt_id] = receipt
         return receipt
@@ -285,6 +306,11 @@ def record_pending_extension(**kwargs: Any) -> dict[str, Any]:
     """Convenience wrapper for a pending reservation extension."""
 
     return record_pending("extension", **kwargs)
+
+
+def record_pending_upgrade(**kwargs: Any) -> dict[str, Any]:
+    """Journal both exact states of a single reservation edit before Save."""
+    return record_pending("upgrade", **kwargs)
 
 
 def record_pending_cancel(**kwargs: Any) -> dict[str, Any]:
