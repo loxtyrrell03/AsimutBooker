@@ -58,6 +58,14 @@ class ProgressivePlannerTests(unittest.TestCase):
         self.assertEqual(candidate.transferred_minutes, 30)
         self.assertEqual(candidate.action_count, 2)
 
+    def test_explicit_single_booking_preference_blocks_partial_transfer_without_mutation(self):
+        self.policy.allow_fragmented_sessions = False
+        before = copy.deepcopy((self.originals, self.gaps, self.args()['events']))
+        self.assertIsNone(self.plan())
+        self.assertEqual((self.originals, self.gaps, self.args()['events']), before)
+        self.policy.allow_fragmented_sessions = True
+        self.assertIsNotNone(self.plan())
+
     def test_preparation_never_moves_opening_earlier_than_proved_site_clock(self):
         self.now = self.edge(750, seconds=-120)
         candidate = self.plan()

@@ -1,3 +1,22 @@
+## 2026-09-15 verified live progressive upgrades
+
+- Two real partial transfers upgraded 90 booked minutes. Independent fresh
+  agenda/grid evidence verified both parent/create receipt pairs, retained every
+  existing reservation ID, preserved each date's total minutes and all unrelated
+  events, and found no pending mutation. The final five-date scan covered 31 rooms
+  and 258 gaps; remaining partial prospects require later horizon openings.
+- The final editor repair passed all 1,248 Python tests. A subsequent explicit
+  single-booking preference guard passed 45 focused planner/discovery tests;
+  partial transfers cannot override disabled fragmented sessions. Actual rolling
+  horizon boundary waiting/final donor retirement still have offline/browser
+  fixture evidence; these two live transfers used already-open prefixes.
+- Source is active in the canonical worker checkout. The existing recurring task
+  retains its action, settings and 15-minute cadence, with launches 07:13–22:58.
+  The idle phone backend was reloaded without changing its shell, private route,
+  credentials or existing desktop sessions. Private HTTPS/session verification
+  and PC browser rendering are separate from physical-phone proof. Private
+  before/after records remain ignored under `artifacts/progressive-upgrades/`.
+
 ## 2026-09-15 live donor editor time coupling
 
 - Live no-Save inspection confirmed that changing a reservation start from

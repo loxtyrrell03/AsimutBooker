@@ -63,6 +63,8 @@ gap in that room. Its bounded search validates the actual prefix and fallback;
 it never treats the aspirational remainder as observed free time.
 New partial prospects receive one bounded execution pass when the ordinary
 full-session sweep finishes, avoiding an unnecessary wait for the next run.
+If fragmented sessions are disabled, partial transfers are disabled too; full
+single-booking upgrades retain their existing path.
 If no further useful growth remains, the completed partial bookings are retained
 and released for ordinary future planning. New lessons, closures, relevant
 preference edits, changed booking identities and ignored/disabled dates require
@@ -183,6 +185,19 @@ also consume the action allowance, so an explicit action cap
 cannot be exceeded by hiding multiple writes inside one group operation.
 
 ## Verification
+
+Two real partial transfers upgraded **90 minutes**, preserving every existing
+reservation ID, each day's total minutes and unrelated events. Both new seeds
+and transaction parents were independently verified. A separate final scan of
+31 rooms across five eligible dates found 258 gaps, no pending mutation and no
+remaining currently open partial upgrade passing the planner's constraints.
+Later-horizon prospects remain routing hints, subject to fresh checks.
+
+The corrected editor passed the full **1,248-test Python suite**; a final
+single-booking preference guard passed 45 focused planner/discovery checks.
+These live transfers used already-open prefixes. Rolling-edge timing and final
+donor retirement retain offline/browser-fixture verification, rather than a
+claim of competitive live proof at every boundary.
 
 After sparse discovery and recovery refinements, all **1,246 Python tests**
 passed, including guarded cancellation timing, changed recovery controls,

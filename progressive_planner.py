@@ -217,6 +217,11 @@ def plan_progressive_transfer(opportunity, *, events, available_data, policy, no
         raise ValueError("Preparation lead must be non-negative whole seconds")
     if acceptable_layout is not None and not callable(acceptable_layout):
         raise TypeError("Layout acceptance must be a callable pure predicate")
+    # A progressive prefix plus fallback creates multiple reservations even
+    # when their times touch. Respect an explicit single-booking preference;
+    # the ordinary whole-session upgrade path remains available instead.
+    if getattr(policy, 'allow_fragmented_sessions', True) is False:
+        return None
     change = getattr(opportunity, "change", opportunity)
     if not isinstance(change, (RoomUpgrade, RoomConsolidation)):
         raise TypeError("Progressive transfer requires an exact upgrade opportunity")
