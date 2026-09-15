@@ -13,7 +13,8 @@ from playwright.sync_api import sync_playwright
 import book_week as b
 import mutation_receipts as receipts
 from room_upgrades import Reservation, RoomUpgrade
-from upgrade_validation import upgrade_request_matches, upgrade_response_success
+from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
+                                upgrade_save_acknowledgement_consistent)
 from booking_preferences_guard import booking_preference_run
 from operation_control import OperationStopped
 
@@ -74,6 +75,15 @@ class UpgradeValidationTests(unittest.TestCase):
         document = result()
         document["response"]["event_ids"] = [True]
         self.assertFalse(upgrade_response_success(document, 1))
+
+    def test_save_can_omit_forms_but_must_retain_explicit_success_and_identity(self):
+        document = result()
+        document['response'].pop('forms')
+        self.assertTrue(upgrade_save_acknowledgement_consistent(document, 42))
+        for field in ('success', 'event_ids', 'save_resolution', 'bookingrules'):
+            missing = copy.deepcopy(document)
+            missing['response'].pop(field)
+            self.assertFalse(upgrade_save_acknowledgement_consistent(missing, 42))
 
 
 EDITOR = r'''<!doctype html><app-event-editor><form>
@@ -166,7 +176,7 @@ class UpgradeEditorTests(unittest.TestCase):
                 if self.mode == "wrong_success_id":
                     payload["response"]["event_ids"] = [99]
                 if self.mode in {'compact_reply', 'compact_reply_without_change'}:
-                    payload = {'response': {'event_ids': [42]}}
+                    payload['response'].pop('forms')
                 route.fulfill(json=payload)
         elif request.method != "GET":
             self.other_mutations.append(request.url)

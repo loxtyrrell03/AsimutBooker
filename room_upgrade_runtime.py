@@ -187,6 +187,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                 scanned[day] = fresh_gaps(page, day)
             gaps = scanned[day]
             for choice in candidates_for(original, tracker, gaps, extensions, now):
+                if time.monotonic() >= deadline:
+                    break
                 key = (choice.original.event_id, choice.replacement.room, choice.replacement.start)
                 if key in attempts:
                     continue
@@ -196,7 +198,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                     break
             if candidate:
                 break
-        if candidate is None:
+        if candidate is None or time.monotonic() >= deadline:
             break
         attempts.add((candidate.original.event_id, candidate.replacement.room, candidate.replacement.start))
         operation_stage(f"Checking {candidate.replacement.room} {time_text(candidate.replacement.start)}–{time_text(candidate.replacement.end)}")

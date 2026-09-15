@@ -177,3 +177,13 @@ class UpgradeRuntimeTests(unittest.TestCase):
         self.settings["booking_strategy"]["daily_planning"]["upgrade_rooms"] = False
         self.assertEqual(self.run_runner(tracker)[0], 0)
         self.scan.assert_not_called()
+
+    def test_slow_grid_cannot_start_an_edit_after_the_phase_deadline(self):
+        tracker = self.prepare_runner()
+        with mock.patch.object(runtime.time, 'monotonic', return_value=100) as clock:
+            def slow_grid(page):
+                clock.return_value = 100 + runtime.UPGRADE_PHASE_SECONDS + 1
+                return copy.deepcopy(self.gaps)
+            with mock.patch.object(b, 'get_available_slots', side_effect=slow_grid):
+                self.assertEqual(self.run_runner(tracker)[0], 0)
+        self.edit.assert_not_called()

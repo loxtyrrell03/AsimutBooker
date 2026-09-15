@@ -22,7 +22,7 @@
   and allows only the checked single-event payload through its request guard.
   It never cancels, recreates, shrinks, changes date, or retries an uncertain Save.
   Verify successful edits on a separate page to avoid Angular navigation races.
-- All 1002 Python tests, 19 Node checks, TypeScript, lint and isolated phone build
+- All 1006 Python tests, 19 Node checks, TypeScript, lint and isolated phone build
   pass. Chromium/WebKit settings persistence and 320/390px layouts pass; owned
   desktop renders preserve navigation and controls at 760px. Chrome inspection confirmed
   exact-event PATCH validation carries the chosen location ID and both times;
@@ -44,10 +44,17 @@
   and durations, changing only the selected room. Its Save response differed
   from the check schema; the pending receipt correctly stopped further changes
   and the queued agenda refresh independently reconciled it as applied.
-  Save acknowledgement validation now rejects explicit contradictions while
-  permitting omitted check-only fields; independent persisted readback is still
-  required before success. All 24 focused editor/recovery checks pass, including
-  compact replies with and without a persisted change. No pending receipt remains.
+  The observed Save reply omits only `forms`; its success, event ID, resolution
+  and rule evidence remain mandatory, followed by independent persisted readback.
+  The final validator also passes against the captured live acknowledgement.
+- A second bounded live edit completed normally, without reconciliation. Both
+  upgrades appear in the deployed phone My Week; two full-agenda comparisons
+  confirmed only the intended room changed and all 18 events retained their
+  dates, times and durations. Both receipts are verified with zero pending.
+  Different-time edits are proven by intercepted Chromium fixtures, not by
+  these two same-time live edits. Phone rendering was verified in PC Chrome,
+  not on a physical iPhone. Slow grid scans cannot begin an edit after the
+  upgrade phase deadline; an already-started Save still finishes verification.
 
 ## 2026-09-14 complete desktop calendar booking lists
 

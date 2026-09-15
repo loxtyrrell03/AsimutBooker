@@ -46,10 +46,10 @@ verifying the original reservation intact. A lost response, unexpected event,
 partial change or missing reservation remains pending and blocks further
 mutations until reconciliation establishes the exact outcome.
 
-Asimut's Save reply can omit fields present in its validation reply. Omitted
-fields do not prove success; an independent reload of the exact changed
-reservation must establish it. Explicit errors or a different event ID still
-require reconciliation.
+Asimut's Save reply omits the validation reply's empty `forms` list. Success,
+event ID, navigation resolution and booking-rule evidence are still required,
+followed by an independent reload of the exact changed reservation. Explicit
+errors or a different event ID require reconciliation.
 
 Asimut's normal provisional-booking reconfirmation requirement still applies.
 Upgrades preserve reserved duration; they do not establish that an unbooked
@@ -84,3 +84,22 @@ unchanged values do not reliably trigger validation, and a single-event editor
 retains an unused Monday recurrence default even on another weekday. Selectors
 use accessible room names; the actual single mode, exact timestamps and event ID
 establish scope, while the complete checked payload must remain unchanged at Save.
+
+## Delivery evidence — 15 September 2026
+
+- **1,006 Python tests** passed, along with 19 phone Node tests, TypeScript,
+  lint, static build validation and Chromium/WebKit settings checks.
+- Two genuine live upgrades changed only the intended room. Full-agenda
+  comparisons retained all 18 observed events and every date, time and duration.
+  Both recovery receipts are verified and none remain pending.
+- The first live Save exposed the omitted `forms` field and exercised automatic
+  reconciliation. The second completed through the corrected normal path.
+  The stricter final validator accepts its captured acknowledgement.
+- Room-and-time changes, conflicts, insufficient gaps, horizons, quotas,
+  pending extensions, preference changes, Stop, lost responses, wrong identities
+  and failed post-Save scans are covered by isolated tests. The two live edits
+  kept their original times.
+- Private phone build `20260915-room-upgrades` passed the deployment verifier
+  and rendered the new controls and both bookings in PC Chrome. Physical-phone
+  verification remains separate. Existing desktop sessions were preserved;
+  reopening the desktop loads the new controls.
