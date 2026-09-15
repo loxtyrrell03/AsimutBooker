@@ -25,6 +25,11 @@
   while leaving the editor open. Forty-two focused staging/editor checks pass,
   including real step revalidation and exact restoration. Blocking editor dialogs
   are reported for diagnosis; unknown overlays never authorize a forced click.
+- Exact original proofs and fresh day revalidation now finish before opening
+  the reservation editor. The editor must still match the original, issue its
+  fresh exact check, and pass the final single-Save/preference boundary. This
+  avoids leaving a dirty form open throughout cross-page scans. Sixty focused
+  editor/staging/runtime checks cover the sequence and existing safety guards.
 
 ## 2026-09-15 comprehensive upgrade planning and consolidation
 

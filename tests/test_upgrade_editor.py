@@ -265,6 +265,14 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertFalse(self.save_calls)
 
+    def test_long_revalidation_does_not_leave_a_dirty_editor_open(self):
+        def revalidate():
+            self.assertIn('/arrangement?eventId=42', self.page.url)
+            self.assertEqual(self.page.get_by_role('textbox', name='Start time', exact=True).count(), 0)
+            return True
+        self.assertTrue(b.edit_reservation_room_time(self.page, self.upgrade, revalidate=revalidate))
+        self.assertEqual(len(self.save_calls), 1)
+
     def test_rejected_check_prevents_receipt_and_save(self):
         self.mode = "check_rejected"
         self.assertFalse(self.run_edit())

@@ -38,6 +38,8 @@ A single-room upgrade retains its exact event ID, date and duration. Both times
 are changed when needed. Fresh complete agenda/grid checks, exact Asimut form
 validation and a final preference/Stop check precede the single guarded Save.
 An independently loaded persisted event page must prove the result.
+The complete scan finishes before opening the editor; the original form identity
+is then checked again and the exact replacement receives a fresh server check.
 
 A consolidation follows this order:
 

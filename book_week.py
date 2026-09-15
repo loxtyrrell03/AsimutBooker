@@ -3466,8 +3466,9 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
     """Edit one exact reservation once; never cancel, recreate, shrink or retry Save.
 
     ``revalidate`` must freshly prove the original agenda, complete destination
-    gap and whole-day constraints using a separate owned page. It runs after
-    preparing the times, before room selection, exact server check and settings lock.
+    gap and whole-day constraints using a separate owned page. It runs before
+    opening the editor, followed by exact form identity, a fresh server check and
+    the settings lock. No dirty editor is left open during the lengthy scan.
     Dry runs follow the same checks but never write a receipt or click Save.
     """
     if not isinstance(upgrade, (RoomUpgrade, RoomConsolidation)) or not callable(revalidate):
@@ -3529,6 +3530,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             raise BookingVerificationError("An unresolved mutation blocks room upgrades")
         for record in upgrade.originals:
             verify(record)
+        if revalidate() is not True:
+            raise ValueError("The fresh day plan no longer permits this upgrade")
         safe_goto(page, f"{ASIMUT_BASE_URL}/event?eventId={original.event_id}")
         start = page.get_by_role("textbox", name="Start time", exact=True)
         end = page.get_by_role("textbox", name="End time", exact=True)
@@ -3551,8 +3554,6 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         options = page.get_by_role("option", name=re.compile(
             r"^\s*" + re.escape(replacement.room) + r"(?:\s*\([^\n]*\))?\s*$"))
         location.press("Escape")
-        if revalidate() is not True:
-            raise ValueError("The fresh day plan no longer permits this upgrade")
         # Selecting the changed room triggers a fresh check. Re-filling an
         # unchanged time does not: Asimut suppresses unchanged form values.
         page.on("request", note_check)
