@@ -934,7 +934,8 @@ def _visible_save_rejection(page):
     return None
 
 
-def refresh_new_booking_validation(page, expected_end_time):
+def refresh_new_booking_validation(page, expected_end_time, *, expected_start_time=None,
+                                   expected_date=None, expected_room=None):
     """Force and prove one fresh no-Save validation at the horizon boundary."""
 
     end_input = page.locator(
@@ -947,7 +948,7 @@ def refresh_new_booking_validation(page, expected_end_time):
     def is_exact_event_check(response):
         try:
             parsed = urlsplit(response.url)
-            return (
+            trusted_url = (
                 parsed.scheme == "https"
                 and parsed.hostname == "rwcmd.asimut.net"
                 and parsed.port is None
@@ -955,25 +956,52 @@ def refresh_new_booking_validation(page, expected_end_time):
                 and not parsed.query
                 and not parsed.fragment
             )
+            if not trusted_url or expected_start_time is None:
+                return trusted_url
+            event = response.request.post_data_json["event"]
+            if response.request.method not in ("POST", "PATCH") or type(event["id"]) is not int or event["id"] != 0:
+                return False
+            for key, expected in (("st", expected_start_time), ("en", expected_end_time)):
+                value = datetime.fromisoformat(event[key])
+                if (value.utcoffset() is None or value.date() != as_date(expected_date)
+                        or value.strftime("%H:%M") != expected or value.second or value.microsecond):
+                    return False
+            location = ACTIVE_ROOM_POLICY.all_room_location_ids[expected_room]
+            return (len(event["rs"]) == 1 and type(event["rs"][0]["id"]) is int
+                    and event["rs"][0]["id"] == location)
         except Exception:
             return False
 
     try:
         with page.expect_response(is_exact_event_check, timeout=5000) as pending:
-            # Playwright fill dispatches a fresh input event even when the text
-            # is unchanged; Tab commits the Angular control and its debounced
-            # server-side horizon check.
+            # Angular suppresses unchanged committed values. A new booking
+            # whose end already matches needs an actual no-Save change before
+            # restoring the requested value; only the exact final check counts.
+            if expected_start_time is not None and end_input.input_value() == expected_end_time:
+                hour, minute = map(int, expected_end_time.split(":"))
+                temporary = hour * 60 + minute - 15
+                end_input.fill(f"{temporary // 60:02d}:{temporary % 60:02d}")
+                end_input.press("Tab")
             end_input.fill(expected_end_time)
             end_input.press("Tab")
         response = pending.value
         if not is_exact_event_check(response) or not response.ok:
             return False, "event validation response was not trusted HTTP success"
+        response.body()
         document = response.json()
         refusal = response_room_permission_refusal(document)
         if refusal:
             return False, refusal
         if not check_response_has_explicit_success(document):
             return False, "Asimut did not approve the fresh event validation"
+        if expected_start_time is not None:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                save = page.locator("button:has-text('Save')").first
+                if save.count() == 1 and save.is_visible() and save.is_enabled():
+                    return True, "exact new-booking check completed and Save is enabled"
+                page.wait_for_timeout(100)
+            return False, "Save remained disabled after the exact new-booking check"
         page.wait_for_timeout(300)
     except Exception as exc:
         return False, f"fresh event validation did not complete: {exc}"
@@ -6005,12 +6033,20 @@ def try_book_slot(
         print(f"  [DEBUG] Found time inputs, filling start time...")
         start_input.click()
         start_input.fill(book_start)
+        start_input.press("Tab")
         page.wait_for_timeout(300)
 
         print(f"  [DEBUG] Filling end time...")
         end_input.click()
-        end_input.fill(book_end)
-        page.wait_for_timeout(300)
+        validation_ok, validation_detail = refresh_new_booking_validation(
+            page, book_end, expected_start_time=book_start,
+            expected_date=target_date, expected_room=room,
+        )
+        if not validation_ok:
+            print(f"  Booking not saved: {validation_detail}")
+            go_back(page, days_ahead)
+            refusal = room_permission_refusal_text(validation_detail)
+            return RoomPermissionRefusal(room, refusal) if refusal else False
 
         # Read back the values to verify
         actual_start = start_input.input_value()
@@ -9759,6 +9795,80 @@ def calculate_extension_capacity_holds(
     return target_by_date, peak_by_date, tuple(held_bookings)
 
 
+def reconcile_extension_targets_with_grid(target_date, available_data, reservations, *, now=None):
+    """Retire unavailable extension capacity using a verified complete day grid.
+
+    Only runtime intent changes here, never a reservation or practice target.
+    Callers must have verified the displayed grid date and scanned the agenda.
+    Missing/ambiguous rows, changed identities and unopened horizons retain holds.
+    """
+    if list_pending_mutation_receipts():
+        return 0
+    day = as_date(target_date).isoformat()
+    bookings = load_extendable_bookings()
+    changes = []
+
+    def hours(value):
+        hour, minute = map(int, value.split(":"))
+        return hour + minute / 60
+
+    for booking in bookings:
+        if booking["date"] != day:
+            continue
+        matches = [event for event in reservations
+                   if event.get("eventId") == booking.get("eventId")]
+        if (not booking.get("eventId") or len(matches) != 1
+                # scan_agenda's reservation-only projection omits this flag.
+                or matches[0].get("isReservation", True) is not True
+                or any(matches[0].get(key) != booking[key]
+                       for key in ("room", "date", "startTime", "endTime"))):
+            continue
+        start, end, target = map(hours, (booking["startTime"], booking["endTime"], booking["target_end"]))
+        horizon = plan_horizon_extension(booking["room"], day, start, end, target, now=now)
+        if not horizon.can_extend or horizon.max_end_hour + 1e-9 < target:
+            continue
+        rows = [row for row in available_data if row.get("room") == booking["room"]]
+        if len(rows) != 1 or not isinstance(rows[0].get("slots"), list):
+            continue
+        try:
+            intervals = sorted((slot["startHour"], slot["endHour"]) for slot in rows[0]["slots"])
+            if (any(type(a) not in (int, float) or type(z) not in (int, float)
+                    or not 0 <= a < z <= 24
+                    or abs(a * 4 - round(a * 4)) > 1e-6
+                    or abs(z * 4 - round(z * 4)) > 1e-6 for a, z in intervals)
+                    or any(z > next_a for (_, z), (next_a, _) in zip(intervals, intervals[1:]))
+                    or any(a < end and z > start for a, z in intervals)):
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        free_end = max((z for a, z in intervals if abs(a - end) < 1e-9), default=end)
+        capped = min(target, free_end)
+        if capped >= target:
+            continue
+        replacement = dict(booking)
+        minutes = round(capped * 60)
+        replacement["target_end"] = f"{minutes // 60:02d}:{minutes % 60:02d}"
+        changes.append((booking, replacement if capped > end else None))
+    if not changes:
+        return 0
+
+    def mutate(settings):
+        entries = settings.get("extendable_bookings", [])
+        for original, replacement in changes:
+            matches = [i for i, entry in enumerate(entries)
+                       if entry.get("eventId") == original["eventId"]]
+            if len(matches) != 1 or entries[matches[0]] != original:
+                raise SettingsError("Extension tracking changed during room availability revalidation")
+            if replacement is None:
+                entries.pop(matches[0])
+            else:
+                entries[matches[0]] = replacement
+
+    update_settings(mutate, settings_file)
+    print(f"  [EXTEND] Replanned {len(changes)} extension target(s) against occupied room time")
+    return len(changes)
+
+
 def refresh_extension_capacity_holds(
     planning_context,
     tracker,
@@ -11019,6 +11129,11 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
             # Get available slots
             available_data = get_available_slots(page)
+            if reconcile_extension_targets_with_grid(target_date, available_data, all_reservations):
+                refresh_extension_capacity_holds(
+                    planning_context, tracker, practice_plan, disabled_dates,
+                    time_prefs=time_prefs,
+                )
 
             # Debug the rooms with the furthest current site-derived horizon.
             furthest_horizon = max(ROOM_HORIZON_MINUTES.values())

@@ -8,10 +8,23 @@
   and horizon logs keep an unmet target explicit while preserving its holds.
   Failed editor attempts produce failed history and a nonzero worker result,
   retaining earlier verified changes; ordinary future unlock waits are not errors.
-- All 104 focused lookup, editor, horizon, capacity, publication and runtime
-  checks pass. The two lazy-load regressions failed before the repair. Full
-  regression and authorized live extension verification follow separately.
-  Preserve unrelated runtime state; private evidence is ignored under artifacts.
+- A fresh complete, date-verified room grid can cap or retire runtime extension
+  targets when occupied time blocks the tail, releasing capacity for alternatives.
+  Exact reservation identity and a fully open target horizon are required;
+  pending mutations, unknown evidence and concurrent tracking drift retain holds
+  or abort. Saved practice targets and remote reservations are unchanged.
+- Normal new bookings commit time controls and require approval for the exact
+  date, room and interval before an enabled Save. Angular suppresses unchanged
+  values, so an already-matching end uses a temporary no-Save change followed by
+  the requested value; approval for the intermediate interval cannot authorize Save.
+- All 1,307 Python tests pass, including real Chromium lookup and new-booking
+  validation regressions. One live extension and two creates were independently
+  verified against persisted events and a fresh complete agenda: all original
+  IDs and unrelated events were preserved, with no pending receipts. Occupancy
+  and explicit room-permission refusals prevented the full requested daily total.
+- The canonical scheduled worker loads the repaired source. Existing hosts and
+  saved preferences were preserved. Private live evidence remains ignored under
+  `artifacts/extension-repair-20260916/`; it is separate from physical-phone proof.
 
 ## 2026-09-15 assistant booking time edits
 
