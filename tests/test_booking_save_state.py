@@ -554,7 +554,6 @@ class BookingSaveStateTests(unittest.TestCase):
         )
         match_script = page.evaluate.call_args_list[0].args[0]
         self.assertIn('[data-cy="event_${eventId}"]', match_script)
-        self.assertIn("if (panels.length !== 1) return -2", match_script)
         self.assertIn("endTime !== currentEnd", match_script)
         self.assertIn(r"\s*[-–]\s*", match_script)
         self.assertIn(

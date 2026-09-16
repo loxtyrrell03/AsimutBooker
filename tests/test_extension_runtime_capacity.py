@@ -104,3 +104,21 @@ class ExtensionCapacityPlanTests(unittest.TestCase):
             day = builder(*args, now=self.now, target_minutes=180,
                           reserved_daily_minutes=60, reserved_peak_minutes=60)
             self.assertIsNone(day.primary)
+
+    def test_unconfirmed_extension_holds_never_report_the_target_complete(self):
+        for legacy in (False, True):
+            args = [self.day, [], self.tracker, self.preferences]
+            if legacy:
+                args.append({"enabled": False, "strict_mode": False})
+            builder = b.build_legacy_display_day_plan if legacy else b.build_display_day_plan
+            day = builder(*args, now=self.now, target_minutes=240,
+                          reserved_daily_minutes=180, reserved_peak_minutes=60)
+            self.assertEqual(day.existing_minutes, 60)
+            self.assertEqual(day.status, "in_progress")
+            self.assertIn("unconfirmed extensions", day.reason)
+            self.assertIsNone(day.primary)
+
+    def test_confirmed_target_can_still_report_complete(self):
+        day = b.build_display_day_plan(self.day, [], self.tracker, self.preferences,
+                                      now=self.now, target_minutes=60)
+        self.assertEqual(day.status, "complete")

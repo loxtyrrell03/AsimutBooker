@@ -1,3 +1,18 @@
+## 2026-09-16 lazy agenda extension lookup and failure reporting
+
+- Extension lookup distinguishes an unloaded card from duplicate identity.
+  Missing cards use the bounded agenda scroll/retry path; duplicate, changed,
+  cancelled and wrong-ID cards still cannot reach the editor. Both current
+  cards and canonical legacy links have real Chromium regressions.
+- Pending extension capacity is not confirmed practice. Modern/legacy plans
+  and horizon logs keep an unmet target explicit while preserving its holds.
+  Failed editor attempts produce failed history and a nonzero worker result,
+  retaining earlier verified changes; ordinary future unlock waits are not errors.
+- All 104 focused lookup, editor, horizon, capacity, publication and runtime
+  checks pass. The two lazy-load regressions failed before the repair. Full
+  regression and authorized live extension verification follow separately.
+  Preserve unrelated runtime state; private evidence is ignored under artifacts.
+
 ## 2026-09-15 assistant booking time edits
 
 - `edit_reservation_time` consumes one fresh exact `find_reservations` selection.

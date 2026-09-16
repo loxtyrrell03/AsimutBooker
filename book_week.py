@@ -3922,7 +3922,10 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                         })
                     );
                 }
-                if (panels.length !== 1) return -2;
+                // Later dates are lazy-loaded. Absence must reach the bounded
+                // scroll/retry path; only duplicate identities are ambiguous.
+                if (panels.length === 0) return -1;
+                if (panels.length > 1) return -2;
 
                 // Parse target date for comparison (YYYY-MM-DD format)
                 const [targetYear, targetMonth, targetDay] = targetDate.split('-').map(Number);
@@ -4030,7 +4033,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
 
         # If not found, scroll down and try again (booking may be further in future)
         if matching_index == -2:
-            print(f"    Exact event id {event_id} was missing or ambiguous")
+            print(f"    Exact event id {event_id} was ambiguous")
             return False
         if matching_index < 0:
             print(f"    Not found in visible area, scrolling...")
@@ -7275,8 +7278,15 @@ def build_display_day_plan(
     held_peak = 0
     reason = "No suitable free opportunity is currently visible"
     if remaining_minutes < MINIMUM_BLOCK_MINUTES:
-        status = "complete"
-        reason = "The configured daily target is already met"
+        if existing_minutes >= target_minutes:
+            status = "complete"
+            reason = "The configured daily target is already met"
+        elif reserved_daily_minutes:
+            status = "in_progress"
+            reason = "Waiting for unconfirmed extensions; the daily target is not yet met"
+        else:
+            status = "unplanned"
+            reason = "The remaining daily target is below the minimum new booking length"
     elif selected_plan:
         primary_opportunity = selected_plan[0]
         if primary_opportunity.unlock_at <= now:
@@ -7483,8 +7493,15 @@ def build_legacy_display_day_plan(
         rank_key=rank_key,
     )
     if selection_minutes < MINIMUM_BLOCK_MINUTES:
-        status = "complete"
-        reason = "The configured daily or rolling-week target is already met"
+        if existing_minutes >= target_minutes:
+            status = "complete"
+            reason = "The configured daily target is already met"
+        elif reserved_daily_minutes:
+            status = "in_progress"
+            reason = "Waiting for unconfirmed extensions; the daily target is not yet met"
+        else:
+            status = "unplanned"
+            reason = "Remaining target or weekly allowance is below the minimum new booking length"
     elif selected:
         status = "planned"
         first = selected[0]
@@ -7975,7 +7992,13 @@ def find_all_snipe_candidates_multi_day(
             effective_daily_remaining is not None
             and effective_daily_remaining < MINIMUM_BLOCK_MINUTES / 60
         ):
-            print(f"\n    Skipping Day {days_ahead} ({target_date}): daily practice target met")
+            reason = (
+                "daily practice target met" if daily_remaining <= 0
+                else "waiting for unconfirmed extensions; daily target not yet met"
+                if extension_target_minutes
+                else "remaining daily target is below the minimum new booking length"
+            )
+            print(f"\n    Skipping Day {days_ahead} ({target_date}): {reason}")
             continue
         fragmentation_ok, fragmentation_reason = fragmentation_allows_new_booking(
             tracker,
@@ -9288,6 +9311,7 @@ def scan_agenda(
 _published_receipts = set()
 _notified_booking_details = set()
 _run_verified_details = ContextVar('run_verified_booking_details', default=None)
+_run_extension_failures = ContextVar('run_extension_failures', default=None)
 
 
 def protect_time_edit_release(receipt):
@@ -9435,12 +9459,17 @@ def save_history(
             # The runtime allowance counts intermediate edits and retirements;
             # history counts the completed reservation operations described here.
             bookings_made = len(booking_details)
+        failures = list(_run_extension_failures.get() or ())
+        history_details = list(booking_details)
+        if outcome == "completed" and failures:
+            outcome = "failed"
+            history_details = [*failures, *history_details]
         entry = {
             "timestamp": datetime.now().isoformat(),
             "outcome": outcome,
             "bookings_made": bookings_made,
             "events_detected": events_detected,
-            "details": "; ".join(booking_details[:5]) if booking_details else "No bookings made"
+            "details": "; ".join(history_details[:5]) if history_details else "No bookings made"
         }
 
         history_lock = history_file.with_suffix(history_file.suffix + ".lock")
@@ -9460,6 +9489,9 @@ def save_history(
 
         # Send push notification
         if not notify:
+            return
+        if outcome == "failed" and failures:
+            send_notification("AsimutBooker needs attention", "\n".join(history_details[:5]))
             return
         if bookings_made > 0:
             title = f"Booked {bookings_made} room{'s' if bookings_made > 1 else ''}"
@@ -9854,6 +9886,17 @@ def process_pending_extensions(
                 f"  Skipped {booking['room']} {booking['date']} "
                 f"{booking['startTime']}: {message}"
             )
+            # A failed editor attempt must not be reported as a successful
+            # no-op. Keep its capacity protected until exact live revalidation;
+            # report the failure without discarding other verified changes.
+            if message == "Edit operation failed":
+                failures = _run_extension_failures.get()
+                if failures is not None:
+                    failures.append(
+                        f"EXTENSION FAILED: {booking['date']} {booking['room']} "
+                        f"{booking['startTime']}-{booking['endTime']}; "
+                        f"extension toward {booking['target_end']} was not confirmed"
+                    )
 
     if extensions_made > 0:
         print(f"\nExtended {extensions_made} booking(s)")
@@ -10501,7 +10544,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         )
         if extensions_only or action_limit_reached:
             reason = (
-                "extension-only scope complete"
+                "extension-only scope finished"
                 if extensions_only
                 else "controlled action limit reached by priority extension"
             )
@@ -11822,7 +11865,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
         # Final summary
         print("\n" + "="*60)
-        print("BOOKING COMPLETE")
+        print("BOOKING RUN FINISHED WITH FAILED EXTENSIONS"
+              if _run_extension_failures.get() else "BOOKING COMPLETE")
         print("="*60)
         print(f"Total reservation changes: {total_booked}")
         if tracker.peak_hours_by_day:
@@ -12360,6 +12404,8 @@ def main(argv=None):
     runtime_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
     completed_details = []
     completed_token = _run_verified_details.set(completed_details)
+    extension_failures = []
+    failures_token = _run_extension_failures.set(extension_failures)
     try:
         acquired = runtime_lock.acquire()
         wait_seconds = (
@@ -12383,7 +12429,8 @@ def main(argv=None):
             print("Another AsimutBooker run is already active; this run did not refresh data.")
             return 6
         with booking_preference_run(settings_file, settings):
-            return run_booking(args, settings, practice_plan, room_preferences) or 0
+            result = run_booking(args, settings, practice_plan, room_preferences) or 0
+            return result or (1 if extension_failures else 0)
     except KeyboardInterrupt:
         print("Booking run cancelled.")
         return 130
@@ -12419,6 +12466,7 @@ def main(argv=None):
     finally:
         runtime_lock.release()
         _run_verified_details.reset(completed_token)
+        _run_extension_failures.reset(failures_token)
 
 
 if __name__ == "__main__":
