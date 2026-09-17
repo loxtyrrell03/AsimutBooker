@@ -1,8 +1,8 @@
 """Book practice rooms throughout Asimut's current live booking window.
 
 This script applies all RWCMD booking rules:
-- Rolling quota of 28 reservation hours
-- Maximum 2hr peak allowance (Mon-Fri 9am-4pm)
+- Rolling quota of 6 advance reservation hours; five-hour last-minute exception
+- Maximum 1hr peak allowance (Mon-Fri 9am-4pm)
 - Minimum 30 min, maximum 2hr per booking
 - 60-minute gap between same room bookings
 - Room-specific booking horizons freshly discovered from Asimut each run
@@ -131,6 +131,9 @@ from live_room_policy import (
     format_horizon_minutes,
 )
 from room_catalog import RoomCatalogError, refresh_from_site as refresh_room_catalog
+from booking_quotas import (refresh_quota_balances, free_horizon_hours,
+                            QuotaPolicyError, QuotaWait, check_quota_refusal,
+                            ROLLING_QUOTA_HOURS, PEAK_QUOTA_MINUTES, FREE_HORIZON_MINUTES)
 from room_preferences import (
     DEFAULT_ORDERED_ROOMS,
     RoomPreferences,
@@ -177,10 +180,10 @@ MANUAL_RECONFIRMATION_REMINDER = (
 # ordinary GUI settings.  Room horizons are never accepted from configuration;
 # every authenticated run observes them afresh from Asimut.
 _DEFAULT_CONFIG = {
-    'rolling_quota': 28,
+    'rolling_quota': ROLLING_QUOTA_HOURS,
     'peak_start': 9,
     'peak_end': 16,
-    'max_peak_hours': 2,
+    'max_peak_hours': PEAK_QUOTA_MINUTES / 60,
     'same_room_gap_minutes': 60,
 }
 
@@ -279,7 +282,8 @@ try:
 except ConfigError as exc:
     _CONFIG = copy.deepcopy(_DEFAULT_CONFIG)
     _CONFIG_ERROR = exc
-MAX_ROLLING_QUOTA_HOURS = _CONFIG['rolling_quota']
+# Older YAML overrides may tighten college limits, but cannot relax them.
+MAX_ROLLING_QUOTA_HOURS = min(_CONFIG['rolling_quota'], ROLLING_QUOTA_HOURS)
 MAX_BOOKING_HOURS = 2
 MIN_BOOKING_MINUTES = 30
 LIVE_ACTION_MINUTES = tuple(range(MIN_BOOKING_MINUTES, MAX_BOOKING_HOURS * 60 + 1, 15))
@@ -323,7 +327,7 @@ def _extension_target_end_hour(start_hour, current_end_hour, max_possible_durati
     return proposed_end if current_end_hour + 1e-9 < proposed_end else None
 PEAK_START = _CONFIG['peak_start']
 PEAK_END = _CONFIG['peak_end']
-MAX_PEAK_HOURS = _CONFIG['max_peak_hours']
+MAX_PEAK_HOURS = min(_CONFIG['max_peak_hours'], PEAK_QUOTA_MINUTES / 60)
 SAME_ROOM_GAP_MINUTES = _CONFIG['same_room_gap_minutes']
 CONFIGURED_SAME_ROOM_GAP_MINUTES = SAME_ROOM_GAP_MINUTES
 DEFAULT_BOOKINGS_PER_DAY = 3  # Default limit per day, dynamically adjusted based on enabled days
@@ -989,6 +993,7 @@ def refresh_new_booking_validation(page, expected_end_time, *, expected_start_ti
             return False, "event validation response was not trusted HTTP success"
         response.body()
         document = response.json()
+        check_quota_refusal(document)
         refusal = response_room_permission_refusal(document)
         if refusal:
             return False, refusal
@@ -1003,6 +1008,8 @@ def refresh_new_booking_validation(page, expected_end_time, *, expected_start_ti
                 page.wait_for_timeout(100)
             return False, "Save remained disabled after the exact new-booking check"
         page.wait_for_timeout(300)
+    except QuotaWait:
+        raise
     except Exception as exc:
         return False, f"fresh event validation did not complete: {exc}"
 
@@ -1053,6 +1060,7 @@ def refresh_extension_validation(page, end_input, booking, expected_end_time):
             return False, "exact extension validation did not return HTTP success"
         response.body()
         document = response.json()
+        check_quota_refusal(document)
         refusal = response_room_permission_refusal(document)
         if refusal:
             return False, refusal
@@ -1070,6 +1078,8 @@ def refresh_extension_validation(page, end_input, booking, expected_end_time):
                 return True, "exact extension validation completed and Save is enabled"
             page.wait_for_timeout(100)
         return False, "Save remained disabled after the exact extension validation"
+    except QuotaWait:
+        raise
     except Exception as exc:
         return False, f"fresh extension validation did not complete: {exc}"
 
@@ -4386,6 +4396,8 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
 
     except (BookingVerificationError, BookingPreferencesChanged):
         raise
+    except QuotaWait:
+        raise
     except Exception as e:
         if save_clicked:
             raise BookingVerificationError(
@@ -4429,6 +4441,8 @@ def try_extend_booking(
         Tuple of (success: bool, new_end_time: str or None, message: str)
     """
     operation_stage('Checking a reservation for extension…')
+    if tracker is not None and tracker.live_quota_minutes is not None:
+        refresh_quota_balances(page, tracker, (date.fromisoformat(booking['date']),))
     time_prefs = resolve_time_preferences(time_prefs, booking['date'])
     room = booking["room"]
     date_str = booking["date"]
@@ -4587,11 +4601,14 @@ def try_extend_booking(
         # Calculate the extension amount (what we're adding, not the total)
         extension_hours = max_end_hour - current_end_hour
 
-        # Rule: Rolling weekly quota (28 hours per week)
-        remaining_quota_hours = tracker.get_remaining_quota_hours()
+        # The complete edited interval, including its original start, must
+        # fit inside the free horizon; an extension tail alone cannot qualify.
+        free_capacity = free_horizon_hours(booking_date, start_hour, now=extension_now)
+        remaining_quota_hours = max(tracker.get_remaining_quota_hours(),
+            max(0, start_hour + free_capacity - current_end_hour) if free_capacity else 0)
         if extension_hours > remaining_quota_hours:
             if remaining_quota_hours < 0.25:  # Less than 15 minutes
-                return False, None, f"Weekly quota full ({tracker.get_total_booking_hours():.1f}/{MAX_ROLLING_QUOTA_HOURS}h)"
+                return False, None, "Advance quota full; the complete extension does not fit the five-hour free horizon"
             # Limit extension to stay within weekly quota
             max_end_hour = current_end_hour + remaining_quota_hours
             # Round down to 15-minute interval
@@ -4600,10 +4617,10 @@ def try_extend_booking(
             max_end_hour = int(max_end_hour) + max_end_mins / 60
             extension_hours = max_end_hour - current_end_hour
             if extension_hours < 0.25:  # Less than 15 minutes
-                return False, None, f"Weekly quota would only allow {extension_hours * 60:.0f}min extension"
+                return False, None, f"Advance quota would only allow {extension_hours * 60:.0f}min extension"
 
-        # Rule: Peak hours limit (Mon-Fri 9am-4pm, max 2 hours per day)
-        if booking_date.weekday() < 5:  # Monday-Friday
+        # Rule: Peak hours limit (Mon-Fri 9am-4pm, max 1 hour per day)
+        if booking_date.weekday() < 5:
             # Calculate peak hours overlap for the EXTENSION portion only
             # (the current booking's peak hours are already accounted for)
             extension_peak_start = max(current_end_hour, PEAK_START)
@@ -4698,7 +4715,10 @@ def try_extend_booking(
         if tracker is not None:
             # Add extension hours to existing reservation hours (for weekly quota)
             extension_hours = max_end_hour - current_end_hour
-            tracker.existing_reservation_hours += extension_hours
+            if not any(b_room == room and as_date(b_date).isoformat() == date_str
+                       and abs(b_start - start_hour) < 0.01
+                       for b_room, b_date, b_start, _ in tracker.bookings):
+                tracker.existing_reservation_hours += extension_hours
             tracker.reservation_hours_by_day[date_str] = (
                 tracker.reservation_hours_by_day.get(date_str, 0.0) + extension_hours
             )
@@ -4742,7 +4762,10 @@ def try_extend_booking(
         # The remote extension and receipt are already verified. A local state
         # failure must not turn that confirmed mutation into an ordinary failure.
         try:
-            if new_end_time == target_end_normalized:
+            peak_complete = (booking_date.weekday() < 5 and max_end_hour < PEAK_END
+                and max(0, min(max_end_hour, PEAK_END) - max(start_hour, PEAK_START))
+                    >= MAX_PEAK_HOURS - 1e-9)
+            if new_end_time == target_end_normalized or peak_complete:
                 remove_extendable_booking(room, date_str, start_time)
             else:
                 update_extendable_booking_end_time(room, date_str, start_time, new_end_time)
@@ -4765,7 +4788,7 @@ def calculate_max_bookings_per_day(remaining_quota_hours, enabled_days_count):
     you can book more hours per day (up to the quota limit).
 
     Args:
-        remaining_quota_hours: Hours left in the weekly quota (28h max)
+        remaining_quota_hours: Hours left in the weekly quota (6h max)
         enabled_days_count: Number of live-window dates enabled for booking
 
     Returns:
@@ -4806,7 +4829,7 @@ def calculate_target_hours_for_day(
         target_date: The date to calculate target hours for
         enabled_dates: List of enabled dates in the booking window
         tracker: BookingTracker with existing reservation data
-        total_quota: Total weekly quota (default 28 hours)
+        total_quota: Total weekly quota (default 6 hours)
 
     Returns:
         Tuple of (target_hours, max_bookings) for the day
@@ -4909,6 +4932,10 @@ class BookingTracker:
     """Tracks bookings and enforces rules."""
 
     def __init__(self):
+        self.live_quota_minutes = None
+        self.quota_observed_hours = 0.0
+        self.live_peak_minutes = {}
+        self.peak_observed_minutes = {}
         self.bookings = []  # List of (room, date, start_hour, end_hour)
         self.agenda_events = []  # Complete validated events from the latest scan.
         self.agenda_active_event_ids = []  # Includes valid out-of-window cards.
@@ -4969,7 +4996,7 @@ class BookingTracker:
                 self.peak_hours_by_day[date_key] += peak_mins
                 peak_info = f" (+{peak_mins:.0f}min peak)"
 
-        # Track reservation hours for rolling quota (28 hours per week)
+        # Track reservation hours for rolling quota (6 advance reservation hours)
         if is_reservation:
             duration_hours = end_hour - start_hour
             self.existing_reservation_hours += duration_hours
@@ -5031,6 +5058,24 @@ class BookingTracker:
             return 9999  # Effectively unlimited
         date_key = date.strftime('%Y-%m-%d')
         used = self.peak_hours_by_day.get(date_key, 0)
+        if date_key in self.live_peak_minutes:
+            balance = self.live_peak_minutes[date_key]
+            if balance is None:
+                return max(0, MAX_PEAK_HOURS * 60 - used)
+            # The user retains a one-hour peak cap even when ASIMUT waives a
+            # quota check for a free-horizon booking. Count all still-active
+            # reservations independently, including those booked as exceptions.
+            now = datetime.now()
+            ranges = set(self.reservation_ranges.get(date_key, ()))
+            ranges.update((start, end, room) for room, day, start, end in self.bookings
+                          if as_date(day).isoformat() == date_key)
+            future_peak = sum(max(0, min(end, PEAK_END) - max(start, PEAK_START)) * 60
+                for start, end, _ in ranges
+                if as_date(date) > now.date() or (as_date(date) == now.date()
+                    and end > now.hour + now.minute / 60))
+            return max(0, min(MAX_PEAK_HOURS * 60 - future_peak,
+                       min(MAX_PEAK_HOURS * 60, balance)
+                       - (used - self.peak_observed_minutes.get(date_key, 0))))
         return max(0, MAX_PEAK_HOURS * 60 - used)
 
     def get_peak_used_for_day(self, date):
@@ -5042,6 +5087,8 @@ class BookingTracker:
         if date.weekday() >= 5:  # Saturday=5, Sunday=6
             return 0
         date_key = date.strftime('%Y-%m-%d')
+        if date_key in self.live_peak_minutes:
+            return MAX_PEAK_HOURS * 60 - self.get_remaining_peak_minutes(date)
         return self.peak_hours_by_day.get(date_key, 0)
 
     def is_peak_quota_exceeded(self, date):
@@ -5068,11 +5115,19 @@ class BookingTracker:
 
     def get_remaining_quota_hours(self):
         """Get remaining rolling quota hours."""
+        if self.live_quota_minutes is not None:
+            return max(0, min(MAX_ROLLING_QUOTA_HOURS, self.live_quota_minutes / 60)
+                       - (self.get_total_booking_hours() - self.quota_observed_hours))
         return max(0, MAX_ROLLING_QUOTA_HOURS - self.get_total_booking_hours())
 
     def is_quota_full(self):
         """Check if rolling quota is exceeded."""
-        return self.get_total_booking_hours() >= MAX_ROLLING_QUOTA_HOURS
+        return self.get_remaining_quota_hours() <= 0
+
+    def booking_capacity_hours(self, day, start_hour, *, now=None):
+        """Capacity at an exact start; free credit never escapes its cutoff."""
+        return max(self.get_remaining_quota_hours(), free_horizon_hours(
+            day, start_hour, now=now or datetime.now(), horizon_minutes=FREE_HORIZON_MINUTES))
 
     def overlaps_conflict(self, date, start_hour, end_hour):
         """Check if a time overlaps with known conflicts."""
@@ -5084,7 +5139,7 @@ class BookingTracker:
                 return True
         return False
 
-    def can_book(self, room, date, start_hour, duration_minutes):
+    def can_book(self, room, date, start_hour, duration_minutes, *, now=None):
         """Check if a booking is allowed by all rules."""
         end_hour = start_hour + duration_minutes / 60
         duration_hours = duration_minutes / 60
@@ -5097,17 +5152,17 @@ class BookingTracker:
         if duration_minutes > MAX_BOOKING_HOURS * 60:
             return False, "Duration too long"
 
-        # Rule: Rolling quota (28 hours per week)
-        remaining_hours = self.get_remaining_quota_hours()
+        # Rule: Rolling quota (6 advance reservation hours)
+        remaining_hours = self.booking_capacity_hours(date, start_hour, now=now)
         if duration_hours > remaining_hours:
-            return False, f"Exceeds weekly quota ({remaining_hours:.1f}h remaining)"
+            return False, f"Exceeds advance quota and does not fit the five-hour free horizon"
 
         # Rule: Check conflict ranges
         if self.overlaps_conflict(date, start_hour, end_hour):
             return False, "Overlaps with your existing reservation"
 
         # Rule: Peak hours limit (per day)
-        if date.weekday() < 5:  # Weekday
+        if date.weekday() < 5:
             overlap_start = max(start_hour, PEAK_START)
             overlap_end = min(end_hour, PEAK_END)
             if overlap_end > overlap_start:
@@ -5867,6 +5922,8 @@ def try_book_slot(
     room = slot['room']
     start_hour = slot['start_hour']
     slot_duration = (slot['end_hour'] - start_hour) * 60
+    if tracker.live_quota_minutes is not None:
+        refresh_quota_balances(page, tracker, (as_date(target_date),))
 
     # Calculate maximum bookable duration based on horizon constraint
     # At the horizon edge, you can only book time that has "passed" the edge
@@ -5901,7 +5958,7 @@ def try_book_slot(
     max_possible_duration = _bounded_create_duration_minutes(
         slot_duration,
         remaining_daily_hours,
-        tracker.get_remaining_quota_hours(),
+        tracker.booking_capacity_hours(target_date, start_hour),
         max_action_minutes,
     )
 
@@ -5911,7 +5968,7 @@ def try_book_slot(
     booking_duration = _bounded_create_duration_minutes(
         requested_duration,
         remaining_daily_hours,
-        tracker.get_remaining_quota_hours(),
+        tracker.booking_capacity_hours(target_date, start_hour),
         max_action_minutes,
     )
 
@@ -6664,6 +6721,7 @@ def build_day_booking_opportunities(
     reserved_peak_minutes=0,
     reserved_weekly_minutes=0,
     only_room=None,
+    free_horizon_only=False,
 ):
     """Build fresh, conflict-aware current and future opportunities for a day."""
     time_prefs = resolve_time_preferences(time_prefs, target_date)
@@ -6719,6 +6777,17 @@ def build_day_booking_opportunities(
                     )
                 )
             for segment_start, segment_end in usable_segments:
+                segment_weekly = weekly_minutes
+                segment_peak = peak_minutes
+                if free_horizon_only:
+                    if target_date == now.date():
+                        segment_start = max(segment_start, (today_minutes // 15 + 1) / 4)
+                    free_hours = free_horizon_hours(target_date, segment_start, now=now)
+                    segment_end = min(segment_end, segment_start + free_hours)
+                    if (segment_end - segment_start) * 60 < MINIMUM_BLOCK_MINUTES:
+                        continue
+                    segment_weekly = int(free_hours * 60)
+                    segment_peak = peak_minutes
                 for opportunity in enumerate_gap_opportunities(
                     room=room_name,
                     target_date=target_date,
@@ -6731,8 +6800,8 @@ def build_day_booking_opportunities(
                     minimum_block_minutes=MINIMUM_BLOCK_MINUTES,
                     maximum_booking_minutes=int(MAX_BOOKING_HOURS * 60),
                     remaining_daily_minutes=daily_minutes,
-                    remaining_weekly_minutes=weekly_minutes,
-                    remaining_peak_minutes=peak_minutes,
+                    remaining_weekly_minutes=segment_weekly,
+                    remaining_peak_minutes=segment_peak,
                     strict_window=strict_window,
                     soft_preferred_window=soft_preferred_window,
                     peak_start_minutes=int(PEAK_START * 60),
@@ -6762,6 +6831,7 @@ def build_day_booking_opportunities(
                         target_date,
                         opportunity.start_hour,
                         opportunity.potential_minutes,
+                        now=now,
                     )
                     if not can_book:
                         continue
@@ -6878,6 +6948,7 @@ def same_time_room_backups(
     available_data, failed_slot, target_date, tracker, time_prefs, daily_planning,
     *, now, excluded_rooms, remaining_daily_hours=None,
     reserved_peak_minutes=0, reserved_weekly_minutes=0, only_room=None,
+    free_horizon_only=False,
 ):
     """Rank freshly available replacements for exactly the failed interval.
 
@@ -6900,6 +6971,7 @@ def same_time_room_backups(
         now=now, remaining_daily_hours=remaining_daily_hours,
         reserved_peak_minutes=reserved_peak_minutes,
         reserved_weekly_minutes=reserved_weekly_minutes, only_room=only_room,
+        free_horizon_only=free_horizon_only,
     )
     return sorted(
         (item for item in opportunities
@@ -6912,7 +6984,7 @@ def same_time_room_backups(
 def attempt_booking_with_room_fallback(
     page, slot, target_date, tracker, days_ahead, *, time_prefs, daily_planning,
     remaining_daily_hours=None, max_action_minutes=None, only_room=None,
-    planning_context=None, horizon=False,
+    planning_context=None, horizon=False, free_horizon_only=False,
 ):
     """Try each eligible room at most once, refreshing after proven failures.
 
@@ -6935,7 +7007,7 @@ def attempt_booking_with_room_fallback(
             else:
                 result = try_book_slot(page, candidate, target_date, tracker,
                                        days_ahead, time_prefs=time_prefs, **kwargs)
-        except (BookingVerificationError, BookingPreferencesChanged):
+        except (BookingVerificationError, BookingPreferencesChanged, QuotaWait, QuotaPolicyError):
             raise
         except Exception as exc:
             # A pre-Save interaction error can be retried only after the same
@@ -6984,6 +7056,7 @@ def attempt_booking_with_room_fallback(
             excluded_rooms=attempted, remaining_daily_hours=backup_daily_remaining,
             reserved_peak_minutes=context.get('extension_peak_by_date', {}).get(date_key, 0),
             reserved_weekly_minutes=reserved_weekly, only_room=only_room,
+            free_horizon_only=free_horizon_only,
         )
         if horizon:
             backups = [item for item in backups if abs((item.unlock_at-slot['bookable_from']).total_seconds()) <= 1]
@@ -7220,6 +7293,7 @@ def build_display_day_plan(
     remaining_weekly_minutes=None,
     reserved_daily_minutes=0,
     reserved_peak_minutes=0,
+    free_horizon_only=False,
     include_future_outside_foresight=False,
 ):
     """Convert fresh opportunities into one clear display-only day plan.
@@ -7249,7 +7323,8 @@ def build_display_day_plan(
         ]
     selection_minutes = min(
         remaining_minutes,
-        _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0,
+        (FREE_HORIZON_MINUTES if free_horizon_only else
+         _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0),
     )
     if remaining_weekly_minutes is not None:
         selection_minutes = min(
@@ -7493,6 +7568,7 @@ def build_legacy_display_day_plan(
     remaining_weekly_minutes=None,
     reserved_daily_minutes=0,
     reserved_peak_minutes=0,
+    free_horizon_only=False,
 ):
     """Build a display plan that exactly follows disabled-planner ordering."""
     time_prefs = resolve_time_preferences(time_prefs, target_date)
@@ -7507,7 +7583,8 @@ def build_legacy_display_day_plan(
     )
     selection_minutes = min(
         max(0, target_minutes - existing_minutes - reserved_daily_minutes),
-        _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0,
+        (FREE_HORIZON_MINUTES if free_horizon_only else
+         _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0),
     )
     if remaining_weekly_minutes is not None:
         selection_minutes = min(
@@ -9326,14 +9403,14 @@ def scan_agenda(
     ignored_str = f", {ignored_count} ignored" if ignored_count > 0 else ""
     print(f"\n  Total events: {events_found} ({reservations_found} reservations, {events_found - reservations_found} other{ignored_str})")
 
-    # Show rolling quota status (28 hours per week)
+    # Show rolling quota status (6 advance reservation hours)
     used_hours = tracker.get_total_booking_hours()
     remaining_hours = tracker.get_remaining_quota_hours()
-    print(f"\n  Rolling quota: {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS} hours this week")
+    print(f"\n  Advance quota remaining: {remaining_hours:.1f}h (limit {MAX_ROLLING_QUOTA_HOURS}h)")
     if remaining_hours > 0:
         print(f"  [OK] Can book {remaining_hours:.1f} more hours")
     else:
-        print(f"  [FULL] QUOTA FULL - cannot make new bookings until existing ones expire!")
+        print(f"  [FULL] Advance quota full; eligible bookings entirely within the next five hours remain possible.")
 
     # Show peak hours summary per day
     if tracker.peak_hours_by_day:
@@ -9737,7 +9814,10 @@ def calculate_extension_capacity_holds(
             )
 
         remaining = max(0, target_end - current_end)
-        if remaining < 15 or remaining_weekly < 15:
+        free_capacity = max(0, int((start_hour + free_horizon_hours(
+            target_date, start_hour, now=now) - current_end / 60) * 60))
+        booking_capacity = max(remaining_weekly, free_capacity)
+        if remaining < 15 or booking_capacity < 15:
             continue
 
         daily_remaining = remaining_target_hours(
@@ -9752,7 +9832,7 @@ def calculate_extension_capacity_holds(
                 - target_by_date.get(date_key, 0),
             )
             remaining = min(remaining, daily_capacity)
-        remaining = min(remaining, remaining_weekly)
+        remaining = min(remaining, booking_capacity)
         remaining -= remaining % 15
         if remaining < 15:
             continue
@@ -9784,7 +9864,7 @@ def calculate_extension_capacity_holds(
         )
         target_by_date[date_key] = target_by_date.get(date_key, 0) + held_minutes
         peak_by_date[date_key] = peak_by_date.get(date_key, 0) + held_peak
-        remaining_weekly -= held_minutes
+        remaining_weekly = max(0, remaining_weekly - held_minutes)
         planned_booking = dict(booking)
         planned_end = current_end + held_minutes
         planned_booking["target_end"] = (
@@ -10208,6 +10288,9 @@ def generate_read_only_booking_plan(
                 after_peak_mode="longest_first",
             )
         )
+        free_preview = (target_date <= (now + timedelta(minutes=FREE_HORIZON_MINUTES)).date()
+                        and target_date >= now.date()
+                        and remaining_weekly_minutes - planned_weekly_minutes < (effective_daily_remaining or 0) * 60)
         opportunities = build_day_booking_opportunities(
             available_data,
             target_date,
@@ -10221,6 +10304,7 @@ def generate_read_only_booking_plan(
                 total_extension_minutes + planned_weekly_minutes
             ),
             only_room=args.only_room,
+            free_horizon_only=free_preview,
         )
         available_weekly_for_new = max(
             0,
@@ -10228,6 +10312,8 @@ def generate_read_only_booking_plan(
             - total_extension_minutes
             - planned_weekly_minutes,
         )
+        if free_preview:
+            available_weekly_for_new = FREE_HORIZON_MINUTES
         if uses_time_aware_planner(daily_planning, time_prefs):
             day_plan = build_display_day_plan(
                 target_date,
@@ -10237,6 +10323,7 @@ def generate_read_only_booking_plan(
                 now=now,
                 target_minutes=target_minutes,
                 remaining_weekly_minutes=available_weekly_for_new,
+                free_horizon_only=free_preview,
                 reserved_daily_minutes=extension_target_minutes,
                 reserved_peak_minutes=extension_peak_minutes,
                 include_future_outside_foresight=True,
@@ -10251,14 +10338,15 @@ def generate_read_only_booking_plan(
                 now=now,
                 target_minutes=target_minutes,
                 remaining_weekly_minutes=available_weekly_for_new,
+                free_horizon_only=free_preview,
                 reserved_daily_minutes=extension_target_minutes,
                 reserved_peak_minutes=extension_peak_minutes,
             )
         newly_selected = (() if day_plan.primary is None else (day_plan.primary,)) + day_plan.additional
-        planned_weekly_minutes += sum(
+        planned_weekly_minutes += min(max(0, remaining_weekly_minutes - planned_weekly_minutes), sum(
             candidate.potential_minutes - candidate.confirmed_minutes
             for candidate in newly_selected
-        )
+        ))
 
         day_plan = attach_extension_progress(
             day_plan,
@@ -10488,6 +10576,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             browser.close()
             return 0
 
+        refresh_quota_balances(page, tracker, live_dates)
+
         # Read-only runs can prove a secured replacement but never retire donors.
         if not getattr(args, "plan_only", False) and not getattr(args, "upgrade_dry_run", False):
             for receipt in list_pending_mutation_receipts():
@@ -10591,35 +10681,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             browser.close()
             return 0
 
-        # A same-duration room edit does not consume additional weekly quota.
-        if tracker.is_quota_full():
-            used_hours = tracker.get_total_booking_hours()
-            print("\n" + "="*60)
-            print("QUOTA FULL - SKIPPING ALL BOOKING ATTEMPTS")
-            print("="*60)
-            print(f"You have {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS} hours booked this week.")
-            print("Cannot make new bookings until existing ones expire.")
-            print("="*60)
-
-            total_booked, tracker = process_room_upgrades(
-                sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
-            save_history(
-                total_booked,
-                events_detected,
-                [f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)", *booking_details],
-            )
-
-            send_notification("AsimutBooker - Quota Full",
-                            f"Cannot book: {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h used this week")
-
-            if not args.headless:
-                print("\nKeeping browser open for 10 seconds...")
-                page.wait_for_timeout(10000)
-
-            persist_storage_state(context)
-            context.close()
-            browser.close()
-            return 0
+        refresh_quota_balances(page, tracker, live_dates)
 
         # Load user policy before any booking-grid navigation. Pending horizon
         # extensions must be able to open their exact editor during the short
@@ -10647,6 +10709,46 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 disabled_dates,
                 time_prefs=time_prefs,
             )
+
+        # The five-hour pass remains available with no advance quota. It uses
+        # the same targets, conflicts, room preferences and guarded Save path.
+        from short_notice_bookings import run_short_notice_pass
+        total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
+            settings, practice_plan, args, tracker, total_booked, booking_details)
+        all_reservations = [event for event in tracker.agenda_events if event.get('isReservation')]
+        refresh_extension_capacity_holds(planning_context, tracker, practice_plan,
+                                         disabled_dates, time_prefs=time_prefs)
+
+        # A same-duration room edit does not consume additional advance quota.
+        # Extensions-only runs still need to examine eligible short-notice edits.
+        if tracker.is_quota_full() and not getattr(args, 'extensions_only', False):
+            used_hours = tracker.get_total_booking_hours()
+            print("\n" + "="*60)
+            print("ADVANCE QUOTA FULL - FREE-HORIZON CHECK COMPLETE")
+            print("="*60)
+            print(f"You have {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS} hours of reservations in the current window.")
+            print("Further advance bookings wait until quota is released; short-notice bookings remain eligible.")
+            print("="*60)
+
+            total_booked, tracker = process_room_upgrades(
+                sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
+            save_history(
+                total_booked,
+                events_detected,
+                [f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)", *booking_details],
+            )
+
+            send_notification("AsimutBooker - Quota Full",
+                            "Advance quota full. The next run will recheck short-notice availability and released quota.")
+
+            if not args.headless:
+                print("\nKeeping browser open for 10 seconds...")
+                page.wait_for_timeout(10000)
+
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0
 
         max_actions = getattr(args, "max_actions", None)
         action_limit_reached = (
@@ -11974,6 +12076,9 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
             print(f"\n  Day summary: {day_booked} bookings made, {attempts} attempts total")
 
+        total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
+            settings, practice_plan, args, tracker, total_booked, booking_details, after_horizon=True)
+
         # Fill targets and finish due extensions before optional improvements.
         total_booked, tracker = process_room_upgrades(
             sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
@@ -12552,6 +12657,20 @@ def main(argv=None):
     except AutonomousLoginError as exc:
         print(f"ERROR: Autonomous login could not complete: {exc}")
         return 2
+    except QuotaWait as exc:
+        print(f"WAITING: {exc}. No further booking attempts in this run.")
+        if list_pending_mutation_receipts():
+            message = f"Reconciliation required after quota refusal: {exc}"
+            print(message)
+            save_history(len(completed_details), 0, [message, *completed_details],
+                         notify=False, outcome='reconciliation_required')
+            return 5
+        save_history(len(completed_details), 0, [f"Waiting: {exc}", *completed_details], notify=False)
+        return 0
+    except QuotaPolicyError as exc:
+        print(f"Booking paused: {exc}. Earlier verified changes are retained.")
+        save_history(len(completed_details), 0, [str(exc), *completed_details], notify=False, outcome='failed')
+        return 4
     except (RoomCatalogError, LiveRoomPolicyError) as exc:
         print(f"ERROR: Live room policy could not be verified: {exc}")
         print("Autonomous booking stopped before any room mutation.")

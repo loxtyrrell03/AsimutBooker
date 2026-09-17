@@ -324,6 +324,7 @@ class AssistantToolSurfaceTests(unittest.TestCase):
         settings = load_settings(self.paths.settings)
         self.assertEqual(result["target_semantics"], "Each value is total desired practice on that date.")
         self.assertTrue(result["session_planning"]["split_larger_targets"])
+        self.assertEqual(result["session_planning"]["weekday_peak_minutes_maximum"], 60)
         self.assertEqual(
             settings["unrelated_user_value"],
             {"preserve": True},

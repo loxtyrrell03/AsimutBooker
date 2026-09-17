@@ -383,7 +383,7 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
-            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.multiple(book_week, restore_page_authentication=mock.Mock(), refresh_quota_balances=mock.Mock()),
             mock.patch.object(
                 book_week,
                 "refresh_live_room_policy",
@@ -453,7 +453,7 @@ class PlanOnlyRuntimeIsolationTests(unittest.TestCase):
                 "authenticated_runtime_context_options",
                 return_value={},
             ),
-            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.multiple(book_week, restore_page_authentication=mock.Mock(), refresh_quota_balances=mock.Mock()),
             mock.patch.object(
                 book_week,
                 "refresh_live_room_policy",
@@ -1213,7 +1213,7 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
-            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.multiple(book_week, restore_page_authentication=mock.Mock(), refresh_quota_balances=mock.Mock()),
             mock.patch.multiple(
                 book_week,
                 refresh_live_room_policy=refresh_policy,
@@ -1257,7 +1257,8 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
         discover_snipes.assert_not_called()
         self.assertEqual(save_history.call_args.args[0], 1)
 
-    def test_extension_phase_runs_before_horizon_discovery(self):
+    @mock.patch('short_notice_bookings.run_short_notice_pass', side_effect=lambda *a, **kw: (a[6], a[5]))
+    def test_extension_phase_runs_before_horizon_discovery(self, _short_notice):
         args = SimpleNamespace(
             headless=True,
             check_only=False,
@@ -1307,7 +1308,7 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
-            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.multiple(book_week, restore_page_authentication=mock.Mock(), refresh_quota_balances=mock.Mock()),
             mock.patch.multiple(
                 book_week,
                 refresh_live_room_policy=refresh_policy,
@@ -1403,7 +1404,7 @@ class LiveActionDurationBoundaryTests(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             mock.patch.object(book_week, "sync_playwright", return_value=playwright_context),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
-            mock.patch.object(book_week, "restore_page_authentication"),
+            mock.patch.multiple(book_week, restore_page_authentication=mock.Mock(), refresh_quota_balances=mock.Mock()),
             mock.patch.multiple(
                 book_week,
                 refresh_live_room_policy=refresh_policy,

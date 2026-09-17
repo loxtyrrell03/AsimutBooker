@@ -304,6 +304,7 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
 
     day_events = [e for e in events if e["date"] == original.day.isoformat()
                   and e.get("eventId") not in original_ids]
+    original_peak = sum(interval_overlap_minutes(r.start, r.end, peak_start, peak_end) for r in originals)
     other_peak = sum(interval_overlap_minutes(clock_minutes(e["startTime"]),
                     clock_minutes(e["endTime"]), peak_start, peak_end)
                     for e in day_events if e.get("isReservation") is True)
@@ -377,7 +378,8 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
                 if preferred < old_peak_pref:
                     continue
                 if (original.day.weekday() < 5
-                        and other_peak + interval_overlap_minutes(start, end, peak_start, peak_end) > peak_limit):
+                        and other_peak + interval_overlap_minutes(start, end, peak_start, peak_end)
+                            > (original_peak if original_peak > peak_limit and other_peak == 0 else peak_limit)):
                     continue
                 if any(_overlaps(start, end, a, b) for a, b in blocked_intervals):
                     continue
@@ -494,7 +496,7 @@ def select_upgrade_portfolio(candidates, *, policy, planning, time_preferences,
     initial_peak = sum(interval_overlap_minutes(clock_minutes(e["startTime"]), clock_minutes(e["endTime"]),
                                                peak_start, peak_end) for e in events
                        if e.get("isReservation") is True and e["date"] == day.isoformat())
-    limit = peak_limit if weekday else 1440
+    limit = max(peak_limit, initial_peak) if weekday else 1440
     deltas = []
     scores = []
     for c in choices:

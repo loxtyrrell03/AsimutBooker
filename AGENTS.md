@@ -1,3 +1,32 @@
+## 2026-09-17 revised college quotas and free horizon
+
+- Advance quota is six hours, with at most one weekday peak hour (09:00-16:00).
+  Live room/global horizons and duration limits remain authoritative; the live
+  global horizon is seven days. Older YAML cannot raise the new quota caps.
+- `booking_quotas.py` reads the authenticated per-date quota endpoint in seconds.
+  Complete snapshots replace local estimates and allow completed sessions to
+  release credit. Unknown quota types or unreadable responses pause writes.
+  Exact quota refusals end the pass without trying every room; unresolved
+  transactions retain reconciliation status, including earlier verified work.
+- Both endpoints must fit entirely inside the next five elapsed hours for a
+  short-notice exception. It consumes any remaining credit normally and never
+  creates advance credit. The local one-hour peak cap also applies here, even
+  if ASIMUT waives that check. Targets, strict hours, conflicts, room access,
+  duration, fragmentation and action limits still apply.
+- Scheduled runs check short-notice opportunities even when advance quota is
+  full. Pending extensions retain priority and capacity; exact-time room fallback
+  can use the same free window. Extensions use the complete edited interval,
+  not only the added tail, and stop at remaining peak allowance. Room upgrades,
+  consolidation, progressive transfers and time edits retain identity/receipt
+  checks. Existing over-limit reservations are never automatically reduced;
+  whole-room upgrades may preserve their peak usage subject to live approval.
+- Assistant contract revision 4 and rule-aware plan fingerprints retire old
+  28-hour/two-hour assumptions without changing saved preferences or history.
+  Full regression run: 1,339 Python tests pass; 72 focused checks pass after the
+  final extension-hold and short-notice fallback changes. Authenticated quota,
+  agenda and read-only plan checks passed with non-check submissions blocked.
+  These checks made no real booking or edit. Activation is recorded separately.
+
 ## 2026-09-16 lazy agenda extension lookup and failure reporting
 
 - Extension lookup distinguishes an unloaded card from duplicate identity.
@@ -1053,7 +1082,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Room Preferences**: GUI ordering, exclusions, live instrument/type/feature requirements, minimum block length, and fragmentation policy
 - **Live Room Policy**: Refreshes the current AHC catalog plus selected promoted All Locations rooms, metadata, per-room horizons, and booking-window cutoff from Asimut before every authenticated booking or check run
 - **Scheduled Execution**: One non-overlapping task runs every 15 minutes (07:13-21:58) with AC/DC wake-timer requests and missed-start recovery
-- **RWCMD Booking Rules**: Respects rolling quota (28 hours/week), peak hours (2hr/day Mon-Fri 9am-4pm), and the greater of the configured/default same-room gap and Asimut's fresh minimum
+- **RWCMD Booking Rules**: Six hours of advance reservations, one peak hour/day Mon-Fri 9am-4pm, a five-hour short-notice exception, and the greater of the configured/default same-room gap and Asimut's fresh minimum
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
@@ -1237,8 +1266,9 @@ This replaces obsolete per-time tasks with one `AsimutBooker_Recurring` task:
 ## Booking Rules (RWCMD)
 
 The script enforces these rules:
-- **Rolling Quota**: Maximum 28 hours per rolling week (only "Reservation" events count, not classes)
-- **Peak Hours**: Maximum 2 hours **per day** during Mon-Fri 9am-4pm
+- **Rolling Quota**: Six hours of advance reservations; live credit returns as sessions finish, without a weekly reset (classes do not count)
+- **Free Horizon**: A full interval inside the next five hours can be approved when advance quota is exhausted; any available quota is consumed normally
+- **Peak Hours**: Maximum one hour **per day** during Mon-Fri 9am-4pm, including short-notice bookings
 - **Booking Duration**: Asimut currently reports 30-120 minutes; the GUI-selected minimum is enforced within those fresh limits
 - **Same-Room Gap**: Enforces the greater of the configured/default 60 minutes and Asimut's freshly reported minimum
 - **Room Horizons**: Uses each room's current site-reported advance window; arbitrary positive 15-minute horizons are supported

@@ -103,6 +103,20 @@ class RoomUpgradePlannerTests(unittest.TestCase):
         self.add_event("10:00", "10:30", "Other", True)
         self.assertEqual(self.plan(), ())
 
+    def test_one_hour_policy_preserves_upgrade_without_increasing_peak_usage(self):
+        self.original = replace(self.original, end=780)
+        self.events = [{**self.original.as_booking(), "isReservation": True}]
+        candidates = self.plan(peak_limit=60)
+        self.assertTrue(candidates)
+        self.assertTrue(all(c.replacement.duration == 60 for c in candidates))
+        self.add_event("10:00", "10:30", "Other", True)
+        self.assertEqual(self.plan(peak_limit=60), ())
+
+    def test_existing_legacy_peak_booking_can_improve_without_adding_minutes(self):
+        candidates = self.plan(peak_limit=60)
+        self.assertTrue(candidates)
+        self.assertTrue(all(c.replacement.duration == self.original.duration for c in candidates))
+
     def test_outside_preference_never_wins_just_for_room_quality(self):
         self.gaps[0]["slots"] = [{"startHour": 18, "endHour": 20}]
         self.assertEqual(self.plan(), ())

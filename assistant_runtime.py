@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 3
+ASSISTANT_CONTRACT_REVISION = 4
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."

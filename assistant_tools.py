@@ -38,6 +38,7 @@ from booking_blackouts import (
     subtract_rebooking_blackout,
 )
 from booking_plan import BookingPlanError, clear_booking_plan
+from booking_quotas import PEAK_QUOTA_MINUTES
 from booking_strategy import (
     BookingStrategyError,
     apply_booking_strategy_update,
@@ -1746,7 +1747,7 @@ class BookerToolSurface:
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
                 "ranking": "best feasible non-overlapping sessions from current preferences",
-                "weekday_peak_minutes_maximum": 120,
+                "weekday_peak_minutes_maximum": PEAK_QUOTA_MINUTES,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": [
                     item["date"]
@@ -1853,7 +1854,7 @@ class BookerToolSurface:
             "session_planning": {
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
-                "weekday_peak_minutes_maximum": 120,
+                "weekday_peak_minutes_maximum": PEAK_QUOTA_MINUTES,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": sorted(set(multi_session_dates)),
             },

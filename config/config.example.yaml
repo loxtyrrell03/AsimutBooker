@@ -4,11 +4,13 @@
 # fragmentation, per-day hours, disabled dates, time preferences, and booking
 # strategy are configured in the desktop app instead. Room booking horizons
 # are always refreshed from Asimut and cannot be configured here.
+# Rolling and peak quotas cannot exceed the current college limits, even if
+# an older config.yaml contains larger overrides.
 
 rules:
-  rolling_quota: 28
+  rolling_quota: 6
   same_room_gap_minutes: 60
   peak_hours:
     start: "09:00"
     end: "16:00"
-    max_hours: 2
+    max_hours: 1

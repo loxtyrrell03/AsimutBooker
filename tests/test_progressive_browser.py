@@ -120,6 +120,14 @@ class ProgressiveSeedGuardTests(unittest.TestCase):
         self.record.assert_not_called()
         self.save.click.assert_not_called()
 
+    def test_quota_refusal_returns_to_parent_recovery_without_save_or_retry(self):
+        self.engine.refresh_new_booking_validation.side_effect = b.QuotaWait('quota changed')
+        self.assertIs(save_seed(self.engine, self.prepared, self.parent), False)
+        self.engine.refresh_new_booking_validation.assert_called_once()
+        self.save.click.assert_not_called()
+        self.record.assert_not_called()
+        self.mark.assert_not_called()
+
     def test_form_drift_during_trial_stops_before_child_or_real_save(self):
         self.engine.booking_summary_matches.side_effect = [True, False]
         with self.assertRaisesRegex(b.BookingVerificationError, "changed before creation"):
@@ -532,6 +540,20 @@ class ProgressiveTransferEditorTests(unittest.TestCase):
         self.assertFalse(self.save_calls)
         self.assertFalse(self.other_mutations)
 
+    def test_new_peak_limit_refuses_two_hour_progressive_destination(self):
+        parent = self.parent('extending')
+        plan = self.existing_plan(parent)
+        prepared = prepare_transfer_destination(b, self.page, plan)
+        self.check_document = editor_fixture.result(False)
+        self.check_document['response']['bookingrules']['issues'] = [
+            ProgressiveDestinationPreflightTests.persons(self, '12:30 - 14:00'),
+            {'class': 'message-warning', 'type': 'category', 'text': 'Requested booking exceeds your peak quota'}]
+        with mock.patch.object(b, 'MAX_PEAK_HOURS', 1):
+            self.assertFalse(preflight_transfer_destination(b, prepared, plan))
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.save_calls)
+
+    @mock.patch.object(b, "MAX_PEAK_HOURS", 2)
     def test_actual_existing_editor_allows_only_compensated_personal_warning(self):
         parent = self.parent('extending')
         plan = self.existing_plan(parent)

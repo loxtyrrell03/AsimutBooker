@@ -18,6 +18,9 @@ from tests import test_upgrade_editor as editor_fixture
 
 class TimeEditValidationTests(unittest.TestCase):
     def setUp(self):
+        peak_patch = mock.patch("booking_time_edits.MAX_PEAK_MINUTES", 120)
+        peak_patch.start()
+        self.addCleanup(peak_patch.stop)
         self.day = date(2026, 9, 21)
         self.old = Reservation(42, self.day, "Weston Gallery", 765, 885)
         self.edit = requested_time_edit(self.old, mode="shift_later", minutes=45)
@@ -28,6 +31,13 @@ class TimeEditValidationTests(unittest.TestCase):
             booking_dates=lambda today: (self.day,), site_clock_offset_bounds=(-1, 1),
             booking_horizon=self.now + timedelta(days=7), horizon_minutes_for=lambda room: 3 * 1440)
         self.gaps = [{"room": self.old.room, "slots": [{"startHour": 14.75, "endHour": 19}]}]
+
+    def test_new_peak_limit_rejects_two_hour_shift_but_allows_offpeak_shift(self):
+        with mock.patch('booking_time_edits.MAX_PEAK_MINUTES', 60):
+            with self.assertRaisesRegex(ValueError, 'one-hour'):
+                self.validate()
+            self.edit = requested_time_edit(self.old, mode='shift_later', minutes=195)
+            self.validate()
 
     def validate(self, **kwargs):
         values = dict(events=self.events, policy=self.policy, now=self.now, gaps=self.gaps)
@@ -182,6 +192,9 @@ class TimeEditReceiptTests(unittest.TestCase):
 
 class TimeEditRuntimeTests(unittest.TestCase):
     def setUp(self):
+        peak_patch = mock.patch("booking_time_edits.MAX_PEAK_MINUTES", 120)
+        peak_patch.start()
+        self.addCleanup(peak_patch.stop)
         TimeEditValidationTests.setUp(self)
         self.engine = mock.Mock()
         self.engine.BookingVerificationError = engine.BookingVerificationError

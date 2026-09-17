@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
+from booking_quotas import RULES_REVISION
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -170,6 +171,7 @@ def booking_plan_fingerprint(
             f"Could not fingerprint advanced booking rules: {exc}"
         ) from exc
     relevant["advanced_config_sha256"] = hashlib.sha256(config_bytes).hexdigest()
+    relevant["college_rules_revision"] = RULES_REVISION
     try:
         canonical = json.dumps(
             relevant,

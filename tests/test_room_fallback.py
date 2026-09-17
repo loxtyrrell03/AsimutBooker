@@ -19,7 +19,7 @@ class RoomFallbackTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.multiple(
             b, PRIORITY_ROOMS=self.rooms,
             ROOM_HORIZON_MINUTES={room:7*1440 for room in self.rooms},
-            MINIMUM_BLOCK_MINUTES=30, MAX_BOOKING_HOURS=2,
+            MINIMUM_BLOCK_MINUTES=30, MAX_BOOKING_HOURS=2, MAX_PEAK_HOURS=2,
             ALLOW_FRAGMENTED_SESSIONS=True, SAME_ROOM_GAP_MINUTES=60,
         ))
         now = self.now
@@ -45,6 +45,16 @@ class RoomFallbackTests(unittest.TestCase):
         result=self.backups(self.grid(*reversed(self.rooms)))
         self.assertEqual([item.room for item in result],self.rooms[1:])
         self.assertEqual({(item.start_minutes,item.end_minutes) for item in result},{(720,840)})
+
+    def test_free_horizon_fallback_works_with_exhausted_advance_quota(self):
+        self.day = self.now.date()
+        self.slot.update(start_hour=16, end_hour=17)
+        self.tracker.existing_reservation_hours = 6
+        receipt = {'event_id':123, 'room':self.rooms[1]}
+        attempt, _, _, _ = self.environment([False, receipt], [self.grid(*self.rooms)])
+        with mock.patch.object(b, 'MAX_PEAK_HOURS', 1):
+            self.assertEqual(self.invoke(free_horizon_only=True)[0], receipt)
+        self.assertEqual(attempt.call_count, 2)
 
     def test_fresh_occupancy_horizon_exclusions_conflicts_and_budgets_apply(self):
         occupied=self.grid('Corus Recital Room')

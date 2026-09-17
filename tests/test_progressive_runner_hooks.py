@@ -43,6 +43,7 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
             "BookingTracker": mock.Mock(return_value=self.tracker),
             "authenticated_runtime_context_options": mock.Mock(return_value={}),
             "restore_page_authentication": mock.Mock(),
+            "refresh_quota_balances": mock.Mock(),
             "refresh_live_room_policy": mock.Mock(),
             "validate_live_scope": mock.Mock(),
             "booking_window_dates": mock.Mock(return_value=(date.today(),)),
@@ -74,12 +75,15 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
 
     def test_progressive_runs_before_quota_full_exit(self):
         self.tracker.is_quota_full.return_value = True
+        self.mocks["process_pending_extensions"].side_effect = None
+        self.mocks["process_pending_extensions"].return_value = (0, True)
+        self.stack.enter_context(mock.patch('short_notice_bookings.run_short_notice_pass', return_value=(0, self.tracker)))
         order = []
         self.progressive.side_effect = lambda *args: (order.append("progressive") or 0, args[5])
         self.mocks["process_room_upgrades"].side_effect = lambda *args: (order.append("whole") or 0, args[5])
         self.assertEqual(self.run_booker(), 0)
         self.assertEqual(order, ["progressive", "whole"])
-        self.mocks["process_pending_extensions"].assert_not_called()
+        self.mocks["process_pending_extensions"].assert_called_once()
 
     def test_progressive_runs_before_ordinary_extension_wait_and_updates_agenda(self):
         updated = mock.Mock(agenda_events=[

@@ -86,8 +86,9 @@ APP_CAPABILITIES = {
         "The assistant never edits classes, arbitrary Asimut events, advanced YAML, or ignored-event identities",
     ],
     "rules": {
-        "rolling_quota": "28 hours per rolling week",
-        "weekday_peak_quota": "2 hours per day, Monday-Friday 09:00-16:00",
+        "rolling_quota": "6 hours of advance reservations, replenished as bookings finish; not a weekly reset",
+        "weekday_peak_quota": "At most 1 hour per day, Monday-Friday 09:00-16:00, including free-horizon bookings. Fresh ASIMUT balance and checks can further restrict this.",
+        "free_horizon": "Both start and end must be within the next 5 hours. Bookings consume remaining quota normally; ASIMUT can allow them when quota is exhausted. Targets, conflicts, room access and 30-120 minute durations still apply.",
         "booking_duration": "live site limits, currently 30-120 minutes",
         "daily_target_semantics": (
             "A dated duration is total desired practice, including existing reservations; "

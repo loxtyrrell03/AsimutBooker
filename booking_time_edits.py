@@ -7,6 +7,7 @@ upgrades, whose equal-duration and better-room guarantees must stay intact.
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from math import isfinite
+from booking_quotas import PEAK_QUOTA_MINUTES as MAX_PEAK_MINUTES
 
 from daily_planner import interval_overlap_minutes
 from room_upgrades import Reservation, clock_minutes, local_instant, time_text, LONDON
@@ -106,8 +107,8 @@ def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=()):
     if b.day.weekday() < 5:
         peak = sum(interval_overlap_minutes(clock_minutes(e["startTime"]), clock_minutes(e["endTime"]),
                                              540, 960) for e in other if e.get("isReservation") is True)
-        if peak + interval_overlap_minutes(b.start, b.end, 540, 960) > 120:
-            raise ValueError("The shift would exceed the two-hour weekday peak allowance")
+        if peak + interval_overlap_minutes(b.start, b.end, 540, 960) > MAX_PEAK_MINUTES:
+            raise ValueError("The shift would exceed the one-hour weekday peak allowance")
     bounds = policy.site_clock_offset_bounds
     if bounds is None:
         raise ValueError("The site's current booking clock is unavailable")

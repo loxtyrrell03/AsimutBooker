@@ -1293,7 +1293,7 @@ class SyntheticBookerDispatcher:
             "session_planning": {
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
-                "weekday_peak_minutes_maximum": 120,
+                "weekday_peak_minutes_maximum": 60,
                 "recurring_runs_pursue_remaining_target": True,
             },
             "message": "Dry-run validation passed; no practice target was saved.",
@@ -1362,7 +1362,7 @@ class SyntheticBookerDispatcher:
             "session_planning": {
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
-                "weekday_peak_minutes_maximum": 120,
+                "weekday_peak_minutes_maximum": 60,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": multi_session_dates,
             },

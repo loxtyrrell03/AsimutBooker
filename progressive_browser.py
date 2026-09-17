@@ -1,4 +1,5 @@
 """Prepare exact transfer destinations early; Save only under their parent."""
+from booking_quotas import QuotaWait
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -201,6 +202,10 @@ def preflight_transfer_destination(engine, prepared, plan):
             engine.dismiss_reservation_time_picker(page)
             ok, detail = engine.refresh_extension_validation(page, end,
                 prepared.existing_seed.as_booking(), time_text(desired.end))
+    except QuotaWait as exc:
+        # This no-Save preflight independently validates compensated warnings
+        # below. The eventual post-transfer Save must still pass normal checks.
+        ok, detail = False, str(exc)
     finally:
         page.remove_listener('request', request_seen)
         page.remove_listener('response', response_seen)
@@ -312,7 +317,12 @@ def save_seed(engine, prepared, receipt, *, role='seed'):
         raise engine.BookingVerificationError('New transfer reservation lost its exact parent scope')
     if not engine.is_new_booking_form_url(page.url):
         raise engine.BookingVerificationError('Prepared transfer editor changed identity')
-    ok, detail = engine.refresh_new_booking_validation(page, time_text(desired.end))
+    try:
+        ok, detail = engine.refresh_new_booking_validation(page, time_text(desired.end))
+    except QuotaWait as exc:
+        # Known pre-Save rejection must reach the parent's compensation path.
+        print(f'TRANSFER NOT SAVED: {exc}')
+        return False
     if not ok:
         refusal = engine._visible_room_permission_refusal(page, desired.room)
         if refusal is None and room_permission_refusal_text(detail):

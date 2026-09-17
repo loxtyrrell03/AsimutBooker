@@ -84,7 +84,7 @@ class StrictConfigTests(unittest.TestCase):
         self.assertIsNot(loaded, book_week._DEFAULT_CONFIG)
         loaded["rolling_quota"] = 1
         loaded["test_only"] = True
-        self.assertEqual(book_week._DEFAULT_CONFIG["rolling_quota"], 28)
+        self.assertEqual(book_week._DEFAULT_CONFIG["rolling_quota"], 6)
         self.assertNotIn("test_only", book_week._DEFAULT_CONFIG)
         self.assertNotIn("priority_rooms", loaded)
         self.assertNotIn("room_horizons", loaded)
@@ -444,6 +444,7 @@ class AgendaIdentityTests(unittest.TestCase):
             "Studio 1",
         )
 
+    @mock.patch.object(book_week, "MAX_PEAK_HOURS", 2)
     def test_ambiguous_legacy_ignore_key_conservatively_ignores_neither_event(self):
         today = date(2026, 8, 31)  # Monday: peak accounting applies.
         window_dates = self._window_dates(today)
@@ -496,6 +497,7 @@ class AgendaIdentityTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("gap from existing reservation", reason)
 
+    @mock.patch.object(book_week, "MAX_PEAK_HOURS", 2)
     def test_v2_ignored_reservation_still_counts_quota_peak_and_room_gap(self):
         today = date(2026, 8, 31)
         window_dates = self._window_dates(today)

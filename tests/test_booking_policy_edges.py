@@ -255,6 +255,7 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
         self.assertEqual(peak_holds, {target_date.isoformat(): 90})
         self.assertEqual(held, (booking,))
 
+    @mock.patch.object(book_week, "MAX_PEAK_HOURS", 2)
     def test_extension_hold_stops_at_the_first_strict_conflict_or_room_gap_limit(self):
         today = date(2026, 8, 30)
         target_date = date(2026, 9, 4)
