@@ -25,7 +25,17 @@
   Full regression run: 1,339 Python tests pass; 72 focused checks pass after the
   final extension-hold and short-notice fallback changes. Authenticated quota,
   agenda and read-only plan checks passed with non-check submissions blocked.
-  These checks made no real booking or edit. Activation is recorded separately.
+  These checks made no real booking or edit.
+- Activated in the canonical scheduled-worker checkout and reloaded only the
+  idle existing phone task under both runtime/mutation locks. Private state
+  hashes, task definitions and every Serve handler were preserved. Exact HTTPS
+  session/bootstrap, deployment checks and a rendered 390px My Week with actual
+  agenda data passed at the unchanged `https://lox-pc.tail89d19b.ts.net:10443/`.
+  The phone shell is unchanged. Existing desktop windows remain open and need
+  reopening for updated in-process assistant rules. This is PC-browser and
+  read-only site evidence, not physical-phone or new-rule live-mutation proof.
+  Private diagnostic/activation evidence is ignored under
+  `artifacts/new-rules-20260917/`.
 
 ## 2026-09-16 lazy agenda extension lookup and failure reporting
 
