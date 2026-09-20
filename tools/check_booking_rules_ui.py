@@ -16,6 +16,8 @@ from playwright.sync_api import sync_playwright, expect
 
 def check(dist):
     origin = json.loads((dist/'build-info.json').read_text())['public_origin']
+    screenshots=Path(__file__).resolve().parents[1]/'artifacts/booking-rules-ui'
+    screenshots.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory() as temp, sync_playwright() as p:
         paths = ContextPaths(**{key:Path(temp)/key for key in inspect.signature(ContextPaths).parameters})
         settings=Path(temp)/'preferences.json'
@@ -55,7 +57,7 @@ def check(dist):
             for width in (320,390,844):
                 page.set_viewport_size({'width':width,'height':844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                page.screenshot(path=str(dist.parent/f'rules-{engine}-{width}.png'),full_page=True)
+                page.screenshot(path=str(screenshots/f'rules-{engine}-{width}.png'),full_page=True)
             preset.select_option('new')
             page.get_by_role('button',name='Save changes',exact=True).click()
             expect(page.get_by_role('button',name='Booking rules',exact=True)).to_be_visible()

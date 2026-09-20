@@ -32,6 +32,20 @@
   uncertain or refused restoration retains its pending receipt. The exact
   Chromium editor checks (86 focused tests) and 77 staging/progressive/runtime
   checks pass. Never infer edit permission from zero net added minutes.
+- All 1,351 Python regressions pass after quota-wait/recovery changes. General
+  failed runs now notify with the actual reason, suppressing identical consecutive
+  failure alerts; history retains every run. Agenda-only quota estimates are
+  explicitly labelled and cannot claim live account credit.
+- Activated in the canonical worker checkout and existing idle phone service,
+  preserving preferences beyond the authorized legacy preset, private state,
+  task definitions and all Serve routes. Build `20260920-rule-presets` passed
+  the exact HTTPS deployment/session and rendered 320/390px settings checks.
+  The natural 14:58 scheduled run completed at 14:59 with a recorded quota wait,
+  zero applied changes and no pending receipt. Independent complete agenda and
+  eight-date/33-room scans preserved every existing event. Live booking checks
+  and an unchanged-duration room-edit check both explicitly refused quota.
+  This does not claim the requested future week was filled. Private evidence is
+  ignored under `artifacts/recovery-20260920/`; no physical-phone check was made.
 
 ## 2026-09-17 revised college quotas and free horizon (superseded by presets above)
 

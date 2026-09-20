@@ -9427,14 +9427,12 @@ def scan_agenda(
     ignored_str = f", {ignored_count} ignored" if ignored_count > 0 else ""
     print(f"\n  Total events: {events_found} ({reservations_found} reservations, {events_found - reservations_found} other{ignored_str})")
 
-    # Show rolling quota status (6 advance reservation hours)
-    used_hours = tracker.get_total_booking_hours()
+    # An agenda alone cannot establish ASIMUT's current account balance.
     remaining_hours = tracker.get_remaining_quota_hours()
-    print(f"\n  Advance quota remaining: {remaining_hours:.1f}h (limit {MAX_ROLLING_QUOTA_HOURS}h)")
-    if remaining_hours > 0:
-        print(f"  [OK] Can book {remaining_hours:.1f} more hours")
-    else:
-        print(f"  [FULL] Advance quota full; eligible bookings entirely within the next five hours remain possible.")
+    print(f"\n  Local quota estimate remaining: {remaining_hours:.1f}h (preset limit {MAX_ROLLING_QUOTA_HOURS}h)")
+    print("  ASIMUT's live balance and exact checks determine what can actually be booked.")
+    if remaining_hours <= 0:
+        print(f"  [FULL] Checking eligible short-notice bookings within {FREE_HORIZON_MINUTES} minutes.")
 
     # Show peak hours summary per day
     if tracker.peak_hours_by_day:
@@ -9618,6 +9616,9 @@ def save_history(
                 if not isinstance(history, dict) or not isinstance(history.get("runs"), list):
                     raise ValueError("booking history must contain a runs list")
 
+            previous = history['runs'][0] if history['runs'] else {}
+            repeated_failure = (outcome == 'failed' and previous.get('outcome') == 'failed'
+                                and previous.get('details') == entry['details'])
             history["runs"].insert(0, entry)
             history["runs"] = history["runs"][:100]  # Keep last 100
             atomic_write_json(history_file, history, backup=True)
@@ -9627,8 +9628,9 @@ def save_history(
         # Send push notification
         if not notify:
             return
-        if outcome == "failed" and failures:
-            send_notification("AsimutBooker needs attention", "\n".join(history_details[:5]))
+        if outcome == "failed":
+            if not repeated_failure:
+                send_notification("AsimutBooker needs attention", "\n".join(history_details[:5]))
             return
         if bookings_made > 0:
             title = f"Booked {bookings_made} room{'s' if bookings_made > 1 else ''}"

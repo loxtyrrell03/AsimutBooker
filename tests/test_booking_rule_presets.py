@@ -75,3 +75,13 @@ class BookingRulesTests(unittest.TestCase):
             self.assertEqual(b.main(['--headless']),4)
             self.assertEqual(history.call_args.kwargs['outcome'],'failed')
             self.assertIn('ambiguous categories',history.call_args.args[2][0])
+
+    def test_policy_failure_notification_reports_reason_without_repeating(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(b,'history_file',Path(temp)/'history.json'), \
+             patch.object(b,'send_notification') as notify, contextlib.redirect_stdout(io.StringIO()):
+            b.save_history(0,0,['Booking paused: ambiguous categories'],outcome='failed')
+            notify.assert_called_once_with('AsimutBooker needs attention','Booking paused: ambiguous categories')
+            b.save_history(0,0,['Booking paused: ambiguous categories'],outcome='failed')
+            self.assertEqual(notify.call_count,1)
+            b.save_history(0,0,['Booking paused: different failure'],outcome='failed')
+            self.assertEqual(notify.call_count,2)
