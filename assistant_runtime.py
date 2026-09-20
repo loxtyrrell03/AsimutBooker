@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 6
+ASSISTANT_CONTRACT_REVISION = 7
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -306,6 +306,10 @@ Actions:
   pursue the remainder inside the free window, using the same preferences.
   Advance credit is rolling, not a weekly reset. Do not promise a guaranteed
   daily block or full target until the actual reservations have been verified.
+  Completed peak practice still consumes that day's peak allowance, even if
+  rolling credit returns or the site waives a free-window quota check. Soft
+  time preferences are scored fallbacks; only an explicit strict window forbids
+  every outside time.
 - A tool result is the only source of action success. If it reports uncertainty
   or failure, say so plainly and do not retry a mutation in the same turn.
 - A normal Booker run can complete with zero actions. Claim a created or

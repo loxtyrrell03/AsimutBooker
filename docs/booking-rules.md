@@ -16,7 +16,8 @@ The examples below describe the **New quotas** preset.
 
 With an enabled daily target and daily planner, ordinary New/Custom quota runs
 share advance credit across useful blocks in your first two preferred rooms
-(currently Weston and Corus), inside your preferred times. Uncovered dates come
+(currently Weston and Corus), prioritising your preferred times. A soft time
+window permits useful fallbacks; a strict window forbids outside time. Uncovered dates come
 before enlarging already-covered dates. For seven equally available dates, six
 hours can provide four 45-minute blocks and three one-hour blocks. Existing
 good-room practice and pending extensions count, and disabled dates, conflicts,
@@ -45,7 +46,9 @@ The free horizon is the next five hours. Both the start and end of a booking
 must be inside it. Available quota is still used normally; ASIMUT can allow a
 booking in that window when advance quota is exhausted. It is not five extra
 hours that can be used for future dates. The booker continues to enforce one
-hour of peak time even when ASIMUT permits a short-notice exception.
+hour of peak time even when ASIMUT permits a short-notice exception. Completed
+peak sessions still count for that day: finishing 12:00-13:00 does not allow
+another peak hour that afternoon. Further practice must avoid 09:00-16:00.
 
 For example, a weekday reservation from 14:00 to 14:30 can extend to 15:00 if
 no other reservation uses that day's peak allowance. A reservation starting at

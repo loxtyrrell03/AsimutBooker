@@ -159,6 +159,9 @@ class BookingOpportunity:
     source_gap_start_minutes: int
     source_gap_end_minutes: int
     soft_preferred_window: tuple[int, int] | None = None
+    # The attainable preferred peak block under this opportunity's actual
+    # peak/target/quota caps, rather than an obsolete larger saved aspiration.
+    peak_target_minutes: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.room, str) or not self.room.strip():
@@ -194,6 +197,8 @@ class BookingOpportunity:
             raise ValueError("overlap minutes cannot be negative")
         if self.peak_window_end_minutes <= self.peak_window_start_minutes:
             raise ValueError("peak window end must be after its start")
+        if self.peak_target_minutes is not None:
+            _require_positive_quarter_duration(self.peak_target_minutes, 'peak target')
 
     @property
     def start_hour(self) -> float:
@@ -240,6 +245,8 @@ def resize_opportunity(item: BookingOpportunity, end: int, planning) -> BookingO
     preferred_end = _planning_clock_minutes(planning, "preferred_peak_end")
     return replace(
         item, end_minutes=end, potential_minutes=end - item.start_minutes,
+        peak_target_minutes=(min(item.peak_target_minutes, end-item.start_minutes)
+            if item.peak_target_minutes is not None else None),
         preferred_minutes=interval_overlap_minutes(
             item.start_minutes, end, preferred_start, preferred_end
         ) if weekday else 0,
@@ -410,6 +417,8 @@ def enumerate_gap_opportunities(
                 source_gap_start_minutes=gap_start,
                 source_gap_end_minutes=gap_end,
                 soft_preferred_window=soft_preferred_window if strict_window is None else None,
+                peak_target_minutes=max(QUARTER_MINUTES, int(min(desired_peak,
+                    remaining_peak_minutes, daily_limit, weekly_limit)) // QUARTER_MINUTES * QUARTER_MINUTES),
             )
         )
     return opportunities
@@ -426,7 +435,7 @@ def opportunity_rank(opportunity: BookingOpportunity, planning, *, now: datetime
         opportunity.target_date.weekday() < 5
         and opportunity.start_minutes >= preferred_start
         and opportunity.end_minutes <= preferred_end
-        and reaches_desired
+        and opportunity.potential_minutes >= (opportunity.peak_target_minutes or desired)
     )
     wait_seconds = max(0, int((opportunity.unlock_at - now).total_seconds()))
     after_peak = opportunity.start_minutes >= opportunity.peak_window_end_minutes

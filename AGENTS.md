@@ -1,3 +1,33 @@
+## 2026-09-20 simulation audit and daily peak accounting
+
+- Independent reference enumeration matches the production decisions in 828
+  synthetic cases: 160 useful-time daily portfolios, 120 fair weekly budgets,
+  120 compatible upgrade sets and 428 progressive prefixes at three-/five-day
+  horizons. Eleven named lifecycle scenarios cover refusals, strict/soft times,
+  live-credit waivers, completed peak sessions, and Corus-to-Weston upgrades.
+  See `docs/planner-simulation-audit.md` for scope, examples and repeatable commands.
+- Opportunities carry their attainable `peak_target_minutes`; legal 30/45/60
+  minute preferred-peak blocks no longer lose to off-peak time merely because
+  the saved aspiration remains 120 minutes. Resizing preserves the effective
+  goal. Saved values and real quota limits are unchanged.
+- Advance planning now preserves soft-time scoring rather than clipping it
+  into a strict window. Useful existing fallback blocks and held tails count
+  consistently toward coverage. Explicit strict windows remain hard limits.
+- A definite no-Save failure defers that date for the pass, reserves its share,
+  refreshes agenda/quota and continues other dates. Quota refusals, unknown
+  outcomes and pending receipts still stop. New daily advance blocks precede
+  room-only progressive transfers when credit is available; interrupted
+  transfers still recover first and extensions retain priority.
+- Weekday peak usage counts the whole day's reservations, including completed
+  sessions. Returned rolling credit or a site free-window waiver cannot create
+  another peak hour. This is shared by creates, extension capacity and plans;
+  upgrades retain their total-peak checks and do not gain an exception.
+- All 1,404 tests in the full regression run pass; 78 final focused checks pass
+  after the additional lifecycle cases and assistant/rule text changes. Rule
+  fingerprints and assistant contract revision 7 invalidate old plans/context
+  while retaining history. These are mock/source results; activation is recorded
+  separately and does not imply a real booking or physical-phone check.
+
 ## 2026-09-20 fair advance quota across the week
 
 - `advance_planner.py` allocates one shared live-credit budget across daily
@@ -7,7 +37,7 @@
   one-hour blocks; existing high-quality minutes and extension holds count.
 - `advance_runtime.py` owns ordinary New/Custom advance creates when both the
   practice target and daily planner are enabled. Only the first two saved room
-  choices and their preferred-time intersections spend this credit. Actual
+  choices spend this credit, with the saved time preferences applied. Actual
   shorter room horizons can hold a later date's allocation. Every selected
   date is refreshed, the whole week replanned, and normal exact Save/receipt
   checks retained. Success triggers a fresh agenda and quota read. Scoped

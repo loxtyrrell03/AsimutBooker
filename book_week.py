@@ -5094,18 +5094,10 @@ class BookingTracker:
             balance = self.live_peak_minutes[date_key]
             if balance is None:
                 return max(0, MAX_PEAK_HOURS * 60 - used)
-            # The user retains a one-hour peak cap even when ASIMUT waives a
-            # quota check for a free-horizon booking. Count all still-active
-            # reservations independently, including those booked as exceptions.
-            now = datetime.now()
-            ranges = set(self.reservation_ranges.get(date_key, ()))
-            ranges.update((start, end, room) for room, day, start, end in self.bookings
-                          if as_date(day).isoformat() == date_key)
-            future_peak = sum(max(0, min(end, PEAK_END) - max(start, PEAK_START)) * 60
-                for start, end, _ in ranges
-                if as_date(date) > now.date() or (as_date(date) == now.date()
-                    and end > now.hour + now.minute / 60))
-            return max(0, min(MAX_PEAK_HOURS * 60 - future_peak,
+            # Peak is a daily cap: completed sessions still use it. Neither
+            # returned rolling credit nor a free-window server waiver creates
+            # another peak hour. A stricter live balance remains an extra cap.
+            return max(0, min(MAX_PEAK_HOURS * 60 - used,
                        min(MAX_PEAK_HOURS * 60, balance)
                        - (used - self.peak_observed_minutes.get(date_key, 0))))
         return max(0, MAX_PEAK_HOURS * 60 - used)
@@ -10738,11 +10730,17 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         # boundary and before quota/target completion skips new booking work.
         # Their persisted plans select what to recheck, never authorize Save.
         from progressive_runtime import process_progressive_upgrades
+        # Missing daily anchor bookings take priority over room-only transfers
+        # when advance credit is available. Interrupted transfers still recover
+        # first, and explicit upgrade/legacy scopes retain their original order.
+        defer_progressive = (advance_allocation_enabled(settings, practice_plan, args)
+            and not tracker.is_quota_full() and not list_pending_mutation_receipts())
         previous_tracker, previous_actions = tracker, total_booked
         try:
-            total_booked, tracker = process_progressive_upgrades(
-                sys.modules[__name__], page, settings, practice_plan, args,
-                tracker, total_booked, booking_details)
+            if not defer_progressive:
+                total_booked, tracker = process_progressive_upgrades(
+                    sys.modules[__name__], page, settings, practice_plan, args,
+                    tracker, total_booked, booking_details)
         except QuotaWait as exc:
             if not advance_allocation_enabled(settings, practice_plan, args) or list_pending_mutation_receipts():
                 raise
@@ -10822,6 +10820,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 policy, settings, practice_plan, args, tracker, total_booked, booking_details)
             total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
                 settings, practice_plan, args, tracker, total_booked, booking_details, after_horizon=True)
+            if defer_progressive:
+                total_booked, tracker = process_progressive_upgrades(
+                    sys.modules[__name__], page, settings, practice_plan, args,
+                    tracker, total_booked, booking_details)
+                if list_pending_mutation_receipts():
+                    raise BookingVerificationError('Progressive transfer needs reconciliation before other upgrades')
             total_booked, tracker = process_room_upgrades(sys.modules[__name__], page,
                 settings, practice_plan, args, tracker, total_booked, booking_details)
             save_history(total_booked, events_detected, booking_details, notify=bool(booking_details))

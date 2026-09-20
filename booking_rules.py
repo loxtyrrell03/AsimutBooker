@@ -65,7 +65,8 @@ def describe_booking_rules(settings):
         'rolling_quota': f'{rule.rolling_quota_hours:g} hours of advance reservations; live ASIMUT balance may be lower',
         'weekday_peak_quota': f'{rule.peak_quota_minutes} minutes per weekday between '
             f'{rule.peak_start_minutes // 60:02d}:{rule.peak_start_minutes % 60:02d} and '
-            f'{rule.peak_end_minutes // 60:02d}:{rule.peak_end_minutes % 60:02d}',
+            f'{rule.peak_end_minutes // 60:02d}:{rule.peak_end_minutes % 60:02d}. '
+            'Completed sessions still count that day; the free horizon does not reset this cap.',
         'free_horizon': f'Both endpoints must fit inside the next {rule.free_horizon_minutes} minutes. '
             'Available quota is consumed normally. ASIMUT must approve every booking.',
     }

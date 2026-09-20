@@ -149,6 +149,7 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
 
     def test_new_weekly_allocation_retains_extensions_free_pass_and_upgrades(self):
         order = []
+        self.progressive.side_effect = lambda *a: (order.append('progressive') or a[6], a[5])
         self.mocks['process_pending_extensions'].side_effect = lambda *a: (order.append('extensions') or 0, True)
         self.mocks['process_room_upgrades'].side_effect = lambda *a: (order.append('upgrades') or a[6], a[5])
         with mock.patch('advance_runtime.run', side_effect=lambda *a, **kw: (
@@ -156,7 +157,7 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
              mock.patch('short_notice_bookings.run_short_notice_pass', side_effect=lambda *a, **kw: (
                 order.append('free') or a[6], a[5])):
             self.assertEqual(self.new_rule_run(), 0)
-        self.assertEqual(order, ['extensions', 'free', 'weekly', 'free', 'upgrades'])
+        self.assertEqual(order, ['extensions', 'free', 'weekly', 'free', 'progressive', 'upgrades'])
         advance.assert_called_once()
         self.mocks['save_history'].assert_called_once()
 
@@ -174,7 +175,12 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.mocks['BookingTracker'].side_effect = [self.tracker, updated]
         refusal = b.QuotaWait('Requested booking exceeds your quota')
         refusal.completed_actions = 4
-        self.progressive.side_effect = refusal
+        pending = [{'kind':'transfer'}]
+        self.mocks['list_pending_mutation_receipts'].side_effect = lambda: list(pending)
+        def recovered_refusal(*args):
+            pending.clear()
+            raise refusal
+        self.progressive.side_effect = recovered_refusal
         with self.assertRaises(StopAfterPriority):
             self.new_rule_run()
         self.assertEqual(self.mocks['scan_agenda'].call_count, 2)

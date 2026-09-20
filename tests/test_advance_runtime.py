@@ -160,7 +160,8 @@ class AdvanceRuntimeTests(unittest.TestCase):
     def test_known_refusal_stops_without_claiming_or_repeating_a_booking(self):
         self.attempt.side_effect = lambda *a, **kw: (False, None)
         self.assertEqual(self.run_week()[0], 0)
-        self.attempt.assert_called_once()
+        self.assertEqual(self.attempt.call_count, len(self.days))
+        self.assertEqual(len({call.args[2] for call in self.attempt.call_args_list}), len(self.days))
         self.assertEqual(self.events, [])
         self.assertEqual(self.details, [])
 

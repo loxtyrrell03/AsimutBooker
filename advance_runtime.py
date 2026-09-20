@@ -39,12 +39,19 @@ def _quality_minutes(engine, tracker, day, rooms, preferences):
     for start, end, room in ranges:
         if room not in rooms:
             continue
-        if preferences.get('enabled'):
-            start = max(start, preferences['start_hour'])
-            end = min(end, preferences['end_hour'])
-        if (end-start)*60 >= engine.MINIMUM_BLOCK_MINUTES:
-            total += int(round((end-start)*60))
+        total += _useful_minutes(engine, start*60, end*60, preferences)
     return min(int(round(tracker.get_hours_for_day(day)*60)), total)
+
+
+def _useful_minutes(engine, start, end, preferences):
+    window = ((int(preferences['start_hour']*60), int(preferences['end_hour']*60))
+              if preferences.get('enabled') else None)
+    if window and preferences.get('strict_mode'):
+        start, end = max(start, window[0]), min(end, window[1])
+        window = None
+    duration = int(round(end-start))
+    return duration if duration >= engine.MINIMUM_BLOCK_MINUTES and \
+        engine.soft_time_is_worth_booking(start, duration, window) else 0
 
 
 def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, now):
@@ -75,7 +82,7 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
                 gaps = []
                 for gap in row.get('slots', ()):
                     start, end = gap['startHour'], gap['endHour']
-                    if day_preferences.get('enabled'):
+                    if day_preferences.get('enabled') and day_preferences.get('strict_mode'):
                         start = max(start, day_preferences['start_hour'])
                         end = min(end, day_preferences['end_hour'])
                     if end > start:
@@ -87,20 +94,16 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
                 remaining_daily_hours=max(0, target-confirmed-held_target)/60,
                 reserved_peak_minutes=peaks.get(day.isoformat(), 0),
                 reserved_weekly_minutes=sum(targets.values()))
-            # Advance credit buys the premium part of the plan. The ordinary
-            # free-window path retains the user's softer fallback-time policy.
-            if day_preferences.get('enabled'):
-                opportunities = [item for item in opportunities
-                    if item.soft_preferred_minutes == item.potential_minutes]
+            # The shared planner scores soft preferences and rejects terrible
+            # fallbacks. Only an explicitly strict window is a hard cutoff.
         quality_hold = 0
         for booking in held:
             if booking['date'] != day.isoformat() or booking['room'] not in rooms:
                 continue
-            start, end = _minutes(booking['endTime']), _minutes(booking['target_end'])
-            if day_preferences.get('enabled'):
-                start = max(start, int(day_preferences['start_hour']*60))
-                end = min(end, int(day_preferences['end_hour']*60))
-            quality_hold += max(0, end-start)
+            start = _minutes(booking['startTime'])
+            quality_hold += max(0,
+                _useful_minutes(engine, start, _minutes(booking['target_end']), day_preferences)
+                - _useful_minutes(engine, start, _minutes(booking['endTime']), day_preferences))
         days.append(AdvanceDay(day, target, confirmed,
             _quality_minutes(engine, tracker, day, rooms, day_preferences),
             tuple(opportunities), max(0, int(tracker.get_remaining_peak_minutes(day)
@@ -191,6 +194,7 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
         open_day(engine, page, day, now.date())
         grids[day] = engine.get_available_slots(page)
     attempts = set()
+    declined_days = set()
     # The live quota is the hard aggregate boundary. This secondary action cap
     # keeps custom large quotas bounded; a later run continues remaining work.
     for _ in range(24):
@@ -205,6 +209,7 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
         candidates = [(item, allocation) for allocation in allocations for item in allocation.sessions
             if (item.unlock_at <= now or (item.unlock_at <= boundary
                 and 0 < (item.unlock_at-now).total_seconds() <= 180))
+            and item.target_date not in declined_days
             and (item.target_date, item.room, item.start_minutes, item.end_minutes) not in attempts]
         if not candidates:
             break
@@ -234,11 +239,16 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
             daily_planning=engine.load_booking_strategy_preferences(settings).daily_planning,
             planning_context=context, horizon=horizon, allowed_rooms=tuple(engine.PRIORITY_ROOMS[:2]))
         if not result:
-            # A proven refusal does not justify trying the unchanged weekly
-            # portfolio repeatedly. The next scheduled pass rediscovers it.
-            break
-        total_actions += 1
-        booking_details.append(f'{result["date"]} {result["room"]} {result["start"]}-{result["end"]}')
+            if engine.list_pending_mutation_receipts():
+                raise engine.BookingVerificationError('Uncertain advance booking needs reconciliation')
+            # Keep this date's allocation reserved, but do not let one proven
+            # no-Save refusal starve the rest of the week. No more intervals on
+            # this date are attempted in this pass. Quota/uncertainty exceptions
+            # still stop the run through the existing guarded mutation path.
+            declined_days.add(item.target_date)
+        else:
+            total_actions += 1
+            booking_details.append(f'{result["date"]} {result["room"]} {result["start"]}-{result["end"]}')
         tracker = engine.BookingTracker()
         engine.scan_agenda(page, tracker, now.date(), ignored_events=engine.load_ignored_events(settings),
             window_dates=engine.booking_window_dates(now.date()), snapshot_path=engine.AGENDA_SNAPSHOT_FILE)
