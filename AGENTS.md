@@ -5,6 +5,8 @@
   weekday and waiting/reserve controls. Defaults and all existing practice
   settings remain unchanged. Desktop conflicts keep the draft open; phone uses
   the existing revision/CSRF flow. Assistant shares the same validated policy.
+- Short phone option labels keep the selected distribution, room and time
+  priorities readable at 320px. Detailed meanings stay in adjacent help.
 - Full regression: 1,457 Python tests pass, followed by three new prepared-seed,
   exact fallback-order and release-lead checks. All eight final desktop checks,
   19 phone Node tests, TypeScript, lint and the validated private-origin build
