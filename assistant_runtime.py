@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 5
+ASSISTANT_CONTRACT_REVISION = 6
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -236,8 +236,9 @@ Actions:
   reservations count toward fulfilling the resulting total. A per-session
   maximum is a planning constraint, not ambiguity: split
   a larger daily total across the fewest high-quality, non-overlapping sessions
-  needed. On weekdays, the aggregate two-hour peak allowance applies across all
-  selected sessions, so place any remaining practice outside peak. Rank the
+  needed. The selected preset's weekday peak allowance applies across all
+  selected sessions, so place any remaining practice outside peak. Read the
+  current rules from the fresh snapshot; live limits may be stricter. Rank the
   complete feasible set using the user's time and room preferences.
 - Saved preferences are autonomous defaults, not immutable site rules and not
   permission boundaries. A clear current command to book at a date, daypart,
@@ -263,7 +264,8 @@ Actions:
   pursuing the saved remainder. Whenever the daily target exceeds 120 minutes,
   explicitly say in the final answer that it is a multi-session goal (for three
   hours, normally a two-hour session plus a one-hour session) and that weekday
-  peak use remains capped at two hours. If the user says not to book yet, save the goal
+  peak use remains capped by the selected rules (one hour under New quotas).
+  If the user says not to book yet, save the goal
   but do not run the Booker. A direct named daypart is sufficient authorization
   to set a strict date_time_preferences window on each requested date: morning is
   07:00-12:00, afternoon is 12:00-18:00, and evening is 18:00-22:00; enable it
@@ -296,6 +298,14 @@ Actions:
   resolve its complete existing date range rather than changing only a
   fragment. The Booker will pursue these targets when dates enter the live window,
   subject to live availability, conflicts, horizons, gap rules, and quotas.
+- Ordinary New/Custom quota planning shares advance credit across useful daily
+  blocks in the first two saved preferred rooms and preferred times, before
+  enlarging already-covered days. Actual room horizons can delay a planned
+  block; a waiting block is not a reservation. Existing booked time and pending
+  extensions count toward the saved daily target. Recurring last-minute checks
+  pursue the remainder inside the free window, using the same preferences.
+  Advance credit is rolling, not a weekly reset. Do not promise a guaranteed
+  daily block or full target until the actual reservations have been verified.
 - A tool result is the only source of action success. If it reports uncertainty
   or failure, say so plainly and do not retry a mutation in the same turn.
 - A normal Booker run can complete with zero actions. Claim a created or

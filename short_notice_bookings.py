@@ -1,9 +1,20 @@
 """Bounded free-horizon pass using the normal planner and guarded Save path."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as local_time
 from copy import copy
+from dataclasses import replace
 
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
+
+
+def reserve_advance_credit(opportunities, planning, *, active):
+    """Delay routine extras until the saved fallback lead when credit is held."""
+    if not active:
+        return opportunities
+    return [replace(item, unlock_at=max(item.unlock_at,
+        datetime.combine(item.target_date, local_time())
+        + timedelta(minutes=item.start_minutes - planning.fallback_lead_minutes)))
+        for item in opportunities]
 
 
 def is_fast_scheduled_pass(args):
@@ -61,6 +72,8 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
     disabled = engine.load_disabled_dates(settings)
     preferences = engine.load_time_preferences(settings)
     planning = engine.load_booking_strategy_preferences(settings).daily_planning
+    from advance_runtime import enabled as advance_allocation_enabled
+    preserve_advance = advance_allocation_enabled(settings, practice_plan, args)
     now = datetime.now()
     days = tuple(day for day in engine.booking_window_dates(now.date())
                  if now.date() <= day <= (now + timedelta(minutes=engine.FREE_HORIZON_MINUTES)).date()
@@ -110,6 +123,8 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
                 only_room=args.only_room, free_horizon_only=True,
                 include_free_horizon_intent=True)
+            opportunities = reserve_advance_credit(opportunities, planning,
+                active=preserve_advance and not tracker.is_quota_full())
             day_plan = engine.build_display_day_plan(day, opportunities, tracker, planning,
                 now=now, target_minutes=int((tracker.get_hours_for_day(day) + remaining) * 60),
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
@@ -122,11 +137,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             if boundary is not None:
                 # Forecast only. After waiting, reread the grid and replan before
                 # any Save; this cannot authorize early or stale-window bookings.
-                later=engine.build_day_booking_opportunities(gaps,day,tracker,preferences,planning,
-                    now=boundary,remaining_daily_hours=remaining,
-                    reserved_peak_minutes=peak_holds.get(day.isoformat(),0),
-                    only_room=args.only_room,free_horizon_only=True)
-                future_candidates.extend(item for item in later if item.unlock_at <= boundary)
+                future_candidates.extend(item for item in opportunities if now < item.unlock_at <= boundary)
         if not candidates:
             if future_candidates and boundary is not None:
                 args._free_boundary_waited=True

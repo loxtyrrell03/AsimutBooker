@@ -14,6 +14,28 @@ The previous-quota preset does not promise the historical policy is still active
 
 The examples below describe the **New quotas** preset.
 
+With an enabled daily target and daily planner, ordinary New/Custom quota runs
+share advance credit across useful blocks in your first two preferred rooms
+(currently Weston and Corus), inside your preferred times. Uncovered dates come
+before enlarging already-covered dates. For seven equally available dates, six
+hours can provide four 45-minute blocks and three one-hour blocks. Existing
+good-room practice and pending extensions count, and disabled dates, conflicts,
+saved minimum durations and the split-session preference remain binding.
+
+Each room keeps its actual ASIMUT horizon. Credit can be held for a good block
+that opens later in a five-day room rather than spent on a second block on an
+already-covered date. An equally suitable preferred room that is open now can
+be secured immediately. The plan is recalculated after each verified booking
+and as quota returns. A waiting block is an intention, not a guaranteed booking.
+
+The daily target stays unchanged. Last-minute bookings and extensions pursue
+the rest. While advance credit is available, routine extras wait until the
+saved fallback lead before their start, so they do not immediately consume the
+week's reserved credit. Imminent practice can take priority over holding future
+credit. At exhausted quota the normal full free window applies. Explicit
+single-date/room actions and the Previous quotas preset retain their existing
+scoped planning behaviour. Quota alone cannot guarantee availability every day.
+
 The college's September 2026 rules allow six hours of advance reservations
 within a seven-day rolling horizon, one hour per weekday during peak time
 (09:00-16:00), and bookings lasting 30-120 minutes. Room-specific access and

@@ -1,3 +1,35 @@
+## 2026-09-20 fair advance quota across the week
+
+- `advance_planner.py` allocates one shared live-credit budget across daily
+  portfolios. It first improves the least-covered good-room daily blocks,
+  then larger saved targets, using existing time/room/session scoring. Six
+  hours over seven equally available dates yields four 45-minute and three
+  one-hour blocks; existing high-quality minutes and extension holds count.
+- `advance_runtime.py` owns ordinary New/Custom advance creates when both the
+  practice target and daily planner are enabled. Only the first two saved room
+  choices and their preferred-time intersections spend this credit. Actual
+  shorter room horizons can hold a later date's allocation. Every selected
+  date is refreshed, the whole week replanned, and normal exact Save/receipt
+  checks retained. Success triggers a fresh agenda and quota read. Scoped
+  commands and the Previous quotas preset retain their existing behaviour.
+- Last-minute sessions still pursue the full unchanged daily target using all
+  saved eligible rooms. With credit available, routine extras wait until the
+  saved fallback lead; imminent daily practice may use held future credit.
+  With no credit, the whole free window remains available. Complete intended
+  tails and weekday peak holds survive short seeds. Extensions can prepare
+  the next quarter at the actual free boundary, never the longer room horizon.
+- A recovered progressive quota refusal refreshes the complete agenda before
+  new planning and retains recovery action costs. Pending transactions still
+  block unrelated work. Plan rule fingerprints and assistant contract revision
+  6 retire old plans and fixed two-hour peak wording; current preset/live rules
+  remain authoritative. No preferences, targets or existing bookings change.
+- Full suite: 1,390 Python tests pass; all 10 final runtime tests pass after
+  adding rolling-credit/new-date and refusal lifecycle cases. Coverage includes
+  fair seven-day allocation, five-day holds, exact runtime dispatch, read-only
+  planning, soft-time clipping, extension boundaries, action limits, recovery,
+  and preserved create/extend/upgrade sequencing. This commit is source/test
+  evidence; activation and live results are recorded separately.
+
 ## 2026-09-20 complete free-window session planning
 
 - The short-notice path now uses the shared whole-day/foresight decision, with
@@ -12,9 +44,8 @@
   share these full-session opportunities instead of clipping away the future.
 - All 1,366 Python tests pass, including new prefix/intent, early-Save rejection,
   future tail holds, foresight, single-session and backup-room regressions.
-  This source milestone is not yet activated and does not prove a live edit.
-  The requested fair advance-quota allocation across preferred rooms/dates is
-  the next implementation milestone; do not equate this with that completion.
+  This source milestone does not prove a live edit. The subsequent allocation
+  milestone above adds the shared preferred-room weekly budget.
 
 ## 2026-09-20 faster daily practice under the free horizon
 

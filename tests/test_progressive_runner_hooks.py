@@ -143,6 +143,54 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.progressive.assert_not_called()
         self.mocks["process_pending_extensions"].assert_not_called()
 
+    def new_rule_run(self):
+        return b.run_booking(self.args, {'booking_rules': {'preset': 'new'}},
+            b.PracticePlan(enabled=True, default_hours=4), room_preferences=mock.Mock())
+
+    def test_new_weekly_allocation_retains_extensions_free_pass_and_upgrades(self):
+        order = []
+        self.mocks['process_pending_extensions'].side_effect = lambda *a: (order.append('extensions') or 0, True)
+        self.mocks['process_room_upgrades'].side_effect = lambda *a: (order.append('upgrades') or a[6], a[5])
+        with mock.patch('advance_runtime.run', side_effect=lambda *a, **kw: (
+                order.append('weekly') or a[7], a[6], True)) as advance, \
+             mock.patch('short_notice_bookings.run_short_notice_pass', side_effect=lambda *a, **kw: (
+                order.append('free') or a[6], a[5])):
+            self.assertEqual(self.new_rule_run(), 0)
+        self.assertEqual(order, ['extensions', 'free', 'weekly', 'free', 'upgrades'])
+        advance.assert_called_once()
+        self.mocks['save_history'].assert_called_once()
+
+    def test_new_read_only_plan_uses_weekly_allocator_without_mutations(self):
+        self.args.plan_only = True
+        with mock.patch('advance_runtime.run', return_value=(0, self.tracker, True)) as advance:
+            self.assertEqual(self.new_rule_run(), 0)
+        self.assertTrue(advance.call_args.kwargs['read_only'])
+        self.progressive.assert_not_called()
+        self.mocks['process_pending_extensions'].assert_not_called()
+        self.mocks['process_room_upgrades'].assert_not_called()
+
+    def test_recovered_quota_refusal_rebuilds_agenda_and_retains_action_budget(self):
+        updated = mock.Mock(agenda_events=[{'eventId': 123, 'isReservation': True}])
+        self.mocks['BookingTracker'].side_effect = [self.tracker, updated]
+        refusal = b.QuotaWait('Requested booking exceeds your quota')
+        refusal.completed_actions = 4
+        self.progressive.side_effect = refusal
+        with self.assertRaises(StopAfterPriority):
+            self.new_rule_run()
+        self.assertEqual(self.mocks['scan_agenda'].call_count, 2)
+        self.assertIs(self.mocks['scan_agenda'].call_args.args[1], updated)
+        call = self.mocks['process_pending_extensions'].call_args.args
+        self.assertIs(call[1], updated)
+        self.assertEqual(call[2], updated.agenda_events)
+        self.assertEqual(call[7], 4)
+
+    def test_unresolved_quota_refusal_cannot_continue_new_weekly_work(self):
+        self.progressive.side_effect = b.QuotaWait('Requested booking exceeds your quota')
+        self.mocks['list_pending_mutation_receipts'].return_value = [{'kind':'transfer'}]
+        with self.assertRaises(b.QuotaWait):
+            self.new_rule_run()
+        self.mocks['process_pending_extensions'].assert_not_called()
+
 
 class ProgressiveReconciliationHookTests(unittest.TestCase):
     def test_parent_is_retained_while_expired_child_is_reconciled(self):

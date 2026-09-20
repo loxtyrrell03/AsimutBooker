@@ -423,9 +423,12 @@ def execute_transfer(ctx, plan, saved, args):
         # Even a known rejection is classified from the actual complete agenda;
         # a throwing/uncertain Save propagates with the parent intact.
         return recover_transfer(ctx, parent)
-    except QuotaWait:
+    except QuotaWait as exc:
         if parent is not None:
             recover_transfer(ctx, parent)
+        # Recovery can itself use verified edits. Preserve their action cost
+        # when an ordinary run continues with fresh daily/advance planning.
+        exc.completed_actions = ctx.actions
         raise
     finally:
         if prepared_page is not None:

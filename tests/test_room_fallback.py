@@ -68,6 +68,12 @@ class RoomFallbackTests(unittest.TestCase):
         self.assertEqual((actual['start_hour'], actual['end_hour']), (17, 18))
         self.assertTrue(actual['free_horizon_intent'])
 
+    def test_preferred_room_allocation_cannot_fall_back_outside_its_room_set(self):
+        attempt, _, _, _ = self.environment([False, False], [self.grid(*self.rooms)] * 2)
+        result, _ = self.invoke(allowed_rooms=self.rooms[:2])
+        self.assertFalse(result)
+        self.assertEqual([call.args[1]['room'] for call in attempt.call_args_list], self.rooms[:2])
+
     def test_fresh_occupancy_horizon_exclusions_conflicts_and_budgets_apply(self):
         occupied=self.grid('Corus Recital Room')
         occupied[0]['slots']=[{'startHour':12.5,'endHour':18}]

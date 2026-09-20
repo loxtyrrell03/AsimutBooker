@@ -236,7 +236,8 @@ class FreeHorizonExtensionIntentTests(unittest.TestCase):
         self.tracker = b.BookingTracker()
         self.tracker.existing_reservation_hours = 6
         self.booking = dict(room='A', date=str(self.day), startTime='12:00',
-            endTime='12:30', target_end='13:00', created_at=self.now.isoformat(), eventId=42)
+            endTime='12:30', target_end='13:00', created_at=self.now.isoformat(), eventId=42,
+            event_url='https://rwcmd.asimut.net/arrangement?eventId=42')
 
     def test_create_saves_only_open_prefix_but_retains_later_target(self):
         caps = []
@@ -277,6 +278,24 @@ class FreeHorizonExtensionIntentTests(unittest.TestCase):
                 free_horizon_intent=True), self.day, self.tracker, 0,
                 remaining_daily_hours=4, max_action_minutes=30, time_prefs={'enabled':False})
         self.assertEqual(coordinates.call_args.args[2:], (12, 12.5))
+
+    def test_prepares_free_window_extension_for_exact_next_boundary(self):
+        self.now = self.now.replace(minute=43)
+        self.tracker.add_existing_event(self.day, 12, 12.5, is_reservation=True, room='A')
+        with patch.object(b, 'edit_reservation_end_time', return_value=True) as edit, \
+             patch.object(b, 'update_extendable_booking_end_time'), \
+             patch.object(b, 'remove_extendable_booking'):
+            result = b.try_extend_booking(None, self.booking, self.tracker, now=self.now,
+                remaining_daily_hours=3.5, time_prefs={'enabled':False})
+        self.assertTrue(result[0], result)
+        self.assertEqual(edit.call_args.args[2], '12:45')
+        self.assertEqual(edit.call_args.kwargs['save_not_before'], self.now.replace(minute=45))
+
+    def test_extension_preview_waits_for_free_boundary_even_with_long_room_horizon(self):
+        candidate = b._plan_candidate_from_extension(self.booking, now=self.now,
+                                                    free_horizon_only=True)
+        self.assertEqual(candidate.state, 'waiting')
+        self.assertEqual(candidate.unlock_at.replace(tzinfo=None), self.now.replace(minute=45))
 
 
 class ShortNoticeIntegrationTests(unittest.TestCase):
@@ -404,6 +423,17 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
         slot = self.attempt.call_args.args[1]
         self.assertEqual((slot['start_hour'], slot['end_hour']), (16, 18))
         self.assertTrue(slot['free_horizon_intent'])
+
+    def test_nonurgent_extras_do_not_spend_credit_reserved_for_weekly_blocks(self):
+        self.tracker.existing_reservation_hours = 0
+        self.now = self.now.replace(hour=11, minute=30)
+        self.assertEqual(self.run_pass()[0], 0)
+        self.attempt.assert_not_called()
+
+    def test_imminent_practice_can_use_credit_instead_of_missing_the_day(self):
+        self.tracker.existing_reservation_hours = 0
+        self.assertEqual(self.run_pass()[0], 1)
+        self.assertEqual(self.events[0][1:], (16, 18))
 
     def test_room_priority_is_retained_with_equal_time_fit(self):
         with patch.object(b,'PRIORITY_ROOMS',['Preferred','Fallback']):

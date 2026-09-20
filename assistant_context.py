@@ -57,6 +57,7 @@ APP_CAPABILITIES = {
         "Explainable future practice intentions resolved into exact dated targets",
         "Room ordering, exclusions, metadata requirements, and session-shape rules",
         "Daily foresight with quota-aware primary, additional, and backup sessions",
+        "Fair advance-credit allocation across daily blocks in the first two preferred rooms, with actual room horizons",
         "Exact horizon-edge creation and verified incremental extensions",
         "Crash-safe mutation receipts and exact event-ID persistence checks",
         "Recurring five-minute Windows schedule with daily practice priority and health evidence",

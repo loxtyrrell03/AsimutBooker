@@ -2677,6 +2677,7 @@ def plan_horizon_extension(
     target_end_hour,
     *,
     now=None,
+    horizon_limit_minutes=None,
 ):
     """Plan the latest unlocked extension and the next exact 15-minute edge.
 
@@ -2741,6 +2742,8 @@ def plan_horizon_extension(
         minutes=start_minutes
     )
     horizon_minutes = room_horizon_minutes(room)
+    if horizon_limit_minutes is not None:
+        horizon_minutes = min(horizon_minutes, horizon_limit_minutes)
     horizon_edge = slot_datetime - timedelta(minutes=horizon_minutes)
     try:
         elapsed_seconds = (now - horizon_edge).total_seconds()
@@ -2815,6 +2818,7 @@ def calculate_max_extension(
     target_end_hour,
     *,
     now=None,
+    horizon_limit_minutes=None,
 ):
     """Calculate maximum possible extension for a booking made at horizon edge.
 
@@ -2844,6 +2848,7 @@ def calculate_max_extension(
         current_end_hour,
         target_end_hour,
         now=now,
+        horizon_limit_minutes=horizon_limit_minutes,
     )
     return plan.can_extend, plan.max_end_hour, plan.reason
 
@@ -4562,6 +4567,8 @@ def try_extend_booking(
     # run that arrives within three minutes of the next quarter-hour prepares
     # the exact editor now and defers only the verified Save.
     extension_now = now or datetime.now()
+    horizon_limit = (FREE_HORIZON_MINUTES if tracker is not None
+        and tracker.get_remaining_quota_hours() < .25 and FREE_HORIZON_MINUTES > 0 else None)
     can_extend, max_end_hour, reason = calculate_max_extension(
         room,
         date_str,
@@ -4570,6 +4577,7 @@ def try_extend_booking(
         created_at,
         target_end_hour,
         now=extension_now,
+        horizon_limit_minutes=horizon_limit,
     )
 
     save_not_before = None
@@ -4581,6 +4589,7 @@ def try_extend_booking(
             current_end_hour,
             target_end_hour,
             now=extension_now,
+            horizon_limit_minutes=horizon_limit,
         )
         if (
             plan.next_end_hour is None
@@ -4624,7 +4633,7 @@ def try_extend_booking(
 
         # The complete edited interval, including its original start, must
         # fit inside the free horizon; an extension tail alone cannot qualify.
-        free_capacity = free_horizon_hours(booking_date, start_hour, now=extension_now,
+        free_capacity = free_horizon_hours(booking_date, start_hour, now=save_not_before or extension_now,
                                           horizon_minutes=FREE_HORIZON_MINUTES)
         remaining_quota_hours = max(tracker.get_remaining_quota_hours(),
             max(0, start_hour + free_capacity - current_end_hour) if free_capacity else 0)
@@ -6992,7 +7001,7 @@ def same_time_room_backups(
     available_data, failed_slot, target_date, tracker, time_prefs, daily_planning,
     *, now, excluded_rooms, remaining_daily_hours=None,
     reserved_peak_minutes=0, reserved_weekly_minutes=0, only_room=None,
-    free_horizon_only=False,
+    free_horizon_only=False, allowed_rooms=None,
 ):
     """Rank freshly available replacements for exactly the failed interval.
 
@@ -7004,7 +7013,7 @@ def same_time_room_backups(
     start, end = failed_slot['start_hour'], failed_slot['end_hour']
     exact_gaps = []
     for row in available_data:
-        if row['room'] in excluded_rooms:
+        if row['room'] in excluded_rooms or (allowed_rooms is not None and row['room'] not in allowed_rooms):
             continue
         if any(gap['startHour'] <= start and gap['endHour'] >= end for gap in row['slots']):
             exact_gaps.append({'room':row['room'], 'slots':[{'startHour':start, 'endHour':end}]})
@@ -7029,7 +7038,7 @@ def same_time_room_backups(
 def attempt_booking_with_room_fallback(
     page, slot, target_date, tracker, days_ahead, *, time_prefs, daily_planning,
     remaining_daily_hours=None, max_action_minutes=None, only_room=None,
-    planning_context=None, horizon=False, free_horizon_only=False,
+    planning_context=None, horizon=False, free_horizon_only=False, allowed_rooms=None,
 ):
     """Try each eligible room at most once, refreshing after proven failures.
 
@@ -7038,6 +7047,8 @@ def attempt_booking_with_room_fallback(
     Uncertain writes and unreadable journals always stop the whole run.
     """
     time_prefs = resolve_time_preferences(time_prefs, target_date)
+    if allowed_rooms is not None and slot['room'] not in allowed_rooms:
+        raise ValueError('Initial room is outside the permitted fallback room set')
     attempted = set()
     candidate = slot
     deadline = time.monotonic() + 180
@@ -7102,6 +7113,7 @@ def attempt_booking_with_room_fallback(
             reserved_peak_minutes=context.get('extension_peak_by_date', {}).get(date_key, 0),
             reserved_weekly_minutes=reserved_weekly, only_room=only_room,
             free_horizon_only=free_horizon_only,
+            allowed_rooms=allowed_rooms,
         )
         if horizon:
             backups = [item for item in backups if abs((item.unlock_at-slot['bookable_from']).total_seconds()) <= 1]
@@ -7234,7 +7246,7 @@ def _plan_candidate_from_opportunity(opportunity, *, state, reason):
     )
 
 
-def _plan_candidate_from_extension(booking, *, now):
+def _plan_candidate_from_extension(booking, *, now, free_horizon_only=False):
     """Reconstruct one display-only extension target from validated state."""
 
     start_h, start_m = map(int, booking["startTime"].split(":"))
@@ -7250,6 +7262,7 @@ def _plan_candidate_from_extension(booking, *, now):
         end_minutes / 60,
         target_minutes / 60,
         now=now,
+        horizon_limit_minutes=FREE_HORIZON_MINUTES if free_horizon_only else None,
     )
     if plan.can_extend:
         unlock_at = now.replace(
@@ -7290,7 +7303,8 @@ def attach_extension_progress(day_plan, planning_context, *, now):
     if not isinstance(planning_context, dict):
         return day_plan
     pending_extensions = [
-        _plan_candidate_from_extension(booking, now=now)
+        _plan_candidate_from_extension(booking, now=now,
+            free_horizon_only=planning_context.get('extensions_use_free_horizon', False))
         for booking in planning_context.get("extension_bookings", ())
         if booking["date"] == day_plan.date
     ]
@@ -10035,6 +10049,7 @@ def refresh_extension_capacity_holds(
     planning_context["extension_target_by_date"] = target_by_date
     planning_context["extension_peak_by_date"] = peak_by_date
     planning_context["extension_bookings"] = held_bookings
+    planning_context['extensions_use_free_horizon'] = tracker.get_remaining_quota_hours() < .25
     return target_by_date, peak_by_date, held_bookings
 
 
@@ -10688,21 +10703,17 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             time_prefs=time_prefs,
         )
 
+        from advance_runtime import enabled as advance_allocation_enabled, run as run_advance_allocation
         if getattr(args, "plan_only", False):
-            generate_read_only_booking_plan(
-                page,
-                policy,
-                settings,
-                practice_plan,
-                tracker,
-                time_prefs,
-                daily_planning,
-                disabled_dates,
-                args,
-                today=today,
-                reverse_date_order=reverse_date_order,
-                planning_context=planning_context,
-            )
+            if advance_allocation_enabled(settings, practice_plan, args):
+                run_advance_allocation(sys.modules[__name__], page, policy, settings,
+                    practice_plan, args, tracker, total_booked, booking_details, read_only=True)
+            else:
+                generate_read_only_booking_plan(
+                    page, policy, settings, practice_plan, tracker, time_prefs,
+                    daily_planning, disabled_dates, args, today=today,
+                    reverse_date_order=reverse_date_order, planning_context=planning_context,
+                )
             persist_storage_state(context)
             context.close()
             browser.close()
@@ -10728,9 +10739,23 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         # Their persisted plans select what to recheck, never authorize Save.
         from progressive_runtime import process_progressive_upgrades
         previous_tracker, previous_actions = tracker, total_booked
-        total_booked, tracker = process_progressive_upgrades(
-            sys.modules[__name__], page, settings, practice_plan, args,
-            tracker, total_booked, booking_details)
+        try:
+            total_booked, tracker = process_progressive_upgrades(
+                sys.modules[__name__], page, settings, practice_plan, args,
+                tracker, total_booked, booking_details)
+        except QuotaWait as exc:
+            if not advance_allocation_enabled(settings, practice_plan, args) or list_pending_mutation_receipts():
+                raise
+            # A refused upgrade cannot starve valid new preferred-room blocks.
+            # Recovery may have changed reservation IDs or used actions. Rebuild
+            # the complete tracker before spending any newly available credit.
+            total_booked = max(total_booked, getattr(exc, 'completed_actions', total_booked))
+            tracker = BookingTracker()
+            scan_agenda(page, tracker, today, ignored_events=ignored_events,
+                window_dates=live_dates, snapshot_path=AGENDA_SNAPSHOT_FILE)
+            apply_rebooking_blackouts(tracker, load_rebooking_blackouts(settings))
+            refresh_quota_balances(page, tracker, live_dates)
+            print('Progressive upgrades are waiting for quota; continuing daily and weekly planning.')
         if any(receipt.get("kind") == "transfer"
                for receipt in list_pending_mutation_receipts()):
             raise BookingVerificationError(
@@ -10791,6 +10816,19 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         all_reservations = [event for event in tracker.agenda_events if event.get('isReservation')]
         refresh_extension_capacity_holds(planning_context, tracker, practice_plan,
                                          disabled_dates, time_prefs=time_prefs)
+
+        if advance_allocation_enabled(settings, practice_plan, args) and not tracker.is_quota_full():
+            total_booked, tracker, _ = run_advance_allocation(sys.modules[__name__], page,
+                policy, settings, practice_plan, args, tracker, total_booked, booking_details)
+            total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
+                settings, practice_plan, args, tracker, total_booked, booking_details, after_horizon=True)
+            total_booked, tracker = process_room_upgrades(sys.modules[__name__], page,
+                settings, practice_plan, args, tracker, total_booked, booking_details)
+            save_history(total_booked, events_detected, booking_details, notify=bool(booking_details))
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0
 
         # A same-duration room edit does not consume additional advance quota.
         # Extensions-only runs still need to examine eligible short-notice edits.
