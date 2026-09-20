@@ -56,6 +56,18 @@ class RoomFallbackTests(unittest.TestCase):
             self.assertEqual(self.invoke(free_horizon_only=True)[0], receipt)
         self.assertEqual(attempt.call_count, 2)
 
+    def test_free_window_fallback_retains_seed_extension_intent(self):
+        self.day = self.now.date()
+        self.slot.update(start_hour=17, end_hour=18, duration=1, free_horizon_intent=True)
+        self.tracker.existing_reservation_hours = 6
+        receipt = {'event_id':123, 'room':self.rooms[1]}
+        attempt, _, _, _ = self.environment([False, receipt], [self.grid(*self.rooms)])
+        result, actual = self.invoke(free_horizon_only=True)
+        self.assertEqual(result, receipt)
+        self.assertEqual(attempt.call_count, 2)
+        self.assertEqual((actual['start_hour'], actual['end_hour']), (17, 18))
+        self.assertTrue(actual['free_horizon_intent'])
+
     def test_fresh_occupancy_horizon_exclusions_conflicts_and_budgets_apply(self):
         occupied=self.grid('Corus Recital Room')
         occupied[0]['slots']=[{'startHour':12.5,'endHour':18}]

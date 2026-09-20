@@ -1,3 +1,21 @@
+## 2026-09-20 complete free-window session planning
+
+- The short-notice path now uses the shared whole-day/foresight decision, with
+  effective unlocks constrained by both the room horizon and the free window.
+  It can seed a minimum-duration session while retaining the longer verified
+  gap as extension intent. The actual create remains capped at the present
+  free cutoff, live quota, peak/daily limits and exact server approval.
+- Currently eligible free-window seeds retain daily and peak capacity for their
+  complete intended tails before later quarters open. Holds authorize no Save;
+  extension checks still use the complete current interval. Same-time fallback
+  preserves the seed intent in another eligible room. Read-only free previews
+  share these full-session opportunities instead of clipping away the future.
+- All 1,366 Python tests pass, including new prefix/intent, early-Save rejection,
+  future tail holds, foresight, single-session and backup-room regressions.
+  This source milestone is not yet activated and does not prove a live edit.
+  The requested fair advance-quota allocation across preferred rooms/dates is
+  the next implementation milestone; do not equate this with that completion.
+
 ## 2026-09-20 faster daily practice under the free horizon
 
 - The recurring schedule now checks every five minutes in the unchanged

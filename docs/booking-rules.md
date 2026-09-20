@@ -51,6 +51,12 @@ behaviour), room order, goals, fragmentation, exclusions and extension holds
 remain the same planning constraints. The worker never treats a future opening
 as permission to book early or promises hours that the site has not confirmed.
 
+Last-minute opportunities retain the intended full session, even when only its
+first 30 minutes are currently inside the free window. The shared day planner
+can wait for a better preferred-time option, and a verified short initial booking
+keeps its extension target and capacity. Later extensions still require their
+entire edited interval to be inside the current window when advance quota is full.
+
 Room upgrades retain their exact-event validation, duration and recovery
 guarantees. Existing reservations above a new limit are not cancelled or
 shortened automatically. A whole-room improvement may retain an existing

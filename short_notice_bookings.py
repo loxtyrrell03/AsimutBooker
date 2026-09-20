@@ -108,14 +108,17 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 gaps, day, tracker, preferences, planning,
                 now=now, remaining_daily_hours=remaining,
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
-                only_room=args.only_room, free_horizon_only=True)
-            chosen = engine.select_day_plan(opportunities, planning, now=now,
-                target_minutes=int(remaining * 60),
-                allow_fragmented_sessions=engine.ALLOW_FRAGMENTED_SESSIONS,
-                remaining_peak_minutes=max(0, tracker.get_remaining_peak_minutes(day)
-                    - peak_holds.get(day.isoformat(), 0)),
-                same_room_gap_minutes=engine.SAME_ROOM_GAP_MINUTES)
+                only_room=args.only_room, free_horizon_only=True,
+                include_free_horizon_intent=True)
+            day_plan = engine.build_display_day_plan(day, opportunities, tracker, planning,
+                now=now, target_minutes=int((tracker.get_hours_for_day(day) + remaining) * 60),
+                reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
+                free_horizon_only=True)
+            chosen = engine._runtime_ordered_day_opportunities(
+                opportunities, day_plan, planning, now=now)
             candidates.extend((item, remaining) for item in chosen if item.unlock_at <= now)
+            if not chosen and day_plan.primary is not None:
+                print(f'  [Free horizon] {day_plan.reason}')
             if boundary is not None:
                 # Forecast only. After waiting, reread the grid and replan before
                 # any Save; this cannot authorize early or stale-window bookings.
@@ -138,8 +141,10 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
         # an exact, fresh ASIMUT check before Save; this balance is not permission.
         refresh_quota_balances(page, tracker, engine.booking_window_dates(now.date()))
         open_day(day, now.date())
+        slot = engine._opportunity_to_normal_slot(item)
+        slot['free_horizon_intent'] = True
         result, _ = engine.attempt_booking_with_room_fallback(
-            page, engine._opportunity_to_normal_slot(item), day, tracker,
+            page, slot, day, tracker,
             (day - now.date()).days, remaining_daily_hours=remaining,
             max_action_minutes=args.max_action_minutes, time_prefs=preferences,
             daily_planning=planning, only_room=args.only_room,

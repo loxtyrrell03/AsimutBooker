@@ -219,6 +219,66 @@ class PeakExtensionTests(unittest.TestCase):
         self.assertEqual(tracker.get_total_booking_hours() - before, .5)
 
 
+class FreeHorizonExtensionIntentTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        self.now = datetime(2026, 9, 21, 7, 30)
+        self.day = self.now.date()
+        self.stack.enter_context(patch.multiple(b, PRIORITY_ROOMS=['A'],
+            MINIMUM_BLOCK_MINUTES=30, MAX_BOOKING_HOURS=2, MAX_PEAK_HOURS=1,
+            FREE_HORIZON_MINUTES=300))
+        self.stack.enter_context(patch.object(b, 'room_horizon_minutes', return_value=10080))
+        self.stack.enter_context(patch.object(b, 'booking_window_dates', return_value=(self.day,)))
+        clock = self.stack.enter_context(patch.object(b, 'datetime', wraps=datetime))
+        clock.now.side_effect = lambda: self.now
+        self.tracker = b.BookingTracker()
+        self.tracker.existing_reservation_hours = 6
+        self.booking = dict(room='A', date=str(self.day), startTime='12:00',
+            endTime='12:30', target_end='13:00', created_at=self.now.isoformat(), eventId=42)
+
+    def test_create_saves_only_open_prefix_but_retains_later_target(self):
+        caps = []
+        cap = b._bounded_create_duration_minutes
+        def record(*args):
+            value = cap(*args)
+            caps.append(value)
+            return value
+        with patch.object(b, '_bounded_create_duration_minutes', side_effect=record), \
+             patch.object(b, 'get_room_slot_coordinates', return_value=None) as coordinates:
+            self.assertFalse(b.try_book_slot(None, dict(room='A', start_hour=12,
+                end_hour=13, free_horizon_intent=True), self.day, self.tracker, 0,
+                remaining_daily_hours=4, time_prefs={'enabled':False}))
+        self.assertEqual(caps, [60, 30])
+        self.assertEqual(coordinates.call_args.args[2:], (12, 12.5))
+        self.assertEqual(b._extension_target_end_hour(12, 12.5, caps[0]), 13)
+
+    def test_pending_peak_tail_keeps_allowance_before_its_window_opens(self):
+        self.tracker.add_existing_event(self.day, 12, 12.5, is_reservation=True, room='A')
+        targets, peaks, held = b.calculate_extension_capacity_holds(
+            [self.booking], self.tracker, b.PracticePlan(enabled=True, default_hours=4),
+            set(), time_prefs={'enabled':False}, now=self.now)
+        self.assertEqual(targets, {str(self.day):30})
+        self.assertEqual(peaks, {str(self.day):30})
+        self.assertEqual(held[0]['target_end'], '13:00')
+
+    def test_future_hold_never_authorizes_an_early_extension(self):
+        self.tracker.add_existing_event(self.day, 12, 12.5, is_reservation=True, room='A')
+        with patch.object(b, 'edit_reservation_end_time') as edit:
+            result = b.try_extend_booking(None, self.booking, self.tracker, now=self.now,
+                remaining_daily_hours=3.5, time_prefs={'enabled':False})
+        self.assertFalse(result[0])
+        edit.assert_not_called()
+
+    def test_free_intent_respects_live_test_action_ceiling(self):
+        with patch.object(b, 'get_room_slot_coordinates', return_value=None) as coordinates:
+            b.try_book_slot(None, dict(room='A', start_hour=12, end_hour=13,
+                free_horizon_intent=True), self.day, self.tracker, 0,
+                remaining_daily_hours=4, max_action_minutes=30, time_prefs={'enabled':False})
+        self.assertEqual(coordinates.call_args.args[2:], (12, 12.5))
+
+
 class ShortNoticeIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
@@ -312,6 +372,38 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
                 'enabled':True,'strict_mode':True,'start_hour':12,'end_hour':16}):
             self.assertEqual(self.run_pass()[0],0)
         self.attempt.assert_not_called()
+
+    def test_free_window_seed_retains_the_whole_peak_session_intent(self):
+        self.now = self.now.replace(hour=7, minute=30)
+        self.grid.return_value = [{'room': 'A', 'slots': [{'startHour': 12, 'endHour': 14}]}]
+        self.attempt.side_effect = None
+        self.attempt.return_value = False, {}
+        self.run_pass()
+        slot = self.attempt.call_args.args[1]
+        self.assertEqual((slot['start_hour'], slot['end_hour']), (12, 13))
+        self.assertTrue(slot['free_horizon_intent'])
+
+    def test_free_window_uses_existing_foresight_before_spending_peak_early(self):
+        self.now = self.now.replace(hour=7)
+        self.grid.return_value = [
+            {'room': room, 'slots': [{'startHour': 11.5, 'endHour': 14}]}
+            for room in ('A', 'B')]
+        with patch.object(b, 'PRIORITY_ROOMS', ['A', 'B']), \
+             patch.object(b, 'load_time_preferences', return_value={
+                 'enabled': True, 'strict_mode': False, 'start_hour': 12, 'end_hour': 18}):
+            self.assertEqual(self.run_pass()[0], 0)
+        self.attempt.assert_not_called()
+
+    def test_single_session_setting_can_seed_a_full_session(self):
+        self.now = self.now.replace(hour=11, minute=30)
+        self.grid.return_value = [{'room': 'A', 'slots': [{'startHour': 16, 'endHour': 18}]}]
+        self.attempt.side_effect = None
+        self.attempt.return_value = False, {}
+        with patch.object(b, 'ALLOW_FRAGMENTED_SESSIONS', False):
+            self.run_pass()
+        slot = self.attempt.call_args.args[1]
+        self.assertEqual((slot['start_hour'], slot['end_hour']), (16, 18))
+        self.assertTrue(slot['free_horizon_intent'])
 
     def test_room_priority_is_retained_with_equal_time_fit(self):
         with patch.object(b,'PRIORITY_ROOMS',['Preferred','Fallback']):

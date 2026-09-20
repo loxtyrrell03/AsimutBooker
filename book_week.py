@@ -132,7 +132,7 @@ from live_room_policy import (
     format_horizon_minutes,
 )
 from room_catalog import RoomCatalogError, refresh_from_site as refresh_room_catalog
-from booking_quotas import (refresh_quota_balances, free_horizon_hours,
+from booking_quotas import (refresh_quota_balances, free_horizon_hours, in_free_horizon,
                             QuotaPolicyError, QuotaWait, check_quota_refusal,
                             ROLLING_QUOTA_HOURS, PEAK_QUOTA_MINUTES, FREE_HORIZON_MINUTES)
 from room_preferences import (
@@ -5978,10 +5978,16 @@ def try_book_slot(
     # Round down to nearest 15-minute interval for cleaner bookings
     horizon_limited_duration = (int(horizon_limited_duration) // 15) * 15
 
+    # A free-window seed can have a longer future extension intent. That intent
+    # reserves planning capacity only; the actual create below still uses the
+    # current complete free window, live quota, room horizon and final approval.
+    intended_capacity = tracker.booking_capacity_hours(target_date, start_hour)
+    if slot.get('free_horizon_intent'):
+        intended_capacity = max(intended_capacity, FREE_HORIZON_MINUTES / 60)
     max_possible_duration = _bounded_create_duration_minutes(
         slot_duration,
         remaining_daily_hours,
-        tracker.booking_capacity_hours(target_date, start_hour),
+        intended_capacity,
         max_action_minutes,
     )
 
@@ -5994,6 +6000,9 @@ def try_book_slot(
         tracker.booking_capacity_hours(target_date, start_hour),
         max_action_minutes,
     )
+    if slot.get('free_horizon_intent'):
+        booking_duration = min(booking_duration, int(free_horizon_hours(
+            target_date, start_hour, now=now, horizon_minutes=FREE_HORIZON_MINUTES) * 60))
 
     # The College minimum and the user's chosen contiguous block minimum are
     # separate.  A larger preference waits for that complete block to unlock.
@@ -6745,8 +6754,11 @@ def build_day_booking_opportunities(
     reserved_weekly_minutes=0,
     only_room=None,
     free_horizon_only=False,
+    include_free_horizon_intent=False,
 ):
     """Build fresh, conflict-aware current and future opportunities for a day."""
+    if include_free_horizon_intent and not free_horizon_only:
+        raise ValueError('Free-window intent requires free-horizon planning')
     time_prefs = resolve_time_preferences(time_prefs, target_date)
 
     now = now or datetime.now()
@@ -6807,17 +6819,24 @@ def build_day_booking_opportunities(
                         segment_start = max(segment_start, (today_minutes // 15 + 1) / 4)
                     free_hours = free_horizon_hours(target_date, segment_start, now=now,
                                                     horizon_minutes=FREE_HORIZON_MINUTES)
-                    segment_end = min(segment_end, segment_start + free_hours)
+                    if not include_free_horizon_intent:
+                        segment_end = min(segment_end, segment_start + free_hours)
                     if (segment_end - segment_start) * 60 < MINIMUM_BLOCK_MINUTES:
                         continue
-                    segment_weekly = int(free_hours * 60)
+                    segment_weekly = (FREE_HORIZON_MINUTES if include_free_horizon_intent
+                                      else int(free_hours * 60))
                     segment_peak = peak_minutes
+                planning_horizon = room_horizon_minutes(room_name)
+                if include_free_horizon_intent:
+                    planning_horizon = min(planning_horizon, FREE_HORIZON_MINUTES)
+                    if planning_horizon < MINIMUM_BLOCK_MINUTES:
+                        continue
                 for opportunity in enumerate_gap_opportunities(
                     room=room_name,
                     target_date=target_date,
                     gap_start_hour=segment_start,
                     gap_end_hour=segment_end,
-                    horizon_minutes=room_horizon_minutes(room_name),
+                    horizon_minutes=planning_horizon,
                     room_priority=room_priority,
                     planning=daily_planning,
                     now=now,
@@ -6854,8 +6873,9 @@ def build_day_booking_opportunities(
                         opportunity.room,
                         target_date,
                         opportunity.start_hour,
-                        opportunity.potential_minutes,
-                        now=now,
+                        (opportunity.initial_minutes if include_free_horizon_intent
+                         else opportunity.potential_minutes),
+                        now=max(now, opportunity.unlock_at) if include_free_horizon_intent else now,
                     )
                     if not can_book:
                         continue
@@ -6996,6 +7016,7 @@ def same_time_room_backups(
         reserved_peak_minutes=reserved_peak_minutes,
         reserved_weekly_minutes=reserved_weekly_minutes, only_room=only_room,
         free_horizon_only=free_horizon_only,
+        include_free_horizon_intent=bool(free_horizon_only and failed_slot.get('free_horizon_intent')),
     )
     return sorted(
         (item for item in opportunities
@@ -7089,6 +7110,8 @@ def attempt_booking_with_room_fallback(
             return False, candidate
         candidate = (_opportunity_to_horizon_candidate(backups[0], target_boundary=slot['bookable_from'])
                      if horizon else _opportunity_to_normal_slot(backups[0]))
+        if free_horizon_only and slot.get('free_horizon_intent'):
+            candidate['free_horizon_intent'] = True
         print(f"  Trying backup: {candidate['room']} at {backups[0].start_text}-{backups[0].end_text}.")
 
 
@@ -9842,6 +9865,14 @@ def calculate_extension_capacity_holds(
         remaining = max(0, target_end - current_end)
         free_capacity = max(0, int((start_hour + free_horizon_hours(
             target_date, start_hour, now=now, horizon_minutes=FREE_HORIZON_MINUTES) - current_end / 60) * 60))
+        # Preserve the whole intended tail of a currently eligible free-window
+        # seed. Otherwise another short booking can consume its daily/peak
+        # allowance before the next quarter-hour extension becomes available.
+        # This is a hold, never authorization to extend beyond the live cutoff.
+        if (in_free_horizon(target_date, start_hour, current_end_hour,
+                            now=now, horizon_minutes=FREE_HORIZON_MINUTES)
+                and target_end - start_time <= FREE_HORIZON_MINUTES - 15):
+            free_capacity = max(free_capacity, remaining)
         booking_capacity = max(remaining_weekly, free_capacity)
         if remaining < 15 or booking_capacity < 15:
             continue
@@ -10331,6 +10362,7 @@ def generate_read_only_booking_plan(
             ),
             only_room=args.only_room,
             free_horizon_only=free_preview,
+            include_free_horizon_intent=free_preview,
         )
         available_weekly_for_new = max(
             0,
