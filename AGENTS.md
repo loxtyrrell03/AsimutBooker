@@ -33,6 +33,18 @@
   separately and does not imply a real booking or physical-phone check.
 - The subsequent admission time budget passes 38 focused planner/runtime tests
   and all 13 named lifecycle scenarios, including an already-long scheduled run.
+- Activated both verified milestones in the canonical scheduled-worker checkout
+  and reloaded only the idle existing phone task under runtime/mutation locks.
+  Settings, history, receipts, browser state, task definitions and every Serve
+  handler were preserved. A scheduled check after the planner/peak fixes
+  completed normally; the later admission budget has mock-test evidence.
+  The rule-aware plan is current; the fresh agenda preserves all 12 events with
+  no pending receipt. Private HTTPS bootstrap and rendered My Week/settings at
+  320/390px pass on the unchanged canonical origin. These are PC-browser and
+  read-only account checks, not new live-booking or physical-phone evidence.
+  Private activation/verification records remain ignored under
+  `artifacts/planner-simulations-20260920/`; desktop windows need reopening to
+  refresh their in-process assistant contract.
 
 ## 2026-09-20 fair advance quota across the week
 
