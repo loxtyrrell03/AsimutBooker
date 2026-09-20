@@ -19,6 +19,22 @@ def descendants(widget):
 
 
 class DesktopSettingsTests(unittest.TestCase):
+    def test_optional_session_controls_persist_without_replacing_primary_settings(self):
+        self.app.show_booking_strategy_dialog()
+        dialog = next(w for w in self.app._detail_pages.values() if w.title() == 'Daily Booking Strategy')
+        widgets = list(descendants(dialog))
+        for title, value in (('Preferred block length', '1 hour'), ('Preferred rest between sessions', '30 minutes')):
+            label = next(w for w in widgets if isinstance(w, ttk.Label) and w.cget('text') == title)
+            label.master.grid_slaves(row=label.grid_info()['row'], column=1)[0].set(value)
+        next(w for w in widgets if isinstance(w, ttk.Checkbutton) and w.cget('text') == 'Prefer fewer room changes').invoke()
+        next(w for w in widgets if isinstance(w, ttk.Button) and w.cget('text') == 'Save Strategy').invoke()
+        saved = json.loads(self.settings.read_text())
+        daily = saved['booking_strategy']['daily_planning']
+        self.assertEqual((daily['preferred_block_minutes'], daily['preferred_rest_minutes']), (60, 30))
+        self.assertTrue(daily['prefer_fewer_room_changes'])
+        self.assertEqual(daily['desired_peak_block_minutes'], 120)
+        self.assertEqual(saved['unrelated'], {'keep': True})
+
     def test_room_upgrade_controls_save_independently_of_planning(self):
         self.app.show_booking_strategy_dialog()
         dialog = next(w for w in self.app._detail_pages.values() if w.title() == 'Daily Booking Strategy')

@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 7
+ASSISTANT_CONTRACT_REVISION = 8
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -310,6 +310,11 @@ Actions:
   rolling credit returns or the site waives a free-window quota check. Soft
   time preferences are scored fallbacks; only an explicit strict window forbids
   every outside time.
+- Preferred block length, rest between practice sessions, and fewer room changes
+  are optional comforts. They never justify losing otherwise useful booked
+  minutes, ignoring hard rules or waiting for an unavailable ideal arrangement.
+  Zero minutes means no block/rest preference. Save them only when requested;
+  do not silently replace the user's daily target, room order or time window.
 - A tool result is the only source of action success. If it reports uncertainty
   or failure, say so plainly and do not retry a mutation in the same turn.
 - A normal Booker run can complete with zero actions. Claim a created or

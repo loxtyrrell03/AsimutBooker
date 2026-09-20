@@ -36,6 +36,9 @@ _DAILY_PLANNING_FIELDS = {
     "priority_mode",
     "upgrade_rooms",
     "upgrade_freeze_hours",
+    "preferred_block_minutes",
+    "preferred_rest_minutes",
+    "prefer_fewer_room_changes",
 }
 
 
@@ -59,6 +62,9 @@ class DailyPlanningPreferences:
     priority_mode: str = "time_first"
     upgrade_rooms: bool = True
     upgrade_freeze_hours: int = 0
+    preferred_block_minutes: int = 0
+    preferred_rest_minutes: int = 0
+    prefer_fewer_room_changes: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return daily_planning_to_dict(self)
@@ -214,6 +220,12 @@ def _parse_daily_planning(raw: Mapping[str, Any]) -> DailyPlanningPreferences:
                                     "booking_strategy.daily_planning.upgrade_rooms"),
         upgrade_freeze_hours=_require_step_int(raw.get("upgrade_freeze_hours", 0),
             "booking_strategy.daily_planning.upgrade_freeze_hours", minimum=0, maximum=168),
+        preferred_block_minutes=_require_step_int(raw.get("preferred_block_minutes", 0),
+            "booking_strategy.daily_planning.preferred_block_minutes", minimum=0, maximum=120, step=30),
+        preferred_rest_minutes=_require_step_int(raw.get("preferred_rest_minutes", 0),
+            "booking_strategy.daily_planning.preferred_rest_minutes", minimum=0, maximum=120, step=15),
+        prefer_fewer_room_changes=_require_bool(raw.get("prefer_fewer_room_changes", False),
+            "booking_strategy.daily_planning.prefer_fewer_room_changes"),
     )
 
 
@@ -268,6 +280,9 @@ def daily_planning_to_dict(value: DailyPlanningPreferences) -> dict[str, Any]:
         "priority_mode": value.priority_mode,
         "upgrade_rooms": value.upgrade_rooms,
         "upgrade_freeze_hours": value.upgrade_freeze_hours,
+        "preferred_block_minutes": value.preferred_block_minutes,
+        "preferred_rest_minutes": value.preferred_rest_minutes,
+        "prefer_fewer_room_changes": value.prefer_fewer_room_changes,
     }
 
 

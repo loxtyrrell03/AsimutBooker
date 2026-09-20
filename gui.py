@@ -4831,6 +4831,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         fallback_var = tk.StringVar(value=str(daily.fallback_lead_minutes))
         upgrade_var = tk.BooleanVar(value=daily.upgrade_rooms)
         upgrade_freeze_var = tk.StringVar(value=str(daily.upgrade_freeze_hours))
+        block_choices = {'Automatic': 0, '30 minutes': 30, '1 hour': 60, '1½ hours': 90, '2 hours': 120}
+        rest_choices = {'No preference': 0, **{f'{n} minutes': n for n in range(15, 121, 15)}}
+        block_var = tk.StringVar(value=next(k for k, v in block_choices.items() if v == daily.preferred_block_minutes))
+        rest_var = tk.StringVar(value=next(k for k, v in rest_choices.items() if v == daily.preferred_rest_minutes))
+        fewer_changes_var = tk.BooleanVar(value=daily.prefer_fewer_room_changes)
         after_peak_choices = {'Longest gaps first':'longest_first', 'Earliest starts first':'earliest_first', 'Room priority first':'room_first'}
         priority_choices = {'Preferred time first':'time_first', 'Room priority first':'room_first'}
         after_peak_var = tk.StringVar(value=next(k for k,v in after_peak_choices.items() if v==daily.after_peak_mode))
@@ -4863,6 +4868,14 @@ class AsimutBookerGUI(QuietFocusGUI):
             f"{minute // 60:02d}:{minute % 60:02d}"
             for minute in range(0, 24 * 60, 15)
         ]
+        add_row('Preferred block length', ttk.Combobox(form, textvariable=block_var,
+            values=tuple(block_choices), state='readonly', width=18),
+            'Aim for this length when equally good practice is available. Shorter or longer blocks still fill missing hours.')
+        add_row('Preferred rest between sessions', ttk.Combobox(form, textvariable=rest_var,
+            values=tuple(rest_choices), state='readonly', width=18),
+            'Aim for this break between practice sessions, including existing bookings. Available practice takes priority.')
+        add_row('Room changes', ttk.Checkbutton(form, text='Prefer fewer room changes', variable=fewer_changes_var),
+            'Choose fewer room changes only when booked hours and room/time quality are equal.')
         preferred = ttk.Frame(form)
         ttk.Combobox(
             preferred, textvariable=start_var, values=quarter_times, state="readonly", width=8
@@ -4988,6 +5001,9 @@ class AsimutBookerGUI(QuietFocusGUI):
                         "priority_mode": priority_choices[priority_var.get()],
                         "upgrade_rooms": upgrade_var.get(),
                         "upgrade_freeze_hours": int(upgrade_freeze_var.get()),
+                        "preferred_block_minutes": block_choices[block_var.get()],
+                        "preferred_rest_minutes": rest_choices[rest_var.get()],
+                        "prefer_fewer_room_changes": fewer_changes_var.get(),
                     }
                 }
                 preview_document = {

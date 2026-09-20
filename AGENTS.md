@@ -1,3 +1,29 @@
+## 2026-09-20 optional session preferences and changing-week simulations
+
+- Shared strategy settings add `preferred_block_minutes` (0/30/60/90/120),
+  `preferred_rest_minutes` (0-120 in quarters) and `prefer_fewer_room_changes`.
+  Zero/off defaults retain prior behaviour. Phone, desktop and assistant expose
+  the same validated, scoped settings; assistant contract revision is 8.
+- `session_preferences.py` refines the ordinary planner's feasible baseline
+  without reducing its exact minutes or primary time/room quality. It considers
+  confirmed practice, retains required current opportunities and hard rules,
+  and cannot trade ready time for a future opening. A bounded search retains
+  the baseline on exhaustion. Weekly allocation keeps comfort below fairness,
+  useful time and room quality. Existing extension/upgrade safety is unchanged.
+- One hundred independent small comfort comparisons and the 55 focused
+  strategy/planning checks pass. Twenty desktop/phone-persistence/core checks
+  pass; Chromium/WebKit Save/reload/Cancel/conflict and 320/390px renders pass.
+  TypeScript, lint and the isolated phone build pass. No live settings changed.
+- The independent changing-week service tests production planning, extension
+  and ordinary upgrade decisions against occupancy, quota, horizon and peak
+  checks. Twenty-five synthetic weeks cover returned credit, cancellations and
+  pre-Save competition; the combined 41 week/policy/extension checks pass.
+  This complements, not replaces, the actual receipt/browser/recovery tests.
+- A full regression rerun is pending after avoiding unnecessary tracker reads
+  when optional comfort is off. Source is not activated yet. Continue the
+  broader audit in `docs/practice-preferences-stress-plan.md`, including exact
+  free-window preparation speed, dense-grid efficiency and final activation.
+
 ## 2026-09-20 simulation audit and daily peak accounting
 
 - Independent reference enumeration matches the production decisions in 828

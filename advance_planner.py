@@ -9,6 +9,7 @@ from datetime import date, datetime
 from fractions import Fraction
 
 from daily_planner import BookingOpportunity, select_day_plan, soft_time_value, opportunity_rank
+from session_preferences import comfort_key, enabled as comfort_enabled
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class AdvanceDay:
     remaining_peak_minutes: int
     held_target_minutes: int = 0
     held_quality_minutes: int = 0
+    existing_sessions: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ def allocate_advance_week(days, planning, *, now: datetime, budget_minutes: int,
                 target_minutes=capacity, allow_fragmented_sessions=allow_fragmented_sessions,
                 remaining_peak_minutes=day.remaining_peak_minutes,
                 same_room_gap_minutes=same_room_gap_minutes,
+                existing_sessions=day.existing_sessions,
                 # Equally suitable preferred-room time that is already open
                 # can be secured now, then upgraded through the existing path.
                 # Do not hold credit for an equivalent unopened alternative.
@@ -72,7 +75,8 @@ def allocate_advance_week(days, planning, *, now: datetime, budget_minutes: int,
                     *opportunity_rank(item, planning, now=now)))
             allocation = AdvanceAllocation(day.target_date, sessions)
             old = options.get(allocation.minutes)
-            if old is None or _quality(allocation.sessions) > _quality(old.sessions):
+            existing = {day.target_date: day.existing_sessions}
+            if old is None or _quality(allocation.sessions, planning, existing) > _quality(old.sessions, planning, existing):
                 options[allocation.minutes] = allocation
         menus.append(tuple(options.values()))
 
@@ -88,7 +92,7 @@ def allocate_advance_week(days, planning, *, now: datetime, budget_minutes: int,
             coverage.append(secured)
             sessions.extend(allocation.sessions)
         return (tuple(sorted(anchors)), tuple(sorted(targets)),
-                *_quality(sessions), tuple(coverage))
+                *_quality(sessions, planning, {d.target_date: d.existing_sessions for d in ordered}), tuple(coverage))
 
     # Multiple-choice knapsack. Sorted max-min coverage remains ordered when
     # the same later day is appended, so one best prefix per cost is sufficient.
@@ -108,10 +112,16 @@ def allocate_advance_week(days, planning, *, now: datetime, budget_minutes: int,
     return max(states.values(), key=score) if states else ()
 
 
-def _quality(sessions):
+def _quality(sessions, planning, existing_by_day):
+    comfort = [0, 0, 0]
+    for day in ({item.target_date for item in sessions} if comfort_enabled(planning) else ()):
+        schedule = (*existing_by_day.get(day, ()), *[(item.start_minutes, item.end_minutes, item.room)
+                    for item in sessions if item.target_date == day])
+        comfort = [a+b for a,b in zip(comfort, comfort_key(schedule, planning))]
     return (
         round(sum(soft_time_value(item.start_minutes, item.potential_minutes,
                                  item.soft_preferred_window) for item in sessions), 8),
         -sum(item.room_priority * item.potential_minutes for item in sessions),
+        *(-value for value in comfort),
         -len(sessions),
     )

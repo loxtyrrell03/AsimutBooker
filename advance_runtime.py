@@ -7,6 +7,7 @@ from booking_rules import load_booking_rules
 from booking_strategy import load_booking_strategy
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
+from session_preferences import tracker_sessions
 
 
 def _minutes(value):
@@ -108,7 +109,8 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
         days.append(AdvanceDay(day, target, confirmed,
             _quality_minutes(engine, tracker, day, rooms, day_preferences),
             tuple(opportunities), max(0, int(tracker.get_remaining_peak_minutes(day)
-                - peaks.get(day.isoformat(), 0))), held_target, int(quality_hold)))
+                - peaks.get(day.isoformat(), 0))), held_target, int(quality_hold),
+                tracker_sessions(tracker, day, planning)))
     budget = max(0, int(tracker.get_remaining_quota_hours()*60) - sum(targets.values()))
     allocations = allocate_advance_week(days, planning, now=now, budget_minutes=budget,
         minimum_block_minutes=engine.MINIMUM_BLOCK_MINUTES,

@@ -5,6 +5,7 @@ export type DailyPlanning = {
   minimum_later_options: number; fallback_lead_minutes: number;
   after_peak_mode: 'longest_first' | 'earliest_first' | 'room_first'; priority_mode: 'time_first' | 'room_first';
   upgrade_rooms: boolean; upgrade_freeze_hours: number;
+  preferred_block_minutes: number; preferred_rest_minutes: number; prefer_fewer_room_changes: boolean;
 };
 export type Preferences = {
   booking_rules: BookingRules;

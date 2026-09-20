@@ -140,16 +140,23 @@ def check(dist):
             assert '2026-10-02' in saved['disabled_dates']
             page.get_by_role('button', name='Booking strategy', exact=True).tap()
             expect(page.get_by_label('Improve booked rooms', exact=True)).to_be_checked()
-            expect(page.get_by_label('Stop upgrades before start (hours)', exact=True)).to_have_value('24')
+            expect(page.get_by_label('Stop upgrades before start (hours)', exact=True)).to_have_value('0')
+            page.get_by_label('Preferred block length', exact=True).select_option('60')
+            page.get_by_label('Preferred rest between sessions', exact=True).select_option('30')
+            page.get_by_label('Prefer fewer room changes', exact=True).check()
             page.get_by_label('Improve booked rooms', exact=True).uncheck()
             page.get_by_label('Stop upgrades before start (hours)', exact=True).fill('48')
             page.get_by_role('button', name='Save changes', exact=True).tap()
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
             daily = read_phone_preferences(settings)['booking_strategy']['daily_planning']
             assert daily['upgrade_rooms'] is False and daily['upgrade_freeze_hours'] == 48
+            assert daily['preferred_block_minutes'] == 60 and daily['preferred_rest_minutes'] == 30
+            assert daily['prefer_fewer_room_changes'] is True
             page.get_by_role('button', name='Booking strategy', exact=True).tap()
             expect(page.get_by_label('Improve booked rooms', exact=True)).not_to_be_checked()
             expect(page.get_by_label('Stop upgrades before start (hours)', exact=True)).to_have_value('48')
+            expect(page.get_by_label('Preferred block length', exact=True)).to_have_value('60')
+            expect(page.get_by_label('Preferred rest between sessions', exact=True)).to_have_value('30')
             for width in (320, 390):
                 page.set_viewport_size({'width': width, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

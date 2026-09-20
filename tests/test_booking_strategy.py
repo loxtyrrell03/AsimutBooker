@@ -60,6 +60,9 @@ class BookingStrategyValidationTests(unittest.TestCase):
                 "priority_mode": "room_first",
                 "upgrade_rooms": True,
                 "upgrade_freeze_hours": 0,
+                "preferred_block_minutes": 60,
+                "preferred_rest_minutes": 30,
+                "prefer_fewer_room_changes": True,
             },
         }
 

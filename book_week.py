@@ -14,6 +14,7 @@ Usage:
 
 from date_time_preferences import with_date_overrides, resolve_time_preferences
 from booking_rules import load_booking_rules
+from session_preferences import tracker_sessions
 from operation_control import OperationStopped, operation_stage, report_available_gaps
 
 import re
@@ -7394,6 +7395,7 @@ def build_display_day_plan(
             0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
         ),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+        existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
     )
     # The planner returns members in desirability order. Runtime can act only
     # on unlocked members, so preserve that order within each group while
@@ -7431,6 +7433,7 @@ def build_display_day_plan(
                 0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
             ),
             same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+            existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
             required_opportunity=decision.selected,
         )
         selected_plan = tuple(
@@ -7656,6 +7659,7 @@ def build_legacy_display_day_plan(
             0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
         ),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
+        existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
         rank_key=rank_key,
     )
     if selection_minutes < MINIMUM_BLOCK_MINUTES:

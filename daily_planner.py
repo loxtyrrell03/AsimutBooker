@@ -581,6 +581,24 @@ def choose_horizon_opportunity(
 
 
 def select_day_plan(
+    opportunities, planning, *, now, target_minutes, allow_fragmented_sessions,
+    remaining_peak_minutes=None, same_room_gap_minutes=0, rank_key=None,
+    required_opportunity=None, existing_sessions=(),
+):
+    """Keep primary booking coverage, then refine optional session comfort."""
+    from session_preferences import refine_plan
+    opportunities = tuple(opportunities)
+    baseline = _select_day_plan(opportunities, planning, now=now,
+        target_minutes=target_minutes, allow_fragmented_sessions=allow_fragmented_sessions,
+        remaining_peak_minutes=remaining_peak_minutes, same_room_gap_minutes=same_room_gap_minutes,
+        rank_key=rank_key, required_opportunity=required_opportunity)
+    return refine_plan(baseline, opportunities, planning, now=now,
+        remaining_peak_minutes=remaining_peak_minutes, same_room_gap_minutes=same_room_gap_minutes,
+        allow_fragmented_sessions=allow_fragmented_sessions, rank_key=rank_key,
+        required_opportunity=required_opportunity, existing_sessions=existing_sessions)
+
+
+def _select_day_plan(
     opportunities: Iterable[BookingOpportunity],
     planning,
     *,
