@@ -46,6 +46,12 @@
   and an unchanged-duration room-edit check both explicitly refused quota.
   This does not claim the requested future week was filled. Private evidence is
   ignored under `artifacts/recovery-20260920/`; no physical-phone check was made.
+- A later idle phone host stopped answering both HTTPS and loopback requests.
+  No booking/assistant worker or unresolved receipt was active. Reloading only
+  its existing task under both mutation locks restored the exact session and
+  rendered app; conversation/request-ledger hashes, settings and routes were
+  preserved. The cause of that isolated host stall was not established; if it
+  recurs, inspect the owned server process rather than changing shared hosting.
 
 ## 2026-09-17 revised college quotas and free horizon (superseded by presets above)
 
