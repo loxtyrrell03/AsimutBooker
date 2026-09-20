@@ -1,3 +1,24 @@
+## 2026-09-20 preferences and prepared-window activation
+
+- Activated the verified source in the canonical scheduled-worker checkout and
+  deployed phone shell `20260920-session-preferences` through the existing idle
+  phone task under the assistant mutation and Booker runtime locks. Only the
+  existing recurring trigger's start moved one minute earlier (07:13 to 07:12);
+  interval, action, ownership, enabled state and all other task fields stayed.
+- Settings, history, receipts, browser state, service configuration and every
+  Serve handler were preserved. The canonical origin remains
+  `https://lox-pc.tail89d19b.ts.net:10443/`. Existing desktop sessions are retained;
+  reopen them to load new in-process controls and assistant contract revision 8.
+- Exact HTTPS deployment/session/bootstrap and connected My Week/settings pass.
+  New controls retain Automatic/no-rest-preference/off defaults; saved primary
+  choices remain intact. PC Chromium checks cover 320/390px, keyboard and touch
+  help, dismissal and viewport bounds. This is not physical-phone evidence.
+- An authenticated, write-blocked production plan refreshed eight date grids,
+  quota and the same 12 agenda events; preferences are unchanged, the plan is
+  current and no receipt is pending. No new real reservation or competitive
+  boundary Save was made by these checks. Private evidence and the prior phone
+  shell are retained under ignored `artifacts/practice-preferences-20260920/`.
+
 ## 2026-09-20 completed comfort and week stress audit
 
 - Dense comfort refinement first tries preferred lengths and prunes options

@@ -76,3 +76,20 @@ on/off can lead to different later outcomes as competitors react to availability
 the guarantee is no sacrificed primary value in the current feasible decision,
 not global optimality against unknown future bookings. Unfilled targets remain
 unfilled rather than being represented as reserved time.
+
+## Final verification and activation
+
+All 1,440 Python tests, 19 phone Node checks, TypeScript and lint pass. The
+phone build passes offline-shell validation and Chromium/WebKit settings
+Save/reload/Cancel/conflict checks. The verified source is active in the canonical
+worker and phone shell `20260920-session-preferences` is deployed on the existing
+private origin. Only the recurring task's start moved from 07:13 to 07:12;
+the five-minute interval and other task/service settings were retained.
+
+Fresh authenticated read-only verification refreshed eight date grids and quota,
+preserved all 12 agenda events, and produced a current plan with no pending
+receipt. Every non-check site write was blocked for that verification. The
+deployed session/data API and 320/390px connected settings pass, including touch
+and keyboard help. Saved preferences, private state and hosting routes were
+preserved. These checks do not establish physical-phone operation or a live
+competitive Save at an actual opening.
