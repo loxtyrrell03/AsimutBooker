@@ -16,6 +16,19 @@
   (including the added soft-time-versus-room-priority case) and 53 desktop
   preference/scheduler checks. This is source and fixture evidence; activation
   and actual booking outcomes must be verified independently.
+- Activated in the canonical worker checkout and selected the new policy. An
+  exact comparison proved every other saved setting unchanged. Only the
+  existing recurring trigger's interval changed to PT5M; task ownership,
+  action, operating window, overlap protection and all Serve routes remained.
+  The idle phone backend was reloaded under both mutation/runtime locks.
+- A real scheduled-worker invocation completed successfully with the new
+  policy and daily-practice path. No eligible same-day slot was available;
+  it created no booking. Fresh complete agenda evidence retained all 12 events
+  (10 reservations), with no pending receipt. Private HTTPS deployment/session
+  checks and connected 320/390px phone rendering passed. This is PC-browser
+  evidence, not physical-phone or successful new-policy live-edit proof.
+  Existing desktop windows need reopening to load new in-process code. Private
+  activation and comparison evidence is ignored in `artifacts/recovery-20260920/`.
 
 ## 2026-09-20 category recovery and selectable quota policy
 
