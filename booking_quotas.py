@@ -12,7 +12,7 @@ from room_catalog import ASIMUT_ORIGIN, SITE_TIMEZONE, _api_json, _format_site_i
 ROLLING_QUOTA_HOURS = 6
 PEAK_QUOTA_MINUTES = 60
 FREE_HORIZON_MINUTES = 300
-RULES_REVISION = '2026-09-17'
+RULES_REVISION = '2026-09-20-presets'
 
 
 class QuotaPolicyError(RuntimeError):

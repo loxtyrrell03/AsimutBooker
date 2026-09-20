@@ -1,4 +1,26 @@
-## 2026-09-17 revised college quotas and free horizon
+## 2026-09-20 category recovery and selectable quota policy
+
+- ASIMUT added a permitted chamber category requiring 3-7 participants. Category
+  discovery now excludes groups that cannot admit one participant, while still
+  rejecting ambiguous individual categories. The first observed scheduled
+  discovery failure was 17 September at 15:58; later runs exited before scans.
+- Policy-discovery and unexpected worker failures now reach failed run history,
+  retaining earlier verified actions. They no longer leave the app showing only
+  a prior successful run. The full 1,347-test Python suite passes.
+- `booking_rules.py` owns saved new (6h/60min peak), legacy (28h/120min peak)
+  and validated custom quota presets. Both built-ins retain the currently tested
+  five-hour free window; legacy means previous quota ceilings, not an assertion
+  that ASIMUT still grants them. Horizons/access/durations and final Save approval
+  remain live. Rule edits invalidate plans and veto in-flight saves on drift.
+  Worker, extensions, upgrades, explicit time edits, phone preferences and
+  assistant context share the selected policy; contract revision is 5.
+- Live read-only checks on 20 September showed the information page still
+  advertising previous quotas, but the actual account balance was zero and
+  future booking checks explicitly refused quota. Never bypass those checks or
+  use the chamber category to obtain solo practice. Activation and actual booking
+  outcomes are recorded separately below; offline tests do not prove a booking.
+
+## 2026-09-17 revised college quotas and free horizon (superseded by presets above)
 
 - Advance quota is six hours, with at most one weekday peak hour (09:00-16:00).
   Live room/global horizons and duration limits remain authoritative; the live

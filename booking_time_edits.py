@@ -64,7 +64,8 @@ def time_edit_from_receipt(receipt):
     return BookingTimeEdit(original, new)
 
 
-def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=()):
+def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=(),
+                       peak_limit=None, peak_start=540, peak_end=960):
     """Validate current agenda and any newly occupied room time before editing.
 
     All other personal events block a move, including ignored planner conflicts.
@@ -106,9 +107,10 @@ def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=()):
         return
     if b.day.weekday() < 5:
         peak = sum(interval_overlap_minutes(clock_minutes(e["startTime"]), clock_minutes(e["endTime"]),
-                                             540, 960) for e in other if e.get("isReservation") is True)
-        if peak + interval_overlap_minutes(b.start, b.end, 540, 960) > MAX_PEAK_MINUTES:
-            raise ValueError("The shift would exceed the one-hour weekday peak allowance")
+                                             peak_start, peak_end) for e in other if e.get("isReservation") is True)
+        limit = MAX_PEAK_MINUTES if peak_limit is None else peak_limit
+        if peak + interval_overlap_minutes(b.start, b.end, peak_start, peak_end) > limit:
+            raise ValueError(f"The shift would exceed the weekday peak allowance ({limit:g} minutes)")
     bounds = policy.site_clock_offset_bounds
     if bounds is None:
         raise ValueError("The site's current booking clock is unavailable")
@@ -167,7 +169,9 @@ def run_time_edit(engine, page, args, settings, policy):
                 engine.wait_for_practice_room_grid(check_page, edit.original.day)
                 gaps = engine.get_available_slots(check_page)
             validate_time_edit(edit, events=tracker.agenda_events, policy=policy,
-                               now=datetime.now().astimezone(), gaps=gaps, blackouts=blackouts)
+                               now=datetime.now().astimezone(), gaps=gaps, blackouts=blackouts,
+                               peak_limit=engine.MAX_PEAK_HOURS * 60,
+                               peak_start=engine.PEAK_START * 60, peak_end=engine.PEAK_END * 60)
             return True
         finally:
             check_page.close()

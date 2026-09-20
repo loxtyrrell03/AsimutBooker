@@ -19,7 +19,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
     planning = engine.load_booking_strategy_preferences(settings).daily_planning
     now = datetime.now()
     days = tuple(day for day in engine.booking_window_dates(now.date())
-                 if now.date() <= day <= (now + timedelta(hours=5)).date()
+                 if now.date() <= day <= (now + timedelta(minutes=engine.FREE_HORIZON_MINUTES)).date()
                  and not engine.is_date_disabled(day, disabled)
                  and (not args.only_date or day.isoformat() == args.only_date))
     def open_day(day, today):
@@ -32,7 +32,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
     for _ in range(10):
         if args.max_actions is not None and total_actions >= args.max_actions:
             break
-        operation_stage('Checking available rooms in the next five hours…')
+        operation_stage(f'Checking rooms in the next {engine.FREE_HORIZON_MINUTES / 60:g} hours…')
         now = datetime.now()
         planning_context = {}
         targets, peak_holds, _ = engine.refresh_extension_capacity_holds(

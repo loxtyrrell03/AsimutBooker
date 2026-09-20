@@ -13,6 +13,7 @@ Usage:
 """
 
 from date_time_preferences import with_date_overrides, resolve_time_preferences
+from booking_rules import load_booking_rules
 from operation_control import OperationStopped, operation_stage, report_available_gaps
 
 import re
@@ -415,6 +416,20 @@ def install_live_room_policy(policy, *, today=None):
     )
     ASIMUT_OVERVIEW_URL = policy.overview_url
     return policy
+
+
+def install_booking_rules(settings):
+    """Install the saved preset at run start; server approval remains mandatory."""
+    global MAX_ROLLING_QUOTA_HOURS, MAX_PEAK_HOURS, FREE_HORIZON_MINUTES, PEAK_START, PEAK_END
+    rules = load_booking_rules(settings)
+    MAX_ROLLING_QUOTA_HOURS = rules.rolling_quota_hours
+    MAX_PEAK_HOURS = rules.peak_quota_minutes / 60
+    FREE_HORIZON_MINUTES = rules.free_horizon_minutes
+    PEAK_START, PEAK_END = rules.peak_start_minutes / 60, rules.peak_end_minutes / 60
+    print(f'Booking rules: {rules.preset}; {MAX_ROLLING_QUOTA_HOURS:g}h advance, '
+          f'{rules.peak_quota_minutes}min peak, {FREE_HORIZON_MINUTES}min free horizon. '
+          'Live ASIMUT limits can be lower.')
+    return rules
 
 
 def require_live_room_policy():
@@ -4603,7 +4618,8 @@ def try_extend_booking(
 
         # The complete edited interval, including its original start, must
         # fit inside the free horizon; an extension tail alone cannot qualify.
-        free_capacity = free_horizon_hours(booking_date, start_hour, now=extension_now)
+        free_capacity = free_horizon_hours(booking_date, start_hour, now=extension_now,
+                                          horizon_minutes=FREE_HORIZON_MINUTES)
         remaining_quota_hours = max(tracker.get_remaining_quota_hours(),
             max(0, start_hour + free_capacity - current_end_hour) if free_capacity else 0)
         if extension_hours > remaining_quota_hours:
@@ -4816,7 +4832,7 @@ def calculate_target_hours_for_day(
     target_date,
     enabled_dates,
     tracker,
-    total_quota=MAX_ROLLING_QUOTA_HOURS,
+    total_quota=None,
     practice_plan=None,
 ):
     """
@@ -4847,6 +4863,7 @@ def calculate_target_hours_for_day(
         max_bookings = max_bookings_for_budget(target_hours) or 0
         return target_hours, min(max_bookings, 24)
 
+    total_quota = MAX_ROLLING_QUOTA_HOURS if total_quota is None else total_quota
     # Calculate ideal hours per day for even distribution
     ideal_per_day = total_quota / len(enabled_dates)
 
@@ -6782,7 +6799,8 @@ def build_day_booking_opportunities(
                 if free_horizon_only:
                     if target_date == now.date():
                         segment_start = max(segment_start, (today_minutes // 15 + 1) / 4)
-                    free_hours = free_horizon_hours(target_date, segment_start, now=now)
+                    free_hours = free_horizon_hours(target_date, segment_start, now=now,
+                                                    horizon_minutes=FREE_HORIZON_MINUTES)
                     segment_end = min(segment_end, segment_start + free_hours)
                     if (segment_end - segment_start) * 60 < MINIMUM_BLOCK_MINUTES:
                         continue
@@ -9815,7 +9833,7 @@ def calculate_extension_capacity_holds(
 
         remaining = max(0, target_end - current_end)
         free_capacity = max(0, int((start_hour + free_horizon_hours(
-            target_date, start_hour, now=now) - current_end / 60) * 60))
+            target_date, start_hour, now=now, horizon_minutes=FREE_HORIZON_MINUTES) - current_end / 60) * 60))
         booking_capacity = max(remaining_weekly, free_capacity)
         if remaining < 15 or booking_capacity < 15:
             continue
@@ -12517,6 +12535,7 @@ def _load_and_validate_runtime_settings():
     """Load every safety-relevant block once and fail closed before Playwright."""
 
     settings = load_settings_document(settings_file)
+    load_booking_rules(settings)
     disabled_dates = load_disabled_dates(settings)
     for value in disabled_dates:
         try:
@@ -12649,6 +12668,7 @@ def main(argv=None):
             print("Another AsimutBooker run is already active; this run did not refresh data.")
             return 6
         with booking_preference_run(settings_file, settings):
+            install_booking_rules(settings)
             result = run_booking(args, settings, practice_plan, room_preferences) or 0
             return result or (1 if extension_failures else 0)
     except KeyboardInterrupt:
@@ -12673,7 +12693,8 @@ def main(argv=None):
         return 4
     except (RoomCatalogError, LiveRoomPolicyError) as exc:
         print(f"ERROR: Live room policy could not be verified: {exc}")
-        print("Autonomous booking stopped before any room mutation.")
+        save_history(len(completed_details), 0,
+                     [f'Booking paused: {exc}', *completed_details], outcome='failed')
         return 4
     except SettingsError as exc:
         print(f"Booking stopped: {exc}")
@@ -12696,6 +12717,8 @@ def main(argv=None):
         return 5
     except Exception as exc:
         print(f"ERROR: Booking run failed safely: {exc}")
+        save_history(len(completed_details), 0,
+                     [f'Booking run failed: {exc}', *completed_details], outcome='failed')
         return 1
     finally:
         runtime_lock.release()

@@ -92,6 +92,7 @@ _FINGERPRINT_SETTINGS_KEYS = (
     "room_preferences",
     "ignored_events",
     "extendable_bookings",
+    "booking_rules",
 )
 
 ADVANCED_CONFIG_FILE = APP_DIR / "config" / "config.yaml"

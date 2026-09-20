@@ -1,5 +1,19 @@
 # Current college booking rules
 
+Choose **Booking rules** in desktop or phone Settings. **Previous quotas** uses
+28 advance hours and 120 weekday peak minutes; **New quotas** uses six advance
+hours and 60 weekday peak minutes. **Custom quotas** lets you edit both quotas,
+the free window and weekday peak times. Saving applies to subsequent runs and
+invalidates old plans; an in-flight Save stops if its rules have changed.
+
+The selected values are local ceilings. ASIMUT may already enforce stricter
+limits, even while its information page still describes the previous rules.
+Its live available quota and exact booking checks remain mandatory. Both
+built-in presets retain the five-hour free window tested on the current site.
+The previous-quota preset does not promise the historical policy is still active.
+
+The examples below describe the **New quotas** preset.
+
 The college's September 2026 rules allow six hours of advance reservations
 within a seven-day rolling horizon, one hour per weekday during peak time
 (09:00-16:00), and bookings lasting 30-120 minutes. Room-specific access and
@@ -31,9 +45,8 @@ over-limit reservation if peak usage does not increase and ASIMUT approves it.
 Consolidation and progressive transfers still require their intermediate and
 final quota checks. An uncertain Save always stops for reconciliation.
 
-Quota and horizon observations update automatically. The six-hour, one-hour
-and five-hour policy limits above are explicit college rules; an unknown new
-quota type pauses booking for review. Older configuration files cannot raise
-the college's rolling or peak caps. Cached plans made under old rules are
+Quota and horizon observations update automatically. Saved quota presets take
+precedence over historical YAML quota values; an unknown new quota type pauses
+booking for review. Cached plans made under different rules are
 marked stale, and the assistant starts a fresh reasoning context while keeping
 the transcript.

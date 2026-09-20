@@ -34,7 +34,7 @@ class TimeEditValidationTests(unittest.TestCase):
 
     def test_new_peak_limit_rejects_two_hour_shift_but_allows_offpeak_shift(self):
         with mock.patch('booking_time_edits.MAX_PEAK_MINUTES', 60):
-            with self.assertRaisesRegex(ValueError, 'one-hour'):
+            with self.assertRaisesRegex(ValueError, '60 minutes'):
                 self.validate()
             self.edit = requested_time_edit(self.old, mode='shift_later', minutes=195)
             self.validate()
@@ -197,6 +197,8 @@ class TimeEditRuntimeTests(unittest.TestCase):
         self.addCleanup(peak_patch.stop)
         TimeEditValidationTests.setUp(self)
         self.engine = mock.Mock()
+        self.engine.MAX_PEAK_HOURS = 2
+        self.engine.PEAK_START, self.engine.PEAK_END = 9, 16
         self.engine.BookingVerificationError = engine.BookingVerificationError
         self.engine.list_pending_mutation_receipts.return_value = []
         self.engine.load_rebooking_blackouts.return_value = ()

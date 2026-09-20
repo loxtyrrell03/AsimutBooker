@@ -479,7 +479,7 @@ def parse_session_context(payload: Any, observed_at: datetime) -> SessionPolicy:
 
 
 def parse_booking_category(payload: Any) -> int:
-    """Select the one live, user-visible category governed by quota+horizon."""
+    """Select a permitted individual category, never a group reservation."""
 
     response = _response_object(payload, "categories")
     _require_success(response, "categories", True)
@@ -506,6 +506,15 @@ def parse_booking_category(payload: Any) -> int:
             and enabled("publicevent_usehorizons")
             and enabled("publicevent_usequotas")
         ):
+            # ASIMUT can also expose chamber/group categories to a student.
+            # Their participant minimum cannot describe this solo booking.
+            minimum = item.get("publicevent_min_participants", 1)
+            maximum = item.get("publicevent_max_participants", 1)
+            if type(minimum) is not int or minimum < 0 or (
+                    maximum is not None and (type(maximum) is not int or maximum < minimum)):
+                raise RoomCatalogError("Booking category has invalid participant limits")
+            if minimum > 1 or maximum is not None and maximum < 1:
+                continue
             candidates.append(category_id)
     if len(candidates) != 1:
         raise RoomCatalogError(

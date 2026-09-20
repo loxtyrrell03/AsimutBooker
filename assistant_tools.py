@@ -27,6 +27,7 @@ from app_settings import (
     InterProcessFileLock,
     SettingsError,
     update_settings,
+    load_settings,
 )
 from assistant_context import LOCAL_TIMEZONE, ContextPaths, build_assistant_context
 from assistant_plans import AssistantPlanError, apply_future_practice_plan
@@ -38,7 +39,7 @@ from booking_blackouts import (
     subtract_rebooking_blackout,
 )
 from booking_plan import BookingPlanError, clear_booking_plan
-from booking_quotas import PEAK_QUOTA_MINUTES
+from booking_rules import load_booking_rules
 from booking_strategy import (
     BookingStrategyError,
     apply_booking_strategy_update,
@@ -1747,7 +1748,7 @@ class BookerToolSurface:
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
                 "ranking": "best feasible non-overlapping sessions from current preferences",
-                "weekday_peak_minutes_maximum": PEAK_QUOTA_MINUTES,
+                "weekday_peak_minutes_maximum": load_booking_rules(load_settings(self.paths.settings)).peak_quota_minutes,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": [
                     item["date"]
@@ -1854,7 +1855,7 @@ class BookerToolSurface:
             "session_planning": {
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
-                "weekday_peak_minutes_maximum": PEAK_QUOTA_MINUTES,
+                "weekday_peak_minutes_maximum": load_booking_rules(load_settings(self.paths.settings)).peak_quota_minutes,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": sorted(set(multi_session_dates)),
             },

@@ -459,6 +459,16 @@ class SessionPolicyTests(unittest.TestCase):
 
 
 class LiveResponseParserTests(unittest.TestCase):
+    def test_group_booking_category_does_not_block_individual_practice(self):
+        payload = category_payload()
+        payload['response']['categories'][0].update(publicevent_min_participants=1, publicevent_max_participants=1)
+        group = payload['response']['categories'][1]
+        group.update(publicevent_usequotas='true', publicevent_min_participants=3, publicevent_max_participants=7)
+        self.assertEqual(parse_booking_category(payload), 56)
+        group['publicevent_min_participants'] = 1
+        with self.assertRaises(RoomCatalogError):
+            parse_booking_category(payload)
+
     def test_dynamic_booking_category_is_selected_without_id_hardcode(self):
         payload = category_payload()
         payload["response"]["categories"][0]["id"] = 904

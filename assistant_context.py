@@ -17,6 +17,7 @@ from agenda_snapshot import AGENDA_SNAPSHOT_FILE, read_agenda_snapshot
 from assistant_calendar import calendar_day
 from app_settings import SETTINGS_FILE, SettingsError, load_settings
 from date_time_preferences import load_date_time_preferences
+from booking_rules import describe_booking_rules
 from assistant_plans import load_assistant_plans
 from booking_blackouts import load_rebooking_blackouts
 from booking_plan import PLAN_FILE, booking_plan_fingerprint, read_booking_plan
@@ -450,8 +451,16 @@ def _recent_history(path: Path, *, limit: int = 20) -> dict[str, Any]:
     return {"available": True, "runs": runs}
 
 
+def _app_context(paths):
+    try:
+        rules = {**APP_CAPABILITIES['rules'], **describe_booking_rules(load_settings(paths.settings))}
+    except SettingsError:
+        rules = {'status':'Saved booking rules are unavailable; refresh settings before advising on quotas.'}
+    return {**APP_CAPABILITIES, 'rules': rules}
+
+
 _SECTION_BUILDERS = {
-    "app": lambda paths: APP_CAPABILITIES,
+    "app": _app_context,
     "preferences": lambda paths: _settings_context(paths.settings),
     "agenda": lambda paths: _agenda_context(paths.agenda, paths.catalog),
     "plan": lambda paths: _plan_context(paths.plan, paths.settings),
