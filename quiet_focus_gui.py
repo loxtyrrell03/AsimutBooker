@@ -220,14 +220,15 @@ class QuietFocusGUI:
         self.settings_tiles={}
         specs=(('Practice target','Daily target'),('Preferred time','Preferred times'),
                ('Booking days','Practice dates'),('Rooms','Rooms'),
-               ('Booking strategy','Booking strategy'),('Automatic booking','Automatic booking'))
+               ('Booking strategy','Booking strategy'),('Advance quota','Advance quota'),
+               ('Automatic booking','Automatic booking'))
         for i,(key,title) in enumerate(specs):
-            tile=RoundedCard(self.settings_hub,fill=WHITE,padding=18,width=1)
+            tile=RoundedCard(self.settings_hub,fill=WHITE,padding=12,width=1)
             tile.grid(row=i//2,column=i%2,sticky='nsew',padx=(0,8) if i%2==0 else (8,0),pady=8)
             button=ttk.Button(tile.content,text=title+'  ›',style='Hub.TButton',command=lambda k=key:self._open_settings_group(k))
             button.pack(fill='x')
             summary=label(tile.content,size=13,color=MUTED,wraplength=330)
-            summary.pack(fill='x',pady=(10,2))
+            summary.pack(fill='x',pady=(8,2))
             summary.bind('<Button-1>',lambda _event,k=key:self._open_settings_group(k))
             self.settings_tiles[key]=(tile,summary,button)
         self.settings_hub.bind('<Configure>',self._layout_settings_hub)
@@ -249,11 +250,15 @@ class QuietFocusGUI:
                    'Booking days':'Choose dates and daily overrides',
                    'Rooms':'Room priority, requirements and sessions',
                    'Booking strategy':'When to wait and when to book',
+                   'Advance quota':'Rooms, periods and how to share your hours',
                    'Automatic booking':self.quiet_health_var.get()}
         for key,(_,summary,_) in self.settings_tiles.items(): summary.configure(text=summaries[key])
         self.settings_scroll.canvas.yview_moveto(0)
 
     def _open_settings_group(self,key):
+        if key == 'Advance quota':
+            self.show_advance_quota_dialog()
+            return
         self.settings_hub.pack_forget()
         self.settings_back.pack(anchor='w',pady=8,before=self.settings_links)
         for card in self.settings_sections.values(): card.grid_remove()

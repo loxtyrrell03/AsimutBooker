@@ -48,6 +48,8 @@ def check(dist):
                                 body = save_phone_preferences(writes[-1], settings)
                             except PreferenceConflict as error:
                                 status, body = 409, {'message': str(error)}
+                            except ValueError as error:
+                                status, body = 400, {'message': str(error)}
                         else:
                             body = read_phone_preferences(settings)
                     elif path == '/api/v1/session':
@@ -157,11 +159,47 @@ def check(dist):
             expect(page.get_by_label('Stop upgrades before start (hours)', exact=True)).to_have_value('48')
             expect(page.get_by_label('Preferred block length', exact=True)).to_have_value('60')
             expect(page.get_by_label('Preferred rest between sessions', exact=True)).to_have_value('30')
+            page.get_by_role('button', name='Cancel', exact=True).tap()
+            page.get_by_role('button', name='Advance quota', exact=True).tap()
+            page.get_by_label('Distribution', exact=True).select_option('weighted')
+            page.get_by_text('Rooms and time periods', exact=True).tap()
+            page.get_by_label('Rooms to use', exact=True).select_option('selected')
+            page.get_by_label('Add advance room', exact=True).select_option('B0.29')
+            page.get_by_role('button', name='Add time period', exact=True).tap()
+            page.get_by_label('start for period 1', exact=True).fill('16:00')
+            page.get_by_label('end for period 1', exact=True).fill('18:00')
+            page.get_by_text('Day priorities and limits', exact=True).tap()
+            page.get_by_label('Monday priority', exact=True).fill('2')
+            page.get_by_label('Tuesday priority', exact=True).fill('0')
+            page.get_by_label('Monday advance limit (minutes)', exact=True).fill('120')
+            page.get_by_text('Waiting and credit reserve', exact=True).tap()
+            page.get_by_label('Keep advance credit unused (minutes)', exact=True).fill('60')
+            page.get_by_label('Plan for rooms whose booking window opens later', exact=True).uncheck()
+            page.get_by_label('Release credit for last-minute practice (minutes before start)', exact=True).fill('90')
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
+            advance = read_phone_preferences(settings)['advance_quota']
+            assert advance['distribution'] == 'weighted' and advance['day_weights'][:2] == [2, 0]
+            assert advance['room_order'] == ['B0.29'] and advance['periods'][0]['start'] == '16:00'
+            assert advance['reserve_minutes'] == 60 and advance['fallback_lead_minutes'] == 90
+            assert not advance['wait_for_opening'] and advance['day_caps_minutes'][0] == 120
+            page.get_by_role('button', name='Advance quota', exact=True).tap()
+            expect(page.get_by_label('Distribution', exact=True)).to_have_value('weighted')
+            for title in ('Rooms and time periods', 'Day priorities and limits', 'Waiting and credit reserve'):
+                page.get_by_text(title, exact=True).tap()
+            # Backend errors retain the draft and permit correction.
+            page.get_by_role('button', name='Add time period', exact=True).tap()
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Periods on the same weekday must not overlap', exact=True)).to_be_visible()
+            page.get_by_role('button', name='Remove period 2', exact=True).tap()
             for width in (320, 390):
                 page.set_viewport_size({'width': width, 'height': 844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            shot = dist.parent / f'upgrade-settings-{engine}.png'
+            shot = dist.parent / f'advance-settings-{engine}.png'
             page.screenshot(path=shot, full_page=True)
+            count = len(writes)
+            page.get_by_role('button', name='Cancel', exact=True).tap()
+            assert len(writes) == count
             assert not errors, errors
             browser.close()
             print(f'PASS {engine}: all four editors, persistence, Cancel, stale-save rejection, reload; no live actions')

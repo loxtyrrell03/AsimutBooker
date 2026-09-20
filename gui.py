@@ -4790,6 +4790,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         """Handle changes to booking strategy settings."""
         self.save_strategy_settings()
 
+    @reuse_detail('advance_quota')
+    def show_advance_quota_dialog(self):
+        from advance_quota_gui import show_editor
+        return show_editor(self)
+
     @reuse_detail('strategy')
     def show_booking_strategy_dialog(self):
         """Edit the forward-looking daily planner without exposing raw JSON."""

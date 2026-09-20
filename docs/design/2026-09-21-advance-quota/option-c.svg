@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1550" viewBox="0 0 1500 1550">
+<rect width="1500" height="1550" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif;fill:#1d2430} .muted{fill:#667080} .blue{fill:#0868d9}</style>
+<text x="34" y="44" font-size="29" class="" font-weight="600">C · Week allocation</text>
+<text x="34" y="75" font-size="17" class="muted" font-weight="400">Start from a seven-day allowance view, then edit each day and its priorities.</text>
+<text x="34" y="101" font-size="14" class="muted" font-weight="400">DESIGN PROPOSAL · All bookings, balances and availability below are invented examples.</text>
+<rect x="28" y="125" width="1010" height="680" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="55" y="167" font-size="22" class="" font-weight="600">Asimut</text>
+<text x="350" y="167" font-size="16" class="blue" font-weight="400">Today      My Week      Calendar      Assistant      Settings</text>
+<text x="68" y="225" font-size="30" class="" font-weight="600">Advance quota</text>
+<text x="68" y="255" font-size="16" class="muted" font-weight="400">Use your rolling allowance for the practice that matters most.</text>
+<text x="68" y="299" font-size="20" class="" font-weight="600">Plan your allowance</text>
+<rect x="68" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="83" y="359" font-size="18" class="" font-weight="600">Mon</text>
+<rect x="77" y="380" width="98" height="67" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="90" y="420" font-size="24" class="blue" font-weight="600">2h</text>
+<text x="79" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<rect x="196" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="211" y="359" font-size="18" class="" font-weight="600">Tue</text>
+<text x="207" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<rect x="324" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="339" y="359" font-size="18" class="" font-weight="600">Wed</text>
+<rect x="333" y="380" width="98" height="67" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="346" y="420" font-size="24" class="blue" font-weight="600">2h</text>
+<text x="335" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<rect x="452" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="467" y="359" font-size="18" class="" font-weight="600">Thu</text>
+<text x="463" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<rect x="580" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="595" y="359" font-size="18" class="" font-weight="600">Fri</text>
+<rect x="589" y="380" width="98" height="67" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="602" y="420" font-size="24" class="blue" font-weight="600">2h</text>
+<text x="591" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<rect x="708" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="723" y="359" font-size="18" class="" font-weight="600">Sat</text>
+<text x="719" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<rect x="836" y="325" width="116" height="178" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="851" y="359" font-size="18" class="" font-weight="600">Sun</text>
+<text x="847" y="482" font-size="14" class="blue" font-weight="400">Set limits ›</text>
+<text x="68" y="554" font-size="21" class="" font-weight="600">Selected day · Monday</text>
+<text x="68" y="591" font-size="16" class="" font-weight="400">Advance maximum  ?</text>
+<rect x="68" y="603" width="270" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="80" y="630" font-size="16" class="" font-weight="400">2 hours</text>
+<text x="314" y="630" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="366" y="591" font-size="16" class="" font-weight="400">Priority  ?</text>
+<rect x="366" y="603" width="270" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="378" y="630" font-size="16" class="" font-weight="400">High</text>
+<text x="612" y="630" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="664" y="591" font-size="16" class="" font-weight="400">Preferred periods  ?</text>
+<rect x="664" y="603" width="299" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="676" y="630" font-size="16" class="" font-weight="400">16:00–18:00</text>
+<text x="939" y="630" font-size="16" class="blue" font-weight="400">⌄</text>
+<rect x="68" y="735" width="180" height="42" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="84" y="762" font-size="16" class="blue" font-weight="400">Save changes</text>
+<rect x="266" y="735" width="110" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="282" y="762" font-size="16" class="" font-weight="400">Cancel</text>
+<text x="530" y="761" font-size="14" class="muted" font-weight="400">Applies to future decisions; keeps existing bookings.</text>
+<rect x="1070" y="125" width="390" height="680" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1090" y="165" font-size="21" class="" font-weight="600">Asimut</text>
+<text x="1090" y="195" font-size="16" class="blue" font-weight="400">Settings  ›  Advance quota</text>
+<text x="1090" y="243" font-size="27" class="" font-weight="600">Advance quota</text>
+<rect x="1090" y="300" width="350" height="67" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1105" y="326" font-size="17" class="" font-weight="600">Monday</text>
+<text x="1105" y="352" font-size="15" class="blue" font-weight="400">2 hours · high priority  ›</text>
+<rect x="1090" y="380" width="350" height="67" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1105" y="406" font-size="17" class="" font-weight="600">Tuesday</text>
+<text x="1105" y="432" font-size="15" class="blue" font-weight="400">No advance allocation  ›</text>
+<rect x="1090" y="460" width="350" height="67" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1105" y="486" font-size="17" class="" font-weight="600">Wednesday</text>
+<text x="1105" y="512" font-size="15" class="blue" font-weight="400">2 hours · high priority  ›</text>
+<rect x="1090" y="562" width="350" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1106" y="589" font-size="16" class="" font-weight="400">Rooms and periods                      ›</text>
+<rect x="1090" y="618" width="350" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1106" y="645" font-size="16" class="" font-weight="400">Other days                                    ›</text>
+<rect x="1090" y="730" width="220" height="42" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="1106" y="757" font-size="16" class="blue" font-weight="400">Save changes</text>
+<rect x="1322" y="730" width="118" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1338" y="757" font-size="16" class="" font-weight="400">Cancel</text>
+<text x="34" y="850" font-size="25" class="" font-weight="600">Details, setup and states · shared by this proposal</text>
+<rect x="28" y="878" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="50" y="912" font-size="20" class="" font-weight="600">Room detail / first setup</text>
+<text x="50" y="945" font-size="15" class="muted" font-weight="400">Start with current top two rooms, or choose any allowed rooms.</text>
+<text x="50" y="973" font-size="15" class="muted" font-weight="400">Rank Weston, Corus and your own alternatives with Up / Down.</text>
+<text x="50" y="1001" font-size="15" class="muted" font-weight="400">Choose selected rooms only, or allow other eligible rooms.</text>
+<text x="50" y="1029" font-size="15" class="muted" font-weight="400">Access restrictions and excluded rooms always apply.</text>
+<rect x="756" y="878" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="778" y="912" font-size="20" class="" font-weight="600">Periods and day detail</text>
+<text x="778" y="945" font-size="15" class="muted" font-weight="400">Add ranked periods, each with weekdays, start and end.</text>
+<text x="778" y="973" font-size="15" class="muted" font-weight="400">Prefer these periods, or only use them for advance bookings.</text>
+<text x="778" y="1001" font-size="15" class="muted" font-weight="400">Set weekday priority and an advance limit per day.</text>
+<text x="778" y="1029" font-size="15" class="muted" font-weight="400">Spread evenly, weight days, concentrate, or prefer best quality.</text>
+<rect x="28" y="1089" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="50" y="1123" font-size="20" class="" font-weight="600">Waiting and flexibility</text>
+<text x="50" y="1156" font-size="15" class="muted" font-weight="400">Choose a preferred block and minimum daily anchor.</text>
+<text x="50" y="1184" font-size="15" class="muted" font-weight="400">Wait for shorter-horizon rooms, or use open rooms now.</text>
+<text x="50" y="1212" font-size="15" class="muted" font-weight="400">Optionally keep some advance minutes unallocated.</text>
+<text x="50" y="1240" font-size="15" class="muted" font-weight="400">Choose when last-minute practice may spend held credit.</text>
+<rect x="756" y="1089" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="778" y="1123" font-size="20" class="" font-weight="600">Help / empty / loading</text>
+<text x="778" y="1156" font-size="15" class="muted" font-weight="400">? explains rolling credit: used sessions return credit.</text>
+<text x="778" y="1184" font-size="15" class="muted" font-weight="400">No custom periods: use existing preferred times.</text>
+<text x="778" y="1212" font-size="15" class="muted" font-weight="400">No selected rooms: show inline error; retain the draft.</text>
+<text x="778" y="1240" font-size="15" class="muted" font-weight="400">Loading settings…  Cancel remains available.</text>
+<rect x="28" y="1300" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="50" y="1334" font-size="20" class="" font-weight="600">Saving / errors / cancellation</text>
+<text x="50" y="1367" font-size="15" class="muted" font-weight="400">Saving… prevents a duplicate submission.</text>
+<text x="50" y="1395" font-size="15" class="muted" font-weight="400">Invalid period: show the error beside its times.</text>
+<text x="50" y="1423" font-size="15" class="muted" font-weight="400">Changed elsewhere: Reload settings before saving again.</text>
+<text x="50" y="1451" font-size="15" class="muted" font-weight="400">Cancel discards this editor draft; reservations stay intact.</text>
+<rect x="756" y="1300" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="778" y="1334" font-size="20" class="" font-weight="600">Confirmation / live preview</text>
+<text x="778" y="1367" font-size="15" class="muted" font-weight="400">Saved. Future booking decisions use these settings.</text>
+<text x="778" y="1395" font-size="15" class="muted" font-weight="400">My Week labels intentions separately from confirmed bookings.</text>
+<text x="778" y="1423" font-size="15" class="muted" font-weight="400">Room opens in 5 days: show its actual unlock, not a promise.</text>
+<text x="778" y="1451" font-size="15" class="muted" font-weight="400">Unavailable credit or slots: explain the remaining shortfall.</text>
+</svg>

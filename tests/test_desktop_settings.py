@@ -19,6 +19,45 @@ def descendants(widget):
 
 
 class DesktopSettingsTests(unittest.TestCase):
+    def test_advance_period_rows_save_the_edited_weekdays_and_times(self):
+        self.app.show_advance_quota_dialog()
+        dialog = self.app._detail_pages['advance_quota']
+        buttons = {w.cget('text'):w for w in descendants(dialog) if isinstance(w,ttk.Button)}
+        buttons['Add time period'].invoke()
+        panel = next(w for w in descendants(dialog) if isinstance(w,ttk.LabelFrame) and w.cget('text') == 'Priority 1')
+        controls = list(descendants(panel))
+        combos = [w for w in controls if isinstance(w,ttk.Combobox)]
+        combos[0].set('16:30'); combos[1].set('18:00')
+        next(w for w in controls if isinstance(w,ttk.Checkbutton) and w.cget('text') == 'Mon').invoke()
+        buttons['Save advance quota'].invoke()
+        self.assertEqual(json.loads(self.settings.read_text())['advance_quota']['periods'],
+                         [dict(days=[1,2,3,4,5,6],start='16:30',end='18:00')])
+
+    def test_advance_editor_scoped_save_cancel_and_conflict(self):
+        self.app._open_settings_group('Advance quota')
+        dialog = self.app._detail_pages['advance_quota']
+        widgets = list(descendants(dialog))
+        label = next(w for w in widgets if isinstance(w, ttk.Label) and w.cget('text') == 'Distribution')
+        select = label.master.grid_slaves(row=label.grid_info()['row'], column=1)[0]
+        select.set('Group into fewer days')
+        next(w for w in widgets if isinstance(w, ttk.Button) and w.cget('text') == 'Save advance quota').invoke()
+        saved = json.loads(self.settings.read_text())
+        self.assertEqual(saved['advance_quota']['distribution'], 'concentrated')
+        self.assertEqual(saved['unrelated'], {'keep':True})
+        self.app.show_advance_quota_dialog()
+        dialog = self.app._detail_pages['advance_quota']
+        widgets = list(descendants(dialog))
+        label = next(w for w in widgets if isinstance(w, ttk.Label) and w.cget('text') == 'Distribution')
+        select = label.master.grid_slaves(row=label.grid_info()['row'], column=1)[0]
+        select.set('Follow day priorities')
+        saved['advance_quota']['reserve_minutes'] = 60
+        self.settings.write_text(json.dumps(saved))
+        next(w for w in widgets if isinstance(w, ttk.Button) and w.cget('text') == 'Save advance quota').invoke()
+        self.assertEqual(json.loads(self.settings.read_text()), saved)
+        self.assertTrue(self.app.settings_available)
+        next(w for w in widgets if isinstance(w, ttk.Button) and w.cget('text') == 'Cancel').invoke()
+        self.assertNotIn('advance_quota', self.app._detail_pages)
+
     def test_optional_session_controls_persist_without_replacing_primary_settings(self):
         self.app.show_booking_strategy_dialog()
         dialog = next(w for w in self.app._detail_pages.values() if w.title() == 'Daily Booking Strategy')
@@ -173,7 +212,7 @@ class DesktopSettingsTests(unittest.TestCase):
                     self.assertLessEqual(right, self.root.winfo_rootx() + width)
                 canvas = self.app.settings_scroll.canvas
                 canvas.yview_moveto(0)
-                # All six settings groups fit at both supported window sizes.
+                # All settings groups fit at both supported window sizes.
                 self.assertEqual(canvas.yview(), (0.0, 1.0))
                 for card, _, _ in self.app.settings_tiles.values():
                     self.assertLessEqual(card.winfo_rooty() + card.winfo_height(),

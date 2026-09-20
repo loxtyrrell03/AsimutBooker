@@ -7,7 +7,16 @@ export type DailyPlanning = {
   upgrade_rooms: boolean; upgrade_freeze_hours: number;
   preferred_block_minutes: number; preferred_rest_minutes: number; prefer_fewer_room_changes: boolean;
 };
+export type AdvanceQuota = {
+  room_mode: 'top' | 'selected' | 'all'; top_room_count: number; room_order: string[]; room_fallback: boolean;
+  periods: { days: number[]; start: string; end: string }[]; period_mode: 'prefer' | 'only';
+  distribution: 'balanced' | 'weighted' | 'concentrated' | 'quality';
+  day_weights: number[]; day_caps_minutes: number[]; anchor_minutes: number; block_minutes: number;
+  priority_mode: 'inherit' | 'time_first' | 'room_first'; date_order: 'inherit' | 'nearest' | 'furthest';
+  reserve_minutes: number; wait_for_opening: boolean; fallback_lead_minutes: number | null;
+};
 export type Preferences = {
+  advance_quota: AdvanceQuota;
   booking_rules: BookingRules;
   revision: string;
   practice_plan: { enabled: boolean; default_hours: number; date_overrides: Record<string, number> };

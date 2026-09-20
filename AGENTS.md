@@ -1,3 +1,18 @@
+## 2026-09-21 compact advance controls and verification
+
+- The user chose design A in `docs/design/2026-09-21-advance-quota/`. Desktop and
+  phone Settings now expose **Advance quota**, with expandable room/period,
+  weekday and waiting/reserve controls. Defaults and all existing practice
+  settings remain unchanged. Desktop conflicts keep the draft open; phone uses
+  the existing revision/CSRF flow. Assistant shares the same validated policy.
+- Full regression: 1,457 Python tests pass, followed by three new prepared-seed,
+  exact fallback-order and release-lead checks. All eight final desktop checks,
+  19 phone Node tests, TypeScript, lint and the validated private-origin build
+  pass. Chromium/WebKit fixtures verify Save/reload/Cancel, validation errors,
+  stale saves and 320/390px layout; owned desktop renders pass at 760/1040px.
+  Six changing-week reports supplement the existing 38-week stress coverage.
+  These checks make no real booking and do not verify a physical phone.
+
 ## 2026-09-21 configurable advance allocation
 
 - `advance_preferences.py` owns the validated `advance_quota` section: ranked

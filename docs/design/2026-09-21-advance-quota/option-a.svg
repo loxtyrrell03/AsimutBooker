@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1550" viewBox="0 0 1500 1550">
+<rect width="1500" height="1550" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif;fill:#1d2430} .muted{fill:#667080} .blue{fill:#0868d9}</style>
+<text x="34" y="44" font-size="29" class="" font-weight="600">A · Focused settings</text>
+<text x="34" y="75" font-size="17" class="muted" font-weight="400">One compact editor with expandable details, matching the existing Settings pages. Recommended.</text>
+<text x="34" y="101" font-size="14" class="muted" font-weight="400">DESIGN PROPOSAL · All bookings, balances and availability below are invented examples.</text>
+<rect x="28" y="125" width="1010" height="680" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="55" y="167" font-size="22" class="" font-weight="600">Asimut</text>
+<text x="350" y="167" font-size="16" class="blue" font-weight="400">Today      My Week      Calendar      Assistant      Settings</text>
+<text x="68" y="225" font-size="30" class="" font-weight="600">Advance quota</text>
+<text x="68" y="255" font-size="16" class="muted" font-weight="400">Use your rolling allowance for the practice that matters most.</text>
+<text x="68" y="295" font-size="20" class="" font-weight="600">Rooms and periods</text>
+<text x="68" y="328" font-size="16" class="" font-weight="400">Rooms to book in advance  ?</text>
+<rect x="68" y="340" width="410" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="80" y="367" font-size="16" class="" font-weight="400">Selected rooms: Weston, Corus</text>
+<text x="454" y="367" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="518" y="328" font-size="16" class="" font-weight="400">Time periods  ?</text>
+<rect x="518" y="340" width="450" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="530" y="367" font-size="16" class="" font-weight="400">1. Weekdays 12:00–16:00     2. 16:00–18:00</text>
+<text x="944" y="367" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="68" y="432" font-size="20" class="" font-weight="600">Distribution</text>
+<text x="68" y="467" font-size="16" class="" font-weight="400">How to share the allowance  ?</text>
+<rect x="68" y="479" width="410" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="80" y="506" font-size="16" class="" font-weight="400">Spread across days</text>
+<text x="454" y="506" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="518" y="467" font-size="16" class="" font-weight="400">Preferred advance block  ?</text>
+<rect x="518" y="479" width="450" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="530" y="506" font-size="16" class="" font-weight="400">1 hour</text>
+<text x="944" y="506" font-size="16" class="blue" font-weight="400">⌄</text>
+<rect x="68" y="545" width="410" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="84" y="572" font-size="16" class="" font-weight="400">Day priorities and limits                 ›</text>
+<rect x="518" y="545" width="450" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="534" y="572" font-size="16" class="" font-weight="400">Waiting, reserve and fallback           ›</text>
+<text x="68" y="643" font-size="18" class="" font-weight="600">Example allocation · 6h total</text>
+<text x="68" y="675" font-size="16" class="muted" font-weight="400">Mon 1h   Tue 1h   Wed 1h   Thu 45m   Fri 45m   Sat 45m   Sun 45m</text>
+<rect x="68" y="735" width="180" height="42" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="84" y="762" font-size="16" class="blue" font-weight="400">Save changes</text>
+<rect x="266" y="735" width="110" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="282" y="762" font-size="16" class="" font-weight="400">Cancel</text>
+<text x="530" y="761" font-size="14" class="muted" font-weight="400">Applies to future decisions; keeps existing bookings.</text>
+<rect x="1070" y="125" width="390" height="680" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1090" y="165" font-size="21" class="" font-weight="600">Asimut</text>
+<text x="1090" y="195" font-size="16" class="blue" font-weight="400">Settings  ›  Advance quota</text>
+<text x="1090" y="243" font-size="27" class="" font-weight="600">Advance quota</text>
+<text x="1090" y="288" font-size="16" class="" font-weight="400">Rooms</text>
+<rect x="1090" y="300" width="350" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1102" y="327" font-size="16" class="" font-weight="400">Weston, Corus  ›</text>
+<text x="1416" y="327" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="1090" y="390" font-size="16" class="" font-weight="400">Periods</text>
+<rect x="1090" y="402" width="350" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1102" y="429" font-size="16" class="" font-weight="400">12:00–16:00; 16:00–18:00  ›</text>
+<text x="1416" y="429" font-size="16" class="blue" font-weight="400">⌄</text>
+<text x="1090" y="492" font-size="16" class="" font-weight="400">Distribution</text>
+<rect x="1090" y="504" width="350" height="43" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1102" y="531" font-size="16" class="" font-weight="400">Spread across days  ›</text>
+<text x="1416" y="531" font-size="16" class="blue" font-weight="400">⌄</text>
+<rect x="1090" y="587" width="350" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1106" y="614" font-size="16" class="" font-weight="400">Day priorities and limits             ›</text>
+<rect x="1090" y="640" width="350" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1106" y="667" font-size="16" class="" font-weight="400">More options                               ›</text>
+<rect x="1090" y="730" width="220" height="42" rx="16" fill="#eaf3ff" stroke="#e1e6ee"/>
+<text x="1106" y="757" font-size="16" class="blue" font-weight="400">Save changes</text>
+<rect x="1322" y="730" width="118" height="42" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="1338" y="757" font-size="16" class="" font-weight="400">Cancel</text>
+<text x="34" y="850" font-size="25" class="" font-weight="600">Details, setup and states · shared by this proposal</text>
+<rect x="28" y="878" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="50" y="912" font-size="20" class="" font-weight="600">Room detail / first setup</text>
+<text x="50" y="945" font-size="15" class="muted" font-weight="400">Start with current top two rooms, or choose any allowed rooms.</text>
+<text x="50" y="973" font-size="15" class="muted" font-weight="400">Rank Weston, Corus and your own alternatives with Up / Down.</text>
+<text x="50" y="1001" font-size="15" class="muted" font-weight="400">Choose selected rooms only, or allow other eligible rooms.</text>
+<text x="50" y="1029" font-size="15" class="muted" font-weight="400">Access restrictions and excluded rooms always apply.</text>
+<rect x="756" y="878" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="778" y="912" font-size="20" class="" font-weight="600">Periods and day detail</text>
+<text x="778" y="945" font-size="15" class="muted" font-weight="400">Add ranked periods, each with weekdays, start and end.</text>
+<text x="778" y="973" font-size="15" class="muted" font-weight="400">Prefer these periods, or only use them for advance bookings.</text>
+<text x="778" y="1001" font-size="15" class="muted" font-weight="400">Set weekday priority and an advance limit per day.</text>
+<text x="778" y="1029" font-size="15" class="muted" font-weight="400">Spread evenly, weight days, concentrate, or prefer best quality.</text>
+<rect x="28" y="1089" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="50" y="1123" font-size="20" class="" font-weight="600">Waiting and flexibility</text>
+<text x="50" y="1156" font-size="15" class="muted" font-weight="400">Choose a preferred block and minimum daily anchor.</text>
+<text x="50" y="1184" font-size="15" class="muted" font-weight="400">Wait for shorter-horizon rooms, or use open rooms now.</text>
+<text x="50" y="1212" font-size="15" class="muted" font-weight="400">Optionally keep some advance minutes unallocated.</text>
+<text x="50" y="1240" font-size="15" class="muted" font-weight="400">Choose when last-minute practice may spend held credit.</text>
+<rect x="756" y="1089" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="778" y="1123" font-size="20" class="" font-weight="600">Help / empty / loading</text>
+<text x="778" y="1156" font-size="15" class="muted" font-weight="400">? explains rolling credit: used sessions return credit.</text>
+<text x="778" y="1184" font-size="15" class="muted" font-weight="400">No custom periods: use existing preferred times.</text>
+<text x="778" y="1212" font-size="15" class="muted" font-weight="400">No selected rooms: show inline error; retain the draft.</text>
+<text x="778" y="1240" font-size="15" class="muted" font-weight="400">Loading settings…  Cancel remains available.</text>
+<rect x="28" y="1300" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="50" y="1334" font-size="20" class="" font-weight="600">Saving / errors / cancellation</text>
+<text x="50" y="1367" font-size="15" class="muted" font-weight="400">Saving… prevents a duplicate submission.</text>
+<text x="50" y="1395" font-size="15" class="muted" font-weight="400">Invalid period: show the error beside its times.</text>
+<text x="50" y="1423" font-size="15" class="muted" font-weight="400">Changed elsewhere: Reload settings before saving again.</text>
+<text x="50" y="1451" font-size="15" class="muted" font-weight="400">Cancel discards this editor draft; reservations stay intact.</text>
+<rect x="756" y="1300" width="710" height="191" rx="16" fill="#fff" stroke="#e1e6ee"/>
+<text x="778" y="1334" font-size="20" class="" font-weight="600">Confirmation / live preview</text>
+<text x="778" y="1367" font-size="15" class="muted" font-weight="400">Saved. Future booking decisions use these settings.</text>
+<text x="778" y="1395" font-size="15" class="muted" font-weight="400">My Week labels intentions separately from confirmed bookings.</text>
+<text x="778" y="1423" font-size="15" class="muted" font-weight="400">Room opens in 5 days: show its actual unlock, not a promise.</text>
+<text x="778" y="1451" font-size="15" class="muted" font-weight="400">Unavailable credit or slots: explain the remaining shortfall.</text>
+</svg>
