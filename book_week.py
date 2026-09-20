@@ -1789,7 +1789,7 @@ def wait_until_datetime(
             except Exception:
                 pass
             last_keepalive_second = remaining_int
-        time.sleep(0.1 if remaining <= 10 else 0.5)
+        time.sleep(0.02 if remaining <= 1 else 0.1 if remaining <= 10 else 0.5)
 
     # A very small server-clock allowance avoids firing on the wrong side of
     # the boundary without giving away the slot for the previous one-second
@@ -6949,11 +6949,13 @@ def current_opportunities_after_hold(
     ]
 
 
-def _opportunity_to_horizon_candidate(opportunity, *, target_boundary):
+def _opportunity_to_horizon_candidate(opportunity, *, target_boundary, free_horizon=False):
     return {
         "room": opportunity.room,
         "room_priority": opportunity.room_priority,
-        "horizon_minutes": room_horizon_minutes(opportunity.room),
+        "horizon_minutes": (min(room_horizon_minutes(opportunity.room), FREE_HORIZON_MINUTES)
+                            if free_horizon else room_horizon_minutes(opportunity.room)),
+        "free_horizon_intent": bool(free_horizon),
         "booking_minutes": opportunity.initial_minutes,
         "bookable_from": target_boundary,
         "target_date": opportunity.target_date,
@@ -7113,7 +7115,8 @@ def attempt_booking_with_room_fallback(
         if not backups or time.monotonic() >= deadline:
             print('  No eligible backup room remains for this time slot in the fresh scan.')
             return False, candidate
-        candidate = (_opportunity_to_horizon_candidate(backups[0], target_boundary=slot['bookable_from'])
+        candidate = (_opportunity_to_horizon_candidate(backups[0], target_boundary=slot['bookable_from'],
+                         free_horizon=bool(free_horizon_only and slot.get('free_horizon_intent')))
                      if horizon else _opportunity_to_normal_slot(backups[0]))
         if free_horizon_only and slot.get('free_horizon_intent'):
             candidate['free_horizon_intent'] = True
@@ -8509,7 +8512,9 @@ def try_horizon_snipe(
     bookable_from = slot['bookable_from']
     horizon_minutes = slot.get('horizon_minutes')
     booking_minutes = slot.get('booking_minutes')
-    if horizon_minutes != room_horizon_minutes(room):
+    free_edge = bool(slot.get('free_horizon_intent'))
+    expected_horizon = min(room_horizon_minutes(room), FREE_HORIZON_MINUTES) if free_edge else room_horizon_minutes(room)
+    if horizon_minutes != expected_horizon:
         print("  [SNIPE] Candidate horizon is stale; aborting")
         return False
     if booking_minutes != MINIMUM_BLOCK_MINUTES:
@@ -8537,12 +8542,20 @@ def try_horizon_snipe(
 
     end_hour = start_hour + booking_minutes / 60
 
+    if free_edge:
+        exact_opening = datetime.combine(as_date(target_date), datetime.min.time()) + timedelta(
+            minutes=round(end_hour*60)-expected_horizon)
+        if FREE_HORIZON_MINUTES <= 0 or bookable_from != exact_opening:
+            print('  [SNIPE] Free-window candidate has an invalid complete-interval opening')
+            return False
+
     # Candidates can become stale while earlier snipes are attempted.
     can_book, reason = tracker.can_book(
         room,
         target_date,
         start_hour,
         booking_minutes,
+        **({'now': max(datetime.now(), bookable_from)} if free_edge else {}),
     )
     if not can_book:
         print(f"  [SNIPE] Candidate is no longer valid: {reason}")
@@ -8730,6 +8743,9 @@ def try_horizon_snipe(
     validation_ok, validation_detail = refresh_new_booking_validation(
         page,
         book_end,
+        expected_start_time=book_start,
+        expected_date=target_date,
+        expected_room=room,
     )
     if not validation_ok:
         print(
@@ -8866,7 +8882,7 @@ def try_horizon_snipe(
     max_possible_duration = _bounded_create_duration_minutes(
         min(slot['duration'], MAX_BOOKING_HOURS * 60),
         remaining_daily_hours,
-        tracker.get_remaining_quota_hours() + booking_minutes / 60,
+        (FREE_HORIZON_MINUTES / 60 if free_edge else tracker.get_remaining_quota_hours() + booking_minutes / 60),
         max_action_minutes,
     )
     if time_prefs and time_prefs.get("enabled") and time_prefs.get("strict_mode"):
@@ -10784,7 +10800,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
         # Load user policy before any booking-grid navigation. Pending horizon
         # extensions must be able to open their exact editor during the short
-        # :13/:28/:43/:58 preparation lead.
+        # :12/:27/:42/:57 preparation lead.
         horizon_only = bool(getattr(args, "horizon_only", False))
         extensions_only = bool(getattr(args, "extensions_only", False))
 
@@ -12237,7 +12253,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
 
 def _scheduled_target_time(now=None):
-    """Return the imminent quarter-hour target for a :13/:28/:43/:58 task."""
+    """Return the imminent quarter-hour target for a :12/:27/:42/:57 task."""
 
     now = now or datetime.now()
     minutes_to_add = 15 - (now.minute % 15)

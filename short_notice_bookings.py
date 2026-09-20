@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
+from booking_timing import scheduled_work_fits
 
 
 def reserve_advance_credit(opportunities, planning, *, active):
@@ -87,6 +88,9 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
     # At most ten minimum-size sessions can fit in five hours. Each success
     # triggers fresh agenda, grid and quota proof; any rejection ends this pass.
     for _ in range(10):
+        if not scheduled_work_fits(args, now=datetime.now(), reserve_seconds=120, edge_work=True):
+            operation_stage('Leaving time for the next prepared booking window')
+            break
         if args.max_actions is not None and total_actions >= args.max_actions:
             break
         operation_stage(f'Checking rooms in the next {engine.FREE_HORIZON_MINUTES / 60:g} hours…')
@@ -135,36 +139,58 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             if not chosen and day_plan.primary is not None:
                 print(f'  [Free horizon] {day_plan.reason}')
             if boundary is not None:
-                # Forecast only. After waiting, reread the grid and replan before
-                # any Save; this cannot authorize early or stale-window bookings.
-                future_candidates.extend(item for item in opportunities if now < item.unlock_at <= boundary)
+                # Use the same complete day decision at the imminent boundary.
+                # Discovery is preparation only; the editor needs a fresh exact
+                # ASIMUT check at the opening before it can Save.
+                projected = engine.build_display_day_plan(day, opportunities, tracker, planning,
+                    now=boundary, target_minutes=int((tracker.get_hours_for_day(day)+remaining)*60),
+                    reserved_peak_minutes=peak_holds.get(day.isoformat(),0), free_horizon_only=True)
+                projected_order = engine._runtime_ordered_day_opportunities(
+                    opportunities, projected, planning, now=boundary)
+                future_candidates.extend((item,remaining) for item in projected_order
+                    if now < item.unlock_at <= boundary)
+        prepare_edge = not candidates and bool(future_candidates)
         if not candidates:
-            if future_candidates and boundary is not None:
+            if prepare_edge:
                 args._free_boundary_waited=True
-                operation_stage('Preparing for the next five-hour booking window…')
-                engine.wait_until_datetime(boundary,page,label='FREE HORIZON',settle_seconds=0)
-                continue
-            print('  [Free horizon] No eligible short-notice booking is currently available for the remaining targets.')
-            break
+                operation_stage('Preparing the room form before the five-hour window opens…')
+                candidates = future_candidates
+            else:
+                print('  [Free horizon] No eligible short-notice booking is currently available for the remaining targets.')
+                break
         item, remaining = min(candidates, key=lambda pair: engine.opportunity_rank(pair[0], planning, now=now))
         day = item.target_date
+        if prepare_edge:
+            natural_opening = datetime.combine(day, local_time()) + timedelta(
+                minutes=item.start_minutes+item.initial_minutes
+                - min(engine.room_horizon_minutes(item.room), engine.FREE_HORIZON_MINUTES))
+            if item.unlock_at != natural_opening:
+                # A saved fallback lead can delay an already-open room while
+                # advance credit is reserved. It is not an ASIMUT horizon edge.
+                engine.wait_until_datetime(item.unlock_at, page, label='PRACTICE', settle_seconds=0)
+                continue
         # Refresh after grid traversal. The mutation path additionally requires
         # an exact, fresh ASIMUT check before Save; this balance is not permission.
         refresh_quota_balances(page, tracker, engine.booking_window_dates(now.date()))
         open_day(day, now.date())
-        slot = engine._opportunity_to_normal_slot(item)
+        slot = (engine._opportunity_to_horizon_candidate(item, target_boundary=item.unlock_at,
+                    free_horizon=True) if prepare_edge else engine._opportunity_to_normal_slot(item))
         slot['free_horizon_intent'] = True
-        result, _ = engine.attempt_booking_with_room_fallback(
+        result, actual = engine.attempt_booking_with_room_fallback(
             page, slot, day, tracker,
             (day - now.date()).days, remaining_daily_hours=remaining,
             max_action_minutes=args.max_action_minutes, time_prefs=preferences,
             daily_planning=planning, only_room=args.only_room,
-            planning_context=planning_context, free_horizon_only=True)
+            planning_context=planning_context, free_horizon_only=True, horizon=prepare_edge)
         if not result:
             args._short_notice_declined = True
             print('  [Free horizon] Booking was not approved; ending this pass without retrying it.')
             break
         total_actions += 1
+        if prepare_edge:
+            result = dict(date=str(day), room=actual['room'],
+                start=engine.time_text(round(actual['start_hour']*60)),
+                end=engine.time_text(round(actual['start_hour']*60)+actual['booking_minutes']))
         booking_details.append(f'{result["date"]} {result["room"]} {result["start"]}-{result["end"]}')
         tracker = engine.BookingTracker()
         engine.scan_agenda(page, tracker, now.date(), ignored_events=engine.load_ignored_events(settings),

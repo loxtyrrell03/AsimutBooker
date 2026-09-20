@@ -79,7 +79,7 @@ class SchedulerInstallerTests(unittest.TestCase):
         self.assertIn('Interval = "PT${RepeatMinutes}M"', self.text)
         self.assertIn('$RepeatDurationIso = "PT15H46M"', self.text)
 
-    def test_two_minute_preparation_covers_every_late_edge_through_2300(self):
+    def test_three_minute_preparation_covers_every_late_edge_through_2300(self):
         first = re.search(r'\$FirstRunTime = "([0-9:]+)"', self.text).group(1)
         step = int(re.search(r'\$RepeatMinutes = ([0-9]+)', self.text).group(1))
         duration = re.search(r'\$RepeatDurationIso = "PT([0-9]+)H([0-9]+)M"', self.text)
@@ -91,11 +91,11 @@ class SchedulerInstallerTests(unittest.TestCase):
             launches.append(value)
             value += timedelta(minutes=step)
         self.assertEqual(len(launches), 190)
-        self.assertEqual(launches[-1].strftime('%H:%M'), '22:58')
-        preparations = [value for value in launches if value.minute % 15 == 13]
+        self.assertEqual(launches[-1].strftime('%H:%M'), '22:57')
+        preparations = [value for value in launches if value.minute % 15 == 12]
         self.assertEqual(len(preparations),64)
         self.assertTrue(all((b-a).total_seconds()==300 for a,b in zip(launches,launches[1:])))
-        edges = {(value + timedelta(minutes=2)).strftime('%H:%M') for value in preparations}
+        edges = {(value + timedelta(minutes=3)).strftime('%H:%M') for value in preparations}
         self.assertTrue({'22:00', '22:15', '22:30', '22:45', '23:00'}.issubset(edges))
         self.assertNotIn('23:15', edges)
 
@@ -104,7 +104,7 @@ class SchedulerInstallerTests(unittest.TestCase):
         first = re.search(r'\$FirstRunTime = "([^"]+)"', self.text).group(1)
         self.assertEqual(gui.RECURRING_DURATION_ISO, duration)
         self.assertEqual(gui.RECURRING_FIRST_RUN_LOCAL, first)
-        self.assertIn('07:13-22:58', gui.RECURRING_SCHEDULE_TEXT)
+        self.assertIn('07:12-22:57', gui.RECURRING_SCHEDULE_TEXT)
 
     def test_action_uses_headless_scheduled_launcher_mode(self):
         self.assertIn("--scheduled", self.text)

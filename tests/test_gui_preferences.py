@@ -131,7 +131,7 @@ class GuiSchedulerHelpersTests(unittest.TestCase):
             "TriggerClass": "MSFT_TaskDailyTrigger",
             "TriggerEnabled": True,
             "DaysInterval": 1,
-            "StartLocalTime": "07:13",
+            "StartLocalTime": "07:12",
             "Interval": "PT5M",
             "Duration": "PT15H46M",
             "StopAtDurationEnd": False,

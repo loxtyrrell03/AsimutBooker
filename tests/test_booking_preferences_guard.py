@@ -81,7 +81,7 @@ class BookingPreferenceGuardTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         page = fixture.build_page()
-        def validate(*_args):
+        def validate(*_args, **_kwargs):
             update_settings(lambda settings: settings.update({"disabled_dates": ["2026-09-04"]}), self.path)
             return True, "fresh validation"
         with contextlib.ExitStack() as stack:

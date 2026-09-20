@@ -63,18 +63,31 @@ fragmentation choice and conflict checks. A room-specific refusal can use an
 eligible backup room; a quota refusal ends that pass and waits for a later run.
 Unknown quota responses stop writes safely rather than assuming availability.
 
-The recurring worker checks every five minutes during its existing 07:13-22:58
+The recurring worker checks every five minutes during its 07:12-22:57
 window. Between quarter-hour preparations it focuses on today's extensions,
 free-horizon bookings and room upgrades. At exhausted advance quota, that daily
 work runs before future upgrades can stop on a quota refusal. Unresolved
 transactions still require recovery before any unrelated booking.
 
-An imminent free-window opportunity can be forecast up to three minutes ahead.
-The worker waits for the actual boundary, then rereads the room grid and replans
-before the normal exact booking checks. Preferred times (including strict/soft
+An imminent free-window opportunity can be prepared up to three minutes ahead.
+The worker chooses from the current grid and opens and fills the exact room form
+before the boundary. At the opening it requires a new, matching ASIMUT validation
+and an enabled Save before submitting once. A refusal can use a freshly checked
+backup; an uncertain Save stops for reconciliation. Routine upgrade work leaves
+time for the next preparation window. Preferred times (including strict/soft
 behaviour), room order, goals, fragmentation, exclusions and extension holds
 remain the same planning constraints. The worker never treats a future opening
 as permission to book early or promises hours that the site has not confirmed.
+
+With no advance credit, 16:00-16:30 becomes eligible at **11:30**, not 11:00:
+the end must also be inside the five-hour window. A verified seed keeps its
+intended longer session, allowing further legal extensions as the window moves.
+The first Save still depends on live approval, network speed and competition.
+
+Optional block length, rest time and fewer-room-change controls refine equally
+good plans. They never reduce planned minutes or override room quality, preferred
+times or hard rules. They default off. Equivalent room-upgrade choices can improve
+rest while retaining the primary upgrade portfolio and its exact originals.
 
 Last-minute opportunities retain the intended full session, even when only its
 first 30 minutes are currently inside the free window. The shared day planner

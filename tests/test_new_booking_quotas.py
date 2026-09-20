@@ -371,19 +371,25 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
         self.attempt.assert_not_called()
         self.assertEqual(self.run_pass(after_horizon=True)[0], 1)
 
-    def test_prepares_new_free_window_then_rechecks_before_booking(self):
+    def test_prepares_new_free_window_form_before_the_boundary(self):
         self.now=self.now.replace(minute=13)
         self.args.scheduled=True
         self.args.target_time='14:15'
         self.plan=b.PracticePlan(enabled=True,default_hours=.5)
         self.grid.return_value=[{'room':'A','slots':[{'startHour':18.75,'endHour':20}]}]
-        def wait(boundary,*args,**kwargs):
+        def prepare(page, slot, day, *args, **kwargs):
             self.assertFalse(self.events)
-            self.now=boundary
-        with patch.object(b,'wait_until_datetime',side_effect=wait) as waiting:
+            self.assertEqual(self.now.minute,13)
+            self.assertTrue(kwargs['horizon'])
+            self.assertTrue(kwargs['free_horizon_only'])
+            self.assertEqual(slot['horizon_minutes'],300)
+            self.now=slot['bookable_from']
+            return self.book(page,slot,day,*args,**kwargs)
+        self.attempt.side_effect=prepare
+        with patch.object(b,'wait_until_datetime') as waiting:
             self.assertEqual(self.run_pass()[0],1)
-        waiting.assert_called_once()
-        self.assertGreaterEqual(self.grid.call_count,2)
+        waiting.assert_not_called()  # Waiting belongs to the prepared editor.
+        self.assertEqual(self.grid.call_count,1)
         self.assertEqual(self.events,[(self.now.date(),18.75,19.25)])
 
     def test_strict_preferred_times_survive_free_horizon(self):
@@ -391,6 +397,19 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
                 'enabled':True,'strict_mode':True,'start_hour':12,'end_hour':16}):
             self.assertEqual(self.run_pass()[0],0)
         self.attempt.assert_not_called()
+
+    def test_saved_fallback_lead_is_not_mistaken_for_a_site_opening(self):
+        self.now=self.now.replace(hour=14,minute=13)
+        self.args.scheduled=True
+        self.args.target_time='14:15'
+        self.tracker.existing_reservation_hours=0
+        self.grid.return_value=[{'room':'A','slots':[{'startHour':16.25,'endHour':18.25}]}]
+        def advance_clock(boundary,*args,**kwargs):
+            self.now=boundary
+        with patch.object(b,'wait_until_datetime',side_effect=advance_clock) as waiting:
+            self.assertEqual(self.run_pass(after_horizon=True)[0],1)
+        waiting.assert_called_once()
+        self.assertFalse(self.attempt.call_args.kwargs['horizon'])
 
     def test_free_window_seed_retains_the_whole_peak_session_intent(self):
         self.now = self.now.replace(hour=7, minute=30)

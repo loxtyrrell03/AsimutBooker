@@ -119,6 +119,22 @@ class UpgradeRuntimeTests(unittest.TestCase):
         self.navigate.assert_called()
         self.assertIn("UPGRADED:", self.details[0])
 
+    def test_scheduled_upgrade_scan_yields_before_competitive_preparation(self):
+        self.now=self.now.replace(hour=11,minute=26)
+        tracker=self.prepare_runner()
+        self.args.scheduled=True
+        self.assertEqual(self.run_runner(tracker)[0],0)
+        self.scan.assert_not_called()
+        self.edit.assert_not_called()
+
+    def test_scan_that_consumes_remaining_window_does_not_start_an_edit(self):
+        tracker=self.prepare_runner()
+        self.args.scheduled=True
+        with mock.patch.object(runtime,'scheduled_work_fits',side_effect=[True,True,False]):
+            self.assertEqual(self.run_runner(tracker)[0],0)
+        self.scan.assert_called_once()
+        self.edit.assert_not_called()
+
     def test_dry_run_never_counts_a_change_or_repeats_one_reservation(self):
         tracker = self.prepare_runner()
         self.args.upgrade_dry_run = True

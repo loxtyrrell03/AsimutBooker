@@ -1,3 +1,23 @@
+## 2026-09-20 prepared free-window bookings
+
+- Short-notice discovery uses the shared whole-day plan at the imminent edge,
+  opens/fills the chosen exact form before the boundary, then performs a fresh
+  matching server check and one guarded Save. Both endpoints must fit the free
+  window; 16:00-16:30 opens at 11:30. Site-clock waiting, peak limits, receipt
+  proof, preference drift and uncertain-outcome handling remain mandatory.
+- Free seeds retain their full extension intent despite exhausted advance
+  credit. Saved fallback-lead delays remain distinct from actual site openings.
+  Horizon checks now use exact date/room/start/end request matching, including
+  Angular's unchanged-input retrigger, rather than an end-only check.
+- The recurring source contract is 07:12-22:57 every five minutes: three-minute
+  preparation before each quarter, including 23:00. Routine work has admission
+  budgets to leave preparation time; active Save/recovery is never interrupted.
+  Existing long operations/network delays can still prevent exact readiness.
+- Real Chromium with an intercepted service submitted one approved Save
+  163-181ms after a simulated opening. This is local timing evidence, not live
+  ASIMUT speed or competition proof. All 1,440 Python tests pass alongside the
+  phone checks. Source activation is recorded separately below when complete.
+
 ## 2026-09-20 optional session preferences and changing-week simulations
 
 - Shared strategy settings add `preferred_block_minutes` (0/30/60/90/120),
@@ -19,10 +39,9 @@
   checks. Twenty-five synthetic weeks cover returned credit, cancellations and
   pre-Save competition; the combined 41 week/policy/extension checks pass.
   This complements, not replaces, the actual receipt/browser/recovery tests.
-- A full regression rerun is pending after avoiding unnecessary tracker reads
-  when optional comfort is off. Source is not activated yet. Continue the
-  broader audit in `docs/practice-preferences-stress-plan.md`, including exact
-  free-window preparation speed, dense-grid efficiency and final activation.
+- The first full rerun passed 1,424 tests. No live settings were changed.
+  Source activation is recorded separately; the broader audit is in
+  `docs/practice-preferences-stress-plan.md`.
 
 ## 2026-09-20 simulation audit and daily peak accounting
 

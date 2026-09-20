@@ -23,6 +23,7 @@ from progressive_state import (protected_event_ids, remember_opportunities,
 from progressive_discovery import find_partial_upgrade_opportunities
 from upgrade_validation import RoomPermissionRefusal
 from booking_quotas import QuotaWait
+from booking_timing import scheduled_work_fits
 
 
 def planning_events(engine, tracker, ignored_events):
@@ -135,6 +136,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         return total_actions, tracker
     max_actions = getattr(args, "max_actions", None)
     if max_actions is not None and total_actions >= max_actions:
+        return total_actions, tracker
+    if not scheduled_work_fits(args, now=datetime.now()):
+        operation_stage('Room improvements will continue after the next booking window')
         return total_actions, tracker
     # Do not turn a no-op run into a costly grid scan when no reservation can move.
     now = datetime.now().astimezone()
@@ -254,6 +258,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         # additional date are included on the next pass as well.
         for day in sorted({date.fromisoformat(e["date"]) for e in originals}):
             if day not in scanned:
+                if not scheduled_work_fits(args, now=datetime.now()):
+                    publish('waiting')
+                    return total_actions, tracker
                 operation_stage(f"Scanning upgrades for {day.isoformat()}")
                 scanned[day] = fresh_gaps(page, day)
                 at = datetime.now().astimezone()
@@ -312,6 +319,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             publish("complete")
             break
         candidate = portfolios[0]
+        if not scheduled_work_fits(args, now=datetime.now(), reserve_seconds=60*(getattr(candidate, 'action_count', 1)+2)):
+            publish('waiting')
+            break
         attempts.add(identity(candidate, events))
         operation_stage(f"Checking {candidate.replacement.room} {time_text(candidate.replacement.start)}–{time_text(candidate.replacement.end)}")
 

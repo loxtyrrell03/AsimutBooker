@@ -7,10 +7,10 @@ $TaskName = "AsimutBooker_Recurring"
 $ScriptPath = Join-Path $PSScriptRoot "run_booker.bat"
 $PythonPath = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 $WorkingDir = $PSScriptRoot
-$FirstRunTime = "07:13"
+$FirstRunTime = "07:12"
 $RepeatMinutes = 5
-# Frequent same-day checks retain every :13/:28/:43/:58 preparation run.
-# 07:13 + 189 repetitions = 22:58; the next repetition is excluded.
+# Frequent same-day checks retain every :12/:27/:42/:57 preparation run.
+# 07:12 + 189 repetitions = 22:57; the next repetition is excluded.
 $RepeatDurationIso = "PT15H46M"
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -138,7 +138,7 @@ function Assert-RegisteredTaskContract {
         [Globalization.CultureInfo]::InvariantCulture
     )
     if ($RegisteredLocalTime -ne $FirstRunTime) {
-        throw "The task was registered without the exact 07:13 local start time."
+        throw "The task was registered without the exact 07:12 local start time."
     }
 
     if (
@@ -306,7 +306,7 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "AsimutBooker automatic booking every 5 minutes from 07:13 through 22:58." `
+        -Description "AsimutBooker automatic booking every 5 minutes from 07:12 through 22:57." `
         -Force |
         Out-Null
 
@@ -444,7 +444,7 @@ try {
 }
 
 Write-Host "Created: $TaskName" -ForegroundColor Green
-Write-Host "  Repeats every 5 minutes from 07:13 through 22:58." -ForegroundColor White
+Write-Host "  Repeats every 5 minutes from 07:12 through 22:57." -ForegroundColor White
 Write-Host "  Runs headless, requests wake on AC or battery, catches up after a missed start, and ignores overlapping starts." -ForegroundColor White
 Write-Host "  Actual wake-from-sleep still depends on Windows, firmware, and hardware support." -ForegroundColor White
 
