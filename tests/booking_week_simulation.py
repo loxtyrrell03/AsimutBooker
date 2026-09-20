@@ -26,8 +26,10 @@ HORIZONS = dict(zip(ROOMS, (5*1440, 7*1440, 3*1440, 5*1440)))
 
 
 class WeekSimulation:
-    def __init__(self, seed=1, *, scarcity=.65, comfort=True, race_every=11, target=180):
+    def __init__(self, seed=1, *, scarcity=.65, comfort=True, race_every=11, target=180,
+                 competitor_waves=False, miss_every=0):
         self.seed, self.target, self.race_every = seed, target, race_every
+        self.competitor_waves, self.miss_every = competitor_waves, miss_every
         self.now = datetime(2026, 9, 20, 12)
         self.days = tuple(START+timedelta(days=i) for i in range(7))
         self.planning = DailyPlanningPreferences(preferred_block_minutes=60 if comfort else 0,
@@ -36,7 +38,8 @@ class WeekSimulation:
         self.events, self.intents, self.journal = {}, {}, []
         self.next_id, self.attempts = 1, 0
         self.metrics = dict(creates=0, extensions=0, upgrades=0, races=0, free_creates=0,
-                            quota_refusals=0, checks=0, released_competitor_slots=0)
+                            quota_refusals=0, checks=0, released_competitor_slots=0,
+                            new_competitor_slots=0, missed_checks=0)
         rng = random.Random(seed)
         self.external = {}
         for day in self.days:
@@ -254,6 +257,17 @@ class WeekSimulation:
                 for minute in range(480,1171,30):
                     self.now=self.stamp(day,minute)
                     self.metrics['checks']+=1
+                    if self.competitor_waves and minute in (480,600,780,930):
+                        for room in ROOMS:
+                            cells=self.external[day,room]
+                            available=[m for m in range(max(720,minute+30),1171,30)
+                                if not any(cell in cells for cell in (m,m+15))
+                                and not any(r.day==day and r.room==room and m<r.end and m+30>r.start
+                                            for r in self.events.values())]
+                            if available:
+                                m=self.rng.choice(available)
+                                cells.update((m,m+15))
+                                self.metrics['new_competitor_slots']+=1
                     # Cancellations release real gaps; confirmed reservations
                     # remain immutable to competing students.
                     if minute in (660,840,990):
@@ -264,6 +278,9 @@ class WeekSimulation:
                                 selected=self.rng.choice(releasable)
                                 cells.difference_update((selected,selected+15))
                                 self.metrics['released_competitor_slots']+=1
+                    if self.miss_every and self.metrics['checks']%self.miss_every==0:
+                        self.metrics['missed_checks']+=1
+                        continue
                     self.extend()
                     if minute==480: self.advance()
                     self.short_notice()

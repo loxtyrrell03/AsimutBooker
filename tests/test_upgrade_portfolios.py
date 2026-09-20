@@ -1,4 +1,5 @@
 import copy
+from dataclasses import replace
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -123,6 +124,29 @@ class UpgradePortfolioTests(unittest.TestCase):
         chosen = self.select(choices, events=events)
         self.assertEqual(len(chosen), 2)
         self.assertEqual(len({c.original.event_id for c in chosen}), 2)
+
+    def test_equal_quality_upgrades_consider_rest_against_the_whole_day(self):
+        old = Reservation(1, self.day, 'Fallback', 1020, 1080)
+        existing = Reservation(2, self.day, 'Corus', 960, 1020)
+        choices = [RoomUpgrade(old, Reservation(1, self.day, 'Weston', start, start+60))
+                   for start in (1020, 1050)]
+        events = [{**r.as_booking(), 'isReservation': True} for r in (old, existing)]
+        chosen = self.select(choices, events=events,
+            time_preferences=dict(enabled=True, start_hour=12, end_hour=20),
+            planning=replace(self.planning, preferred_rest_minutes=30))
+        self.assertEqual(chosen[0].replacement.start, 1050)
+        self.assertEqual(chosen[0].replacement.duration, 60)
+
+    def test_comfort_cannot_replace_a_better_room_upgrade(self):
+        old = Reservation(1, self.day, 'Fallback', 1020, 1080)
+        existing = Reservation(2, self.day, 'Corus', 960, 1020)
+        choices = [RoomUpgrade(old, Reservation(1, self.day, 'Weston', 1020, 1080)),
+                   RoomUpgrade(old, Reservation(1, self.day, 'Corus', 1080, 1140))]
+        chosen = self.select(choices,
+            events=[{**r.as_booking(), 'isReservation': True} for r in (old, existing)],
+            time_preferences=dict(enabled=True, start_hour=12, end_hour=20),
+            planning=replace(self.planning, preferred_rest_minutes=60))
+        self.assertEqual(chosen[0].replacement.room, 'Weston')
 
     def test_many_variants_do_not_exceed_python_recursion_limit(self):
         candidates = self.consolidate() * 150

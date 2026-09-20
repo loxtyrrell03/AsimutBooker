@@ -539,4 +539,51 @@ def select_upgrade_portfolio(candidates, *, policy, planning, time_preferences,
         return best
 
     result = solve(0, 0, (), initial_peak)
-    return tuple(choices[i] for i in result[1]) if result else ()
+    selected = tuple(result[1]) if result else ()
+    from session_preferences import enabled, comfort_key
+    if selected and enabled(planning):
+        # Improve optional comfort only among equally good ways to upgrade the
+        # exact same originals. Evaluate the complete resulting day, so another
+        # selected move cannot silently lose its break or acquire a conflict.
+        groups = {}
+        for index in range(len(choices)):
+            groups.setdefault((masks[index], scores[index][:3]), []).append(index)
+
+        def comfort(indices):
+            final = events
+            for index in indices:
+                final = apply_upgrade_to_events(final, choices[index])
+            practice = [Reservation.from_event(e) for e in final
+                        if e.get('isReservation') is True and e['date'] == day.isoformat()]
+            changed = {choices[i].replacement.event_id for i in indices}
+            for a, b in combinations(practice, 2):
+                if a.event_id not in changed and b.event_id not in changed:
+                    continue
+                gap = same_room_gap if a.room == b.room else 0
+                if a.start < b.end+gap and a.end > b.start-gap:
+                    return None
+            if weekday and sum(interval_overlap_minutes(r.start, r.end, peak_start, peak_end)
+                               for r in practice) > limit:
+                return None
+            return comfort_key(((r.start, r.end, r.room) for r in practice), planning)
+
+        best = comfort(selected)
+        checks = 0
+        # A local tie refinement, not a claim of global comfort optimality.
+        # The primary portfolio and all of its secured minutes remain intact.
+        for _ in range(3):
+            improved = False
+            for position, index in enumerate(selected):
+                for alternative in groups[masks[index], scores[index][:3]]:
+                    checks += 1
+                    if checks > 1000:
+                        break
+                    candidate = (*selected[:position], alternative, *selected[position+1:])
+                    value = comfort(candidate)
+                    if value is not None and best is not None and value < best:
+                        selected, best, improved = candidate, value, True
+                if checks > 1000:
+                    break
+            if not improved or checks > 1000:
+                break
+    return tuple(choices[i] for i in selected)

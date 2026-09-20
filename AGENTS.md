@@ -1,3 +1,23 @@
+## 2026-09-20 completed comfort and week stress audit
+
+- Dense comfort refinement first tries preferred lengths and prunes options
+  that cannot preserve room quality. Early acceptance requires proven primary
+  and comfort bounds; mixed-length alternatives still compete when they could
+  improve the primary result. The 1,100-opportunity regression finds three good
+  one-hour blocks within two seconds; bounded fallback remains available.
+- Equivalent upgrade slots can improve full-day comfort without changing the
+  selected original IDs, primary gain, booked minutes, conflicts or peak cap.
+  This is a bounded local tie refinement; core upgrades remain authoritative.
+- All 1,440 Python tests and 19 phone Node checks pass, plus TypeScript, lint,
+  validated phone build and prior Chromium/WebKit settings persistence/render
+  checks. Thirty-eight simulated weeks include incoming competitors, missed
+  runs and a fully occupied week with zero Save attempts. The full suite also
+  retains actual journal/browser/transfer recovery regressions.
+- `tools/simulate_changing_weeks.py` produces repeatable synthetic comparisons;
+  `docs/practice-preferences-stress-plan.md` records the matrix and limitations.
+  Comfort never sacrifices the current feasible primary plan, but unknown
+  future competition can still produce different total weekly outcomes.
+
 ## 2026-09-20 prepared free-window bookings
 
 - Short-notice discovery uses the shared whole-day plan at the imminent edge,

@@ -38,10 +38,42 @@ def tracker_sessions(tracker, day, planning=None):
     return tuple(sorted((round(start*60), round(end*60), room) for start, end, room in ranges))
 
 
-def refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minutes,
+def refine_plan(baseline, opportunities, planning, **kwargs):
+    """Try exact preferred lengths first, then the full bounded refinement.
+
+    A perfect comfort score is a proven lower bound. Finding it in the much
+    smaller length-restricted search avoids exploring thousands of inferior
+    fragments on dense grids; the ordinary baseline remains the quality floor.
+    """
+    if not baseline or not enabled(planning):
+        return baseline
+    options = tuple(opportunities)
+    block = getattr(planning, 'preferred_block_minutes', 0)
+    if block and sum(i.potential_minutes for i in baseline) % block == 0:
+        fitted = _refine_plan(baseline, options, planning, exact_block=block, **kwargs)
+        sessions = (*kwargs.get('existing_sessions', ()), *(
+            (i.start_minutes, i.end_minutes, i.room) for i in fitted))
+        from daily_planner import soft_time_value
+        target = sum(i.potential_minutes for i in fitted)
+        peak = kwargs.get('remaining_peak_minutes')
+        # The fast result must also reach absolute primary upper bounds. A
+        # perfect break pattern alone must not hide a better-room mixed-length
+        # solution that the unrestricted search can find.
+        primary_optimal = (
+            round(sum(soft_time_value(i.start_minutes, i.potential_minutes,
+                                     i.soft_preferred_window) for i in fitted), 7) == target
+            and sum(i.room_priority*i.potential_minutes for i in fitted)
+                == min(i.room_priority for i in (*options, *baseline))*target
+            and sum(i.preferred_minutes for i in fitted) >= min(target, peak if peak is not None else target))
+        if primary_optimal and comfort_key(sessions, planning) == (0, 0, 0):
+            return fitted
+    return _refine_plan(baseline, options, planning, **kwargs)
+
+
+def _refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minutes,
                 same_room_gap_minutes, allow_fragmented_sessions, rank_key=None,
                 required_opportunity=None, existing_sessions=(), state_limit=15000,
-                transition_limit=75000):
+                transition_limit=75000, exact_block=0):
     from daily_planner import opportunity_rank, resize_opportunity, soft_time_value, soft_time_is_worth_booking
     if not baseline or not enabled(planning):
         return baseline
@@ -49,6 +81,7 @@ def refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minute
     peak_limit = 1440 if remaining_peak_minutes is None else remaining_peak_minutes
     rank = rank_key or (lambda item: opportunity_rank(item, planning, now=now))
     existing = tuple(existing_sessions)
+    room_budget = sum(item.room_priority*item.potential_minutes for item in baseline)
 
     def source(item):
         return (item.room, item.target_date, item.start_minutes, item.unlock_at,
@@ -57,9 +90,16 @@ def refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minute
     records = {}
     for item in opportunities:
         for duration in range(item.initial_minutes, min(target, item.potential_minutes)+1, 15):
+            if exact_block and duration != exact_block:
+                continue
             if not soft_time_is_worth_booking(item.start_minutes, duration, item.soft_preferred_window):
                 continue
             variant = resize_opportunity(item, item.start_minutes+duration, planning)
+            # Optional comfort cannot buy a worse room. This exact lower bound
+            # also removes thousands of irrelevant alternatives when the known
+            # plan already uses the highest-ranked room throughout.
+            if variant.room_priority*duration > room_budget:
+                continue
             if variant.peak_minutes > peak_limit:
                 continue
             if any(variant.start_minutes < end and variant.end_minutes > start
@@ -73,8 +113,12 @@ def refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minute
     # Keep every baseline member even when an upstream source representation
     # was coalesced, so the bounded search can never lose its known solution.
     for item in baseline:
+        if exact_block and item.potential_minutes != exact_block:
+            continue
         key = (item.start_minutes, item.end_minutes, item.room)
         records.setdefault(key, (item, source(item) == required))
+    if not records:
+        return baseline
     rows = tuple(sorted(records.values(), key=lambda row: (
         row[0].start_minutes, rank(row[0]), row[0].end_minutes, row[0].room)))
     variants = tuple(row[0] for row in rows)
@@ -150,6 +194,9 @@ def refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minute
     if selected is None:
         return baseline
     result = tuple(variants[index] for index in selected)
+    if (sum(i.room_priority*i.potential_minutes for i in result) > room_budget
+            or sum(i.preferred_minutes for i in result) < sum(i.preferred_minutes for i in baseline)):
+        return baseline
     # Comfort cannot replace secured time by a not-yet-bookable alternative.
     if sum(i.potential_minutes for i in result if i.unlock_at > now) > \
             sum(i.potential_minutes for i in baseline if i.unlock_at > now):

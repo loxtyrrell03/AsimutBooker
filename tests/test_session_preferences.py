@@ -1,6 +1,7 @@
 import itertools
 import random
 import unittest
+from time import perf_counter
 from dataclasses import replace
 
 from booking_strategy import DailyPlanningPreferences, load_booking_strategy, apply_booking_strategy_update, BookingStrategyError
@@ -109,6 +110,22 @@ class SessionPreferenceTests(unittest.TestCase):
             raw = tuple((o.room,o.start_minutes,o.end_minutes) for o in actual)
             with self.subTest(case=case):
                 self.assertEqual(score(raw),min(map(score,plans)))
+
+    def test_dense_grid_can_find_three_hour_blocks_without_losing_best_rooms(self):
+        from tests import test_daily_planner as fixture
+        world=fixture.DailyPlannerTests()
+        options=[]
+        for room in range(22):
+            for n in range(50):
+                start=480+n*15
+                options.append(world.opportunities(f'R{room:02d}',start/60,min(start+120,1320)/60,NOW,
+                                                   priority=room)[0])
+        started=perf_counter()
+        result=self.choose(options,target_minutes=180,preferred_block_minutes=60,
+                           preferred_rest_minutes=30,same_room_gap_minutes=60)
+        self.assertEqual([i.potential_minutes for i in result],[60,60,60])
+        self.assertTrue(all(i.room=='R00' for i in result))
+        self.assertLess(perf_counter()-started,2)
 
 
 if __name__ == '__main__':
