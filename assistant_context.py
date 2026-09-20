@@ -59,7 +59,7 @@ APP_CAPABILITIES = {
         "Daily foresight with quota-aware primary, additional, and backup sessions",
         "Exact horizon-edge creation and verified incremental extensions",
         "Crash-safe mutation receipts and exact event-ID persistence checks",
-        "Recurring 15-minute Windows schedule with health evidence",
+        "Recurring five-minute Windows schedule with daily practice priority and health evidence",
         "Read-only login, agenda, availability, and planning refreshes",
         "Single, inclusive-date-range, upcoming-scope, or bounded selected-set reservation cancellation through the assistant action surface",
     ],

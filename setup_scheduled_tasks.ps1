@@ -8,9 +8,9 @@ $ScriptPath = Join-Path $PSScriptRoot "run_booker.bat"
 $PythonPath = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 $WorkingDir = $PSScriptRoot
 $FirstRunTime = "07:13"
-$RepeatMinutes = 15
-# 07:13 + 63 repetitions = 22:58, preparing the final 23:00 room edge.
-# The next repetition (23:13) is excluded.
+$RepeatMinutes = 5
+# Frequent same-day checks retain every :13/:28/:43/:58 preparation run.
+# 07:13 + 189 repetitions = 22:58; the next repetition is excluded.
 $RepeatDurationIso = "PT15H46M"
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -118,7 +118,7 @@ function Assert-RegisteredTaskContract {
         $RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskDailyTrigger" -or
         -not $RegisteredTrigger.Enabled -or
         $RegisteredTrigger.DaysInterval -ne 1 -or
-        $RegisteredTrigger.Repetition.Interval -ne "PT15M" -or
+        $RegisteredTrigger.Repetition.Interval -ne "PT5M" -or
         $RegisteredTrigger.Repetition.Duration -ne $RepeatDurationIso -or
         $RegisteredTrigger.Repetition.StopAtDurationEnd
     ) {
@@ -306,7 +306,7 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "AsimutBooker automatic booking every 15 minutes from 07:13 through 22:58." `
+        -Description "AsimutBooker automatic booking every 5 minutes from 07:13 through 22:58." `
         -Force |
         Out-Null
 
@@ -444,7 +444,7 @@ try {
 }
 
 Write-Host "Created: $TaskName" -ForegroundColor Green
-Write-Host "  Repeats every 15 minutes from 07:13 through 22:58." -ForegroundColor White
+Write-Host "  Repeats every 5 minutes from 07:13 through 22:58." -ForegroundColor White
 Write-Host "  Runs headless, requests wake on AC or battery, catches up after a missed start, and ignores overlapping starts." -ForegroundColor White
 Write-Host "  Actual wake-from-sleep still depends on Windows, firmware, and hardware support." -ForegroundColor White
 

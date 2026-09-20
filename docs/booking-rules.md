@@ -38,6 +38,19 @@ fragmentation choice and conflict checks. A room-specific refusal can use an
 eligible backup room; a quota refusal ends that pass and waits for a later run.
 Unknown quota responses stop writes safely rather than assuming availability.
 
+The recurring worker checks every five minutes during its existing 07:13-22:58
+window. Between quarter-hour preparations it focuses on today's extensions,
+free-horizon bookings and room upgrades. At exhausted advance quota, that daily
+work runs before future upgrades can stop on a quota refusal. Unresolved
+transactions still require recovery before any unrelated booking.
+
+An imminent free-window opportunity can be forecast up to three minutes ahead.
+The worker waits for the actual boundary, then rereads the room grid and replans
+before the normal exact booking checks. Preferred times (including strict/soft
+behaviour), room order, goals, fragmentation, exclusions and extension holds
+remain the same planning constraints. The worker never treats a future opening
+as permission to book early or promises hours that the site has not confirmed.
+
 Room upgrades retain their exact-event validation, duration and recovery
 guarantees. Existing reservations above a new limit are not cancelled or
 shortened automatically. A whole-room improvement may retain an existing

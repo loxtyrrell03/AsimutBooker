@@ -88,9 +88,9 @@ SETTINGS_FILE = APP_DIR / "data" / "settings.json"
 GUI_INSTANCE_LOCK_FILE = APP_DIR / "data" / "gui-runtime.lock"
 RECURRING_TASK_NAME = "AsimutBooker_Recurring"
 RECURRING_TASK_PATH = "\\"
-RECURRING_SCHEDULE_TEXT = "Every 15 minutes, 07:13-22:58"
+RECURRING_SCHEDULE_TEXT = "Every 5 minutes, 07:13-22:58"
 RECURRING_FIRST_RUN_LOCAL = "07:13"
-RECURRING_INTERVAL_ISO = "PT15M"
+RECURRING_INTERVAL_ISO = "PT5M"
 RECURRING_DURATION_ISO = "PT15H46M"
 RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
 RECURRING_RESTART_INTERVAL_ISO = "PT1M"
@@ -669,7 +669,7 @@ def scheduler_health_item(
         "Next automatic run",
         "ok",
         headline,
-        "Every 15 minutes in the daily window; Windows wake is requested, while physical wake proof is shown separately.",
+        "Every 5 minutes in the daily window; Windows wake is requested, while physical wake proof is shown separately.",
     )
 
 
@@ -2703,10 +2703,10 @@ class AsimutBookerGUI(QuietFocusGUI):
             )
         elif task["state"].casefold() == "running":
             if not has_dashboard:
-                self.tasks_status_var.set("✅ Running (15-minute schedule)")
+                self.tasks_status_var.set("✅ Running (5-minute schedule)")
         else:
             if not has_dashboard:
-                self.tasks_status_var.set("✅ Active (every 15 min)")
+                self.tasks_status_var.set("✅ Active (every 5 min)")
 
         tree = getattr(self, "tasks_tree", None)
         if tree is None:
@@ -3170,7 +3170,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         ttk.Label(
             main_frame,
             text=(
-                "A single non-overlapping task checks for bookings every 15 minutes "
+                "A single non-overlapping task checks for bookings every 5 minutes "
                 "from 07:13 through 22:58. Use Install / Repair to create the correct "
                 "schedule and replace obsolete per-time tasks."
             ),
@@ -3278,7 +3278,7 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         if not messagebox.askyesno(
             "Remove Automatic Schedule",
-            "Remove the AsimutBooker automatic 15-minute schedule?\n\n"
+            "Remove the AsimutBooker automatic 5-minute schedule?\n\n"
             "Manual runs from the control panel will still work.",
             parent=parent_dialog,
         ):
@@ -3411,7 +3411,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             "Install or repair the automatic booking schedule?\n\n"
             "This will:\n"
             "• Replace obsolete AsimutBooker tasks with one recurring task\n"
-            "• Run every 15 minutes from 07:13 through 22:58\n"
+            "• Run every 5 minutes from 07:13 through 22:58\n"
             "• Ignore overlapping starts and catch up after missed starts\n"
             "• Enable AC/DC wake-timer requests and plugged-in lid-close operation\n\n"
             "Wake-from-sleep still depends on Windows, firmware, and hardware support.\n\n"
@@ -3474,7 +3474,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             messagebox.showinfo(
                 "Schedule Ready",
                 "The automatic schedule is installed and verified.\n\n"
-                "It will run every 15 minutes from 07:13 through 22:58. "
+                "It will run every 5 minutes from 07:13 through 22:58. "
                 "AC/DC wake timers were requested; actual wake support depends on "
                 "Windows and the PC hardware.",
             )

@@ -292,6 +292,46 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
         self.attempt.assert_not_called()
         self.assertEqual(self.run_pass(after_horizon=True)[0], 1)
 
+    def test_prepares_new_free_window_then_rechecks_before_booking(self):
+        self.now=self.now.replace(minute=13)
+        self.args.scheduled=True
+        self.args.target_time='14:15'
+        self.plan=b.PracticePlan(enabled=True,default_hours=.5)
+        self.grid.return_value=[{'room':'A','slots':[{'startHour':18.75,'endHour':20}]}]
+        def wait(boundary,*args,**kwargs):
+            self.assertFalse(self.events)
+            self.now=boundary
+        with patch.object(b,'wait_until_datetime',side_effect=wait) as waiting:
+            self.assertEqual(self.run_pass()[0],1)
+        waiting.assert_called_once()
+        self.assertGreaterEqual(self.grid.call_count,2)
+        self.assertEqual(self.events,[(self.now.date(),18.75,19.25)])
+
+    def test_strict_preferred_times_survive_free_horizon(self):
+        with patch.object(b,'load_time_preferences',return_value={
+                'enabled':True,'strict_mode':True,'start_hour':12,'end_hour':16}):
+            self.assertEqual(self.run_pass()[0],0)
+        self.attempt.assert_not_called()
+
+    def test_room_priority_is_retained_with_equal_time_fit(self):
+        with patch.object(b,'PRIORITY_ROOMS',['Preferred','Fallback']):
+            self.grid.return_value=[{'room':r,'slots':[{'startHour':16,'endHour':18}]} for r in ('Fallback','Preferred')]
+            self.assertEqual(self.run_pass()[0],1)
+        self.assertEqual(self.attempt.call_args.args[1]['room'],'Preferred')
+
+    def test_soft_preferred_time_keeps_priority_over_a_better_room_outside_it(self):
+        self.plan = b.PracticePlan(enabled=True, default_hours=1)
+        self.grid.return_value = [
+            {'room': 'Preferred', 'slots': [{'startHour': 18, 'endHour': 19}]},
+            {'room': 'Fallback', 'slots': [{'startHour': 16, 'endHour': 17}]},
+        ]
+        with patch.object(b, 'PRIORITY_ROOMS', ['Preferred', 'Fallback']), \
+             patch.object(b, 'load_time_preferences', return_value={
+                 'enabled': True, 'strict_mode': False, 'start_hour': 12, 'end_hour': 18}):
+            self.assertEqual(self.run_pass()[0], 1)
+        self.assertEqual(self.attempt.call_args.args[1]['room'], 'Fallback')
+        self.assertEqual(self.events[0][1:], (16, 17))
+
     def test_no_save_rejection_is_not_retried_in_second_pass(self):
         self.attempt.side_effect = None
         self.attempt.return_value = False, {'room':'A'}

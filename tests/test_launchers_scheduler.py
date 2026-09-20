@@ -90,10 +90,12 @@ class SchedulerInstallerTests(unittest.TestCase):
         while value < stop:
             launches.append(value)
             value += timedelta(minutes=step)
-        self.assertEqual(len(launches), 64)
+        self.assertEqual(len(launches), 190)
         self.assertEqual(launches[-1].strftime('%H:%M'), '22:58')
-        self.assertTrue(all(value.minute % 15 == 13 for value in launches))
-        edges = {(value + timedelta(minutes=2)).strftime('%H:%M') for value in launches}
+        preparations = [value for value in launches if value.minute % 15 == 13]
+        self.assertEqual(len(preparations),64)
+        self.assertTrue(all((b-a).total_seconds()==300 for a,b in zip(launches,launches[1:])))
+        edges = {(value + timedelta(minutes=2)).strftime('%H:%M') for value in preparations}
         self.assertTrue({'22:00', '22:15', '22:30', '22:45', '23:00'}.issubset(edges))
         self.assertNotIn('23:15', edges)
 
@@ -156,7 +158,7 @@ class SchedulerInstallerTests(unittest.TestCase):
             '$RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskDailyTrigger"',
             "$RegisteredTrigger.Enabled",
             "$RegisteredTrigger.DaysInterval -ne 1",
-            '$RegisteredTrigger.Repetition.Interval -ne "PT15M"',
+            '$RegisteredTrigger.Repetition.Interval -ne "PT5M"',
             "$RegisteredTrigger.Repetition.Duration -ne $RepeatDurationIso",
             "$RegisteredTrigger.Repetition.StopAtDurationEnd",
             "$RegisteredTrigger.StartBoundary",

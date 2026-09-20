@@ -1,3 +1,22 @@
+## 2026-09-20 faster daily practice under the free horizon
+
+- The recurring schedule now checks every five minutes in the unchanged
+  07:13-22:58 window. Existing quarter-hour preparation runs remain; intervening
+  runs focus on today's extensions, free-window bookings and room upgrades.
+  At full quota, today's work precedes future upgrades, so a future quota
+  refusal cannot prevent the daily booking pass. Pending receipts still own
+  recovery exclusively; overlapping workers remain prohibited.
+- An imminent free-window opportunity may prepare up to three minutes ahead,
+  then wait for the real boundary and refresh the grid and plan before the
+  usual exact live approval. The shared planner retains preferred times and
+  their strict/soft setting, room ranking, daily targets, extension holds,
+  fragmentation, blackouts and action limits. No future prediction authorizes
+  a Save, and the existing one-hour peak checks still cap extensions.
+- All 1,357 Python regressions pass, plus 32 final quota/preferences checks
+  (including the added soft-time-versus-room-priority case) and 53 desktop
+  preference/scheduler checks. This is source and fixture evidence; activation
+  and actual booking outcomes must be verified independently.
+
 ## 2026-09-20 category recovery and selectable quota policy
 
 - ASIMUT added a permitted chamber category requiring 3-7 participants. Category

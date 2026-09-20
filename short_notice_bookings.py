@@ -1,8 +1,52 @@
 """Bounded free-horizon pass using the normal planner and guarded Save path."""
 from datetime import datetime, timedelta
+from copy import copy
 
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
+
+
+def is_fast_scheduled_pass(args):
+    """Between quarter-hour preparations, focus the same worker on today's needs."""
+    return bool(getattr(args, 'scheduled', False) and not getattr(args, 'target_time', None)
+        and not any(getattr(args, flag, False) for flag in (
+            'horizon_only','extensions_only','upgrades_only','upgrade_dry_run',
+            'plan_only','check_only','agenda_only')))
+
+
+def prioritise_daily_practice(engine, page, settings, practice_plan, args, tracker,
+                             total_actions, booking_details):
+    """Finish today's work before a future quota refusal can end the run.
+
+    Unresolved transactions retain exclusive mutation ownership. Extension holds
+    remain authoritative, and all actual writes use the existing guarded paths.
+    """
+    today = datetime.now().date()
+    if (any(getattr(args, flag, False) for flag in (
+            'horizon_only','extensions_only','upgrades_only','upgrade_dry_run',
+            'plan_only','check_only','agenda_only'))
+            or getattr(args,'only_date',None) not in (None,today.isoformat())
+            or engine.list_pending_mutation_receipts()
+            or not (tracker.is_quota_full() or is_fast_scheduled_pass(args))):
+        return total_actions,tracker,False
+    scoped=copy(args)
+    scoped.only_date=today.isoformat()
+    from booking_quotas import QuotaWait
+    try:
+        total_actions,_=engine.process_pending_extensions(page,tracker,
+            [e for e in tracker.agenda_events if e.get('isReservation')],practice_plan,
+            engine.load_disabled_dates(settings),engine.load_time_preferences(settings),
+            scoped,total_actions,booking_details)
+    except QuotaWait as exc:
+        if engine.list_pending_mutation_receipts():
+            raise
+        print(f'  [Free horizon] Extension waits: {exc}')
+    total_actions,tracker=run_short_notice_pass(engine,page,settings,practice_plan,
+        args,tracker,total_actions,booking_details)
+    # The earlier result is a whole-week tracker; only the upgrade scope changes.
+    total_actions,tracker=engine.process_room_upgrades(engine,page,settings,practice_plan,
+        scoped,tracker,total_actions,booking_details)
+    return total_actions,tracker,True
 
 
 def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
@@ -39,6 +83,13 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             planning_context, tracker, practice_plan, disabled,
             time_prefs=preferences, now=now)
         candidates = []
+        future_candidates = []
+        boundary = None
+        if (getattr(args,'scheduled',False) and getattr(args,'target_time',None)
+                and not getattr(args,'_free_boundary_waited',False)):
+            value=engine.target_boundary_datetime(args.target_time,base_date=now.date())
+            if 0 < (value-now).total_seconds() <= 180:
+                boundary=value
         for day in days:
             if not engine.fragmentation_allows_new_booking(tracker, day)[0]:
                 continue
@@ -52,8 +103,9 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             if remaining * 60 < engine.MINIMUM_BLOCK_MINUTES:
                 continue
             open_day(day, now.date())
+            gaps=engine.get_available_slots(page)
             opportunities = engine.build_day_booking_opportunities(
-                engine.get_available_slots(page), day, tracker, preferences, planning,
+                gaps, day, tracker, preferences, planning,
                 now=now, remaining_daily_hours=remaining,
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
                 only_room=args.only_room, free_horizon_only=True)
@@ -64,7 +116,20 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                     - peak_holds.get(day.isoformat(), 0)),
                 same_room_gap_minutes=engine.SAME_ROOM_GAP_MINUTES)
             candidates.extend((item, remaining) for item in chosen if item.unlock_at <= now)
+            if boundary is not None:
+                # Forecast only. After waiting, reread the grid and replan before
+                # any Save; this cannot authorize early or stale-window bookings.
+                later=engine.build_day_booking_opportunities(gaps,day,tracker,preferences,planning,
+                    now=boundary,remaining_daily_hours=remaining,
+                    reserved_peak_minutes=peak_holds.get(day.isoformat(),0),
+                    only_room=args.only_room,free_horizon_only=True)
+                future_candidates.extend(item for item in later if item.unlock_at <= boundary)
         if not candidates:
+            if future_candidates and boundary is not None:
+                args._free_boundary_waited=True
+                operation_stage('Preparing for the next five-hour booking window…')
+                engine.wait_until_datetime(boundary,page,label='FREE HORIZON',settle_seconds=0)
+                continue
             print('  [Free horizon] No eligible short-notice booking is currently available for the remaining targets.')
             break
         item, remaining = min(candidates, key=lambda pair: engine.opportunity_rank(pair[0], planning, now=now))

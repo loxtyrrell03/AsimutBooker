@@ -10676,6 +10676,20 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             browser.close()
             return 0
 
+        # A future-room quota refusal must never starve today's practice.
+        from short_notice_bookings import prioritise_daily_practice, is_fast_scheduled_pass
+        total_booked, tracker, daily_priority_done = prioritise_daily_practice(
+            sys.modules[__name__], page, settings, practice_plan, args, tracker,
+            total_booked, booking_details)
+        if daily_priority_done:
+            all_reservations = [event for event in tracker.agenda_events if event.get('isReservation')]
+            if is_fast_scheduled_pass(args):
+                save_history(total_booked, events_detected, booking_details, notify=bool(booking_details))
+                persist_storage_state(context)
+                context.close()
+                browser.close()
+                return 0
+
         # Saved progressive transfers are competitive horizon work. Prepare
         # their next exact step before ordinary extensions can wait for a
         # boundary and before quota/target completion skips new booking work.
@@ -10716,7 +10730,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         extensions_only = bool(getattr(args, "extensions_only", False))
 
         _extensions_considered = False
-        if not horizon_only:
+        if not horizon_only and not daily_priority_done:
             total_booked, _extensions_considered = process_pending_extensions(
                 page,
                 tracker,
@@ -10739,8 +10753,9 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         # The five-hour pass remains available with no advance quota. It uses
         # the same targets, conflicts, room preferences and guarded Save path.
         from short_notice_bookings import run_short_notice_pass
-        total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
-            settings, practice_plan, args, tracker, total_booked, booking_details)
+        if not daily_priority_done:
+            total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
+                settings, practice_plan, args, tracker, total_booked, booking_details)
         all_reservations = [event for event in tracker.agenda_events if event.get('isReservation')]
         refresh_extension_capacity_holds(planning_context, tracker, practice_plan,
                                          disabled_dates, time_prefs=time_prefs)

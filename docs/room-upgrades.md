@@ -40,7 +40,7 @@ session, the next opening boundary and the relevant preference fingerprint.
 The recurring worker uses these hints before its ordinary broad scan. It
 prepares within three minutes of the boundary, using freshly observed horizons
 and conservative site-clock evidence; preparation never permits early trimming.
-The existing recurring task starts every 15 minutes from 07:13 through 22:58,
+The existing recurring task starts every five minutes from 07:13 through 22:58,
 leaving preparation time before quarter-hour boundaries through 23:00. A missed
 run recalculates the largest currently useful prefix from fresh availability.
 

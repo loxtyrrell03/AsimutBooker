@@ -73,7 +73,7 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
     def run_booker(self):
         return b.run_booking(self.args, {}, b.PracticePlan(), room_preferences=mock.Mock())
 
-    def test_progressive_runs_before_quota_full_exit(self):
+    def test_today_is_completed_before_future_upgrades_at_full_quota(self):
         self.tracker.is_quota_full.return_value = True
         self.mocks["process_pending_extensions"].side_effect = None
         self.mocks["process_pending_extensions"].return_value = (0, True)
@@ -82,7 +82,7 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.progressive.side_effect = lambda *args: (order.append("progressive") or 0, args[5])
         self.mocks["process_room_upgrades"].side_effect = lambda *args: (order.append("whole") or 0, args[5])
         self.assertEqual(self.run_booker(), 0)
-        self.assertEqual(order, ["progressive", "whole"])
+        self.assertEqual(order, ["whole", "progressive", "whole"])
         self.mocks["process_pending_extensions"].assert_called_once()
 
     def test_progressive_runs_before_ordinary_extension_wait_and_updates_agenda(self):
@@ -100,6 +100,35 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.assertEqual(call[2], [updated.agenda_events[0]])
         self.assertEqual(call[7], 2)
         self.assertEqual(self.mocks["refresh_extension_capacity_holds"].call_count, 2)
+
+    def test_future_quota_refusal_cannot_skip_daily_priority(self):
+        self.tracker.is_quota_full.return_value=True
+        self.mocks['process_pending_extensions'].side_effect=None
+        self.mocks['process_pending_extensions'].return_value=(0,True)
+        short=self.stack.enter_context(mock.patch('short_notice_bookings.run_short_notice_pass',
+            return_value=(0,self.tracker)))
+        def refuse(*args):
+            short.assert_called_once()
+            self.mocks['process_pending_extensions'].assert_called_once()
+            self.assertEqual(self.mocks['process_room_upgrades'].call_args.args[4].only_date,str(date.today()))
+            raise b.QuotaWait('Requested booking exceeds your quota')
+        self.progressive.side_effect=refuse
+        with self.assertRaises(b.QuotaWait):
+            self.run_booker()
+
+    def test_between_edge_scheduled_pass_only_works_on_daily_practice(self):
+        self.args.scheduled=True
+        self.args.target_time=None
+        self.tracker.is_quota_full.return_value=False
+        self.mocks['process_pending_extensions'].side_effect=None
+        self.mocks['process_pending_extensions'].return_value=(0,True)
+        short=self.stack.enter_context(mock.patch('short_notice_bookings.run_short_notice_pass',
+            return_value=(0,self.tracker)))
+        self.assertEqual(self.run_booker(),0)
+        short.assert_called_once()
+        self.progressive.assert_not_called()
+        self.assertEqual(self.mocks['process_room_upgrades'].call_args.args[4].only_date,str(date.today()))
+        self.assertIsNone(self.args.only_date)
 
     def test_pending_transfer_blocks_fallthrough_to_unrelated_mutations(self):
         self.mocks["list_pending_mutation_receipts"].return_value = [{"kind": "transfer"}]
