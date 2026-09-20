@@ -1,3 +1,22 @@
+## 2026-09-21 advance-controls activation
+
+- Activated the verified planner/UI source in the canonical worker checkout and
+  deployed phone build `20260921-advance-quota-2` on the unchanged
+  `https://lox-pc.tail89d19b.ts.net:10443/`. The idle phone backend was reloaded
+  under runtime/mutation locks for the policy API; the later label-only shell
+  update required no further restart. Existing assets were retained for clients.
+- Settings, history, receipts, session/configuration state, both existing task
+  definitions and every Serve handler were preserved during activation. The
+  recurring worker remains scheduled from 07:12 every five minutes. Existing
+  desktop windows need reopening; the phone must load the new shell for controls.
+- Exact private HTTPS deployment/session/bootstrap and connected agenda/settings
+  checks pass at 320/390px, including help and the saved defaults. An authenticated
+  read-only scan refreshed eight date grids and all 12 existing agenda events,
+  with non-check site writes blocked, unchanged preferences/events, a current
+  plan and zero pending receipts. No live booking or physical-phone proof is
+  claimed. Private diagnostics/backups are ignored under
+  `artifacts/advance-quota-20260921/`.
+
 ## 2026-09-21 compact advance controls and verification
 
 - The user chose design A in `docs/design/2026-09-21-advance-quota/`. Desktop and
