@@ -6,15 +6,17 @@ from dataclasses import replace
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
 from booking_timing import scheduled_work_fits
+from advance_preferences import load_advance_quota
 
 
-def reserve_advance_credit(opportunities, planning, *, active):
+def reserve_advance_credit(opportunities, planning, *, active, release_lead_minutes=None):
     """Delay routine extras until the saved fallback lead when credit is held."""
     if not active:
         return opportunities
+    lead = planning.fallback_lead_minutes if release_lead_minutes is None else release_lead_minutes
     return [replace(item, unlock_at=max(item.unlock_at,
         datetime.combine(item.target_date, local_time())
-        + timedelta(minutes=item.start_minutes - planning.fallback_lead_minutes)))
+        + timedelta(minutes=item.start_minutes - lead)))
         for item in opportunities]
 
 
@@ -128,7 +130,8 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 only_room=args.only_room, free_horizon_only=True,
                 include_free_horizon_intent=True)
             opportunities = reserve_advance_credit(opportunities, planning,
-                active=preserve_advance and not tracker.is_quota_full())
+                active=preserve_advance and not tracker.is_quota_full(),
+                release_lead_minutes=load_advance_quota(settings).fallback_lead_minutes)
             day_plan = engine.build_display_day_plan(day, opportunities, tracker, planning,
                 now=now, target_minutes=int((tracker.get_hours_for_day(day) + remaining) * 60),
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),

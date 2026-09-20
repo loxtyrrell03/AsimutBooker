@@ -24,7 +24,7 @@ class BookingPreferenceGuardTests(unittest.TestCase):
 
     def test_changed_controls_stop_before_receipt_or_click(self):
         for key in ["time_preferences", "practice_plan", "disabled_dates", "room_preferences",
-                    "booking_strategy", "ignored_events", "rebooking_blackouts"]:
+                    "booking_strategy", "advance_quota", "ignored_events", "rebooking_blackouts"]:
             atomic_write_json(self.path, self.settings)
             with self.subTest(control=key), booking_preference_run(self.path, self.settings):
                 update_settings(lambda settings: settings.update({key: {"changed": True}}), self.path)

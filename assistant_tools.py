@@ -40,6 +40,7 @@ from booking_blackouts import (
 )
 from booking_plan import BookingPlanError, clear_booking_plan
 from booking_rules import load_booking_rules
+from advance_preferences import apply_advance_quota, preference_schema as advance_quota_schema
 from booking_strategy import (
     BookingStrategyError,
     apply_booking_strategy_update,
@@ -600,6 +601,7 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                             ]},
                         }, required=("date", "window")),
                     },
+                    "advance_quota": advance_quota_schema(),
                     "booking_strategy": _object_schema(
                         {
                             "reverse_date_order": {"type": "boolean"},
@@ -1777,6 +1779,7 @@ class BookerToolSurface:
         patch = dict(arguments)
         patch.pop("request_quote", None)
         allowed = {
+            "advance_quota",
             "booking_days",
             "practice_plan",
             "time_preferences",
@@ -1824,6 +1827,8 @@ class BookerToolSurface:
             if "booking_strategy" in patch:
                 value = apply_booking_strategy_update(settings, patch["booking_strategy"])
                 changed["booking_strategy"] = booking_strategy_to_dict(value)
+            if "advance_quota" in patch:
+                changed["advance_quota"] = apply_advance_quota(settings, patch["advance_quota"]).to_dict()
             if "room_preferences" in patch:
                 value = apply_room_preferences_update(settings, patch["room_preferences"])
                 changed["room_preferences"] = room_preferences_to_dict(value)

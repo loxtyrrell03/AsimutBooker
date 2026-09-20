@@ -22,6 +22,16 @@ from mutation_receipts import SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION
 class AssistantToolSurfaceTests(unittest.TestCase):
     """Host-contract tests; natural-language interpretation belongs to Terra evals."""
 
+    def test_advance_policy_is_scoped_and_visible_in_context(self):
+        request = 'Group my advance hours into fewer days, with Corus ahead of Weston.'
+        result = self.surface.dispatch('update_booker_preferences', {
+            'request_quote':request, 'advance_quota':{'distribution':'concentrated',
+                'room_mode':'selected','room_order':['Corus','Weston']}},user_request=request)
+        self.assertEqual(result['changed']['advance_quota']['distribution'],'concentrated')
+        settings=load_settings(self.paths.settings)
+        self.assertEqual(settings['unrelated_user_value'],{'preserve':True})
+        self.assertEqual(settings['practice_plan']['default_hours'],2)
+
     CANCELLATION_FIELDS = (
         "event_id",
         "date",

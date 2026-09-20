@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 8
+ASSISTANT_CONTRACT_REVISION = 9
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -298,9 +298,14 @@ Actions:
   resolve its complete existing date range rather than changing only a
   fragment. The Booker will pursue these targets when dates enter the live window,
   subject to live availability, conflicts, horizons, gap rules, and quotas.
-- Ordinary New/Custom quota planning shares advance credit across useful daily
-  blocks in the first two saved preferred rooms and preferred times, before
-  enlarging already-covered days. Actual room horizons can delay a planned
+- Ordinary New/Custom quota planning uses advance_quota: ranked rooms and time
+  periods, spread/weighted/grouped/quality allocation, weekday weights and caps,
+  block aims, credit reserve and room-opening waits. Missing settings preserve
+  the first two preferred rooms and even daily spreading. Custom advance periods
+  replace soft general hours only; strict hours and all site rules remain hard.
+  Weight zero disables advance on that weekday; caps include confirmed time and
+  held extensions. General last-minute, extension and upgrade preferences remain.
+  Save only the requested fields. Actual room horizons can delay a planned
   block; a waiting block is not a reservation. Existing booked time and pending
   extensions count toward the saved daily target. Recurring last-minute checks
   pursue the remainder inside the free window, using the same preferences.

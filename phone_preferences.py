@@ -9,6 +9,7 @@ from room_preferences import load_room_preferences, apply_room_preferences_updat
 from booking_strategy import load_booking_strategy, apply_booking_strategy_update
 from date_time_preferences import load_date_time_preferences, apply_date_time_preferences
 from booking_rules import load_booking_rules, apply_booking_rules
+from advance_preferences import load_advance_quota, apply_advance_quota
 
 
 class PreferenceConflict(ValueError):
@@ -31,6 +32,7 @@ def preference_document(settings):
         'booking_strategy': load_booking_strategy(copy).to_dict(),
         'date_time_preferences': load_date_time_preferences(copy),
         'booking_rules': load_booking_rules(copy).to_dict(),
+        'advance_quota': load_advance_quota(copy).to_dict(),
     }
     revision = sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
     return {'revision': revision, **values}
@@ -46,7 +48,7 @@ def save_phone_preferences(payload, path=SETTINGS_FILE):
     changes = payload['changes']
     if not isinstance(changes, dict) or not changes or set(changes) - {
         'practice_plan', 'time_preferences', 'booking_days', 'room_preferences',
-        'booking_strategy', 'date_time_preferences', 'booking_rules'
+        'booking_strategy', 'date_time_preferences', 'booking_rules', 'advance_quota'
     }:
         raise ValueError('Unsupported preference changes')
 
@@ -54,7 +56,9 @@ def save_phone_preferences(payload, path=SETTINGS_FILE):
         if payload['revision'] != preference_document(settings)['revision']:
             raise PreferenceConflict('Settings changed elsewhere. Reload settings before saving.')
         for name, patch in changes.items():
-            if name == 'booking_rules':
+            if name == 'advance_quota':
+                apply_advance_quota(settings, patch)
+            elif name == 'booking_rules':
                 apply_booking_rules(settings, patch)
             elif name == 'room_preferences':
                 apply_room_preferences_update(settings, patch)

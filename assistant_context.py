@@ -22,6 +22,7 @@ from assistant_plans import load_assistant_plans
 from booking_blackouts import load_rebooking_blackouts
 from booking_plan import PLAN_FILE, booking_plan_fingerprint, read_booking_plan
 from booking_strategy import booking_strategy_to_dict, load_booking_strategy
+from advance_preferences import load_advance_quota
 from health_status import (
     AUTH_COOLDOWN_FILE,
     PHYSICAL_WAKE_FILE,
@@ -227,6 +228,7 @@ def _settings_context(settings_path: Path) -> dict[str, Any]:
         "time_preferences": _validate_time_preferences(settings),
         "date_time_preferences": load_date_time_preferences(settings),
         "booking_strategy": booking_strategy_to_dict(strategy),
+        "advance_quota": load_advance_quota(settings).to_dict(),
         "room_preferences": room_preferences_to_dict(rooms),
         "extendable_bookings": _safe_extendable_bookings(settings),
         "rebooking_blackouts": [item.to_dict() for item in blackouts],

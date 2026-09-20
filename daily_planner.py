@@ -583,7 +583,7 @@ def choose_horizon_opportunity(
 def select_day_plan(
     opportunities, planning, *, now, target_minutes, allow_fragmented_sessions,
     remaining_peak_minutes=None, same_room_gap_minutes=0, rank_key=None,
-    required_opportunity=None, existing_sessions=(),
+    required_opportunity=None, existing_sessions=(), quality_score=None,
 ):
     """Keep primary booking coverage, then refine optional session comfort."""
     from session_preferences import refine_plan
@@ -591,11 +591,18 @@ def select_day_plan(
     baseline = _select_day_plan(opportunities, planning, now=now,
         target_minutes=target_minutes, allow_fragmented_sessions=allow_fragmented_sessions,
         remaining_peak_minutes=remaining_peak_minutes, same_room_gap_minutes=same_room_gap_minutes,
-        rank_key=rank_key, required_opportunity=required_opportunity)
-    return refine_plan(baseline, opportunities, planning, now=now,
+        rank_key=rank_key, required_opportunity=required_opportunity, quality_score=quality_score)
+    refined = refine_plan(baseline, opportunities, planning, now=now,
         remaining_peak_minutes=remaining_peak_minutes, same_room_gap_minutes=same_room_gap_minutes,
         allow_fragmented_sessions=allow_fragmented_sessions, rank_key=rank_key,
         required_opportunity=required_opportunity, existing_sessions=existing_sessions)
+    if quality_score is not None:
+        def quality(plan):
+            rows = [quality_score(item) for item in plan]
+            return tuple(sum(column) for column in zip(*rows)) if rows else ()
+        if quality(refined) < quality(baseline):
+            return baseline
+    return refined
 
 
 def _select_day_plan(
@@ -609,6 +616,7 @@ def _select_day_plan(
     same_room_gap_minutes: int = 0,
     rank_key=None,
     required_opportunity: BookingOpportunity | None = None,
+    quality_score=None,
 ) -> tuple[BookingOpportunity, ...]:
     """Select a desirable whole-day portfolio within the daily target.
 
@@ -662,6 +670,7 @@ def _select_day_plan(
 
     def candidate_quality(item: BookingOpportunity) -> tuple:
         return (
+            *((tuple(-v for v in quality_score(item)),) if quality_score is not None else ()),
             rank_key(item),
             -item.potential_minutes,
             item.room,
@@ -756,6 +765,7 @@ def _select_day_plan(
         return ()
 
     qualities = tuple(candidate_quality(item) for item in variants)
+    custom_values = tuple(quality_score(item) for item in variants) if quality_score is not None else ()
     durations = tuple(item.potential_minutes for item in variants)
     values = tuple(round(soft_time_value(
         item.start_minutes, item.potential_minutes, item.soft_preferred_window
@@ -773,6 +783,12 @@ def _select_day_plan(
 
     @lru_cache(maxsize=None)
     def portfolio_key(plan: tuple[int, ...]) -> tuple:
+        if custom_values:
+            return (-sum(durations[index] for index in plan),
+                    *( -sum(custom_values[index][column] for index in plan)
+                       for column in range(len(custom_values[0])) ),
+                    len(plan), tuple(sorted(qualities[index] for index in plan)),
+                    tuple(sorted(chronological_keys[index] for index in plan)))
         return (
             -sum(values[index] for index in plan),
             len(plan),
@@ -847,7 +863,7 @@ def _select_day_plan(
             ),
         )
 
-    if soft_tradeoff:
+    if soft_tradeoff or custom_values:
         # Never fall back to maximum raw hours when preference scoring is active.
         # Seed a deterministic feasible plan so a busy grid can hit the search
         # bound without turning a poor time into a compulsory target filler.

@@ -7026,7 +7026,7 @@ def same_time_room_backups(
         (item for item in opportunities
          if item.start_minutes == round(start*60)
          and item.end_minutes == round(end*60) and item.unlock_at <= now),
-        key=lambda item: item.room_priority,
+        key=lambda item: allowed_rooms.index(item.room) if allowed_rooms is not None else item.room_priority,
     )
 
 
@@ -12664,6 +12664,11 @@ def _load_and_validate_runtime_settings():
     load_ignored_events(settings)
     load_time_preferences(settings)
     load_booking_strategy(settings)
+    from advance_preferences import load_advance_quota
+    try:
+        load_advance_quota(settings)
+    except BookingStrategyError as exc:
+        raise SettingsError(str(exc)) from exc
     load_rebooking_blackouts(settings)
     load_extendable_bookings(settings)
     list_pending_mutation_receipts()

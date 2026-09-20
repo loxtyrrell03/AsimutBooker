@@ -7,6 +7,21 @@ from phone_preferences import read_phone_preferences, save_phone_preferences, Pr
 
 
 class PhonePreferencesTests(unittest.TestCase):
+    def test_advance_controls_persist_scoped_with_revision_and_atomic_validation(self):
+        before = self.path.read_bytes()
+        current = read_phone_preferences(self.path)
+        self.assertEqual(current['advance_quota']['distribution'], 'balanced')
+        self.assertEqual(self.path.read_bytes(), before)
+        self.save({'advance_quota':{'distribution':'weighted','day_weights':[2,1,0,1,1,1,1],
+            'room_mode':'selected','room_order':['Corus','Weston'],'reserve_minutes':60}})
+        saved = self.path.read_bytes()
+        with self.assertRaises(PreferenceConflict):
+            save_phone_preferences({'revision':current['revision'],'changes':{'advance_quota':{'distribution':'quality'}}},self.path)
+        with self.assertRaises(ValueError):
+            self.save({'advance_quota':{'room_order':[]},'practice_plan':{'default_hours':2}})
+        self.assertEqual(self.path.read_bytes(),saved)
+        self.assertEqual(read_phone_preferences(self.path)['advance_quota']['room_order'],['Corus','Weston'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -8,6 +8,17 @@ from booking_strategy import load_booking_strategy
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
 from session_preferences import tracker_sessions
+from dataclasses import replace
+from advance_preferences import load_advance_quota, rooms_for, windows_for
+
+
+def booking_times(engine, settings, day, policy):
+    preferences = engine.resolve_time_preferences(engine.load_time_preferences(settings), day)
+    # A custom advance period replaces the general soft preference only for
+    # advance creates. Explicit general/date strict hours remain a hard veto.
+    if windows_for(policy, day) and not preferences.get('strict_mode'):
+        preferences = {**preferences, 'enabled': False}
+    return preferences
 
 
 def _minutes(value):
@@ -60,11 +71,16 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
     preferences = engine.load_time_preferences(settings)
     strategy = engine.load_booking_strategy_preferences(settings)
     planning = strategy.daily_planning
+    quota = load_advance_quota(settings)
+    if quota.block_minutes:
+        planning = replace(planning, preferred_block_minutes=quota.block_minutes)
+    if quota.priority_mode != 'inherit':
+        planning = replace(planning, priority_mode=quota.priority_mode)
     disabled = engine.load_disabled_dates(settings)
     context = {}
     targets, peaks, held = engine.refresh_extension_capacity_holds(context, tracker,
         practice_plan, disabled, time_prefs=preferences, now=now)
-    rooms = tuple(engine.PRIORITY_ROOMS[:2])
+    rooms = rooms_for(quota, engine.PRIORITY_ROOMS)
     days = []
     for day, grid in sorted(grids.items()):
         if engine.is_date_disabled(day, disabled):
@@ -72,7 +88,7 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
         target = int(round((practice_plan.target_for(day) or 0)*60))
         if target <= 0:
             continue
-        day_preferences = engine.resolve_time_preferences(preferences, day)
+        day_preferences = booking_times(engine, settings, day, quota)
         confirmed = int(round(tracker.get_hours_for_day(day)*60))
         held_target = targets.get(day.isoformat(), 0)
         opportunities = ()
@@ -88,14 +104,20 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
                         start = max(start, day_preferences['start_hour'])
                         end = min(end, day_preferences['end_hour'])
                     if end > start:
-                        gaps.append({'startHour':start, 'endHour':end})
+                        windows = windows_for(quota, day) if quota.periods and quota.period_mode == 'only' else ((0,1440),)
+                        for left, right in windows:
+                            a, z = max(start, left/60), min(end, right/60)
+                            if z > a:
+                                gaps.append({'startHour':a, 'endHour':z})
                 premium_grid.append({'room':row['room'], 'slots':gaps})
             opportunities = engine.build_day_booking_opportunities(
                 premium_grid, day, tracker,
-                preferences, planning, now=now,
+                day_preferences, planning, now=now,
                 remaining_daily_hours=max(0, target-confirmed-held_target)/60,
                 reserved_peak_minutes=peaks.get(day.isoformat(), 0),
                 reserved_weekly_minutes=sum(targets.values()))
+            opportunities = tuple(replace(item, room_priority=rooms.index(item.room)) for item in opportunities
+                if quota.wait_for_opening or item.unlock_at <= now)
             # The shared planner scores soft preferences and rejects terrible
             # fallbacks. Only an explicitly strict window is a hard cutoff.
         quality_hold = 0
@@ -110,13 +132,13 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
             _quality_minutes(engine, tracker, day, rooms, day_preferences),
             tuple(opportunities), max(0, int(tracker.get_remaining_peak_minutes(day)
                 - peaks.get(day.isoformat(), 0))), held_target, int(quality_hold),
-                tracker_sessions(tracker, day, planning)))
-    budget = max(0, int(tracker.get_remaining_quota_hours()*60) - sum(targets.values()))
+                tracker_sessions(tracker, day, planning), quota.day_caps_minutes[day.weekday()]))
+    budget = max(0, int(tracker.get_remaining_quota_hours()*60) - sum(targets.values()) - quota.reserve_minutes)
     allocations = allocate_advance_week(days, planning, now=now, budget_minutes=budget,
         minimum_block_minutes=engine.MINIMUM_BLOCK_MINUTES,
         allow_fragmented_sessions=engine.ALLOW_FRAGMENTED_SESSIONS,
         same_room_gap_minutes=engine.SAME_ROOM_GAP_MINUTES,
-        reverse_date_order=strategy.reverse_date_order)
+        reverse_date_order=strategy.reverse_date_order, quota_preferences=quota)
     return days, allocations, context
 
 
@@ -141,7 +163,7 @@ def publish(engine, days, allocations, context, policy, settings, tracker, *, no
             status = 'waiting'
             reason = ('Waiting for released advance quota or an eligible last-minute session'
                       if tracker.get_remaining_quota_hours() < engine.MINIMUM_BLOCK_MINUTES/60
-                      else 'No additional preferred-room block fits the fair advance allocation')
+                      else 'No additional block fits your advance-quota settings and availability')
         row = engine.DayPlan(date=day.target_date.isoformat(),
             target_minutes=day.target_minutes, existing_minutes=day.confirmed_minutes,
             peak_used_minutes=min(peak_limit, int(tracker.get_peak_used_for_day(day.target_date))),
@@ -160,7 +182,8 @@ def publish(engine, days, allocations, context, policy, settings, tracker, *, no
                     - day.held_target_minutes)/60,
                 reserved_peak_minutes=context['extension_peak_by_date'].get(day.target_date.isoformat(), 0),
                 free_horizon_only=True, include_free_horizon_intent=True)
-            free_options = reserve_advance_credit(free_options, planning, active=not tracker.is_quota_full())
+            free_options = reserve_advance_credit(free_options, planning, active=not tracker.is_quota_full(),
+                release_lead_minutes=load_advance_quota(settings).fallback_lead_minutes)
             if free_options and engine.fragmentation_allows_new_booking(tracker, day.target_date)[0]:
                 row = engine.build_display_day_plan(day.target_date, free_options, tracker, planning,
                     now=now, target_minutes=day.target_minutes,
@@ -245,12 +268,13 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
         horizon = item.unlock_at > datetime.now()
         slot = (engine._opportunity_to_horizon_candidate(item, target_boundary=item.unlock_at)
                 if horizon else engine._opportunity_to_normal_slot(item))
-        result, _ = engine.attempt_booking_with_room_fallback(page, slot, item.target_date, tracker,
+        quota = load_advance_quota(settings)
+        result, actual = engine.attempt_booking_with_room_fallback(page, slot, item.target_date, tracker,
             (item.target_date-now.date()).days, remaining_daily_hours=item.potential_minutes/60,
             max_action_minutes=args.max_action_minutes,
-            time_prefs=engine.load_time_preferences(settings),
+            time_prefs=booking_times(engine, settings, item.target_date, quota),
             daily_planning=engine.load_booking_strategy_preferences(settings).daily_planning,
-            planning_context=context, horizon=horizon, allowed_rooms=tuple(engine.PRIORITY_ROOMS[:2]))
+            planning_context=context, horizon=horizon, allowed_rooms=rooms_for(quota, engine.PRIORITY_ROOMS))
         if not result:
             if engine.list_pending_mutation_receipts():
                 raise engine.BookingVerificationError('Uncertain advance booking needs reconciliation')
@@ -261,6 +285,10 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
             declined_days.add(item.target_date)
         else:
             total_actions += 1
+            if horizon:
+                result = dict(date=str(item.target_date), room=actual['room'],
+                    start=engine.time_text(round(actual['start_hour']*60)),
+                    end=engine.time_text(round(actual['start_hour']*60)+actual['booking_minutes']))
             booking_details.append(f'{result["date"]} {result["room"]} {result["start"]}-{result["end"]}')
         tracker = engine.BookingTracker()
         engine.scan_agenda(page, tracker, now.date(), ignored_events=engine.load_ignored_events(settings),

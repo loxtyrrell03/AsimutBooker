@@ -1,3 +1,25 @@
+## 2026-09-21 configurable advance allocation
+
+- `advance_preferences.py` owns the validated `advance_quota` section: ranked
+  rooms/weekday periods, spread/weighted/grouped/quality allocation, weekday
+  caps/weights, block aims, live-credit reserve, opening waits and release lead.
+  Missing values preserve top-two rooms and even spreading. General strict
+  hours, exclusions, live quotas/horizons, peak and target limits remain hard.
+- Ordinary New/Custom advance creates use this policy; scoped/legacy commands
+  and general extension/upgrade/last-minute preferences retain their behavior.
+  A day cap counts confirmed practice and extension holds; weight zero stops
+  new advance allocation on that weekday. Reserve withholds advance credit, not
+  last-minute practice. See `docs/advance-quota-preferences.md` for semantics.
+- Phone, desktop and assistant share scoped validation. Policy changes invalidate
+  display plans and stop stale prepared Saves. Assistant contract revision 9
+  includes the policy. Prepared-horizon history records the actual fallback room
+  and confirmed seed duration rather than mistaking its success boolean for an
+  event or counting the planned extension as booked time.
+- Eighty-two focused integration/planner checks plus three boundary checks pass,
+  including 40 independent small custom-quality schedule comparisons. The dense
+  31-room/1,705-opportunity one-day allocation completed in about three seconds.
+  These are isolated source tests; deployment is recorded separately.
+
 ## 2026-09-20 preferences and prepared-window activation
 
 - Activated the verified source in the canonical scheduled-worker checkout and
