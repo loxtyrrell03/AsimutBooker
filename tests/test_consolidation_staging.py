@@ -192,6 +192,22 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(engine.edit_reservation_room_time.call_count, 1)
         self.assertEqual(classify_consolidation_outcome(self.events, self.receipt), 'untouched')
 
+    def test_quota_refusal_restores_staging_before_ending_pass(self):
+        from booking_quotas import QuotaWait
+        engine = self.engine()
+        original_edit = engine.edit_reservation_room_time.side_effect
+        def rejected(page, step, **kwargs):
+            if isinstance(step, RoomConsolidation):
+                raise QuotaWait('Requested booking exceeds your quota')
+            return original_edit(page, step, **kwargs)
+        engine.edit_reservation_room_time.side_effect = rejected
+        with self.assertRaises(QuotaWait):
+            staging.execute_staged_consolidation(engine, mock.MagicMock(), self.staged,
+                revalidate=lambda:True, dry_run=False, freeze_minutes=0)
+        self.assertEqual(classify_consolidation_outcome(self.events,self.receipt),'untouched')
+        engine.resolve_mutation_receipt.assert_called_once()
+        engine.cancel_reservation_exact.assert_not_called()
+
     def test_failed_restoration_keeps_full_intermediate_hours_and_pending_parent(self):
         engine = self.engine()
         self.events = apply_upgrade_to_events(self.events, self.bridge)

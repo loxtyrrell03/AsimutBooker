@@ -3760,6 +3760,7 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         if not response.ok or not exact_check(response):
             raise ValueError("Asimut did not approve the exact room/time change")
         check_payload = response.json()
+        check_quota_refusal(check_payload)
         refusal = response_room_permission_refusal(check_payload)
         if refusal:
             for record in upgrade.originals:
@@ -3863,6 +3864,11 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         print(f"{label}: {original.room} {time_text(original.start)}-{time_text(original.end)} "
               f"-> {replacement.room} {time_text(replacement.start)}-{time_text(replacement.end)}")
         return True
+    except QuotaWait:
+        # A rejected exact check has made no Save. Leave the editor clean and
+        # end this pass rather than testing the same exhausted quota in every room.
+        safe_goto(page, original.event_url)
+        raise
     except (BookingPreferencesChanged, BookingVerificationError, OperationStopped):
         raise
     except Exception as exc:

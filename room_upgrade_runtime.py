@@ -22,6 +22,7 @@ from progressive_state import (protected_event_ids, remember_opportunities,
                                load_state, denial_key, remember_denial)
 from progressive_discovery import find_partial_upgrade_opportunities
 from upgrade_validation import RoomPermissionRefusal
+from booking_quotas import QuotaWait
 
 
 def planning_events(engine, tracker, ignored_events):
@@ -338,12 +339,16 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             finally:
                 check_page.close()
 
-        if isinstance(candidate, RoomConsolidation) and candidate.bridges:
-            changed = execute_staged_consolidation(engine, page, candidate, revalidate=revalidate,
-                                                   dry_run=dry_run, freeze_minutes=freeze_minutes)
-        else:
-            changed = engine.edit_reservation_room_time(page, candidate, revalidate=revalidate,
-                                                        dry_run=dry_run, freeze_minutes=freeze_minutes)
+        try:
+            if isinstance(candidate, RoomConsolidation) and candidate.bridges:
+                changed = execute_staged_consolidation(engine, page, candidate, revalidate=revalidate,
+                                                       dry_run=dry_run, freeze_minutes=freeze_minutes)
+            else:
+                changed = engine.edit_reservation_room_time(page, candidate, revalidate=revalidate,
+                                                            dry_run=dry_run, freeze_minutes=freeze_minutes)
+        except QuotaWait:
+            publish('quota_wait')
+            raise
         if changed:
             rejected_bridges.difference_update({pair for pair in rejected_bridges
                                                 if pair[0].day == candidate.original.day})

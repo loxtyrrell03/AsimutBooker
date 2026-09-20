@@ -226,6 +226,15 @@ class ProgressiveRuntimeTests(unittest.TestCase):
         self.assertFalse(data['plans'])
         self.assertEqual(datetime.fromisoformat(data['denials'][state.denial_key('Best', DAY)]), NOW+timedelta(minutes=30))
 
+    def test_quota_refusal_after_trim_restores_before_ending_pass(self):
+        from booking_quotas import QuotaWait
+        with mock.patch.object(runtime,'save_seed',side_effect=QuotaWait('Requested booking exceeds your quota')):
+            with self.assertRaises(QuotaWait):
+                self.execute()
+        self.assertEqual(self.ctx.actual,{42:self.original})
+        self.assertEqual(self.total(),120)
+        self.assertFalse(journal.list_pending())
+
     def test_permission_refusal_during_preparation_releases_no_fallback_time(self):
         with mock.patch.object(runtime, 'prepare_transfer_destination', return_value=RoomPermissionRefusal('Best', 'You are not allowed to book this room')):
             self.assertFalse(self.execute())

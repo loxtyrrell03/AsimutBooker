@@ -225,8 +225,13 @@ def execute_staged_consolidation(engine, page, change, *, revalidate, dry_run, f
             bridges=[dict(original=record(b.original), replacement=record(b.replacement)) for b in change.bridges])
     applied_bridges = 0
     for step in (*change.bridges, change.prepared):
-        changed = engine.edit_reservation_room_time(page, step, transaction_receipt=receipt,
-            revalidate=lambda: revalidate_staging_step(engine, page, receipt, step), freeze_minutes=freeze_minutes)
+        from booking_quotas import QuotaWait
+        try:
+            changed = engine.edit_reservation_room_time(page, step, transaction_receipt=receipt,
+                revalidate=lambda: revalidate_staging_step(engine, page, receipt, step), freeze_minutes=freeze_minutes)
+        except QuotaWait:
+            restore_staged_consolidation(engine, page, receipt)
+            raise
         if not changed:
             restore_staged_consolidation(engine, page, receipt)
             return RestoredStaging(2 * applied_bridges, step)

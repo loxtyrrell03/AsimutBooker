@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from booking_strategy import load_booking_strategy
+from booking_quotas import QuotaWait
 from date_time_preferences import resolve_time_preferences
 from mutation_receipts import record_pending, load_journal
 from progressive_browser import (PreparedSeed, prepare_seed, save_seed,
@@ -354,6 +355,7 @@ def execute_transfer(ctx, plan, saved, args):
         return False
     prepared_page = ctx.page.context.new_page()
     prepared = None
+    parent = None
     try:
         if prepared_page is not None:
             prepared = prepare_transfer_destination(e, prepared_page, plan)
@@ -421,6 +423,10 @@ def execute_transfer(ctx, plan, saved, args):
         # Even a known rejection is classified from the actual complete agenda;
         # a throwing/uncertain Save propagates with the parent intact.
         return recover_transfer(ctx, parent)
+    except QuotaWait:
+        if parent is not None:
+            recover_transfer(ctx, parent)
+        raise
     finally:
         if prepared_page is not None:
             prepared_page.close()

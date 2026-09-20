@@ -177,7 +177,10 @@ class UpgradeEditorTests(unittest.TestCase):
     def site(self, route):
         request = route.request
         if ";type=check" in request.url:
-            payload = result(self.mode not in {"check_rejected", "check_permission"})
+            payload = result(self.mode not in {"check_rejected", "check_permission", "check_quota"})
+            if self.mode == "check_quota":
+                payload['response']['bookingrules']['issues'] = [
+                    {'type':'category','class':'message-warning','text':'Requested booking exceeds your quota'}]
             if self.mode == "check_permission":
                 payload["response"]["bookingrules"]["issues"] = [
                     {"class": "message-warning", "message": "You do not have permission to book this room"}]
@@ -330,6 +333,15 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertEqual(self.persisted, self.original)
         self.assertFalse(self.save_calls)
         self.assertFalse(self.path.exists())
+
+    def test_quota_refusal_ends_pass_before_save_and_cleans_editor(self):
+        self.mode = 'check_quota'
+        with self.assertRaises(b.QuotaWait):
+            self.run_edit()
+        self.assertEqual(self.persisted,self.original)
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.path.exists())
+        self.assertIn('/arrangement?eventId=42',self.page.url)
 
     def test_rejected_save_proves_original_before_resolving(self):
         self.mode = "save_rejected"

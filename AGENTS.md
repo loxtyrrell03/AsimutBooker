@@ -26,6 +26,12 @@
   preset/custom saves, midnight, invalid values and stale-settings reload. The
   desktop dialog regression, 19 Node checks, TypeScript, lint and isolated static
   build pass. This UI milestone does not itself prove deployment or live writes.
+- Exact upgrade checks also return the live quota warning, even for unchanged
+  duration. They now end the pass with a visible quota wait instead of trying
+  each room. Known refusals restore staged/concurrent transfer work first;
+  uncertain or refused restoration retains its pending receipt. The exact
+  Chromium editor checks (86 focused tests) and 77 staging/progressive/runtime
+  checks pass. Never infer edit permission from zero net added minutes.
 
 ## 2026-09-17 revised college quotas and free horizon (superseded by presets above)
 
