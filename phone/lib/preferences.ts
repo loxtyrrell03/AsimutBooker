@@ -7,6 +7,7 @@ export type DailyPlanning = {
   upgrade_rooms: boolean; upgrade_freeze_hours: number;
 };
 export type Preferences = {
+  booking_rules: BookingRules;
   revision: string;
   practice_plan: { enabled: boolean; default_hours: number; date_overrides: Record<string, number> };
   time_preferences: TimePreference & { preset?: string };
@@ -16,3 +17,6 @@ export type Preferences = {
   room_preferences: { ordered_rooms: string[]; excluded_rooms: string[]; acceptable_instrument_tags: string[];
     acceptable_room_type_tags: string[]; required_feature_terms: string[]; minimum_block_minutes: number; allow_fragmented_sessions: boolean };
 };
+
+export type BookingRules = { preset: 'new' | 'legacy' | 'custom'; rolling_quota_hours: number;
+  peak_quota_minutes: number; free_horizon_minutes: number; peak_start_minutes: number; peak_end_minutes: number };

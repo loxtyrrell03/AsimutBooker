@@ -19,6 +19,13 @@
   future booking checks explicitly refused quota. Never bypass those checks or
   use the chamber category to obtain solo practice. Activation and actual booking
   outcomes are recorded separately below; offline tests do not prove a booking.
+- Desktop Booking Rules and phone Settings > Booking rules expose both presets
+  and custom quota/peak-window/free-window values, using the shared validator.
+  Phone edits retain revision-conflict handling; changing presets does not alter
+  targets or existing reservations. Chromium/WebKit checks cover 320/390/844px,
+  preset/custom saves, midnight, invalid values and stale-settings reload. The
+  desktop dialog regression, 19 Node checks, TypeScript, lint and isolated static
+  build pass. This UI milestone does not itself prove deployment or live writes.
 
 ## 2026-09-17 revised college quotas and free horizon (superseded by presets above)
 

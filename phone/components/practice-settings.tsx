@@ -6,10 +6,11 @@ import { requestJson } from '../lib/api';
 
 import type { Preferences, DailyPlanning } from '../lib/preferences';
 import { HelpTip } from './help-tip';
+import { BookingRulesFields } from './booking-rules-fields';
 
-type Section = 'goal' | 'days' | 'times' | 'rooms' | 'strategy' | 'requirements' | 'all';
+type Section = 'goal' | 'days' | 'times' | 'rooms' | 'strategy' | 'requirements' | 'rules' | 'all';
 
-const labels: Record<Section, string> = { goal: 'Daily goal', days: 'Practice days', times: 'Preferred times', rooms: 'Favourite rooms', all: 'Edit practice settings', strategy: 'Booking strategy', requirements: 'Room requirements' };
+const labels: Record<Section, string> = { goal: 'Daily goal', days: 'Practice days', times: 'Preferred times', rooms: 'Favourite rooms', all: 'Edit practice settings', strategy: 'Booking strategy', requirements: 'Room requirements', rules: 'Booking rules' };
 
 export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabel, onEditing }: { onEditing?: (editing: boolean) => void; csrf: string; enabled: boolean; onSaved: () => void; targetLabel: string; timeLabel: string }) {
   const heading = useRef<HTMLHeadingElement>(null);
@@ -66,6 +67,7 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
     } else if (section === 'goal') changes = { practice_plan: { enabled: values.practice_plan.enabled, default_hours: Number(hours) } };
     else if (section === 'times') changes = { time_preferences: values.time_preferences };
     else if (section === 'strategy') changes = { booking_strategy: values.booking_strategy };
+    else if (section === 'rules') changes = { booking_rules: values.booking_rules };
     else if (section === 'requirements') changes = { room_preferences: { acceptable_instrument_tags: values.room_preferences.acceptable_instrument_tags, acceptable_room_type_tags: values.room_preferences.acceptable_room_type_tags, required_feature_terms: values.room_preferences.required_feature_terms, minimum_block_minutes: values.room_preferences.minimum_block_minutes, allow_fragmented_sessions: values.room_preferences.allow_fragmented_sessions } };
     else if (section === 'rooms') changes = { room_preferences: { ordered_rooms: values.room_preferences.ordered_rooms, excluded_rooms: values.room_preferences.excluded_rooms } };
     else {
@@ -103,7 +105,7 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
 
   return <div className="practice-settings">
     <div className="section-heading"><h3>Your practice</h3><button type="button" className="quiet-icon" aria-label="Edit all practice settings" disabled={!enabled || section !== null} onClick={() => void open('all')}><Settings2 /></button></div>
-    {!section && <div className="preference-actions">{(['goal', 'days', 'times', 'rooms', 'requirements', 'strategy'] as Section[]).map(key =>
+    {!section && <div className="preference-actions">{(['goal', 'days', 'times', 'rooms', 'requirements', 'strategy', 'rules'] as Section[]).map(key =>
       <button type="button" className="quiet-secondary" key={key} onClick={() => void open(key)} disabled={!enabled} aria-label={labels[key]}><span>{labels[key]}</span>{key === 'goal' ? <small>{targetLabel}</small> : key === 'times' ? <small>{timeLabel}</small> : <span aria-hidden="true">›</span>}</button>)}</div>}
     {!enabled && <p className="quiet-muted">Connect to Booker and wait for the current operation to finish to edit preferences.</p>}
     {notice && <output className="quiet-notice">{notice}</output>}
@@ -112,6 +114,7 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
       {working && <output>{values ? 'Saving…' : 'Loading settings…'}</output>}
       {error && <p role="alert">{error}</p>}
       {values && <fieldset disabled={working || !enabled}>
+        {section === 'rules' && <BookingRulesFields value={values.booking_rules} onChange={booking_rules => setValues({ ...values, booking_rules })} />}
         {(section === 'goal' || section === 'all') && <>
           <label><input type="checkbox" checked={values.practice_plan.enabled} onChange={event => setValues({ ...values, practice_plan: { ...values.practice_plan, enabled: event.target.checked } })} /> Use a daily practice goal</label>
           <label>Hours per day<input type="number" required min="0.5" max="12" step="0.5" value={hours} onChange={event => setHours(event.target.value)} /></label>

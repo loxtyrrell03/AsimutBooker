@@ -2166,6 +2166,11 @@ class AsimutBookerGUI(QuietFocusGUI):
         )
         self.booking_strategy_btn.pack(anchor=tk.W, pady=(6, 0))
         self._settings_controls.append(self.booking_strategy_btn)
+        from booking_rules_ui import show_booking_rules_dialog
+        rules_button = ttk.Button(strategy_inner, text='Booking rules',
+                                  command=lambda: show_booking_rules_dialog(self))
+        rules_button.pack(anchor=tk.W, pady=(6, 0))
+        self._settings_controls.append(rules_button)
 
         # Row 1: Reverse date order toggle
         strategy_row1 = ttk.Frame(strategy_frame)
