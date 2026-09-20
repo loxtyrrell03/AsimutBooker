@@ -1,5 +1,6 @@
 """Fresh weekly discovery and guarded execution of preferred-room allocations."""
 from datetime import datetime, timedelta
+import time
 
 from advance_planner import AdvanceDay, allocate_advance_week
 from booking_rules import load_booking_rules
@@ -185,6 +186,13 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
     if not read_only and args.max_actions is not None and total_actions >= args.max_actions:
         return total_actions, tracker, True
     now = datetime.now()
+    # Leave enough time for one bounded fallback attempt and final verification.
+    # Repeated slow, definitive failures must not consume the scheduled task's
+    # entire 14-minute lifetime; the next run can continue the remaining dates.
+    deadline = time.monotonic() + 480
+    run_started = getattr(engine, '_booker_run_started_monotonic', None)
+    if getattr(args, 'scheduled', False) and isinstance(run_started, (int, float)):
+        deadline = min(deadline, run_started + 660)
     disabled = engine.load_disabled_dates(settings)
     grids = {}
     for day in engine.booking_window_dates(now.date()):
@@ -203,6 +211,9 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
             practice_plan, tracker, args, now=now)
         publish(engine, days, allocations, context, policy, settings, tracker, now=now, grids=grids)
         if read_only or (args.max_actions is not None and total_actions >= args.max_actions):
+            break
+        if deadline - time.monotonic() < 180:
+            operation_stage('Weekly booking checks will continue on the next run')
             break
         boundary = engine.target_boundary_datetime(args.target_time, base_date=now.date()) \
             if getattr(args, 'target_time', None) else now

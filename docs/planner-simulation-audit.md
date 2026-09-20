@@ -27,6 +27,7 @@ possible real-world room grids. Large soft-preference searches remain bounded.
 | Only Weston 18:00-19:00 remains outside a soft 12:00-18:00 preference | Keeps the useful fallback; an explicitly strict window still rejects it |
 | A useful soft-time block is already booked | Counts it toward coverage and allocates the next credit to an uncovered date |
 | One date's booking is definitively refused before Save | Keeps its allocation reserved, tries other dates, and does not retry that date in the same pass |
+| Definitive failures are slow, or earlier scheduled work consumed the available time | Publishes the plan, leaves time for subsequent worker phases, and continues remaining dates on a later run |
 | Quota refusal or uncertain Save | Stops immediately; no attempt on another date |
 | Corus is open at seven days; equally suitable Weston opens at five | Secures Corus, forecasts Weston, then permits the same-ID/duration upgrade only after Weston opens |
 | A new daily anchor and a room-only transfer compete | Existing extension work and new advance blocks go first; interrupted transactions still recover before unrelated work |

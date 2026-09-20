@@ -3,7 +3,7 @@
 - Independent reference enumeration matches the production decisions in 828
   synthetic cases: 160 useful-time daily portfolios, 120 fair weekly budgets,
   120 compatible upgrade sets and 428 progressive prefixes at three-/five-day
-  horizons. Eleven named lifecycle scenarios cover refusals, strict/soft times,
+  horizons. Thirteen named lifecycle scenarios cover refusals, strict/soft times,
   live-credit waivers, completed peak sessions, and Corus-to-Weston upgrades.
   See `docs/planner-simulation-audit.md` for scope, examples and repeatable commands.
 - Opportunities carry their attainable `peak_target_minutes`; legal 30/45/60
@@ -18,6 +18,10 @@
   outcomes and pending receipts still stop. New daily advance blocks precede
   room-only progressive transfers when credit is available; interrupted
   transfers still recover first and extensions retain priority.
+- Advance attempts also reserve three minutes before starting another fallback,
+  within an eight-minute phase budget and the scheduled run's first eleven
+  minutes. Slow definite failures defer remaining dates to the next run without
+  interrupting a Save. Read-only planning still publishes its complete result.
 - Weekday peak usage counts the whole day's reservations, including completed
   sessions. Returned rolling credit or a site free-window waiver cannot create
   another peak hour. This is shared by creates, extension capacity and plans;
@@ -27,6 +31,8 @@
   fingerprints and assistant contract revision 7 invalidate old plans/context
   while retaining history. These are mock/source results; activation is recorded
   separately and does not imply a real booking or physical-phone check.
+- The subsequent admission time budget passes 38 focused planner/runtime tests
+  and all 13 named lifecycle scenarios, including an already-long scheduled run.
 
 ## 2026-09-20 fair advance quota across the week
 

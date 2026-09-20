@@ -82,6 +82,28 @@ class SmartAdvanceScenarios(unittest.TestCase):
             w.attempt.assert_called_once()
         self.assertFalse(w.events)
 
+    def test_slow_definitive_failures_leave_time_for_the_next_worker_phases(self):
+        w=self.world
+        clock=[0]
+        def slow_refusal(*a,**kw):
+            clock[0]+=240
+            return False,None
+        w.attempt.side_effect=slow_refusal
+        with patch.object(runtime,'time',SimpleNamespace(monotonic=lambda:clock[0])):
+            self.assertEqual(w.run_week()[0],0)
+        self.assertEqual(w.attempt.call_count,2)
+        self.assertFalse(w.events)
+
+    def test_long_prior_scheduled_work_defers_creates_but_publishes_the_plan(self):
+        w = self.world
+        w.args.scheduled = True
+        with patch.object(runtime, 'time', SimpleNamespace(monotonic=lambda: 600)), \
+             patch.object(b, '_booker_run_started_monotonic', 1, create=True):
+            self.assertEqual(w.run_week()[0], 0)
+        w.attempt.assert_not_called()
+        self.assertTrue(w.publications)
+        self.assertFalse(w.events)
+
     def test_secure_open_corus_then_upgrade_when_five_day_weston_opens(self):
         w=self.world
         day=w.days[5]
