@@ -29,6 +29,17 @@
   planning, soft-time clipping, extension boundaries, action limits, recovery,
   and preserved create/extend/upgrade sequencing. This commit is source/test
   evidence; activation and live results are recorded separately.
+- Activated commit `2d11cd0` in the canonical scheduled checkout and reloaded
+  only the idle existing phone task under both runtime/mutation locks. Exact
+  settings/private-state hashes, task definitions and all Serve handlers were
+  preserved. The authenticated eight-date read-only plan completed in 56 seconds
+  with non-check mutations blocked, retained all original events and found no
+  pending receipt. The subsequent five-minute worker completed normally.
+- Exact HTTPS deployment/session and rendered 320/390px My Week/settings checks
+  passed at the unchanged canonical origin. Live advance credit was exhausted,
+  so these checks made no new reservation or extension. This is source, live
+  read-only and PC-browser evidence, not physical-phone or new-allocation Save
+  proof. Private evidence stays ignored under `artifacts/recovery-20260920/`.
 
 ## 2026-09-20 complete free-window session planning
 
