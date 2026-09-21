@@ -108,9 +108,15 @@ def day_plan(day, plan, opportunities, planning, *, now):
     text += f' Selection: {priority_text(planning)}.'
     chosen = next((o for o in opportunities if o.room == primary.room and o.start_text == primary.start_time), None)
     if chosen is not None and chosen.room_priority > 0:
-        higher = {f'{o.room} {o.start_text}-{o.end_text}' for o in opportunities
-                  if o.room_priority < chosen.room_priority}
-        text += (' Higher-ranked alternatives in this scan: ' + '; '.join(sorted(higher)[:2]) + '.'
+        higher = []
+        seen = set()
+        for other in sorted((o for o in opportunities if o.room_priority < chosen.room_priority),
+                            key=lambda o: (o.room_priority, o.unlock_at, o.start_text)):
+            if other.room not in seen:
+                seen.add(other.room)
+                higher.append(f'{other.room} {other.start_text}-{other.end_text} '
+                              f'(first {other.initial_minutes}m from {other.unlock_at:%H:%M})')
+        text += (' Higher-ranked alternatives in this scan: ' + '; '.join(higher[:2]) + '.'
                  if higher else ' No eligible higher-ranked option in this scan.')
     note(f'free:{day}', text)
 
@@ -151,7 +157,7 @@ def bounded(text, limit=3700):
     raw = text.encode('utf-8')
     if len(raw) <= limit:
         return text
-    suffix = '\nMore detail in Activity and history.'
+    suffix = '\nFull explanation saved in the local booking-history file.'
     return raw[:limit-len(suffix.encode('utf-8'))].decode('utf-8', errors='ignore') + suffix
 
 

@@ -15,7 +15,7 @@ an expired display plan or infer success from the worker exit code.
   fallback reason. A longer intended tail is explicitly not booked yet.
   Existing receipt verification and reconfirmation reminders remain in place.
 - The generic second quota alert is removed. Quiet fast passes stay quiet, but
-  their full explanation is saved in Activity and history. Normal notifying
+  their full explanation is saved in the local booking-history file. Normal notifying
   passes send one no-change summary. Newly visible sign-in and quota-policy
   failures use the failure notification path; identical consecutive failures
   retain existing suppression.
@@ -27,6 +27,6 @@ context is reset on every exit. The history retains complete explanations and
 ntfy payloads are bounded by UTF-8 byte length.
 
 No booking preference, quota rule, worker schedule or phone route changes as
-part of this feature. The phone reads existing history fields, so it needs no
-new static build. Successful HTTP delivery proves ntfy accepted a message, not
+part of this feature. This changes worker notifications only; the phone needs no new static build.
+Its existing history view continues to show typed run summaries. Successful HTTP delivery proves ntfy accepted a message, not
 that a particular phone displayed it.

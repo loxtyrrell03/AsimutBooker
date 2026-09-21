@@ -71,6 +71,24 @@ class RunReportTests(unittest.TestCase):
         self.assertIn('extend to 18:00; that extra time is not booked yet', text)
         self.assertNotIn('Why:', report.confirmation({**receipt, 'room':'Other'}))
 
+    def test_higher_room_comparison_uses_room_rank_and_distinct_rooms(self):
+        primary=SimpleNamespace(room='Other',start_time='16:30',end_time='17:30',
+            unlock_at=datetime(2026,9,21,12),initial_minutes=30)
+        def opportunity(room, rank, start):
+            return SimpleNamespace(room=room,room_priority=rank,start_text=start,end_text='20:00',
+                unlock_at=datetime(2026,9,21,14),initial_minutes=30)
+        options=[opportunity('Other',3,'16:30'),opportunity('B0.11',2,'18:00'),
+                 opportunity('Weston',0,'19:00'),opportunity('Weston',0,'19:15'),
+                 opportunity('Corus',1,'19:00')]
+        report.day_plan(self.day,SimpleNamespace(primary=primary,reason='Whole-day choice'),options,
+                        SimpleNamespace(priority_mode='time_first'),now=datetime(2026,9,21,10))
+        text=report.lines(now=datetime(2026,9,21,10))[-1]
+        self.assertIn('Weston 19:00',text)
+        self.assertIn('Corus 19:00',text)
+        self.assertNotIn('Weston 19:15',text)
+        self.assertNotIn('B0.11',text)
+        self.assertIn('first 30m from 14:00',text)
+
     def test_full_utf8_history_and_bounded_push(self):
         report.note('long', 'Room ' + '\u00e9'*5000)
         with tempfile.TemporaryDirectory() as directory, patch.object(b, 'history_file', Path(directory)/'history.json'), patch.object(b, 'send_notification') as send:
@@ -78,7 +96,7 @@ class RunReportTests(unittest.TestCase):
             entry=json.loads(b.history_file.read_text(encoding="utf-8"))['runs'][0]
             self.assertIn('\u00e9'*5000, '\n'.join(entry['explanation']))
             self.assertLessEqual(len(send.call_args.args[1].encode('utf-8')),3700)
-            self.assertIn('Activity and history', send.call_args.args[1])
+            self.assertIn('local booking-history file', send.call_args.args[1])
 
     def test_quiet_run_keeps_explanation_in_history_without_push(self):
         report.note('reason', 'Waiting for the 12:00 opening.')

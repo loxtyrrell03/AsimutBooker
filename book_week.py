@@ -10130,7 +10130,7 @@ def process_pending_extensions(
         load_settings_document(settings_file)
     )
     if not extendable_bookings:
-        run_report.note("extensions", "Extensions: no saved extension targets are queued.")
+        run_report.note("extensions", "Extension phase: no saved targets were queued when checked.")
         return total_booked, False
 
     from progressive_runtime import protected_event_ids

@@ -7,12 +7,16 @@
   not authorize or change booking decisions.
 - Receipt-gated success notifications include selection/fallback reasons and
   clearly separate future extension aims. The duplicate generic quota alert
-  is removed; quiet fast passes retain explanations in Activity and history.
+  is removed; quiet fast passes retain explanations in the local booking-history file.
   Payloads are UTF-8 bounded. See `docs/booking-notifications.md`.
 - Source verification: 154 focused regression checks pass, including the real
-  Chromium prepared-Save fixture, followed by 14 final report/failure checks.
+  Chromium prepared-Save fixture, followed by 15 final report/failure checks.
   These use tiny fixtures and intercepted notifications; no live reservation is
-  created by verification. Scheduled-worker activation is recorded separately.
+  created by verification. The canonical worker was activated under both locks
+  without restarting services or changing settings, agenda or schedules. Its
+  normal 11:07 run completed with detailed reasons and no reservation changes.
+  ntfy accepted a detailed message from that actual run (HTTP 200); physical
+  phone display is unverified. Private evidence is under `artifacts/booker-monitor`.
 
 ## 2026-09-21 opening-time preference activation
 
