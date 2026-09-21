@@ -1,3 +1,24 @@
+## 2026-09-21 contained phone assistant scrolling
+
+- Assistant uses a viewport-bounded flex layout: header, composer and navigation
+  retain their space, while messages, activity and notices share one scroll area.
+  Activity no longer has a clipped, separately scrolling body. Other tabs retain
+  document scrolling and their persistent editors/drafts.
+- The assistant follows new output only while near the bottom. Reading older
+  activity stops following; returning to the bottom resumes it. A ResizeObserver
+  watches content and available space, and visualViewport height/offset keep the
+  controls aligned when the keyboard changes the visible viewport. Pinch zoom
+  retains browser control. No document-wide scrollIntoView runs on new replies.
+- `tools/check_phone_assistant_scroll_ui.py` reproduces the previous document
+  overflow and verifies the repair in Chromium/WebKit at 320/390px and 460px
+  height, including activity expansion, reading-position retention, streaming,
+  long drafts, error notices, Stop and leaving/re-entering Assistant. It replaces
+  two obsolete CSS/source-shape assertions with rendered behavior checks.
+  The 17 remaining Node tests, four PWA tests, TypeScript, lint, build validation,
+  existing interrupted-request checks and settings persistence renders pass.
+- These are synthetic browser/viewport checks, not physical iPhone or keyboard
+  verification. Live publication is recorded separately once complete.
+
 ## 2026-09-21 external cancellation memory
 
 - `manual_cancellations.py` atomically remembers upcoming reservation IDs and
@@ -1972,6 +1993,7 @@ python -m unittest discover -s tests
 | `verify_phone_deployment.ps1` | Proves the exact startup task, loopback process, PWA assets, API rejection, and tailnet-only route |
 | `tools/generate_phone_icons.py` | Deterministically renders the three-bar phone and maskable icons |
 | `tools/verify_phone_build.py` | Validates synchronized offline shell assets, manifest icons, API cache exclusion, and no source maps |
+| `tools/check_phone_assistant_scroll_ui.py` | Isolated mobile assistant scrolling, activity visibility, viewport, reading-position and control checks |
 | `config/config.example.yaml` | Exact supported advanced configuration schema |
 | `config/config.yaml` | Optional local advanced-rule override; room policy is site-owned |
 | `data/browser_state/state.json` | Saved browser session (cookies, localStorage) |

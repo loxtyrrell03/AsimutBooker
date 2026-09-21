@@ -508,7 +508,6 @@ function ProgressCard({
 }) {
   const [expanded, setExpanded] = useState(busy);
   const wasBusyRef = useRef(busy);
-  const bodyRef = useRef<HTMLDivElement>(null);
   const summaries = reasoningParts
     .map((part) => compactProgressText(part.text, 420))
     .filter(Boolean);
@@ -527,15 +526,6 @@ function ProgressCard({
     wasBusyRef.current = busy;
   }, [busy]);
 
-  useEffect(() => {
-    if (!expanded || !bodyRef.current) return;
-    const body = bodyRef.current;
-    const frame = window.requestAnimationFrame(() => {
-      body.scrollTop = body.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [cleanNarrative, expanded, summaries, visibleTools]);
-
   if (!cleanNarrative && !summaries.length && !visibleTools.length && !busy) return null;
   return (
     <details
@@ -551,7 +541,7 @@ function ProgressCard({
         </span>
         <ChevronDown aria-hidden="true" />
       </summary>
-      <div className="progress-body" ref={bodyRef}>
+      <div className="progress-body">
         {(cleanNarrative || summaries.length > 0) && (
           <div className="thinking-summary">
             <strong>Thinking</strong>
@@ -590,11 +580,6 @@ function Transcript({
   tools: ToolUpdate[];
   busy: boolean;
 }) {
-  const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-  }, [messages, streamingText, busy]);
-
   return (
     <section className="transcript" aria-label="Conversation">
       {messages.length === 0 && (
@@ -641,7 +626,6 @@ function Transcript({
           </div>
         </article>
       )}
-      <div ref={endRef} />
     </section>
   );
 }
@@ -1053,6 +1037,8 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
 
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('today');
+  const shellRef = useRef<HTMLElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [systemJob, setSystemJob] = useState<SystemJob | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const cancellingRef = useRef(false);
@@ -1478,6 +1464,47 @@ export default function HomePage() {
   }, [tab]);
 
   useEffect(() => {
+    if (tab !== 'assistant') return;
+    const shell = shellRef.current;
+    const scroll = scrollRef.current;
+    if (!shell || !scroll) return;
+
+    // Keep all chat scrolling inside this viewport, including when iOS pans
+    // its visual viewport for the keyboard. Never scroll the document to a reply.
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      if (viewport && viewport.scale !== 1) return; // Preserve pinch zoom.
+      shell.style.setProperty('--assistant-height', `${viewport?.height ?? window.innerHeight}px`);
+      shell.style.setProperty('--assistant-top', `${viewport?.offsetTop ?? 0}px`);
+    };
+    let following = true;
+    const trackScroll = () => {
+      following = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 48;
+    };
+    const followLatest = () => {
+      if (following) scroll.scrollTop = scroll.scrollHeight;
+    };
+    const observer = new ResizeObserver(followLatest);
+    observer.observe(scroll);
+    if (scroll.firstElementChild) observer.observe(scroll.firstElementChild);
+    scroll.addEventListener('scroll', trackScroll, { passive: true });
+    viewport?.addEventListener('resize', updateViewport);
+    viewport?.addEventListener('scroll', updateViewport);
+    window.addEventListener('resize', updateViewport);
+    updateViewport();
+    followLatest();
+    return () => {
+      observer.disconnect();
+      scroll.removeEventListener('scroll', trackScroll);
+      viewport?.removeEventListener('resize', updateViewport);
+      viewport?.removeEventListener('scroll', updateViewport);
+      window.removeEventListener('resize', updateViewport);
+      shell.style.removeProperty('--assistant-height');
+      shell.style.removeProperty('--assistant-top');
+    };
+  }, [tab]);
+
+  useEffect(() => {
     if ((tab !== 'schedule' && tab !== 'today' && tab !== 'calendar') || connection !== 'online' || preview || !csrf || busy) return;
     const initial = window.setTimeout(() => void refreshLiveSchedule(false), 0);
     const timer = window.setInterval(() => void refreshLiveSchedule(false), 5 * 60_000);
@@ -1700,80 +1727,84 @@ export default function HomePage() {
   if (privateSurface === null) return <main className="gate-shell" aria-label="Opening Asimut Assistant" />;
 
   return (
-    <main className={`app-shell tab-${tab}`}>
+    <main className={`app-shell tab-${tab}`} ref={shellRef}>
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
-      {systemJob?.active && tab !== 'status' && <output className="system-job system-global"><strong>PC operation in progress</strong><p>{systemJob.text}</p><button type="button" onClick={() => setTab('status')}>View operation / Stop</button></output>}
-      {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
-        {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
-        <div><strong>{cancelling ? 'Cancelling booking' : 'Cancellation update'}</strong>
-          {cancellationBooking && <span>{cancellationBooking.room} · {cancellationBooking.start_time}–{cancellationBooking.end_time}</span>}
-          <p>{cancellationStatus}</p></div>
-        {!cancelling && <button type="button" aria-label="Dismiss cancellation update" onClick={() => setCancellationStatus('')}><X /></button>}
-      </output>}
-      <ConnectionBanner connection={connection} error={error} onRetry={retryConnection} />
-      {uncertainOutcome && (
-        <div className="uncertain-outcome" role="alert">
-          <AlertTriangle />
-          <div>
-            <strong>Previous command needs review</strong>
-            <p>{uncertainOutcome}</p>
-            <div className="uncertain-actions">
-              <button onClick={() => setTab('status')} type="button">Review status</button>
-              <button disabled={acknowledgingUncertain} onClick={() => void acknowledgeUncertain()} type="button">
-                {acknowledgingUncertain ? 'Recording review…' : 'Continue carefully'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {error && connection === 'online' && (
-        <div className="inline-error" role="alert">
-          <AlertTriangle />
-          <span>{error}</span>
-          <button aria-label="Dismiss error" onClick={() => setError('')} type="button"><X /></button>
-        </div>
-      )}
-
-      {tab === 'today' && booker && (selectedBooking ? <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} /> :
-        <TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview} />)}
-      {tab === 'assistant' && (
-        <div className="assistant-view">
-          {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
-          {pendingDelivery && !busy && <output className="quiet-notice">
-            <span>Check delivery of: {pendingDelivery.text}</span>
-            <button type="button" className="quiet-secondary" disabled={connection !== 'online' || Boolean(uncertainOutcome)} onClick={() => void send(true)}>Retry previous message</button>
+      <div className={tab === 'assistant' ? 'assistant-scroll' : undefined} ref={scrollRef}>
+        <div className="app-content">
+          {systemJob?.active && tab !== 'status' && <output className="system-job system-global"><strong>PC operation in progress</strong><p>{systemJob.text}</p><button type="button" onClick={() => setTab('status')}>View operation / Stop</button></output>}
+          {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
+            {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
+            <div><strong>{cancelling ? 'Cancelling booking' : 'Cancellation update'}</strong>
+              {cancellationBooking && <span>{cancellationBooking.room} · {cancellationBooking.start_time}–{cancellationBooking.end_time}</span>}
+              <p>{cancellationStatus}</p></div>
+            {!cancelling && <button type="button" aria-label="Dismiss cancellation update" onClick={() => setCancellationStatus('')}><X /></button>}
           </output>}
-          {stopping && <output className="quiet-notice">Requesting stop…</output>}
-          <Transcript
-            busy={busy}
-            messages={messages}
-            narrative={progressNarrative}
-            reasoningParts={reasoningParts}
-            streamingText={streamingText}
-            tools={tools}
-          />
-          {!busy && messages.length < 4 && <StarterPrompts onPick={choosePrompt} />}
-          <ChatComposer
-            busy={busy}
-            draft={draft}
-            enabled={connection === 'online' && !uncertainOutcome}
-            inputRef={inputRef}
-            onSend={() => void send()}
-            onStop={() => void stop()}
-            setDraft={setDraft}
-          />
+          <ConnectionBanner connection={connection} error={error} onRetry={retryConnection} />
+          {uncertainOutcome && (
+            <div className="uncertain-outcome" role="alert">
+              <AlertTriangle />
+              <div>
+                <strong>Previous command needs review</strong>
+                <p>{uncertainOutcome}</p>
+                <div className="uncertain-actions">
+                  <button onClick={() => setTab('status')} type="button">Review status</button>
+                  <button disabled={acknowledgingUncertain} onClick={() => void acknowledgeUncertain()} type="button">
+                    {acknowledgingUncertain ? 'Recording review…' : 'Continue carefully'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {error && connection === 'online' && (
+            <div className="inline-error" role="alert">
+              <AlertTriangle />
+              <span>{error}</span>
+              <button aria-label="Dismiss error" onClick={() => setError('')} type="button"><X /></button>
+            </div>
+          )}
+
+          {tab === 'today' && booker && (selectedBooking ? <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} /> :
+            <TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview} />)}
+          {tab === 'assistant' && (
+            <div className="assistant-view">
+              {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
+              {pendingDelivery && !busy && <output className="quiet-notice">
+                <span>Check delivery of: {pendingDelivery.text}</span>
+                <button type="button" className="quiet-secondary" disabled={connection !== 'online' || Boolean(uncertainOutcome)} onClick={() => void send(true)}>Retry previous message</button>
+              </output>}
+              {stopping && <output className="quiet-notice">Requesting stop…</output>}
+              <Transcript
+                busy={busy}
+                messages={messages}
+                narrative={progressNarrative}
+                reasoningParts={reasoningParts}
+                streamingText={streamingText}
+                tools={tools}
+              />
+              {!busy && messages.length < 4 && <StarterPrompts onPick={choosePrompt} />}
+            </div>
+          )}
+          {tab === 'schedule' && booker && (
+            <ScheduleView booker={booker} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
+          )}
+          {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
+          {booker && <div hidden={tab !== 'status'}>
+            <StatusView booker={booker} active={tab === 'status'} systemJob={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} refreshing={refreshing} csrf={csrf} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={refreshSnapshot} />
+          </div>}
+          {tab !== 'assistant' && !booker && (
+            <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>
+          )}
         </div>
-      )}
-      {tab === 'schedule' && booker && (
-        <ScheduleView booker={booker} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
-      )}
-      {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
-      {booker && <div hidden={tab !== 'status'}>
-        <StatusView booker={booker} active={tab === 'status'} systemJob={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} refreshing={refreshing} csrf={csrf} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={refreshSnapshot} />
-      </div>}
-      {tab !== 'assistant' && !booker && (
-        <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>
-      )}
+      </div>
+      {tab === 'assistant' && <ChatComposer
+        busy={busy}
+        draft={draft}
+        enabled={connection === 'online' && !uncertainOutcome}
+        inputRef={inputRef}
+        onSend={() => void send()}
+        onStop={() => void stop()}
+        setDraft={setDraft}
+      />}
       <BottomNavigation onChange={(next) => { setSelectedBooking(null); setTab(next); }} tab={tab} />
     </main>
   );
