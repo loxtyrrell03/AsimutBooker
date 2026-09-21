@@ -16,8 +16,15 @@
   two obsolete CSS/source-shape assertions with rendered behavior checks.
   The 17 remaining Node tests, four PWA tests, TypeScript, lint, build validation,
   existing interrupted-request checks and settings persistence renders pass.
-- These are synthetic browser/viewport checks, not physical iPhone or keyboard
-  verification. Live publication is recorded separately once complete.
+- Build `20260921-assistant-scroll` is active at the unchanged private origin.
+  Publication held both mutation/runtime locks, retained prior assets, and
+  preserved settings/history/receipts/agenda/session hashes, tasks, routes and
+  the running phone process. No restart or booking request was needed.
+  Exact private HTTPS deployment/assets/session and connected Assistant renders
+  pass in Chromium/WebKit at 320/390px and 460px height. These are PC-browser
+  and simulated viewport checks, not physical iPhone or keyboard verification.
+  Existing phone pages need reloading. Private evidence and the small rollback
+  shell are ignored under `artifacts/assistant-scroll-20260921/` (under 3 MiB).
 
 ## 2026-09-21 external cancellation memory
 
