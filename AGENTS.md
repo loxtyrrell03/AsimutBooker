@@ -4,6 +4,9 @@
   live/local allowance. A live zero balance must not cap displayed usage at the
   one-hour limit when older bookings contain two hours. All 17 report checks
   pass, including live-cap and completed-session cases; booking guards are unchanged.
+  Activated under both locks; the normal 11:27 run reported the actual two hours
+  and zero remaining peak allowance, with ntfy acceptance, unchanged agenda and
+  no pending receipt. Private evidence: `artifacts/booker-monitor/peak-report-verification.json`.
 - Run-local reports explain confirmed daily progress, live versus estimated
   rolling credit, daily peak usage, selected rooms/times and opening waits,
   extension blockers, scoped upgrade checks and exact site refusals. They use
