@@ -15,6 +15,11 @@
   same-room spacing and retiring stale holds. All 1,509 Python tests pass,
   including the corrected existing tracker mock and complete extension/upgrade
   recovery and prepared-Save regressions.
+- Activated the follow-up under both locks without a service restart, preserving
+  exact settings/history/receipts/agenda hashes. An authenticated write-blocked
+  eight-date refresh then published a new valid plan, retained all 13 events and
+  preferences, and found no pending receipt. Connected Chromium/WebKit My Week
+  and Booking rules renders pass at 320/390px with fresh agenda/plan data.
 
 ## 2026-09-21 verified free-horizon peak exception
 
