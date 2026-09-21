@@ -89,7 +89,9 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
         setReloadRequired(response.status >= 500 || result.error === 'preferences_changed' || response.status === 409 && !result.error);
         setError(result.message || result.detail || 'Settings could not be saved. Reload settings and try again.'); return;
       }
-      setValues(result as Preferences); setSection(null); setNotice('Preferences saved. Future booking runs will use your changes.'); onSaved();
+      setValues(result as Preferences); setSection(null); setNotice(section === 'goal'
+        ? `Preferences saved. Daily goal: ${result.practice_plan.enabled ? `${result.practice_plan.default_hours} hours per day` : 'off'}. Future booking runs will use your changes.`
+        : 'Preferences saved. Future booking runs will use your changes.'); onSaved();
     } catch {
       setReloadRequired(true);
       setError('The save result could not be checked. Reload settings before trying again.');
@@ -115,6 +117,11 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
     {notice && <output className="quiet-notice">{notice}</output>}
     {section && <form className="preference-editor" onSubmit={event => void save(event)} aria-label={labels[section]}>
       <h4 ref={heading} tabIndex={-1}>{labels[section]}</h4>
+      <div className="preference-editor-actions">
+        {values && <button className="quiet-primary" type="submit" disabled={working || !enabled || reloadRequired}>Save changes</button>}
+        <button className="quiet-secondary" type="button" disabled={working && values !== null} onClick={() => { loadRequest.current?.abort(); setWorking(false); setSection(null); setError(''); }}>Cancel</button>
+        {error && <button className="quiet-secondary preference-reload" type="button" disabled={working} onClick={() => void open(section)}>Reload settings</button>}
+      </div>
       {working && <output>{values ? 'Saving…' : 'Loading settings…'}</output>}
       {error && <p role="alert">{error}</p>}
       {values && <fieldset disabled={working || !enabled}>
@@ -158,11 +165,6 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
           <StrategyFields value={values.booking_strategy.daily_planning} onChange={daily_planning => setValues({ ...values, booking_strategy: { ...values.booking_strategy, daily_planning } })} />
         </>}
       </fieldset>}
-      <div className="preference-actions">
-        {values && <button className="quiet-primary" type="submit" disabled={working || !enabled || reloadRequired}>Save changes</button>}
-        <button className="quiet-secondary" type="button" disabled={working && values !== null} onClick={() => { loadRequest.current?.abort(); setWorking(false); setSection(null); setError(''); }}>Cancel</button>
-        {error && <button className="quiet-secondary" type="button" disabled={working} onClick={() => void open(section)}>Reload settings</button>}
-      </div>
     </form>}
   </div>;
 }

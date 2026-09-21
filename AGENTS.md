@@ -1,3 +1,17 @@
+## 2026-09-21 visible phone settings Save
+
+- Practice editors use a dedicated sticky Save/Cancel row above the fields.
+  Settings-list styles are scoped to the list, so they cannot remove the blue
+  Save button styling. Daily-goal confirmation names the server-saved value;
+  existing revision checks, validation, Cancel and retained drafts are unchanged.
+- Chromium and WebKit checks verify an actual visible, unobstructed touch target
+  at 320/390px and in a 460px-high viewport, then save six hours, reload and read
+  the persisted value. All settings persistence/conflict checks, 19 Node checks,
+  TypeScript, lint and the private-origin static build pass. A reduced viewport
+  approximates keyboard space; it is not physical iPhone keyboard verification.
+- Build `20260921-settings-save` is ready for the existing phone service; live
+  activation and scheduled-worker confirmation are recorded after deployment.
+
 ## 2026-09-21 detailed booking notifications
 
 - Peak reporting uses actual whole-day agenda minutes separately from remaining

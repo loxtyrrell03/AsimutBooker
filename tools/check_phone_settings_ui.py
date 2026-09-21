@@ -70,12 +70,34 @@ def check(dist):
             page.get_by_label('Use a daily practice goal').check()
             page.get_by_label('Hours per day', exact=True).fill('')
             expect(page.get_by_label('Hours per day', exact=True)).to_have_value('')
-            page.get_by_label('Hours per day', exact=True).fill('3.5')
-            page.get_by_role('button', name='Save changes', exact=True).tap()
+            page.get_by_label('Hours per day', exact=True).fill('6')
+            save = page.get_by_role('button', name='Save changes', exact=True)
+            # Locator clicks auto-scroll and previously hid an inaccessible or
+            # unrecognisable Save. Check the painted control without that help,
+            # including a short viewport modelling space above a phone keyboard.
+            for width, height in ((320, 568), (390, 844), (390, 460)):
+                page.set_viewport_size({'width': width, 'height': height})
+                page.get_by_label('Hours per day', exact=True).focus()
+                page.get_by_label('Hours per day', exact=True).evaluate('(el) => el.scrollIntoView({block: "center"})')
+                assert save.evaluate('''el => {
+                    const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                    const nav = document.querySelector('.bottom-nav').getBoundingClientRect();
+                    const hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);
+                    return r.top >= 0 && r.bottom <= nav.top && r.height >= 44
+                        && s.backgroundColor !== 'rgba(0, 0, 0, 0)' && s.color === 'rgb(255, 255, 255)'
+                        && el.contains(hit) && document.documentElement.scrollWidth <= innerWidth;
+                }'''), f'Save hidden, covered or unstyled at {width}x{height}'
+                page.screenshot(path=dist.parent / f'goal-save-{engine}-{width}-{height}.png')
+            box = save.bounding_box()
+            page.touchscreen.tap(box['x'] + box['width']/2, box['y'] + box['height']/2)
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
-            assert read_phone_preferences(settings)['practice_plan']['default_hours'] == 3.5
+            expect(page.get_by_text('Daily goal: 6 hours per day.', exact=False)).to_be_visible()
+            assert read_phone_preferences(settings)['practice_plan']['default_hours'] == 6
+            page.set_viewport_size({'width': 390, 'height': 844})
+            page.reload()
+            page.get_by_role('button', name='Settings', exact=True).tap()
             page.get_by_role('button', name='Daily goal', exact=True).tap()
-            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('3.5')
+            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('6')
             page.get_by_label('Hours per day', exact=True).fill('5')
             page.get_by_role('button', name='Cancel', exact=True).tap()
             assert len(writes) == 1
@@ -127,7 +149,7 @@ def check(dist):
             assert read_phone_preferences(settings)['room_preferences']['excluded_rooms'] == ['Weston Gallery']
 
             page.get_by_role('button', name='Daily goal', exact=True).tap()
-            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('3.5')
+            expect(page.get_by_label('Hours per day', exact=True)).to_have_value('6')
             current = read_phone_preferences(settings)
             save_phone_preferences({'revision': current['revision'], 'changes': {'practice_plan': {'default_hours': 4}}}, settings)
             page.get_by_role('button', name='Save changes', exact=True).tap()

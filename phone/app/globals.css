@@ -140,9 +140,12 @@ svg { flex-shrink:0; } p,h1,h2,h3,h4 { margin:0; } h1,h2,h3,h4 { line-height:1.2
 .system-panel dt { color:var(--quiet); font-size:13px; margin-top:12px; }
 .system-panel dd { margin:5px 0; overflow-wrap:anywhere; }
 .system-note { color:var(--quiet); }
-.practice-settings .preference-actions { display:flex; flex-direction:column; gap:0; }
-.practice-settings .preference-actions button { flex-direction:row; justify-content:space-between; border:0; border-top:1px solid var(--border); border-radius:0; text-align:left; background:transparent; color:var(--foreground); }
-.practice-settings .preference-actions small { color:var(--quiet); font-size:12px; }
+.practice-settings > .preference-actions { display:flex; flex-direction:column; gap:0; }
+.practice-settings > .preference-actions button { flex-direction:row; justify-content:space-between; border:0; border-top:1px solid var(--border); border-radius:0; text-align:left; background:transparent; color:var(--foreground); }
+.practice-settings > .preference-actions small { color:var(--quiet); font-size:12px; }
+.preference-editor-actions { position:sticky; top:8px; z-index:25; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; padding:8px 0; margin-bottom:12px; background:var(--card); }
+.preference-editor-actions button { min-width:0; padding-inline:8px; }
+.preference-editor-actions .preference-reload { grid-column:1 / -1; }
 .timeline-potential { position:absolute; left:95px; right:2px; min-height:30px; border:1px dashed var(--primary); background:repeating-linear-gradient(135deg,#eaf3ffee,#eaf3ffee 5px,#fff9 5px,#fff9 10px); font-size:11px; padding:3px; border-radius:5px; overflow:auto; z-index:2; }
 
 .status-view [hidden] { display:none !important; }
