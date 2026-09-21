@@ -40,6 +40,23 @@ class RunReportTests(unittest.TestCase):
         report.observe(fresh)
         self.assertIn('last live ASIMUT check', '\n'.join(report.lines(now=datetime(2026, 9, 21, 10))))
 
+    def test_live_peak_cap_does_not_hide_actual_over_limit_agenda_minutes(self):
+        self.tracker.live_peak_minutes[str(self.day)] = 0
+        self.tracker.peak_observed_minutes = dict(self.tracker.peak_hours_by_day)
+        self.assertEqual(self.tracker.get_peak_used_for_day(self.day), 60)
+        for hour in (11, 15):
+            text='\n'.join(report.lines(now=datetime(2026,9,21,hour)))
+            self.assertIn('peak use: 2h / 1h limit', text)
+            self.assertIn('No further peak time', text)
+
+    def test_live_peak_refusal_remains_visible_when_local_agenda_usage_is_lower(self):
+        tracker=b.BookingTracker()
+        tracker.live_peak_minutes[str(self.day)]=0
+        report.observe(tracker)
+        text='\n'.join(report.lines(now=datetime(2026,9,21,11)))
+        self.assertIn('peak use: 0m / 1h limit',text)
+        self.assertIn('No further peak time',text)
+
     def test_unknown_credit_is_never_labelled_live(self):
         nested = report.start(b, {}, b.PracticePlan())
         try:

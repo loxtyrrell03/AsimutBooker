@@ -1,5 +1,9 @@
 ## 2026-09-21 detailed booking notifications
 
+- Peak reporting uses actual whole-day agenda minutes separately from remaining
+  live/local allowance. A live zero balance must not cap displayed usage at the
+  one-hour limit when older bookings contain two hours. All 17 report checks
+  pass, including live-cap and completed-session cases; booking guards are unchanged.
 - Run-local reports explain confirmed daily progress, live versus estimated
   rolling credit, daily peak usage, selected rooms/times and opening waits,
   extension blockers, scoped upgrade checks and exact site refusals. They use

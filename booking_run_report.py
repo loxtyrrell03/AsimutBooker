@@ -144,10 +144,16 @@ def lines(*, now=None):
         else:
             result.append(f'Estimated advance credit: {duration(remaining)}; live balance not verified in this phase.')
         if day.weekday() < 5:
-            used = round(tracker.get_peak_used_for_day(day))
+            # The capacity helper caps usage at the selected quota when live
+            # balances exist. Report actual agenda minutes, including older
+            # over-limit bookings and completed sessions, separately.
+            used = round(tracker.peak_hours_by_day.get(day.isoformat(), 0))
             limit = round(engine.MAX_PEAK_HOURS * 60)
-            result.append(f'Today\'s peak use: {duration(used)} / {duration(limit)} limit.' +
-                          (' No further peak time, including last-minute bookings.' if used >= limit else ''))
+            remaining_peak = round(tracker.get_remaining_peak_minutes(day))
+            result.append(f'Today\'s peak use: {duration(used)} / {duration(limit)} limit. '
+                          f'Remaining peak allowance: {duration(remaining_peak)}.' +
+                          (' No further peak time, including last-minute bookings.'
+                           if remaining_peak <= 0 else ''))
     result.extend(report.notes.values())
     return result
 
