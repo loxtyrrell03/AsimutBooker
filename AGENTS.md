@@ -1,3 +1,27 @@
+## 2026-09-21 external cancellation memory
+
+- `manual_cancellations.py` atomically remembers upcoming reservation IDs and
+  consumes unexplained disappearances into room-independent cancellation
+  blackouts. Every production `scan_agenda` caller uses the persistent scan hook,
+  after completeness validation and before display publication. Failed tracking
+  writes stop the scan; existing Save preference checks stop stale decisions.
+- Missing dates retain evidence, expired sessions do not block, same-ID edits
+  update the baseline, pending internal originals await recovery and verified
+  consolidation donors retire without exclusions. Explicit assistant
+  `reopen_booking_window` remains authoritative and is not undone by later scans.
+- Tracking starts with observed bookings; it cannot reconstruct older removals
+  or bookings created and cancelled between scans. ASIMUT does not identify the
+  cancelling actor, so unexplained removals are conservatively protected. See
+  `docs/manual-cancellations.md`. No UI redesign or service restart is required;
+  existing desktop processes must reopen to load the new scan code.
+- The full 1,517-test suite passes, followed by all nine new tests including
+  the final scan-integration case; 183 existing focused checks also pass.
+  The canonical active worker has persisted eight upcoming tracked IDs, all
+  matching the latest agenda snapshot. No reservation was changed for testing;
+  a separate live read-only attempt yielded to an existing worker lock. External
+  cancellation detection has fixture proof, not a deliberately cancelled live
+  reservation or physical-phone proof.
+
 ## 2026-09-21 extension holds protect their time intervals
 
 - Live read-only verification exposed a previously unprotected extension tail:

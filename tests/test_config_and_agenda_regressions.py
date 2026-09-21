@@ -378,7 +378,7 @@ class AgendaIdentityTests(unittest.TestCase):
             ],
             window_dates,
         )
-        tracker = _AgendaTracker()
+        tracker = book_week.BookingTracker()
         with tempfile.TemporaryDirectory() as directory:
             snapshot_path = Path(directory) / "agenda.json"
             with (

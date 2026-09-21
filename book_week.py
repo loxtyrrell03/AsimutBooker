@@ -9443,6 +9443,16 @@ def scan_agenda(
     unique_events = deduplicate_events(events_data)
     tracker.agenda_events = [dict(event) for event in unique_events]
     if snapshot_path is not None:
+        # Persist safety evidence separately from the display snapshot. A failed
+        # write must stop this scan before any booking decision can use it.
+        from manual_cancellations import remember_agenda
+        scan_data_dir = Path(snapshot_path).parent
+        observed_blackouts = remember_agenda(
+            unique_events, window_dates,
+            settings_path=scan_data_dir / "settings.json",
+            receipts_path=scan_data_dir / "mutation_receipts.json",
+        )
+        apply_rebooking_blackouts(tracker, observed_blackouts)
         try:
             publish_agenda_snapshot(
                 unique_events,
