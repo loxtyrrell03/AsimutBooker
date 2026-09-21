@@ -31,8 +31,16 @@ save.addEventListener('click',async()=>{
 
 class PreparedFreeBrowserTests(unittest.TestCase):
     def test_form_is_ready_and_one_exact_approved_save_follows_the_boundary(self):
-        now=[datetime(2026,9,21,11,28)]
-        edge=datetime(2026,9,21,11,30)
+        self.run_prepared_case(16, False)
+
+    def test_spent_peak_credit_still_prepares_and_saves_at_free_boundary(self):
+        self.run_prepared_case(12, True)
+
+    def run_prepared_case(self, start_hour, peak_exception):
+        start_text = f'{start_hour:02d}:00'
+        end_text = f'{start_hour:02d}:30'
+        now=[datetime(2026,9,21,start_hour-5,28)]
+        edge=datetime(2026,9,21,start_hour-5,30)
         elapsed=[]
         saves=[]
         checks=[]
@@ -47,15 +55,15 @@ class PreparedFreeBrowserTests(unittest.TestCase):
             def route(route):
                 request=route.request
                 if request.method=='GET':
-                    route.fulfill(content_type='text/html',body=HTML);return
+                    route.fulfill(content_type='text/html',body=HTML.replace('16:', f'{start_hour:02d}:'));return
                 payload=request.post_data_json
                 if request.url.endswith('type=check'):
                     checks.append(payload)
-                    success=now[0]>=edge and payload['event']['en'][11:16]=='16:30'
+                    success=now[0]>=edge and payload['event']['en'][11:16]==end_text
                     route.fulfill(content_type='application/json',body=json.dumps({'response':{'success':success}}))
                 else:
                     self.assertGreaterEqual(now[0],edge)
-                    self.assertEqual(payload,{'start':'16:00','end':'16:30'})
+                    self.assertEqual(payload,{'start':start_text,'end':end_text})
                     saves.append(payload)
                     elapsed.append(time.perf_counter()-clock_start[0])
                     route.fulfill(content_type='application/json',body='{"success":true}')
@@ -65,18 +73,18 @@ class PreparedFreeBrowserTests(unittest.TestCase):
             stack.enter_context(patch.object(b,'datetime',Clock))
             stack.enter_context(patch.multiple(b,ACTIVE_ROOM_POLICY=Mock(all_room_location_ids={'Weston':80}),
                 ROOM_HORIZON_MINUTES={'Weston':7200},MINIMUM_BLOCK_MINUTES=30,FREE_HORIZON_MINUTES=300,
-                SITE_CLOCK_OFFSET_BOUNDS=(0,0)))
+                SITE_CLOCK_OFFSET_BOUNDS=(0,0),FREE_HORIZON_OVERRIDES_PEAK=peak_exception))
             stack.enter_context(patch.object(b,'get_room_slot_coordinates',return_value={'x':2,'y':2}))
             stack.enter_context(patch.object(b,'enter_new_booking_form',return_value=True))
             stack.enter_context(patch.object(b,'page_booking_snapshot',return_value=dict(
-                room='Weston',date='2026-09-21',start='16:00',end='16:30')))
+                room='Weston',date='2026-09-21',start=start_text,end=end_text)))
             stack.enter_context(patch.object(b,'_visible_save_rejection',return_value=None))
             stack.enter_context(patch.object(b,'_visible_room_permission_refusal',return_value=None))
             receipt=stack.enter_context(patch.object(b,'record_pending_create',return_value={'id':'fixture'}))
             stack.enter_context(patch.object(b,'save_extendable_booking'))
             def wait(deadline,*args,**kwargs):
-                self.assertEqual(page.locator('#startDate').input_value(),'16:00')
-                self.assertEqual(page.locator('#endDate').input_value(),'16:30')
+                self.assertEqual(page.locator('#startDate').input_value(),start_text)
+                self.assertEqual(page.locator('#endDate').input_value(),end_text)
                 self.assertFalse(saves)
                 receipt.assert_not_called()
                 self.assertTrue(page.get_by_role('button',name='Save').is_visible())
@@ -91,11 +99,13 @@ class PreparedFreeBrowserTests(unittest.TestCase):
             tracker=b.BookingTracker()
             tracker.live_quota_minutes=0
             tracker.quota_observed_hours=0
-            result=b.try_horizon_snipe(page,dict(room='Weston',start_hour=16,end_hour=18,duration=120,
+            tracker.peak_hours_by_day['2026-09-21']=90
+            tracker.live_peak_minutes={'2026-09-21':0}
+            result=b.try_horizon_snipe(page,dict(room='Weston',start_hour=start_hour,end_hour=start_hour+2,duration=120,
                 free_horizon_intent=True,horizon_minutes=300,booking_minutes=30,bookable_from=edge),
                 date(2026,9,21),tracker,0,remaining_daily_hours=2,time_prefs={'enabled':False})
             self.assertTrue(result)
-            self.assertEqual([r['event']['en'][11:16] for r in checks],['16:15','16:30'])
+            self.assertEqual([r['event']['en'][11:16] for r in checks],[f'{start_hour:02d}:15',end_text])
             receipt.assert_called_once()
             self.assertLess(elapsed[0],1.5,'No broad rescan or fixed post-opening wait should precede Save')
         print(f'Prepared Chromium free-window Save: {elapsed[0]*1000:.0f}ms after simulated opening (local intercepted service)')

@@ -12,7 +12,7 @@ from room_catalog import ASIMUT_ORIGIN, SITE_TIMEZONE, _api_json, _format_site_i
 ROLLING_QUOTA_HOURS = 6
 PEAK_QUOTA_MINUTES = 60
 FREE_HORIZON_MINUTES = 300
-RULES_REVISION = '2026-09-20-simulated-daily-peak'
+RULES_REVISION = '2026-09-21-verified-free-peak'
 
 
 class QuotaPolicyError(RuntimeError):
@@ -112,3 +112,13 @@ def free_horizon_hours(day, start_hour, *, now, horizon_minutes=300):
 def in_free_horizon(day, start, end, *, now, horizon_minutes=300):
     return end > start and end - start <= free_horizon_hours(
         day, start, now=now, horizon_minutes=horizon_minutes) + 1e-9
+
+
+def peak_quota_exempt(day, start, end, *, now, free_horizon_overrides_peak=False,
+                      free_horizon_minutes=300):
+    """An opt-in local exception; the site's exact check still authorizes Save.
+
+    Clock hours describe the COMPLETE new/edited reservation, never just its tail.
+    """
+    return free_horizon_overrides_peak is True and in_free_horizon(
+        day, start, end, now=now, horizon_minutes=free_horizon_minutes)

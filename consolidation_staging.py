@@ -3,6 +3,7 @@
 Every intermediate edit retains one exact reservation and its full duration.
 Only the final, freshly approved enlarged booking permits donor retirement.
 """
+from booking_quotas import peak_quota_exempt
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -37,6 +38,9 @@ def prepare_consolidation(change, *, excluded_steps=(), **kwargs):
     same_gap = kwargs.get('same_room_gap', 60)
     peak_start, peak_end = kwargs.get('peak_start', 540), kwargs.get('peak_end', 960)
     peak_limit = kwargs.get('peak_limit', 120)
+    exempt = peak_quota_exempt(new.day, new.start / 60, new.end / 60, now=kwargs['now'],
+        free_horizon_overrides_peak=kwargs.get('free_horizon_overrides_peak', False),
+        free_horizon_minutes=kwargs.get('free_horizon_minutes', 300))
     def overlaps(r, gap=0):
         return new.start < r.end + gap and new.end > r.start - gap
     donors = change.retired
@@ -47,7 +51,7 @@ def prepare_consolidation(change, *, excluded_steps=(), **kwargs):
                        if e.get('isReservation') is True and e['date'] == str(new.day)
                        and e['eventId'] != change.original.event_id)
     interim_peak += interval_overlap_minutes(new.start, new.end, peak_start, peak_end)
-    if new.day.weekday() < 5 and interim_peak > peak_limit:
+    if new.day.weekday() < 5 and not exempt and interim_peak > peak_limit:
         required.update(r.event_id for r in donors if interval_overlap_minutes(r.start, r.end, peak_start, peak_end))
     if not required:
         return change
@@ -62,7 +66,7 @@ def prepare_consolidation(change, *, excluded_steps=(), **kwargs):
                                                  peak_start, peak_end) for e in events
                        if e.get('isReservation') is True and e['date'] == str(new.day)
                        and e['eventId'] != change.original.event_id)
-            if new.day.weekday() < 5 and peak + interval_overlap_minutes(new.start, new.end, peak_start, peak_end) > peak_limit:
+            if new.day.weekday() < 5 and not exempt and peak + interval_overlap_minutes(new.start, new.end, peak_start, peak_end) > peak_limit:
                 return None
             return staged
         # Try each donor order: an earlier move can free a useful staging gap.
@@ -116,7 +120,9 @@ def fresh_staging_arguments(engine, page, day, *, verified_tracker=None):
     return dict(events=events, available_data=gaps, policy=policy, now=datetime.now().astimezone(),
         time_preferences=resolve_time_preferences(engine.load_time_preferences(settings), day), planning=planning,
         peak_start=int(engine.PEAK_START * 60), peak_end=int(engine.PEAK_END * 60),
-        peak_limit=int(engine.MAX_PEAK_HOURS * 60), same_room_gap=engine.SAME_ROOM_GAP_MINUTES,
+        peak_limit=int(engine.MAX_PEAK_HOURS * 60),
+            free_horizon_overrides_peak=getattr(engine, "FREE_HORIZON_OVERRIDES_PEAK", False) is True,
+            free_horizon_minutes=engine.FREE_HORIZON_MINUTES, same_room_gap=engine.SAME_ROOM_GAP_MINUTES,
         freeze_minutes=planning.upgrade_freeze_hours * 60,
         blocked_intervals=[(a * 60, b * 60) for a, b in engine.blackout_conflict_ranges(blackouts).get(str(day), ())],
         protected_extensions=engine.load_extendable_bookings(), ignored_event_ids=ignored_ids)

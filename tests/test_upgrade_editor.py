@@ -3,7 +3,7 @@ import copy
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -144,6 +144,11 @@ class UpgradeEditorTests(unittest.TestCase):
         cls.playwright.stop()
 
     def setUp(self):
+        # Fixed-date intercepted fixtures need a fixed clock, too.
+        clock_patch = mock.patch.object(b, "datetime", wraps=datetime)
+        clock = clock_patch.start()
+        self.addCleanup(clock_patch.stop)
+        clock.now.return_value = datetime(2026, 9, 21, 8, tzinfo=timezone.utc)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "receipts.json"

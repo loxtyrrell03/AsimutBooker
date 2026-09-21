@@ -1758,6 +1758,7 @@ class BookerToolSurface:
                 "split_larger_targets": True,
                 "ranking": "best feasible non-overlapping sessions from current preferences",
                 "weekday_peak_minutes_maximum": load_booking_rules(load_settings(self.paths.settings)).peak_quota_minutes,
+                "free_horizon_overrides_peak": load_booking_rules(load_settings(self.paths.settings)).free_horizon_overrides_peak,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": [
                     item["date"]
@@ -1868,6 +1869,7 @@ class BookerToolSurface:
                 "maximum_single_session_minutes": 120,
                 "split_larger_targets": True,
                 "weekday_peak_minutes_maximum": load_booking_rules(load_settings(self.paths.settings)).peak_quota_minutes,
+                "free_horizon_overrides_peak": load_booking_rules(load_settings(self.paths.settings)).free_horizon_overrides_peak,
                 "recurring_runs_pursue_remaining_target": True,
                 "multi_session_dates": sorted(set(multi_session_dates)),
             },

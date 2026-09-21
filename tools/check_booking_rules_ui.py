@@ -54,15 +54,33 @@ def check(dist):
             preset=page.get_by_label('Booking rules preset',exact=True)
             expect(preset).to_have_value('legacy')
             expect(page.get_by_label('Weekday peak quota (minutes)',exact=True)).to_have_value('120')
+            peak_switch=page.get_by_role('checkbox',name='Allow extra peak time within the free horizon')
             for width in (320,390,844):
                 page.set_viewport_size({'width':width,'height':844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(screenshots/f'rules-{engine}-{width}.png'),full_page=True)
+                peak_switch.check()
+                expect(peak_switch).to_be_checked()
+                peak_switch.uncheck()
+                help_button=page.get_by_role('button',name='Help: Extra peak time',exact=True)
+                peak_switch.focus()
+                page.keyboard.press('Tab')
+                expect(help_button).to_be_focused()
+                expect(page.get_by_role('tooltip')).to_be_visible()
+                box=page.get_by_role('tooltip').bounding_box()
+                assert box and box['x'] >= 0 and box['x']+box['width'] <= width
+                page.screenshot(path=str(screenshots/f'peak-switch-{engine}-{width}.png'))
+                page.keyboard.press('Escape')
+                expect(page.get_by_role('tooltip')).not_to_be_visible()
             preset.select_option('new')
+            peak_switch=page.get_by_role('checkbox',name='Allow extra peak time within the free horizon')
+            peak_switch.check()
             page.get_by_role('button',name='Save changes',exact=True).click()
             expect(page.get_by_role('button',name='Booking rules',exact=True)).to_be_visible()
             assert read_phone_preferences(settings)['booking_rules']['peak_quota_minutes']==60
+            assert read_phone_preferences(settings)['booking_rules']['free_horizon_overrides_peak'] is True
             page.get_by_role('button',name='Booking rules',exact=True).click()
+            expect(peak_switch).to_be_checked()
             preset.select_option('custom')
             page.get_by_label('Advance quota (hours)',exact=True).fill('10')
             page.get_by_label('Weekday peak quota (minutes)',exact=True).fill('90')
@@ -71,6 +89,7 @@ def check(dist):
             page.get_by_role('button',name='Save changes',exact=True).click()
             expect(page.get_by_role('button',name='Booking rules',exact=True)).to_be_visible()
             assert read_phone_preferences(settings)['booking_rules']['peak_end_minutes']==1440
+            assert read_phone_preferences(settings)['booking_rules']['free_horizon_overrides_peak'] is True
             page.get_by_role('button',name='Booking rules',exact=True).click()
             page.get_by_label('Weekday peak end',exact=True).select_option('0')
             page.get_by_role('button',name='Save changes',exact=True).click()

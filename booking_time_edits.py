@@ -4,6 +4,7 @@ The type fixes identity, room and date. It is separate from automatic room
 upgrades, whose equal-duration and better-room guarantees must stay intact.
 """
 
+from booking_quotas import peak_quota_exempt
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from math import isfinite
@@ -65,7 +66,8 @@ def time_edit_from_receipt(receipt):
 
 
 def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=(),
-                       peak_limit=None, peak_start=540, peak_end=960):
+                       peak_limit=None, peak_start=540, peak_end=960,
+                       free_horizon_overrides_peak=False, free_horizon_minutes=300):
     """Validate current agenda and any newly occupied room time before editing.
 
     All other personal events block a move, including ignored planner conflicts.
@@ -105,7 +107,9 @@ def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=(),
     # Shrinking an owned interval acquires no new room time or peak allowance.
     if edit.mode == "trim_start":
         return
-    if b.day.weekday() < 5:
+    if b.day.weekday() < 5 and not peak_quota_exempt(b.day, b.start / 60, b.end / 60,
+            now=now, free_horizon_overrides_peak=free_horizon_overrides_peak,
+            free_horizon_minutes=free_horizon_minutes):
         peak = sum(interval_overlap_minutes(clock_minutes(e["startTime"]), clock_minutes(e["endTime"]),
                                              peak_start, peak_end) for e in other if e.get("isReservation") is True)
         limit = MAX_PEAK_MINUTES if peak_limit is None else peak_limit
@@ -171,6 +175,8 @@ def run_time_edit(engine, page, args, settings, policy):
             validate_time_edit(edit, events=tracker.agenda_events, policy=policy,
                                now=datetime.now().astimezone(), gaps=gaps, blackouts=blackouts,
                                peak_limit=engine.MAX_PEAK_HOURS * 60,
+                               free_horizon_overrides_peak=getattr(engine, "FREE_HORIZON_OVERRIDES_PEAK", False) is True,
+                               free_horizon_minutes=engine.FREE_HORIZON_MINUTES,
                                peak_start=engine.PEAK_START * 60, peak_end=engine.PEAK_END * 60)
             return True
         finally:

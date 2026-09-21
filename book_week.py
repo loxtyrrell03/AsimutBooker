@@ -422,16 +422,28 @@ def install_live_room_policy(policy, *, today=None):
     return policy
 
 
+FREE_HORIZON_OVERRIDES_PEAK = False
+
+
+def peak_quota_exempt(day, start, end, *, now=None):
+    from booking_quotas import peak_quota_exempt as eligible
+    return eligible(day, start, end, now=now or datetime.now().astimezone(),
+                    free_horizon_overrides_peak=FREE_HORIZON_OVERRIDES_PEAK,
+                    free_horizon_minutes=FREE_HORIZON_MINUTES)
+
+
 def install_booking_rules(settings):
     """Install the saved preset at run start; server approval remains mandatory."""
-    global MAX_ROLLING_QUOTA_HOURS, MAX_PEAK_HOURS, FREE_HORIZON_MINUTES, PEAK_START, PEAK_END
+    global MAX_ROLLING_QUOTA_HOURS, MAX_PEAK_HOURS, FREE_HORIZON_MINUTES, PEAK_START, PEAK_END, FREE_HORIZON_OVERRIDES_PEAK
     rules = load_booking_rules(settings)
     MAX_ROLLING_QUOTA_HOURS = rules.rolling_quota_hours
     MAX_PEAK_HOURS = rules.peak_quota_minutes / 60
     FREE_HORIZON_MINUTES = rules.free_horizon_minutes
+    FREE_HORIZON_OVERRIDES_PEAK = rules.free_horizon_overrides_peak
     PEAK_START, PEAK_END = rules.peak_start_minutes / 60, rules.peak_end_minutes / 60
     print(f'Booking rules: {rules.preset}; {MAX_ROLLING_QUOTA_HOURS:g}h advance, '
           f'{rules.peak_quota_minutes}min peak, {FREE_HORIZON_MINUTES}min free horizon. '
+          f'Free-window peak exception: {"on" if FREE_HORIZON_OVERRIDES_PEAK else "off"}. '
           'Live ASIMUT limits can be lower.')
     return rules
 
@@ -4662,8 +4674,18 @@ def try_extend_booking(
             if extension_hours < 0.25:  # Less than 15 minutes
                 return False, None, f"Advance quota would only allow {extension_hours * 60:.0f}min extension"
 
-        # Rule: Peak hours limit (Mon-Fri 9am-4pm, max 1 hour per day)
-        if booking_date.weekday() < 5:
+        # Keep a legal free-window prefix when the complete desired extension
+        # would exceed normal peak credit. Never qualify using the tail alone.
+        peak_at = save_not_before or extension_now
+        from daily_planner import _peak_capped_end
+        normal_peak_end = (_peak_capped_end(round(current_end_hour * 60), round(max_end_hour * 60),
+            tracker.get_remaining_peak_minutes(booking_date), peak_start=round(PEAK_START * 60),
+            peak_end=round(PEAK_END * 60)) / 60 if booking_date.weekday() < 5 else max_end_hour)
+        free_end = min(max_end_hour, start_hour + free_capacity)
+        if peak_quota_exempt(booking_date, start_hour, free_end, now=peak_at):
+            max_end_hour = max(normal_peak_end, free_end)
+        if booking_date.weekday() < 5 and not peak_quota_exempt(
+                booking_date, start_hour, max_end_hour, now=peak_at):
             # Calculate peak hours overlap for the EXTENSION portion only
             # (the current booking's peak hours are already accounted for)
             extension_peak_start = max(current_end_hour, PEAK_START)
@@ -4805,7 +4827,7 @@ def try_extend_booking(
         # The remote extension and receipt are already verified. A local state
         # failure must not turn that confirmed mutation into an ordinary failure.
         try:
-            peak_complete = (booking_date.weekday() < 5 and max_end_hour < PEAK_END
+            peak_complete = (not FREE_HORIZON_OVERRIDES_PEAK and booking_date.weekday() < 5 and max_end_hour < PEAK_END
                 and max(0, min(max_end_hour, PEAK_END) - max(start_hour, PEAK_START))
                     >= MAX_PEAK_HOURS - 1e-9)
             if new_end_time == target_end_normalized or peak_complete:
@@ -5197,8 +5219,8 @@ class BookingTracker:
         if self.overlaps_conflict(date, start_hour, end_hour):
             return False, "Overlaps with your existing reservation"
 
-        # Rule: Peak hours limit (per day)
-        if date.weekday() < 5:
+        # Normal peak quota remains intact outside the complete free window.
+        if date.weekday() < 5 and not peak_quota_exempt(date, start_hour, end_hour, now=now):
             overlap_start = max(start_hour, PEAK_START)
             overlap_end = min(end_hour, PEAK_END)
             if overlap_end > overlap_start:
@@ -6849,7 +6871,9 @@ def build_day_booking_opportunities(
                         continue
                     segment_weekly = (FREE_HORIZON_MINUTES if include_free_horizon_intent
                                       else int(free_hours * 60))
-                    segment_peak = peak_minutes
+                    # All candidates in this pass open through the free window.
+                    # Their full intents are holds; every actual prefix is checked.
+                    segment_peak = 1440 if FREE_HORIZON_OVERRIDES_PEAK else peak_minutes
                 planning_horizon = room_horizon_minutes(room_name)
                 if include_free_horizon_intent:
                     planning_horizon = min(planning_horizon, FREE_HORIZON_MINUTES)
@@ -7425,9 +7449,9 @@ def build_display_day_plan(
         now=now,
         target_minutes=selection_minutes,
         allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
-        remaining_peak_minutes=max(
+        remaining_peak_minutes=(1440 if free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK else max(
             0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
-        ),
+        )),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
         existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
     )
@@ -7463,9 +7487,9 @@ def build_display_day_plan(
             now=now,
             target_minutes=selection_minutes,
             allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
-            remaining_peak_minutes=max(
+            remaining_peak_minutes=(1440 if free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK else max(
                 0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
-            ),
+            )),
             same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
             existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
             required_opportunity=decision.selected,
@@ -7689,9 +7713,9 @@ def build_legacy_display_day_plan(
         now=now,
         target_minutes=selection_minutes,
         allow_fragmented_sessions=ALLOW_FRAGMENTED_SESSIONS,
-        remaining_peak_minutes=max(
+        remaining_peak_minutes=(1440 if free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK else max(
             0, tracker.get_remaining_peak_minutes(target_date) - reserved_peak_minutes
-        ),
+        )),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
         existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
         rank_key=rank_key,
@@ -8425,6 +8449,7 @@ def find_all_snipe_candidates_multi_day(
             elif (
                 remaining_peak_after_extensions is not None
                 and initial_peak_minutes > remaining_peak_after_extensions
+                and not peak_quota_exempt(target_date, start_hour, end_hour, now=target_boundary)
             ):
                 can_book = False
                 reason = "peak allowance is reserved for pending extensions"
@@ -9973,6 +9998,10 @@ def calculate_extension_capacity_holds(
             int(tracker.get_remaining_peak_minutes(target_date))
             - peak_by_date.get(date_key, 0),
         )
+        if peak_quota_exempt(target_date, start_hour, current_end_hour, now=now):
+            # A currently eligible seed can retain its intended later extensions.
+            # This reserves daily capacity only; each edit rechecks the full span.
+            remaining_peak = 1440
         held_end = cap_end_for_peak(
             target_date,
             current_end,

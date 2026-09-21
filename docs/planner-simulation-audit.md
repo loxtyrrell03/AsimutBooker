@@ -3,6 +3,10 @@
 All schedules below are invented fixtures. The tests use no real account,
 network or reservation writes.
 
+The hard peak-cap cases below describe the default exception-off policy. The
+subsequently verified, optional [free-horizon peak exception](free-horizon-peak-exception.md)
+adds separate boundary and lifecycle coverage without relaxing advance limits.
+
 ## Independent comparisons
 
 The reference searches enumerate legal alternatives directly, without calling

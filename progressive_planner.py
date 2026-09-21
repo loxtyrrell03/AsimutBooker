@@ -5,6 +5,7 @@ Every source change and destination Save still needs fresh runtime checks and a
 durable recovery record. In particular, ``prepare_at`` never permits early trim.
 """
 
+from booking_quotas import peak_quota_exempt
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import ceil, floor, isfinite
@@ -193,7 +194,8 @@ def plan_progressive_transfer(opportunity, *, events, available_data, policy, no
                               peak_end=960, peak_limit=120, same_room_gap=60,
                               freeze_minutes=0, blocked_intervals=(),
                               ignored_event_ids=(), protected_extensions=(),
-                              preparation_seconds=180, acceptable_layout=None):
+                              preparation_seconds=180, acceptable_layout=None,
+                              free_horizon_overrides_peak=False, free_horizon_minutes=300):
     """Return the largest feasible open prefix, or the earliest future step.
 
     ``opportunity`` may be an UpgradeOpportunity or its RoomUpgrade/
@@ -251,6 +253,7 @@ def plan_progressive_transfer(opportunity, *, events, available_data, policy, no
     kwargs = dict(events=events, available_data=structure_gaps, policy=policy,
                   now=now, time_preferences=time_preferences, planning=planning,
                   peak_start=peak_start, peak_end=peak_end, peak_limit=peak_limit,
+                  free_horizon_overrides_peak=free_horizon_overrides_peak, free_horizon_minutes=free_horizon_minutes,
                   same_room_gap=same_room_gap, freeze_minutes=freeze_minutes,
                   blocked_intervals=blocked_intervals, ignored_event_ids=ignored_event_ids,
                   protected_extensions=protected_extensions, _ignore_room_horizon=True)
@@ -310,6 +313,7 @@ def plan_progressive_transfer(opportunity, *, events, available_data, policy, no
                   available_data=available_data, policy=policy, now=max(now_utc, opening),
                   time_preferences=time_preferences, planning=planning, peak_start=peak_start,
                   peak_end=peak_end, peak_limit=peak_limit, same_room_gap=same_room_gap,
+                  free_horizon_overrides_peak=free_horizon_overrides_peak, free_horizon_minutes=free_horizon_minutes,
                   freeze_minutes=freeze_minutes, blocked_intervals=blocked_intervals,
                   protected_extensions=protected_extensions, minimum=minimum,
                   accepts=accepts)
@@ -330,7 +334,7 @@ _SEARCH_EXHAUSTED = object()
 def _find_remainders(originals, group, replacement, *, events, available_data,
                      policy, now, time_preferences, planning, peak_start, peak_end,
                      peak_limit, same_room_gap, freeze_minutes, blocked_intervals,
-                     protected_extensions, minimum, accepts):
+                     protected_extensions, minimum, accepts, free_horizon_overrides_peak=False, free_horizon_minutes=300):
     needed = sum(r.duration for r in group) - replacement.duration
     day = replacement.day
     group_ids = {r.event_id for r in group}
@@ -424,7 +428,20 @@ def _find_remainders(originals, group, replacement, *, events, available_data,
                 return
             if day.weekday() < 5 and other_peak + sum(interval_overlap_minutes(r.start, r.end,
                                                    peak_start, peak_end) for r in all_records) > peak_limit:
-                return
+                old_by_id = {r.event_id: r for r in group}
+                for record in all_records:
+                    old = old_by_id.get(record.event_id)
+                    # Unchanged/trimmed fallbacks acquire no time. Every moved
+                    # peak interval must individually qualify, including its start.
+                    retained = (old is not None and old.room == record.room
+                                and old.start <= record.start < record.end <= old.end)
+                    if (interval_overlap_minutes(record.start, record.end, peak_start, peak_end)
+                            and not retained and not peak_quota_exempt(day, record.start / 60, record.end / 60,
+                                now=now, free_horizon_overrides_peak=free_horizon_overrides_peak,
+                                free_horizon_minutes=free_horizon_minutes)):
+                        return
+                if not free_horizon_overrides_peak:
+                    return
             source_ids = {r.event_id for r in originals}
             seed = next((r for r in group if r.event_id not in source_ids), None)
             if _ordered_adjustments(originals, kept, replacement, seed,

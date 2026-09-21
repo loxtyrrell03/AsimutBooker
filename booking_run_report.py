@@ -152,8 +152,9 @@ def lines(*, now=None):
             remaining_peak = round(tracker.get_remaining_peak_minutes(day))
             result.append(f'Today\'s peak use: {duration(used)} / {duration(limit)} limit. '
                           f'Remaining peak allowance: {duration(remaining_peak)}.' +
-                          (' No further peak time, including last-minute bookings.'
-                           if remaining_peak <= 0 else ''))
+                          (' Extra peak time is allowed for complete bookings inside the free horizon, subject to ASIMUT approval.'
+                           if getattr(engine, 'FREE_HORIZON_OVERRIDES_PEAK', False) is True else
+                           (' No further peak time, including last-minute bookings.' if remaining_peak <= 0 else '')))
     result.extend(report.notes.values())
     return result
 

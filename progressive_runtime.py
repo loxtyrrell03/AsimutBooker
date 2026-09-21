@@ -134,7 +134,9 @@ class LiveContext:
             now=datetime.now().astimezone(), time_preferences=resolve_time_preferences(e.load_time_preferences(self.settings), day),
             planning=load_booking_strategy(self.settings).daily_planning, seed=seed,
             peak_start=int(e.PEAK_START*60), peak_end=int(e.PEAK_END*60),
-            peak_limit=int(e.MAX_PEAK_HOURS*60), same_room_gap=e.SAME_ROOM_GAP_MINUTES,
+            peak_limit=int(e.MAX_PEAK_HOURS*60),
+            free_horizon_overrides_peak=getattr(e, "FREE_HORIZON_OVERRIDES_PEAK", False) is True,
+            free_horizon_minutes=e.FREE_HORIZON_MINUTES, same_room_gap=e.SAME_ROOM_GAP_MINUTES,
             freeze_minutes=load_booking_strategy(self.settings).daily_planning.upgrade_freeze_hours*60,
             blocked_intervals=blocked, ignored_event_ids=ignored_ids, protected_extensions=e.load_extendable_bookings())
 

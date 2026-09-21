@@ -1,3 +1,33 @@
+## 2026-09-21 verified free-horizon peak exception
+
+- Fresh authenticated ASIMUT checks with zero rolling and peak balance accepted
+  a complete same-day peak request inside the free window; next-day requests
+  returned both quota warnings. No diagnostic reservation was saved. Another
+  visible student reservation exceeded one peak hour, but its creation time was
+  unavailable and does not independently establish the exception.
+- `booking_rules.free_horizon_overrides_peak` is a separately saved boolean;
+  absent values remain false and numeric preset changes preserve it. Desktop
+  and phone Booking rules expose the switch. When enabled, the complete new or
+  edited reservation must fit inside the configured free window. This supersedes
+  earlier notes imposing a universal one-hour cap even inside that window.
+- Free-window planning, creates, prepared seeds, extensions/holds, room upgrades,
+  consolidation, progressive transfers and time shifts share that exception.
+  Advance planning and actual daily peak accounting retain their normal limits.
+  Exempt moves cannot give another outside-window move extra peak credit.
+  Upgrade capacity checks retain attainable free-window practice at zero credit.
+  Exact site checks, conflicts, room horizons, targets and receipt recovery remain.
+- Rule fingerprints and assistant contract revision 11 reject stale prepared
+  Saves/context; run reports distinguish normal peak exhaustion from the free
+  exception. See `docs/free-horizon-peak-exception.md`. The shared intercepted
+  upgrade editor fixture now fixes its clock as well as its reservation dates,
+  so verification does not expire when the real calendar reaches those dates.
+- All 1,508 Python tests pass, including 17 exception regressions, the 432-request
+  boundary matrix and real Chromium prepared-Save/editor recovery fixtures.
+  Nineteen phone Node checks, TypeScript, lint and the private-origin build pass.
+  Chromium/WebKit verify the new switch, Save/reload, invalid/stale writes,
+  existing settings editors and keyboard help at 320/390px. These are fixture
+  and PC-browser checks; activation and real reservation outcomes are separate.
+
 ## 2026-09-21 visible phone settings Save
 
 - Practice editors use a dedicated sticky Save/Cancel row above the fields.

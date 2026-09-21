@@ -29,4 +29,4 @@ export type Preferences = {
 };
 
 export type BookingRules = { preset: 'new' | 'legacy' | 'custom'; rolling_quota_hours: number;
-  peak_quota_minutes: number; free_horizon_minutes: number; peak_start_minutes: number; peak_end_minutes: number };
+  free_horizon_overrides_peak: boolean; peak_quota_minutes: number; free_horizon_minutes: number; peak_start_minutes: number; peak_end_minutes: number };

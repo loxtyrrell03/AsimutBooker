@@ -8,7 +8,7 @@ every original until the full replacement is independently verified.
 
 import booking_run_report as report
 import copy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from booking_strategy import load_booking_strategy
 from date_time_preferences import resolve_time_preferences
@@ -85,6 +85,13 @@ def preserves_day_transition(engine, *, day, before_events, after_events,
     enabled_dates = [d for d in policy.booking_dates(now.date()) if not engine.is_date_disabled(d, disabled_dates)]
     remaining_hours, _ = engine.calculate_target_hours_for_day(
         day, enabled_dates, before, practice_plan=practice_plan)
+    free_peak = (getattr(engine, 'FREE_HORIZON_OVERRIDES_PEAK', False) is True
+                 and day <= (now + timedelta(minutes=engine.FREE_HORIZON_MINUTES)).date())
+    if free_peak and practice_plan.enabled:
+        # A spent advance budget must not hide attainable last-minute practice
+        # when deciding whether a room move would strand the rest of the day.
+        remaining_hours = max(remaining_hours,
+            engine.remaining_target_hours(practice_plan, day, before.get_hours_for_day(day)) or 0)
     # A final 15min can still be filled by an existing horizon extension.
     # Compare its holds even when there is too little left for a new booking.
     if remaining_hours <= 0:
@@ -103,19 +110,24 @@ def preserves_day_transition(engine, *, day, before_events, after_events,
         remaining = max(0, remaining_hours - held / 60)
         if remaining < policy.minimum_block_minutes / 60 or not engine.fragmentation_allows_new_booking(tracker, day)[0]:
             return (held, held)
-        opportunities = engine.build_day_booking_opportunities(
-            available, day, tracker, prefs, planning, now=now.replace(tzinfo=None),
-            remaining_daily_hours=remaining,
-            reserved_peak_minutes=held_peak, reserved_weekly_minutes=sum(target_holds.values()))
-        chosen = engine.select_day_plan(
-            opportunities, planning, now=now.replace(tzinfo=None),
-            target_minutes=int(round(remaining * 60)),
-            allow_fragmented_sessions=policy.allow_fragmented_sessions,
-            remaining_peak_minutes=max(0, tracker.get_remaining_peak_minutes(day) - held_peak),
-            same_room_gap_minutes=engine.SAME_ROOM_GAP_MINUTES)
-        window = engine._soft_time_window(prefs)
-        return (held + sum(item.potential_minutes for item in chosen),
-                held + sum(engine.soft_time_value(item.start_minutes, item.potential_minutes, window) for item in chosen))
+        outcomes = []
+        for free_only in ((False, True) if free_peak else (False,)):
+            opportunities = engine.build_day_booking_opportunities(
+                available, day, tracker, prefs, planning, now=now.replace(tzinfo=None),
+                remaining_daily_hours=remaining,
+                reserved_peak_minutes=held_peak, reserved_weekly_minutes=sum(target_holds.values()),
+                **({'free_horizon_only': True, 'include_free_horizon_intent': True} if free_only else {}))
+            chosen = engine.select_day_plan(
+                opportunities, planning, now=now.replace(tzinfo=None),
+                target_minutes=int(round(remaining * 60)),
+                allow_fragmented_sessions=policy.allow_fragmented_sessions,
+                remaining_peak_minutes=(1440 if free_only else
+                    max(0, tracker.get_remaining_peak_minutes(day) - held_peak)),
+                same_room_gap_minutes=engine.SAME_ROOM_GAP_MINUTES)
+            window = engine._soft_time_window(prefs)
+            outcomes.append((held + sum(item.potential_minutes for item in chosen),
+                held + sum(engine.soft_time_value(item.start_minutes, item.potential_minutes, window) for item in chosen)))
+        return max(outcomes)
 
     old_coverage, old_quality = coverage(before, before_gaps)
     new_coverage, new_quality = coverage(after, after_gaps)
@@ -188,7 +200,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         return dict(events=events, available_data=gaps,
             policy=policy, now=at, time_preferences=prefs, planning=planning,
             peak_start=int(engine.PEAK_START * 60), peak_end=int(engine.PEAK_END * 60),
-            peak_limit=int(engine.MAX_PEAK_HOURS * 60), same_room_gap=engine.SAME_ROOM_GAP_MINUTES,
+            peak_limit=int(engine.MAX_PEAK_HOURS * 60),
+            free_horizon_overrides_peak=getattr(engine, "FREE_HORIZON_OVERRIDES_PEAK", False) is True,
+            free_horizon_minutes=engine.FREE_HORIZON_MINUTES, same_room_gap=engine.SAME_ROOM_GAP_MINUTES,
             freeze_minutes=freeze_minutes, blocked_intervals=blocked,
             protected_extensions=extensions, ignored_event_ids=ignored_ids)
 
@@ -306,7 +320,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             portfolios.extend(select_upgrade_portfolio(by_day[day], policy=policy, planning=planning,
                 time_preferences=resolve_time_preferences(engine.load_time_preferences(settings), day), events=events,
                 same_room_gap=engine.SAME_ROOM_GAP_MINUTES, peak_start=int(engine.PEAK_START * 60),
-                peak_end=int(engine.PEAK_END * 60), peak_limit=int(engine.MAX_PEAK_HOURS * 60)))
+                peak_end=int(engine.PEAK_END * 60), peak_limit=int(engine.MAX_PEAK_HOURS * 60), now=now,
+                free_horizon_overrides_peak=getattr(engine, 'FREE_HORIZON_OVERRIDES_PEAK', False) is True,
+                free_horizon_minutes=engine.FREE_HORIZON_MINUTES))
         if not portfolios:
             if not dry_run and not any(getattr(args, k, None) for k in
                     ('only_date', 'only_room', 'upgrade_event_id', 'max_actions', 'max_action_minutes')):

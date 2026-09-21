@@ -28,6 +28,9 @@ def show_booking_rules_dialog(app):
         control.grid(row=row,column=1,sticky='ew')
         controls[key] = control
     HelpTip(body,'Both endpoints must fit inside this window. Available quota is used normally.').grid(row=5,column=2,padx=8)
+    peak_exception = tk.BooleanVar(value=current.free_horizon_overrides_peak)
+    ttk.Checkbutton(body, text='Allow extra peak time within the free horizon', variable=peak_exception).grid(row=8,column=0,columnspan=2,sticky='w',pady=8)
+    HelpTip(body,'Only complete bookings inside the free window qualify. ASIMUT must approve each booking and extension.').grid(row=8,column=2,padx=8)
     def populate(rule):
         for key,_ in fields:
             value=getattr(rule,key)
@@ -42,11 +45,11 @@ def show_booking_rules_dialog(app):
             for control in controls.values(): control.configure(state='normal')
     selector.bind('<<ComboboxSelected>>',selected)
     populate(current)
-    ttk.Label(body,text='Room horizons and durations are checked live. Existing reservations stay in place.',wraplength=470).grid(row=8,column=0,columnspan=3,sticky='w',pady=12)
+    ttk.Label(body,text='Room horizons and durations are checked live. Existing reservations stay in place.',wraplength=470).grid(row=9,column=0,columnspan=3,sticky='w',pady=12)
     def save():
         try:
             name=next(k for k,v in PRESET_LABELS.items() if v==preset.get())
-            patch={'preset':name}
+            patch={'preset':name, 'free_horizon_overrides_peak':peak_exception.get()}
             if name=='custom':
                 for key,_ in fields:
                     value=variables[key].get()
@@ -62,7 +65,7 @@ def show_booking_rules_dialog(app):
                 dialog.destroy()
         except (ValueError,RuntimeError) as exc:
             messagebox.showerror('Invalid booking rules',str(exc),parent=dialog)
-    buttons=ttk.Frame(body); buttons.grid(row=9,column=0,columnspan=3,sticky='e')
+    buttons=ttk.Frame(body); buttons.grid(row=10,column=0,columnspan=3,sticky='e')
     ttk.Button(buttons,text='Cancel',command=dialog.destroy).pack(side='left',padx=8)
     ttk.Button(buttons,text='Save rules',command=save).pack(side='left')
     return dialog

@@ -15,6 +15,7 @@ class BookingRules:
     free_horizon_minutes: int = 300
     peak_start_minutes: int = 540
     peak_end_minutes: int = 960
+    free_horizon_overrides_peak: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -42,8 +43,10 @@ def load_booking_rules(settings):
             raise SettingsError(f'{key} must be 0-1440 minutes in 15-minute steps')
     if values['peak_start_minutes'] >= values['peak_end_minutes']:
         raise SettingsError('Peak end must be later than peak start')
+    if type(values['free_horizon_overrides_peak']) is not bool:
+        raise SettingsError('Free-horizon peak exception must be on or off')
     result = BookingRules(**values)
-    if preset != 'custom' and result != base:
+    if preset != 'custom' and replace(result, free_horizon_overrides_peak=base.free_horizon_overrides_peak) != base:
         raise SettingsError('Select custom before changing preset values')
     return result
 
@@ -51,7 +54,8 @@ def apply_booking_rules(settings, patch):
     if not isinstance(patch, dict) or not patch:
         raise SettingsError('Supply booking rules to save')
     if patch.get('preset') in PRESETS:
-        raw = patch  # Presets reset all values; normalized identical fields are allowed.
+        # Numeric presets do not silently change the separately verified exception.
+        raw = {'free_horizon_overrides_peak': load_booking_rules(settings).free_horizon_overrides_peak} | patch
     else:
         raw = load_booking_rules(settings).to_dict() | patch
     rule = load_booking_rules({'booking_rules':raw})
@@ -65,8 +69,10 @@ def describe_booking_rules(settings):
         'rolling_quota': f'{rule.rolling_quota_hours:g} hours of advance reservations; live ASIMUT balance may be lower',
         'weekday_peak_quota': f'{rule.peak_quota_minutes} minutes per weekday between '
             f'{rule.peak_start_minutes // 60:02d}:{rule.peak_start_minutes % 60:02d} and '
-            f'{rule.peak_end_minutes // 60:02d}:{rule.peak_end_minutes % 60:02d}. '
-            'Completed sessions still count that day; the free horizon does not reset this cap.',
+            f'{rule.peak_end_minutes // 60:02d}:{rule.peak_end_minutes % 60:02d}. ' +
+            ('Completed sessions still count. The peak cap is waived only for a complete booking inside the free horizon.'
+             if rule.free_horizon_overrides_peak else
+             'Completed sessions still count that day; the free horizon does not reset this cap.'),
         'free_horizon': f'Both endpoints must fit inside the next {rule.free_horizon_minutes} minutes. '
             'Available quota is consumed normally. ASIMUT must approve every booking.',
     }

@@ -5,6 +5,7 @@ reservations are consolidated. The runtime must refresh the agenda/grid and
 validate each exact edit with Asimut before any covered donor is retired.
 """
 
+from booking_quotas import peak_quota_exempt
 from dataclasses import dataclass
 from itertools import combinations
 from bisect import bisect_left
@@ -259,6 +260,7 @@ def classify_consolidation_outcome(events, receipt):
 def find_room_upgrades(original, *, events, available_data, policy, now,
                        time_preferences, planning, peak_start=540, peak_end=960,
                        peak_limit=120, same_room_gap=60, freeze_minutes=DEFAULT_FREEZE_MINUTES,
+                       free_horizon_overrides_peak=False, free_horizon_minutes=300,
                        blocked_intervals=(), protected_extensions=(), ignored_event_ids=(),
                        _originals=None, _ignore_room_horizon=False, _allow_room_downgrade=False):
     """Rank superior rooms at all legal quarter-hour starts, keeping coverage.
@@ -378,6 +380,9 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
                 if preferred < old_peak_pref:
                     continue
                 if (original.day.weekday() < 5
+                        and not peak_quota_exempt(original.day, start / 60, end / 60, now=now,
+                            free_horizon_overrides_peak=free_horizon_overrides_peak,
+                            free_horizon_minutes=free_horizon_minutes)
                         and other_peak + interval_overlap_minutes(start, end, peak_start, peak_end)
                             > (original_peak if original_peak > peak_limit and other_peak == 0 else peak_limit)):
                     continue
@@ -468,7 +473,8 @@ def find_upgrade_opportunities(*, events, policy, now, eligible_event_ids=None, 
 
 
 def select_upgrade_portfolio(candidates, *, policy, planning, time_preferences,
-                             events, same_room_gap=60, peak_start=540, peak_end=960, peak_limit=120):
+                             events, same_room_gap=60, peak_start=540, peak_end=960, peak_limit=120,
+                             now=None, free_horizon_overrides_peak=False, free_horizon_minutes=300):
     """Choose compatible improvements together, preserving every original once.
 
     Exact memoized interval search includes original identity and room cooldowns.
@@ -510,8 +516,13 @@ def select_upgrade_portfolio(candidates, *, policy, planning, time_preferences,
         primary = ((quality_gain, time_gain, preferred_gain) if planning.priority_mode == "room_first"
                    else (time_gain, preferred_gain, quality_gain))
         scores.append((*primary, len(c.originals) - 1, -abs(new.start - min(r.start for r in c.originals))))
-        deltas.append(interval_overlap_minutes(new.start, new.end, peak_start, peak_end)
-                      - sum(interval_overlap_minutes(r.start, r.end, peak_start, peak_end) for r in c.originals))
+        delta = (interval_overlap_minutes(new.start, new.end, peak_start, peak_end)
+                 - sum(interval_overlap_minutes(r.start, r.end, peak_start, peak_end) for r in c.originals))
+        exempt = now is not None and peak_quota_exempt(new.day, new.start / 60, new.end / 60,
+            now=now, free_horizon_overrides_peak=free_horizon_overrides_peak,
+            free_horizon_minutes=free_horizon_minutes)
+        # Exempt gains never grant credit to a different, non-exempt replacement.
+        deltas.append(min(0, delta) if exempt else delta)
     zero = (0, 0, 0, 0, 0)
 
     @lru_cache(maxsize=None)
@@ -562,8 +573,7 @@ def select_upgrade_portfolio(candidates, *, policy, planning, time_preferences,
                 gap = same_room_gap if a.room == b.room else 0
                 if a.start < b.end+gap and a.end > b.start-gap:
                     return None
-            if weekday and sum(interval_overlap_minutes(r.start, r.end, peak_start, peak_end)
-                               for r in practice) > limit:
+            if weekday and initial_peak + sum(deltas[i] for i in indices) > limit:
                 return None
             return comfort_key(((r.start, r.end, r.room) for r in practice), planning)
 

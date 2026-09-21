@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 10
+ASSISTANT_CONTRACT_REVISION = 11
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -264,7 +264,10 @@ Actions:
   pursuing the saved remainder. Whenever the daily target exceeds 120 minutes,
   explicitly say in the final answer that it is a multi-session goal (for three
   hours, normally a two-hour session plus a one-hour session) and that weekday
-  peak use remains capped by the selected rules (one hour under New quotas).
+  peak use follows the selected rules (normally one hour under New quotas).
+  If free_horizon_overrides_peak is enabled, complete bookings inside the free
+  horizon may exceed that peak cap, subject to exact ASIMUT approval. This never
+  grants extra advance credit or permits a booking outside the complete window.
   If the user says not to book yet, save the goal
   but do not run the Booker. A direct named daypart is sufficient authorization
   to set a strict date_time_preferences window on each requested date: morning is
