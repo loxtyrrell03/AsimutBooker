@@ -9,8 +9,16 @@
   the persisted value. All settings persistence/conflict checks, 19 Node checks,
   TypeScript, lint and the private-origin static build pass. A reduced viewport
   approximates keyboard space; it is not physical iPhone keyboard verification.
-- Build `20260921-settings-save` is ready for the existing phone service; live
-  activation and scheduled-worker confirmation are recorded after deployment.
+- Build `20260921-settings-save` is active at the unchanged private origin.
+  Deployment waited for the prepared booking extension, held both locks and
+  preserved settings/history/agenda hashes, existing assets and Serve routes;
+  no service restart was needed. Exact served assets and connected settings
+  render pass in Chromium/WebKit at 320/390px. Physical-phone display is unverified.
+- The requested six-hour goal was saved through the revision/CSRF API with
+  every other preference unchanged. The next scheduled run used the six-hour
+  target; an explicit read-only plan refresh completed and all eight current
+  plan dates show 360 target minutes. Private evidence is ignored under
+  `artifacts/phone-goal-save-20260921/`.
 
 ## 2026-09-21 detailed booking notifications
 
