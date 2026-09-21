@@ -5002,6 +5002,7 @@ class BookingTracker:
         self.quota_observed_hours = 0.0
         self.live_peak_minutes = {}
         self.peak_observed_minutes = {}
+        self.extension_holds = ()  # Unconfirmed intervals protected for later extension.
         self.bookings = []  # List of (room, date, start_hour, end_hour)
         self.agenda_events = []  # Complete validated events from the latest scan.
         self.agenda_active_event_ids = []  # Includes valid out-of-window cards.
@@ -5197,6 +5198,19 @@ class BookingTracker:
                 return True
         return False
 
+    def extension_blocked_ranges(self, date, room):
+        """Held session intervals constrain planning without counting as booked."""
+        blocked = []
+        for booking in getattr(self, 'extension_holds', ()):
+            if booking['date'] != as_date(date).isoformat():
+                continue
+            start_h, start_m = map(int, booking['startTime'].split(':'))
+            end_h, end_m = map(int, booking['target_end'].split(':'))
+            start, end = start_h + start_m / 60, end_h + end_m / 60
+            gap = SAME_ROOM_GAP_MINUTES / 60 if room == booking['room'] else 0
+            blocked.append((start - gap, end + gap))
+        return blocked
+
     def can_book(self, room, date, start_hour, duration_minutes, *, now=None):
         """Check if a booking is allowed by all rules."""
         end_hour = start_hour + duration_minutes / 60
@@ -5218,6 +5232,9 @@ class BookingTracker:
         # Rule: Check conflict ranges
         if self.overlaps_conflict(date, start_hour, end_hour):
             return False, "Overlaps with your existing reservation"
+
+        if any(start_hour < end and end_hour > start for start, end in self.extension_blocked_ranges(date, room)):
+            return False, "Time is reserved for a pending session extension"
 
         # Normal peak quota remains intact outside the complete free window.
         if date.weekday() < 5 and not peak_quota_exempt(date, start_hour, end_hour, now=now):
@@ -6841,7 +6858,8 @@ def build_day_booking_opportunities(
         if only_room and room_name != only_room:
             continue
         room_priority = PRIORITY_ROOMS.index(room_name)
-        room_blocks = tracker.get_same_room_blocked_ranges(target_date, room_name)
+        room_blocks = (tracker.get_same_room_blocked_ranges(target_date, room_name)
+                       + tracker.extension_blocked_ranges(target_date, room_name))
         for raw_gap in room_data.get("slots", ()):
             raw_start = float(raw_gap["startHour"])
             raw_end = float(raw_gap["endHour"])
@@ -10138,6 +10156,7 @@ def refresh_extension_capacity_holds(
     planning_context["extension_target_by_date"] = target_by_date
     planning_context["extension_peak_by_date"] = peak_by_date
     planning_context["extension_bookings"] = held_bookings
+    tracker.extension_holds = held_bookings
     planning_context['extensions_use_free_horizon'] = tracker.get_remaining_quota_hours() < .25
     return target_by_date, peak_by_date, held_bookings
 

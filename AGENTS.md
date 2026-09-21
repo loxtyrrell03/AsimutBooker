@@ -1,3 +1,21 @@
+## 2026-09-21 extension holds protect their time intervals
+
+- Live read-only verification exposed a previously unprotected extension tail:
+  the display planner could select another session during held extension time
+  and then reject its own overlapping plan. Holds had reserved daily/peak minutes
+  without reserving the corresponding intervals for new-booking candidates.
+- `BookingTracker.extension_holds` now follows each refreshed hold snapshot.
+  Shared planning splits room gaps around these intervals and respects the
+  extended same-room gap. The final create guard also rejects held intervals.
+  Holds never increase confirmed hours and retiring them clears these constraints.
+  Upgrade capacity comparisons install their own calculated holds consistently.
+- The captured eight-date live grid/agenda replays as a valid, non-overlapping
+  plan, preserving the six-hour target and placing the next session after the
+  extension's intended end. Regression covers publication, direct creates,
+  same-room spacing and retiring stale holds. All 1,509 Python tests pass,
+  including the corrected existing tracker mock and complete extension/upgrade
+  recovery and prepared-Save regressions.
+
 ## 2026-09-21 verified free-horizon peak exception
 
 - Fresh authenticated ASIMUT checks with zero rolling and peak balance accepted
@@ -27,6 +45,15 @@
   Chromium/WebKit verify the new switch, Save/reload, invalid/stale writes,
   existing settings editors and keyboard help at 320/390px. These are fixture
   and PC-browser checks; activation and real reservation outcomes are separate.
+- Activated the exception in the canonical worker and phone build
+  `20260921-free-peak` at the unchanged private origin. The enabled flag is the
+  only preference change: the six-hour daily goal, noon-to-closing window, room
+  ranking and all other saved choices remain. Exact HTTPS assets/session and
+  connected Chromium/WebKit settings pass at 320/390px; no physical-phone proof.
+  The existing health monitor now respects this conditional peak exception.
+  Subsequent scheduled runs verified a Corus-to-Weston upgrade and ordinary
+  extensions; these do not constitute a real extra-peak booking test. Existing
+  desktop windows must reopen to load the new controls and assistant contract.
 
 ## 2026-09-21 visible phone settings Save
 

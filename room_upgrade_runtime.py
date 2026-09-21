@@ -104,7 +104,8 @@ def preserves_day_transition(engine, *, day, before_events, after_events,
         holds = engine.calculate_extension_capacity_holds(
             extensions, tracker, practice_plan, disabled_dates, time_prefs=prefs,
             now=(observation_now or now).replace(tzinfo=None))
-        target_holds, peak_holds, _ = holds
+        target_holds, peak_holds, held_bookings = holds
+        tracker.extension_holds = held_bookings
         held = target_holds.get(day.isoformat(), 0)
         held_peak = peak_holds.get(day.isoformat(), 0)
         remaining = max(0, remaining_hours - held / 60)

@@ -132,6 +132,35 @@ class AdvanceRuntimeTests(unittest.TestCase):
         self.assertEqual(row.existing_minutes, 0)
         self.attempt.assert_not_called()
 
+    def test_free_preview_reserves_extension_time_and_can_publish_remaining_session(self):
+        self.now = datetime(2026, 9, 21, 14, 36)
+        today = self.now.date()
+        self.practice = b.PracticePlan(enabled=True, default_hours=2)
+        self.grids = {today: [{'room':'Weston','slots':[{'startHour':19.5,'endHour':20.5}]}]}
+        self.tracker.add_existing_event(today,18.5,19.5,is_reservation=True,room='Other')
+        self.tracker.live_quota_minutes = 0
+        booking = dict(room='Other',date=str(today),startTime='18:30',endTime='19:30',
+            target_end='20:00',created_at=self.now.isoformat(),eventId=42,
+            event_url='https://rwcmd.asimut.net/arrangement?eventId=42')
+        with patch.object(b,'booking_window_dates',return_value=(today,)), \
+             patch.object(b,'load_time_preferences',return_value={'enabled':False}), \
+             patch.object(b,'load_extendable_bookings',return_value=[booking]):
+            days, allocations, context = runtime.plan_from_grids(b,self.grids,self.settings,
+                self.practice,self.tracker,self.args,now=self.now)
+            runtime.publish(b,days,allocations,context,Mock(),self.settings,self.tracker,
+                now=self.now,grids=self.grids)
+        row = self.publications[-1][0]  # publish validates all candidates, including overlap.
+        self.assertEqual((row.primary.start_time,row.primary.end_time),('18:30','20:00'))
+        self.assertEqual([(c.start_time,c.end_time) for c in row.additional],[('20:00','20:30')])
+        self.assertEqual(row.existing_minutes,60)  # Holds never inflate confirmed practice.
+        self.assertFalse(self.tracker.can_book('Weston',today,19.5,30,now=self.now.replace(hour=15))[0])
+        self.assertFalse(self.tracker.can_book('Other',today,20.5,30,now=self.now.replace(hour=16))[0])
+        # Fresh evidence can retire the hold without leaving stale phantom conflicts.
+        with patch.object(b,'booking_window_dates',return_value=(today,)), \
+             patch.object(b,'load_extendable_bookings',return_value=[]):
+            b.refresh_extension_capacity_holds({},self.tracker,self.practice,set(),now=self.now)
+        self.assertTrue(self.tracker.can_book('Weston',today,19.5,30,now=self.now.replace(hour=15))[0])
+
     def test_scoped_and_legacy_runs_retain_existing_behaviour(self):
         self.args.only_date = str(self.days[0])
         self.assertFalse(self.run_week()[2])

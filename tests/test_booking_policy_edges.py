@@ -181,6 +181,7 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
         tracker.get_remaining_peak_minutes.return_value = 120
         tracker.conflict_ranges = {}
         tracker.get_same_room_blocked_ranges.return_value = []
+        tracker.extension_blocked_ranges.return_value = []
         with (
             mock.patch.object(book_week, "PRIORITY_ROOMS", ["B0.29"]),
             mock.patch.object(book_week, "room_horizon_minutes", return_value=7200),
