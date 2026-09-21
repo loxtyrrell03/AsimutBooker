@@ -246,7 +246,7 @@ class QuietFocusGUI:
         self.settings_hub.pack(fill='x',before=self.settings_links)
         p=self.practice_plan
         summaries={'Practice target':f'{p.default_hours:g} hours each practice day' if p.enabled else 'Daily target is off',
-                   'Preferred time':self.time_prefs_dropdown.get() if self.time_prefs_enabled.get() else 'Any time',
+                   'Preferred time':(self.custom_start_time.get() + '–' + self.custom_end_time.get() if self.time_prefs_dropdown.get() == 'Custom...' else self.time_prefs_dropdown.get()) if self.time_prefs_enabled.get() else 'Any time',
                    'Booking days':'Choose dates and daily overrides',
                    'Rooms':'Room priority, requirements and sessions',
                    'Booking strategy':'When to wait and when to book',

@@ -1,5 +1,6 @@
 """Deterministic desktop calendar day and multi-date preferences editor."""
 from datetime import date
+from preferred_time_bounds import endpoint_label
 import tkinter as tk
 from tkinter import ttk
 
@@ -60,8 +61,8 @@ def open_calendar_preferences(app, dates, settings_path):
     clocks = [f'{minute // 60:02d}:{minute % 60:02d}' for minute in range(0, 1440, 15)]
     ttk.Label(times, text='Start').grid(row=0, column=0, sticky='w')
     ttk.Label(times, text='End').grid(row=0, column=1, sticky='w', padx=(16, 0))
-    start_control = ttk.Combobox(times, textvariable=start, values=clocks, width=9, state='readonly')
-    end_control = ttk.Combobox(times, textvariable=end, values=clocks, width=9, state='readonly')
+    start_control = ttk.Combobox(times, textvariable=start, values=["Rooms open", *clocks], width=14, state='readonly')
+    end_control = ttk.Combobox(times, textvariable=end, values=["Rooms closed", *clocks], width=14, state='readonly')
     start_control.grid(row=1, column=0, sticky='w', pady=5)
     end_control.grid(row=1, column=1, sticky='w', padx=(16, 0), pady=5)
     strict_control = ttk.Checkbutton(right, text='Only book within these times', variable=strict)
@@ -88,7 +89,7 @@ def open_calendar_preferences(app, dates, settings_path):
             return
         # Changes apply only after a real edit, never just from selecting dates.
         value = {'enabled': enabled.get(), 'hours': hours.get(), 'time': None if mode.get() == 'Use default time' else
-                 {'enabled': mode.get() == 'Custom time', 'start_time': start.get(), 'end_time': end.get(), 'strict_mode': strict.get()}}
+                 {'enabled': mode.get() == 'Custom time', 'start_time': 'rooms_open' if start.get() == 'Rooms open' else start.get(), 'end_time': 'rooms_closed' if end.get() == 'Rooms closed' else end.get(), 'strict_mode': strict.get()}}
         for key in loaded_selection[0]:
             drafts[key] = {**drafts.get(key, {}), field: value[field]}
         draft_note.set(f'{len(drafts)} changed dates · Save changes to apply')
@@ -107,10 +108,10 @@ def open_calendar_preferences(app, dates, settings_path):
         enabled.set(state['enabled']); hours.set(state['hours'])
         time = state['time'] or document['time_preferences']
         mode.set('Use default time' if state['time'] is None else 'Custom time' if time['enabled'] else 'Any time')
-        start.set(time['start_time']); end.set(time['end_time']); strict.set(time['strict_mode'])
+        start.set(endpoint_label(time['start_time'])); end.set(endpoint_label(time['end_time'])); strict.set(time['strict_mode'])
         scope.set(date.fromisoformat(first).strftime('%A %d %B') if len(keys) == 1 else f'{len(keys)} dates selected — edits apply to all')
         default = document['time_preferences']
-        default_label.set(f"Default: {default['start_time']}–{default['end_time']}" if default['enabled'] else 'Default: any time')
+        default_label.set(f"Default: {endpoint_label(default['start_time'])}–{endpoint_label(default['end_time'])}" if default['enabled'] else 'Default: any time')
         update_controls()
         loading[0] = False
 

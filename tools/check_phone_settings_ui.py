@@ -82,12 +82,34 @@ def check(dist):
 
             page.get_by_role('button', name='Preferred times', exact=True).tap()
             page.get_by_label('Use preferred times', exact=True).check()
-            page.get_by_label('Start time', exact=True).fill('12:30')
-            page.get_by_label('End time', exact=True).fill('21:00')
+            page.get_by_label('Start time', exact=True).select_option('12:30')
+            page.get_by_label('End time', exact=True).select_option('21:00')
             page.get_by_label('Only book within these times').check()
             page.get_by_role('button', name='Save changes', exact=True).tap()
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
             assert read_phone_preferences(settings)['time_preferences']['start_time'] == '12:30'
+
+            page.get_by_role('button', name='Preferred times', exact=True).tap()
+            page.get_by_label('Start time', exact=True).select_option('rooms_open')
+            page.get_by_label('End time', exact=True).select_option('rooms_closed')
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
+            current = read_phone_preferences(settings)['time_preferences']
+            assert (current['start_time'], current['end_time']) == ('rooms_open', 'rooms_closed')
+            page.get_by_role('button', name='Preferred times', exact=True).tap()
+            expect(page.get_by_label('Start time', exact=True)).to_have_value('rooms_open')
+            expect(page.get_by_label('End time', exact=True)).to_have_value('rooms_closed')
+            for width in (320, 390):
+                page.set_viewport_size({'width': width, 'height': 844})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            page.get_by_role('button', name='Help: Room opening hours', exact=True).tap()
+            expect(page.get_by_role('tooltip')).to_be_visible()
+            page.get_by_role('button', name='Close help', exact=True).tap()
+            page.screenshot(path=dist.parent / f'opening-times-{engine}.png', full_page=True)
+            page.get_by_label('Start time', exact=True).select_option('12:00')
+            page.get_by_role('button', name='Save changes', exact=True).tap()
+            expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
+            assert read_phone_preferences(settings)['time_preferences']['end_time'] == 'rooms_closed'
 
             page.get_by_role('button', name='Practice days', exact=True).tap()
             page.get_by_label('Practice date', exact=True).fill('2026-10-01')
@@ -116,7 +138,7 @@ def check(dist):
             page.get_by_role('button', name='Edit all practice settings', exact=True).tap()
             expect(page.get_by_label('Hours per day', exact=True)).to_have_value('4')
             page.get_by_label('Hours per day', exact=True).fill('2.5')
-            page.get_by_label('Start time', exact=True).fill('13:00')
+            page.get_by_label('Start time', exact=True).select_option('13:00')
             page.get_by_role('button', name='Save changes', exact=True).tap()
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
             assert read_phone_preferences(settings)['practice_plan']['default_hours'] == 2.5

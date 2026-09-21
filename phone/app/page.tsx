@@ -1,4 +1,5 @@
 'use client';
+import { timeBoundaryLabel } from '../lib/time-boundaries';
 
 import { ClosedDayCross } from '../components/closed-day-cross';
 import {
@@ -981,7 +982,7 @@ function StatusView({
       {!booker.unavailable_sections.includes('preferences') && <section hidden={systemDetail} className="preference-card">
         <PracticeSettings onEditing={setPracticeDetail} csrf={csrf} enabled={editable} onSaved={onSaved}
           targetLabel={practice.enabled && practice.default_hours ? `${practice.default_hours} hours` : 'Off'}
-          timeLabel={time.enabled ? `${time.start_time}–${time.end_time}` : 'Any time'} />
+          timeLabel={time.enabled ? `${timeBoundaryLabel(time.start_time)}–${timeBoundaryLabel(time.end_time)}` : 'Any time'} />
         {booker.preferences.future_intentions.length > 0 && (
           <div className="intent-list" aria-label="Saved future practice intentions">
             {booker.preferences.future_intentions.map((intention) => (

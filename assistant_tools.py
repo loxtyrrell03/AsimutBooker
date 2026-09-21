@@ -48,6 +48,7 @@ from booking_strategy import (
 )
 from practice_plan import PracticePlanError, load_practice_plan
 from date_time_preferences import apply_date_time_preferences
+from preferred_time_bounds import boundary_fields, custom_bounds, saved_endpoint, set_saved_endpoint
 from assistant_calendar import calendar_day, validate_cancellation_weekdays
 from room_preferences import (
     RoomPreferencesError,
@@ -570,8 +571,8 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                     "time_preferences": _object_schema(
                         {
                             "enabled": {"type": "boolean"},
-                            "start_time": clock,
-                            "end_time": clock,
+                            "start_time": {"type": "string", "description": "HH:MM or rooms_open"},
+                            "end_time": {"type": "string", "description": "HH:MM or rooms_closed"},
                             "strict_mode": {"type": "boolean"},
                             "preset": {
                                 "type": "string",
@@ -594,7 +595,7 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                             "window": {"anyOf": [
                                 _object_schema({
                                     "enabled": {"type": "boolean"},
-                                    "start_time": clock, "end_time": clock,
+                                    "start_time": {"type": "string", "description": "HH:MM or rooms_open"}, "end_time": {"type": "string", "description": "HH:MM or rooms_closed"},
                                     "strict_mode": {"type": "boolean"},
                                 }, required=("enabled", "start_time", "end_time", "strict_mode")),
                                 {"type": "null"},
@@ -1995,6 +1996,10 @@ class BookerToolSurface:
             "custom_end_min": current.get("custom_end_min", 0),
             "strict_mode": current.get("strict_mode", False),
         }
+        try:
+            stored.update(boundary_fields(current))
+        except ValueError as exc:
+            raise AssistantToolError(str(exc)) from exc
         if "enabled" in raw_patch:
             stored["enabled"] = raw_patch["enabled"]
         if "strict_mode" in raw_patch:
@@ -2003,9 +2008,10 @@ class BookerToolSurface:
             stored["preset"] = raw_patch["preset"]
         for key, prefix in (("start_time", "custom_start"), ("end_time", "custom_end")):
             if key in raw_patch:
-                value = _canonical_clock(raw_patch[key], f"time_preferences.{key}")
-                stored[f"{prefix}_hour"] = int(value[:2])
-                stored[f"{prefix}_min"] = int(value[3:])
+                try:
+                    set_saved_endpoint(stored, "start" if key == "start_time" else "end", raw_patch[key], quarter=True)
+                except ValueError as exc:
+                    raise AssistantToolError(str(exc)) from exc
                 stored["preset"] = "custom"
         for flag in ("enabled", "strict_mode"):
             if type(stored[flag]) is not bool:
@@ -2019,16 +2025,18 @@ class BookerToolSurface:
             "custom",
         }:
             raise AssistantToolError("time_preferences.preset is unsupported")
-        start = stored["custom_start_hour"] * 60 + stored["custom_start_min"]
-        end = stored["custom_end_hour"] * 60 + stored["custom_end_min"]
+        try:
+            start, end = custom_bounds(stored)
+        except ValueError as exc:
+            raise AssistantToolError(str(exc)) from exc
         if stored["preset"] == "custom" and end <= start:
             raise AssistantToolError("Preferred end time must be after start time")
         settings["time_preferences"] = stored
         effective_start, effective_end = _TIME_PREFERENCE_PRESETS.get(
             stored["preset"],
             (
-                f"{stored['custom_start_hour']:02d}:{stored['custom_start_min']:02d}",
-                f"{stored['custom_end_hour']:02d}:{stored['custom_end_min']:02d}",
+                saved_endpoint(stored, "start"),
+                saved_endpoint(stored, "end"),
             ),
         )
         return {

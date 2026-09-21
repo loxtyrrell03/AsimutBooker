@@ -77,6 +77,7 @@ from assistant_ui import AssistantEvent, AssistantPanel
 from quiet_focus_gui import QuietFocusGUI
 from calendar_preferences_ui import open_calendar_preferences
 from date_time_preferences import load_date_time_preferences
+from preferred_time_bounds import boundary_fields, custom_bounds, saved_endpoint, set_saved_endpoint, endpoint_label, TOKENS
 
 # Constants
 APP_DIR = Path(__file__).resolve().parent
@@ -723,7 +724,14 @@ def validate_time_preferences_section(settings: Mapping[str, Any]) -> dict[str, 
         "time_preferences.custom_end_min",
         59,
     )
-    if preset == "custom" and (end_hour, end_min) <= (start_hour, start_min):
+    try:
+        boundaries = boundary_fields(prefs)
+    except ValueError as exc:
+        raise SettingsError(str(exc)) from exc
+    start_bound, end_bound = custom_bounds({
+        "custom_start_hour": start_hour, "custom_start_min": start_min,
+        "custom_end_hour": end_hour, "custom_end_min": end_min, **boundaries})
+    if preset == "custom" and end_bound <= start_bound:
         raise SettingsError("Custom preferred end time must be later than start time")
 
     return {
@@ -734,6 +742,7 @@ def validate_time_preferences_section(settings: Mapping[str, Any]) -> dict[str, 
         "custom_end_hour": end_hour,
         "custom_end_min": end_min,
         "strict_mode": strict_mode,
+        **boundaries,
     }
 
 
@@ -2069,65 +2078,24 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.custom_time_frame = ttk.Frame(time_prefs_frame)
         # Don't pack yet - will be shown/hidden based on selection
 
-        ttk.Label(self.custom_time_frame, text="From:").pack(side=tk.LEFT, padx=(0, 10))
-
-        # Start hour entry
+        clocks = [f'{minute // 60:02d}:{minute % 60:02d}' for minute in range(0, 1440, 15)]
         self.custom_start_hour = tk.StringVar(value="14")
-        self.custom_start_hour_entry = ttk.Entry(
-            self.custom_time_frame,
-            textvariable=self.custom_start_hour,
-            width=3,
-            font=("Segoe UI", 13),
-            justify="center"
-        )
-        self.custom_start_hour_entry.pack(side=tk.LEFT)
-        self.custom_start_hour_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
-        self.custom_start_hour_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
-
-        ttk.Label(self.custom_time_frame, text=":").pack(side=tk.LEFT)
-
-        # Start minute entry
         self.custom_start_min = tk.StringVar(value="00")
-        self.custom_start_min_entry = ttk.Entry(
-            self.custom_time_frame,
-            textvariable=self.custom_start_min,
-            width=3,
-            font=("Segoe UI", 13),
-            justify="center"
-        )
-        self.custom_start_min_entry.pack(side=tk.LEFT)
-        self.custom_start_min_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
-        self.custom_start_min_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
-
-        ttk.Label(self.custom_time_frame, text="To:").pack(side=tk.LEFT, padx=(30, 10))
-
-        # End hour entry
         self.custom_end_hour = tk.StringVar(value="22")
-        self.custom_end_hour_entry = ttk.Entry(
-            self.custom_time_frame,
-            textvariable=self.custom_end_hour,
-            width=3,
-            font=("Segoe UI", 13),
-            justify="center"
-        )
-        self.custom_end_hour_entry.pack(side=tk.LEFT)
-        self.custom_end_hour_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
-        self.custom_end_hour_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
-
-        ttk.Label(self.custom_time_frame, text=":").pack(side=tk.LEFT)
-
-        # End minute entry
         self.custom_end_min = tk.StringVar(value="00")
-        self.custom_end_min_entry = ttk.Entry(
-            self.custom_time_frame,
-            textvariable=self.custom_end_min,
-            width=3,
-            font=("Segoe UI", 13),
-            justify="center"
-        )
-        self.custom_end_min_entry.pack(side=tk.LEFT)
-        self.custom_end_min_entry.bind("<FocusOut>", lambda e: self.on_time_prefs_changed())
-        self.custom_end_min_entry.bind("<Return>", lambda e: self.on_time_prefs_changed())
+        self.custom_start_time = tk.StringVar(value="14:00")
+        self.custom_end_time = tk.StringVar(value="22:00")
+        for column, side, label, special in ((0, 'start', 'Start time', 'Rooms open'),
+                                              (1, 'end', 'End time', 'Rooms closed')):
+            ttk.Label(self.custom_time_frame, text=label).grid(row=0, column=column, sticky='w', padx=(0, 20))
+            control = ttk.Combobox(self.custom_time_frame,
+                textvariable=getattr(self, f'custom_{side}_time'),
+                values=[special, *clocks], state='readonly', width=17, font=("Segoe UI", 13))
+            control.grid(row=1, column=column, sticky='w', padx=(0, 20), pady=(4, 0))
+            control.bind('<<ComboboxSelected>>', lambda e: self.on_time_prefs_changed())
+            setattr(self, f'custom_{side}_time_control', control)
+
+        HelpTip(self.custom_time_frame, 'Rooms open and Rooms closed follow each room’s available hours for that day, including changes to opening hours.').grid(row=1, column=2, padx=(0, 8))
 
         # Load saved time preferences
         self.load_time_preferences()
@@ -2136,10 +2104,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self.time_prefs_enable_cb,
                 self.time_prefs_dropdown,
                 self.time_prefs_strict_cb,
-                self.custom_start_hour_entry,
-                self.custom_start_min_entry,
-                self.custom_end_hour_entry,
-                self.custom_end_min_entry,
+                self.custom_start_time_control,
+                self.custom_end_time_control,
             ]
         )
 
@@ -4651,6 +4617,9 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.custom_end_hour.set(str(prefs["custom_end_hour"]))
         self.custom_end_min.set(str(prefs["custom_end_min"]).zfill(2))
 
+        self.custom_start_time.set(endpoint_label(saved_endpoint(prefs, "start")))
+        self.custom_end_time.set(endpoint_label(saved_endpoint(prefs, "end")))
+
         # Set strict mode
         self.time_prefs_strict.set(prefs["strict_mode"])
 
@@ -4680,6 +4649,11 @@ class AsimutBookerGUI(QuietFocusGUI):
                 "custom_end_min": int(self.custom_end_min.get()),
                 "strict_mode": self.time_prefs_strict.get(),
             }
+            for side in ("start", "end"):
+                value = getattr(self, f"custom_{side}_time").get()
+                if value == endpoint_label(TOKENS[side]):
+                    value = TOKENS[side]
+                set_saved_endpoint(candidate, side, value)
             time_preferences = validate_time_preferences_section(
                 {"time_preferences": candidate}
             )
@@ -5919,7 +5893,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         cell.bind('<Configure>', wrap_day_text, add='+')
         if not is_past:
             time_override = (getattr(self, 'calendar_date_time_preferences', None) or {}).get(date_str)
-            time_label = (f"{time_override['start_time']}–{time_override['end_time']}" if time_override['enabled'] else 'Any time') if time_override else 'Edit'
+            time_label = (f"{endpoint_label(time_override['start_time'])}–{endpoint_label(time_override['end_time'])}" if time_override['enabled'] else 'Any time') if time_override else 'Edit'
             tk.Button(cell,text=time_label,command=lambda d=current_date:open_calendar_preferences(self,[d],SETTINGS_FILE),bg=bg_color,fg='#0868D9',activebackground='#EAF3FF',relief='flat',bd=0,font=(self.ui_font_family,-12),cursor='hand2',takefocus=True).pack(anchor='w',padx=5)
 
         if closed:

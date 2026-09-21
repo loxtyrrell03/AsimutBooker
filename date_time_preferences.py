@@ -1,6 +1,6 @@
 """Shared exact-date preferred-time overrides for both calendars and booking."""
 from datetime import date, datetime
-import re
+from preferred_time_bounds import endpoint_minutes, TOKENS
 
 KEY = 'date_time_preferences'
 FIELDS = {'enabled', 'start_time', 'end_time', 'strict_mode'}
@@ -22,13 +22,9 @@ def validate_window(value):
     for key in ('enabled', 'strict_mode'):
         if type(value[key]) is not bool:
             raise ValueError(f'{key} must be true or false')
-    for key in ('start_time', 'end_time'):
-        clock = value[key]
-        if not isinstance(clock, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', clock):
-            raise ValueError('Use a time in HH:MM format')
-        if int(clock[3:]) % 15:
-            raise ValueError('Choose times in 15-minute steps')
-    if value['end_time'] <= value['start_time']:
+    start = endpoint_minutes(value['start_time'], 'start', quarter=True)
+    end = endpoint_minutes(value['end_time'], 'end', quarter=True)
+    if end <= start:
         raise ValueError('End time must be later than start time')
     return dict(value)
 
@@ -68,8 +64,9 @@ def resolve_time_preferences(preferences, target_date):
     override = preferences['date_overrides'].get(date_key(target_date))
     effective = base
     if override is not None:
-        def hour(clock):
-            return int(clock[:2]) + int(clock[3:]) / 60
         effective = {'enabled': override['enabled'], 'strict_mode': override['strict_mode'],
-                     'start_hour': hour(override['start_time']), 'end_hour': hour(override['end_time'])}
+                     'start_hour': endpoint_minutes(override['start_time'], 'start') / 60,
+                     'end_hour': endpoint_minutes(override['end_time'], 'end') / 60}
+        effective.update({f'{side}_boundary': token for side, token in TOKENS.items()
+                          if override[f'{side}_time'] == token})
     return {**effective, 'date_overrides': preferences['date_overrides'], '_default_preferences': base}

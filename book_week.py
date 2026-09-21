@@ -13,6 +13,7 @@ Usage:
 """
 
 from date_time_preferences import with_date_overrides, resolve_time_preferences
+from preferred_time_bounds import boundary_fields, custom_bounds, runtime_window_label
 from booking_rules import load_booking_rules
 from session_preferences import tracker_sessions
 from operation_control import OperationStopped, operation_stage, report_available_gaps
@@ -2210,7 +2211,14 @@ def load_time_preferences(settings=None):
     start_m = require_clock_part("custom_start_min", 0, 59)
     end_h = require_clock_part("custom_end_hour", 22, 23)
     end_m = require_clock_part("custom_end_min", 0, 59)
-    if preset == "custom" and (end_h, end_m) <= (start_h, start_m):
+    try:
+        boundaries = boundary_fields(prefs)
+    except ValueError as exc:
+        raise SettingsError(str(exc)) from exc
+    custom = {"custom_start_hour": start_h, "custom_start_min": start_m,
+              "custom_end_hour": end_h, "custom_end_min": end_m, **boundaries}
+    start_bound, end_bound = custom_bounds(custom)
+    if preset == "custom" and end_bound <= start_bound:
         raise SettingsError("Custom preferred end time must be later than start time")
 
     if not enabled:
@@ -2219,13 +2227,13 @@ def load_time_preferences(settings=None):
     if preset in TIME_PREFERENCE_PRESETS:
         start_hour, end_hour = TIME_PREFERENCE_PRESETS[preset]
     else:
-        start_hour = start_h + start_m / 60.0
-        end_hour = end_h + end_m / 60.0
+        start_hour, end_hour = start_bound, end_bound
     return with_date_overrides({
         "enabled": True,
         "start_hour": start_hour,
         "end_hour": end_hour,
         "strict_mode": strict_mode,
+        **(boundaries if preset == "custom" else {}),
     }, settings)
 
 
@@ -10919,7 +10927,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         if disabled_dates:
             print(f"\n  Disabled dates (will skip): {sorted(disabled_dates)}")
         if time_prefs["enabled"]:
-            print(f"\n  Time preferences: Prioritizing {int(time_prefs['start_hour']):02d}:00 - {int(time_prefs['end_hour']):02d}:00")
+            print(f"\n  Time preferences: Prioritizing {runtime_window_label(time_prefs)}")
             if time_prefs["strict_mode"]:
                 print(f"  Strict mode: ON (only booking preferred times)")
         if reverse_date_order:

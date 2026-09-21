@@ -1,3 +1,26 @@
+## 2026-09-21 room-opening preferred-time bounds
+
+- Global and exact-date preferred windows accept `rooms_open` at the start and
+  `rooms_closed` at the end. Desktop, phone, calendars and assistant share these
+  semantics. `preferred_time_bounds.py` preserves fixed clocks and validates
+  dormant values; explicit clock edits clear the corresponding boundary.
+- A boundary removes the user's cutoff on that side. It never invents a fixed
+  college closing time: fresh room-grid intervals, exceptional closures and
+  exact site validation remain authoritative. Quotas, horizons, daily targets,
+  soft/strict time behavior and extension/upgrade guards are unchanged.
+- Phone/desktop labels show Rooms open/Rooms closed, including summaries and
+  dated overrides. Assistant contract revision 10 refreshes old instructions;
+  actual reservation timestamps still require exact clocks.
+- Verification: 1,472 Python tests pass, followed by focused checks for final
+  validation/display refinements. Phone Node tests, TypeScript/lint, static build
+  and Chromium/WebKit save/reload/calendar checks pass at 320/390px; isolated
+  desktop controls render at 760/1040px. These are source/fixture checks; live
+  activation and the requested noon-to-closing preference are recorded separately.
+- Extension tracking follows existing saved targets; it does not automatically
+  discover every newly free tail of an otherwise completed reservation. An empty
+  extension queue is not evidence of a quota refusal. This change adds preferred
+  boundaries and does not claim to add automatic extension rediscovery.
+
 ## 2026-09-21 advance-controls activation
 
 - Activated the verified planner/UI source in the canonical worker checkout and

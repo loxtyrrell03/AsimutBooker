@@ -62,8 +62,8 @@ def check(dist):
             page.get_by_label('Book on this day',exact=True).uncheck()
             page.get_by_label('Target hours',exact=True).fill('2.5')
             page.get_by_label('Preferred time',exact=True).select_option('custom')
-            page.get_by_label('Day start time',exact=True).fill('17:00')
-            page.get_by_label('Day end time',exact=True).fill('19:00')
+            page.get_by_label('Day start time',exact=True).select_option('17:00')
+            page.get_by_label('Day end time',exact=True).select_option('19:00')
             page.get_by_label('Only book within this day’s times').check()
             page.get_by_role('button',name='Settings',exact=True).tap()
             page.get_by_role('button',name='Calendar',exact=True).tap()
@@ -80,15 +80,15 @@ def check(dist):
             page.get_by_role('button',name=re.compile('^Thursday 17 October,')).tap()
             page.get_by_role('button',name='Disable selected days',exact=True).tap()
             page.get_by_label('Preferred time for selected days',exact=True).select_option('custom')
-            page.get_by_label('Selected days start',exact=True).fill('10:00')
-            page.get_by_label('Selected days end',exact=True).fill('12:00')
+            page.get_by_label('Selected days start',exact=True).select_option('rooms_open')
+            page.get_by_label('Selected days end',exact=True).select_option('rooms_closed')
             page.get_by_role('button',name='Apply preferred time',exact=True).tap()
             page.get_by_role('button',name='Save changes',exact=True).tap()
             expect(page.get_by_text('Calendar changes saved.',exact=True)).to_be_visible()
             saved=read_phone_preferences(settings)
             assert saved['disabled_dates']==['2030-10-15','2030-10-16','2030-10-17']
-            assert saved['date_time_preferences']['2030-10-16']['start_time']=='10:00'
-            assert saved['date_time_preferences']['2030-10-17']['start_time']=='10:00'
+            assert saved['date_time_preferences']['2030-10-16']['start_time']=='rooms_open'
+            assert saved['date_time_preferences']['2030-10-17']['start_time']=='rooms_open'
             page.get_by_role('button',name='Finish selecting days',exact=True).tap()
             page.get_by_label('Preferred time',exact=True).select_option('default')
             # Another device changes the default before this draft is saved.

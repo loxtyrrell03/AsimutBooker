@@ -35,7 +35,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATE_FILE = APP_DIR / "data" / "assistant_state.json"
 STATE_VERSION = 2
 LEGACY_STATE_VERSION = 1
-ASSISTANT_CONTRACT_REVISION = 9
+ASSISTANT_CONTRACT_REVISION = 10
 CONTRACT_REFRESH_MESSAGE = (
     "Assistant rules were updated. Earlier messages remain visible for reference, "
     "but this is a fresh reasoning context."
@@ -273,6 +273,9 @@ Actions:
   means 12:00-22:00. Always use dated windows for dated requests, preserving the
   global time_preferences and other dates, even without the word temporary.
   Change global time_preferences only for a request about the usual schedule.
+  Preferred start_time accepts rooms_open and end_time accepts rooms_closed:
+  these follow actual room availability, not a fixed opening/closing clock.
+  Exact booking/edit timestamps must still use real clock times.
   An exact time similarly
   authorizes the smallest custom window that faithfully represents the
   requested session. Do not ask whether to keep the previous preference.

@@ -1,4 +1,6 @@
 'use client';
+import { TimeBoundarySelect } from './time-boundary-select';
+import { timeBoundaryMinutes } from '../lib/time-boundaries';
 
 import { useEffect, useRef, useState } from 'react';
 import { Settings2 } from 'lucide-react';
@@ -55,7 +57,7 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
   async function save(event: { preventDefault: () => void }) {
     event.preventDefault();
     if (!values || !section || working || !enabled || reloadRequired) return;
-    if ((section === 'times' || section === 'all') && values.time_preferences.start_time >= values.time_preferences.end_time) {
+    if ((section === 'times' || section === 'all') && timeBoundaryMinutes(values.time_preferences.start_time) >= timeBoundaryMinutes(values.time_preferences.end_time)) {
       setError('End time must be later than start time.'); return;
     }
     const days = Object.entries(dateEdits);
@@ -135,8 +137,9 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
         {(section === 'times' || section === 'all') && <>
           <label>Time preset<select aria-label="Time preset" value={values.time_preferences.preset ?? 'custom'} onChange={event => { const times: Record<string, [string, string]> = { morning: ['07:00', '12:00'], peak_afternoon: ['12:00', '16:00'], afternoon: ['12:00', '18:00'], evening: ['18:00', '22:00'], afternoon_evening: ['14:00', '22:00'] }; const pair = times[event.target.value]; setValues({ ...values, time_preferences: { ...values.time_preferences, preset: event.target.value, ...(pair ? { start_time: pair[0], end_time: pair[1] } : {}) } }); }}><option value="morning">Morning</option><option value="peak_afternoon">Peak afternoon</option><option value="afternoon">Afternoon</option><option value="evening">Evening</option><option value="afternoon_evening">Afternoon and evening</option><option value="custom">Custom</option></select></label>
           <label><input type="checkbox" checked={values.time_preferences.enabled} onChange={event => setValues({ ...values, time_preferences: { ...values.time_preferences, enabled: event.target.checked } })} /> Use preferred times</label>
-          <label>Start time<input type="time" required step="900" value={values.time_preferences.start_time} onChange={event => setValues({ ...values, time_preferences: { ...values.time_preferences, start_time: event.target.value, preset: 'custom' } })} /></label>
-          <label>End time<input type="time" required step="900" value={values.time_preferences.end_time} onChange={event => setValues({ ...values, time_preferences: { ...values.time_preferences, end_time: event.target.value, preset: 'custom' } })} /></label>
+          <p className="quiet-muted">Room opening hours <HelpTip label="Room opening hours">Rooms open and Rooms closed follow each room’s available hours for the selected day, including changes to opening hours.</HelpTip></p>
+          <TimeBoundarySelect label="Start time" side="start" value={values.time_preferences.start_time} onChange={value => setValues({ ...values, time_preferences: { ...values.time_preferences, start_time: value, preset: 'custom' } })} />
+          <TimeBoundarySelect label="End time" side="end" value={values.time_preferences.end_time} onChange={value => setValues({ ...values, time_preferences: { ...values.time_preferences, end_time: value, preset: 'custom' } })} />
           <label><input type="checkbox" checked={values.time_preferences.strict_mode} onChange={event => setValues({ ...values, time_preferences: { ...values.time_preferences, strict_mode: event.target.checked } })} /> Only book within these times</label>
         </>}
         {(section === 'rooms' || section === 'all') && <><label>Find a room<input type="search" value={roomQuery} onChange={event => setRoomQuery(event.target.value)} /></label><p>Higher rooms are preferred. Untick a room to exclude it.</p>

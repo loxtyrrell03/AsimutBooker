@@ -118,6 +118,27 @@ class DesktopSettingsTests(unittest.TestCase):
         self.app._select_quiet_page('settings')
         self.root.update()
 
+    def test_opening_boundaries_persist_and_return_to_clock_times(self):
+        app = self.app
+        app.time_prefs_enabled.set(True)
+        app.time_prefs_dropdown.set('Custom...')
+        app.custom_start_time.set('Rooms open')
+        app.custom_end_time.set('Rooms closed')
+        app.on_time_prefs_changed()
+        saved = json.loads(self.settings.read_text())
+        self.assertEqual(saved['time_preferences']['start_boundary'], 'rooms_open')
+        self.assertEqual(saved['time_preferences']['end_boundary'], 'rooms_closed')
+        self.assertEqual(saved['unrelated'], {'keep': True})
+        app.load_time_preferences()
+        self.assertEqual(app.custom_start_time.get(), 'Rooms open')
+        self.assertEqual(app.custom_end_time.get(), 'Rooms closed')
+        app.custom_start_time_control.set('12:00')
+        app.custom_start_time_control.event_generate('<<ComboboxSelected>>')
+        saved = json.loads(self.settings.read_text())['time_preferences']
+        self.assertNotIn('start_boundary', saved)
+        self.assertEqual(saved['custom_start_hour'], 12)
+        self.assertEqual(saved['end_boundary'], 'rooms_closed')
+
     def test_controls_persist_directly_and_survive_navigation(self):
         app = self.app
         self.assertNotIn('Advanced preferences', [app.main_notebook.tab(tab, 'text') for tab in app.main_notebook.tabs()])
@@ -223,7 +244,7 @@ class DesktopSettingsTests(unittest.TestCase):
                 self.app._update_time_prefs_ui_state()
                 self.root.update()
                 self.assertEqual(canvas.yview(), (0.0, 1.0))
-                for entry in (self.app.custom_start_hour_entry, self.app.custom_end_min_entry):
+                for entry in (self.app.custom_start_time_control, self.app.custom_end_time_control):
                     self.assertGreaterEqual(entry.winfo_width(), entry.winfo_reqwidth() - 1)
                 # Extra error/detail content may still need the scroll fallback.
                 overflow = tk.Frame(self.app.settings_scroll.content, height=800)

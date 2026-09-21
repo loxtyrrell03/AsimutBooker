@@ -17,6 +17,7 @@ from agenda_snapshot import AGENDA_SNAPSHOT_FILE, read_agenda_snapshot
 from assistant_calendar import calendar_day
 from app_settings import SETTINGS_FILE, SettingsError, load_settings
 from date_time_preferences import load_date_time_preferences
+from preferred_time_bounds import boundary_fields, custom_bounds, saved_endpoint
 from booking_rules import describe_booking_rules
 from assistant_plans import load_assistant_plans
 from booking_blackouts import load_rebooking_blackouts
@@ -174,15 +175,18 @@ def _validate_time_preferences(settings: Mapping[str, Any]) -> dict[str, Any]:
         if type(value) is not int or not 0 <= value <= maximum:
             raise SettingsError(f"time_preferences.{key} is invalid")
         parts[key] = value
-    start = parts["custom_start_hour"] * 60 + parts["custom_start_min"]
-    end = parts["custom_end_hour"] * 60 + parts["custom_end_min"]
+    try:
+        parts.update(boundary_fields(raw))
+        start, end = custom_bounds(parts)
+    except ValueError as exc:
+        raise SettingsError(str(exc)) from exc
     if preset == "custom" and end <= start:
         raise SettingsError("custom preferred end time must be after start time")
     return {
         "enabled": enabled,
         "preset": preset,
-        "start_time": f"{parts['custom_start_hour']:02d}:{parts['custom_start_min']:02d}",
-        "end_time": f"{parts['custom_end_hour']:02d}:{parts['custom_end_min']:02d}",
+        "start_time": saved_endpoint(parts, "start") if preset == "custom" else f"{parts['custom_start_hour']:02d}:{parts['custom_start_min']:02d}",
+        "end_time": saved_endpoint(parts, "end") if preset == "custom" else f"{parts['custom_end_hour']:02d}:{parts['custom_end_min']:02d}",
         "strict_mode": strict,
     }
 

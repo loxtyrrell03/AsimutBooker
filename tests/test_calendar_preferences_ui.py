@@ -29,6 +29,21 @@ class CalendarPreferencesTests(DesktopSettingsTests):
         editor.destroy()
         self.assertEqual(read_phone_preferences(self.settings)['date_time_preferences'][day.isoformat()]['start_time'], '17:00')
 
+    def test_calendar_room_boundaries_round_trip(self):
+        day = date.today() + timedelta(days=10)
+        self.app.show_calendar_dialog()
+        editor = open_calendar_preferences(self.app, [day], self.settings)
+        self.root.update()
+        controls = editor.calendar_controls
+        controls['mode'].set('Custom time')
+        controls['start'].set('Rooms open')
+        controls['end'].set('Rooms closed')
+        controls['save'].invoke()
+        saved = read_phone_preferences(self.settings)['date_time_preferences'][day.isoformat()]
+        self.assertEqual((saved['start_time'], saved['end_time']), ('rooms_open', 'rooms_closed'))
+        self.assertEqual(controls['end'].get(), 'Rooms closed')
+        editor.destroy()
+
     def test_bulk_enabled_change_preserves_individual_times_and_stale_form_refuses_save(self):
         days = [date.today() + timedelta(days=i) for i in (10, 11)]
         first = read_phone_preferences(self.settings)
