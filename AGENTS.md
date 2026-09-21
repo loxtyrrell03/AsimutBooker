@@ -1,3 +1,19 @@
+## 2026-09-21 opening-time preference activation
+
+- Activated the verified source in the canonical worker and phone build
+  `20260921-opening-times` at the unchanged private origin. The requested global
+  preference is noon through Rooms closed; existing soft mode and every other
+  preference, including dated overrides and room order, were retained.
+- Only the idle existing phone task was reloaded under both mutation locks.
+  Exact private HTTPS deployment/session checks and connected settings/My Week
+  render pass at 320/390px. The refreshed current plan uses the new preference;
+  all 12 agenda events remain identical and no receipt is pending. No real
+  reservation was created or edited by this change. This is PC-browser proof,
+  not physical-phone verification; existing desktop windows need reopening for
+  the new controls. Private activation/verification artifacts remain ignored.
+- The final 33 focused backend/desktop checks and Chromium/WebKit calendar
+  boundary persistence checks pass after the last validation/display edits.
+
 ## 2026-09-21 room-opening preferred-time bounds
 
 - Global and exact-date preferred windows accept `rooms_open` at the start and
