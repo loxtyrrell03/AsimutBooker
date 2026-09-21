@@ -82,6 +82,8 @@ def refresh_quota_balances(page, tracker, days):
     tracker.quota_observed_hours = tracker.get_total_booking_hours()
     tracker.live_peak_minutes = {day: b.peak_minutes for day, b in balances.items()}
     tracker.peak_observed_minutes = dict(tracker.peak_hours_by_day)
+    from booking_run_report import observe
+    observe(tracker)
 
 
 def free_horizon_hours(day, start_hour, *, now, horizon_minutes=300):

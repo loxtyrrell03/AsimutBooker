@@ -6,6 +6,7 @@ Normal creates/extensions finish first. Exact transaction recovery protects
 every original until the full replacement is independently verified.
 """
 
+import booking_run_report as report
 import copy
 from datetime import date, datetime
 
@@ -130,6 +131,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
     """
     planning = load_booking_strategy(settings).daily_planning
     if not planning.upgrade_rooms:
+        report.note("upgrades", "Room upgrades are disabled in settings.")
         return total_actions, tracker
     if any(getattr(args, flag, False) for flag in
            ("check_only", "plan_only", "agenda_only", "horizon_only", "extensions_only")):
@@ -316,6 +318,9 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                     practice_plan, args, tracker, total_actions, booking_details)
             description = "validated previews; no bookings changed" if dry_run else "no further eligible whole-session improvements"
             print(f"UPGRADE SWEEP COMPLETE: {len(plan_days)} dates scanned; {description}")
+            scope = ", ".join(str(day) for day in sorted(plan_days)) or "no eligible dates"
+            report.note("upgrades", f"Upgrades checked: {scope}; {description}.")
+            report.observe(tracker)
             publish("complete")
             break
         candidate = portfolios[0]
@@ -323,6 +328,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             publish('waiting')
             break
         attempts.add(identity(candidate, events))
+        report.choice(str(candidate.replacement.day), candidate.replacement.room, candidate.replacement.start,
+            candidate.replacement.end, "improve room quality while preserving practice time and the remaining daily plan.")
         operation_stage(f"Checking {candidate.replacement.room} {time_text(candidate.replacement.start)}–{time_text(candidate.replacement.end)}")
 
         def revalidate():
@@ -357,6 +364,7 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                 changed = engine.edit_reservation_room_time(page, candidate, revalidate=revalidate,
                                                             dry_run=dry_run, freeze_minutes=freeze_minutes)
         except QuotaWait:
+            report.note('upgrades', 'ASIMUT refused the room change on quota; unchanged duration does not guarantee edit permission.')
             publish('quota_wait')
             raise
         if changed:

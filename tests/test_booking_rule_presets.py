@@ -80,7 +80,9 @@ class BookingRulesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.object(b,'history_file',Path(temp)/'history.json'), \
              patch.object(b,'send_notification') as notify, contextlib.redirect_stdout(io.StringIO()):
             b.save_history(0,0,['Booking paused: ambiguous categories'],outcome='failed')
-            notify.assert_called_once_with('AsimutBooker needs attention','Booking paused: ambiguous categories')
+            notify.assert_called_once()
+            self.assertEqual(notify.call_args.args[0], 'AsimutBooker needs attention')
+            self.assertIn('Booking paused: ambiguous categories', notify.call_args.args[1])
             b.save_history(0,0,['Booking paused: ambiguous categories'],outcome='failed')
             self.assertEqual(notify.call_count,1)
             b.save_history(0,0,['Booking paused: different failure'],outcome='failed')

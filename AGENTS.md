@@ -1,3 +1,19 @@
+## 2026-09-21 detailed booking notifications
+
+- Run-local reports explain confirmed daily progress, live versus estimated
+  rolling credit, daily peak usage, selected rooms/times and opening waits,
+  extension blockers, scoped upgrade checks and exact site refusals. They use
+  current worker observations, never an expired display plan. Reporting does
+  not authorize or change booking decisions.
+- Receipt-gated success notifications include selection/fallback reasons and
+  clearly separate future extension aims. The duplicate generic quota alert
+  is removed; quiet fast passes retain explanations in Activity and history.
+  Payloads are UTF-8 bounded. See `docs/booking-notifications.md`.
+- Source verification: 154 focused regression checks pass, including the real
+  Chromium prepared-Save fixture, followed by 14 final report/failure checks.
+  These use tiny fixtures and intercepted notifications; no live reservation is
+  created by verification. Scheduled-worker activation is recorded separately.
+
 ## 2026-09-21 opening-time preference activation
 
 - Activated the verified source in the canonical worker and phone build

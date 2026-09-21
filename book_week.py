@@ -18,6 +18,8 @@ from booking_rules import load_booking_rules
 from session_preferences import tracker_sessions
 from operation_control import OperationStopped, operation_stage, report_available_gaps
 
+import booking_run_report as run_report
+
 import re
 import sys
 import json
@@ -4238,6 +4240,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
             )
             if not validation_ok:
                 print(f"    Extension not saved: {validation_detail}")
+                run_report.note("refusal", f"Extension refused: {validation_detail}; no Save attempted.")
                 safe_goto(page, ASIMUT_AGENDA_URL)
                 refusal = room_permission_refusal_text(validation_detail)
                 if refusal:
@@ -6038,9 +6041,11 @@ def try_book_slot(
 
     if time_prefs and not interval_is_strictly_preferred(start_hour, end_hour, time_prefs):
         print("  Skipping: the final booking interval falls outside the strict time window")
+        run_report.note("refusal", f"{room}: final interval falls outside your strict preferred times.")
         return False
     if not soft_time_allows_booking(start_hour, booking_duration, time_prefs):
         print("  Skipping: this time is too far from the preferred window for this duration")
+        run_report.note("refusal", f"{room}: too far outside your preferred time for this session length.")
         return False
 
     # Format times
@@ -6055,6 +6060,7 @@ def try_book_slot(
     can_book, reason = tracker.can_book(room, target_date, start_hour, booking_duration)
     if not can_book:
         print(f"  Skipping {room} {book_start}: {reason}")
+        run_report.note("refusal", f"{room} {book_start}: {reason}")
         return False
 
     # Note: We no longer need is_room_available_to_book() here since we already
@@ -6062,6 +6068,7 @@ def try_book_slot(
     is_available, horizon_reason = is_room_available_to_book(room, target_date, start_hour)
     if not is_available:
         print(f"  Skipping {room} {book_start}: {horizon_reason}")
+        run_report.note("refusal", f"{room} {book_start}: {horizon_reason}")
         return False
 
     # Log if this is a horizon-limited booking
@@ -6115,6 +6122,7 @@ def try_book_slot(
     page.mouse.click(coords['x'], coords['y'])
     if not enter_new_booking_form(page):
         print("  The exact new-booking form did not become ready; no Save attempted")
+        run_report.note("refusal", f"{room}: booking form did not become ready; no Save attempted.")
         return False
 
     # Step 3: Set times
@@ -6143,6 +6151,7 @@ def try_book_slot(
         )
         if not validation_ok:
             print(f"  Booking not saved: {validation_detail}")
+            run_report.note("refusal", f"{room}: {validation_detail}; no Save attempted.")
             go_back(page, days_ahead)
             refusal = room_permission_refusal_text(validation_detail)
             return RoomPermissionRefusal(room, refusal) if refusal else False
@@ -6209,6 +6218,7 @@ def try_book_slot(
     refusal = _visible_room_permission_refusal(page, room)
     if refusal is not None:
         print(f"  Room skipped: {room}: {refusal.reason}")
+        run_report.note("refusal", f"{room}: ASIMUT refused room access: {refusal.reason}")
         go_back(page, days_ahead)
         return refusal
     error_msg = page.locator("text=You are not allowed").first
@@ -6216,6 +6226,7 @@ def try_book_slot(
         # Get the full error text for debugging
         full_error = error_msg.text_content() or "Unknown error"
         print(f"  Error: Not allowed to book")
+        run_report.note("refusal", f"{room}: ASIMUT says {full_error[:300]}")
         print(f"  [DEBUG] Error message: {full_error[:100]}")
 
         # Extract conflict time
@@ -6243,6 +6254,7 @@ def try_book_slot(
 
     if has_conflict:
         print("  Error: Conflicts with existing booking")
+        run_report.note("refusal", f"{room}: conflicts with an existing booking.")
 
         # Extract conflict time from the booking list
         conflict_text = page.locator("text=/\\d{2}:\\d{2}\\s*-\\s*\\d{2}:\\d{2}.*Reservation/").first
@@ -6260,6 +6272,7 @@ def try_book_slot(
     # Re-check if our slot now overlaps with conflicts we just discovered
     if tracker.overlaps_conflict(target_date, start_hour, end_hour):
         print(f"  Skipping - overlaps with newly discovered conflict")
+        run_report.note("refusal", f"{room}: fresh check found a conflicting event.")
         go_back(page, days_ahead)
         return False
 
@@ -6270,6 +6283,7 @@ def try_book_slot(
             text = warn.text_content() or ""
             if "conflict" in text.lower() or "clash" in text.lower() or "not allowed" in text.lower():
                 print(f"  Warning found: {text[:50]}...")
+                run_report.note("refusal", f"{room}: ASIMUT warning: {text[:300]}")
                 go_back(page, days_ahead)
                 return False
 
@@ -7057,6 +7071,12 @@ def attempt_booking_with_room_fallback(
     deadline = time.monotonic() + 180
     while True:
         attempted.add(candidate['room'])
+        reason = slot.get('decision_reason') or f'Fits the daily plan, using {run_report.priority_text(daily_planning)}.'
+        if candidate['room'] != slot['room']:
+            reason += f" Same-time fallback after {', '.join(sorted(attempted - {candidate['room']}))} could not be booked."
+        if 'start_hour' in candidate and 'end_hour' in candidate:
+            run_report.choice(str(as_date(target_date)), candidate['room'], round(candidate['start_hour']*60),
+                round(candidate.get('planned_target_end_hour', candidate['end_hour'])*60), reason)
         try:
             kwargs = dict(remaining_daily_hours=remaining_daily_hours,
                           max_action_minutes=max_action_minutes)
@@ -7074,7 +7094,9 @@ def attempt_booking_with_room_fallback(
             print(f"  Room interaction failed for {candidate['room']}: {exc}")
             result = False
         if result:
+            run_report.note("attempt", f"{target_date} {candidate['room']}: booking confirmed.")
             return result, candidate
+        run_report.note("attempt", f"{target_date} {candidate['room']}: no booking confirmed; checking safe same-time alternatives.")
         try:
             if list_pending_mutation_receipts():
                 raise BookingVerificationError(
@@ -7122,6 +7144,7 @@ def attempt_booking_with_room_fallback(
             backups = [item for item in backups if abs((item.unlock_at-slot['bookable_from']).total_seconds()) <= 1]
         if not backups or time.monotonic() >= deadline:
             print('  No eligible backup room remains for this time slot in the fresh scan.')
+            run_report.note('attempt', f'{target_date}: no eligible same-time backup remains after a fresh scan.')
             return False, candidate
         candidate = (_opportunity_to_horizon_candidate(backups[0], target_boundary=slot['bookable_from'],
                          free_horizon=bool(free_horizon_only and slot.get('free_horizon_intent')))
@@ -8761,6 +8784,7 @@ def try_horizon_snipe(
             f"{validation_detail}; aborting"
         )
         go_back(page, days_ahead)
+        run_report.note("refusal", f"{room}: boundary check refused the booking: {validation_detail}; no Save attempted.")
         refusal = room_permission_refusal_text(validation_detail)
         if refusal:
             return RoomPermissionRefusal(room, refusal)
@@ -8806,6 +8830,7 @@ def try_horizon_snipe(
     try:
         if not save_btn.is_enabled():
             print("  [SNIPE] Save button is disabled at the boundary; aborting")
+            run_report.note("refusal", f"{room}: Save is disabled at the opening; no booking submitted.")
             go_back(page, days_ahead)
             return False
     except Exception as exc:
@@ -9567,9 +9592,11 @@ def verify_mutation_receipt(receipt_id, *, event_url=None):
     _notified_booking_details.add(formatted)
     try:
         title = "Practice room upgraded" if receipt["kind"] in {"upgrade", "consolidation", "transfer"} else "Booked 1 room"
+        if receipt["kind"] == "extension":
+            title = "Practice booking extended"
         if receipt["kind"] == "time_edit":
             title = "Booking time changed"
-        send_notification(title, f"{formatted}\n{MANUAL_RECONFIRMATION_REMINDER}")
+        send_notification(title, run_report.bounded(f"{formatted}\n{run_report.confirmation(receipt)}\n{MANUAL_RECONFIRMATION_REMINDER}"))
     except Exception as exc:
         print(f"Warning: Confirmed booking notification failed: {exc}")
     return receipt
@@ -9582,7 +9609,7 @@ def send_notification(title, message, priority="default"):
 
     try:
         url = f"https://ntfy.sh/{NTFY_TOPIC}"
-        data = message.encode('utf-8')
+        data = run_report.bounded(message).encode('utf-8')
 
         req = urllib.request.Request(url, data=data, method='POST')
         req.add_header('Title', title)
@@ -9603,6 +9630,13 @@ def send_notification(title, message, priority="default"):
 def format_booking_notification_detail(detail):
     """Render one history detail while preserving exact multiword room names."""
 
+    import re
+    short = re.fullmatch(r"(\d{4}-\d{2}-\d{2}) (.+) (\d{2}:\d{2})-(\d{2}:\d{2})", detail)
+    if short:
+        day, room, start, end = short.groups()
+        sh, sm = map(int, start.split(':'))
+        eh, em = map(int, end.split(':'))
+        detail = f'{day} {room} {start} {end} {(eh-sh)*60+em-sm}'
     parts = detail.split()
     if len(parts) < 5:
         return detail
@@ -9656,12 +9690,14 @@ def save_history(
         if outcome == "completed" and failures:
             outcome = "failed"
             history_details = [*failures, *history_details]
+        explanation = run_report.lines()
         entry = {
             "timestamp": datetime.now().isoformat(),
             "outcome": outcome,
             "bookings_made": bookings_made,
             "events_detected": events_detected,
-            "details": "; ".join(history_details[:5]) if history_details else "No bookings made"
+            "details": "; ".join([*history_details[:5], *explanation]) or "No bookings made",
+            "explanation": explanation
         }
 
         history_lock = history_file.with_suffix(history_file.suffix + ".lock")
@@ -9685,9 +9721,9 @@ def save_history(
         # Send push notification
         if not notify:
             return
-        if outcome == "failed":
+        if outcome in {"failed", "reconciliation_required"}:
             if not repeated_failure:
-                send_notification("AsimutBooker needs attention", "\n".join(history_details[:5]))
+                send_notification("AsimutBooker needs attention", run_report.message("Run stopped; earlier confirmed changes are retained.", history_details[:5]))
             return
         if bookings_made > 0:
             title = f"Booked {bookings_made} room{'s' if bookings_made > 1 else ''}"
@@ -9707,8 +9743,12 @@ def save_history(
             message += f"\n{MANUAL_RECONFIRMATION_REMINDER}"
             send_notification(title, message, priority="default")
         else:
-            title = "AsimutBooker ran"
-            message = f"No new bookings. {events_detected} existing events detected."
+            title = "AsimutBooker: no booking changes"
+            reasons = ["Advance bookings are waiting for rolling credit to return."
+                       if detail.startswith("Quota full (") else detail for detail in history_details]
+            message = run_report.message("No booking changes this run.", reasons)
+            if not explanation and not history_details:
+                message += "\nNo detailed decision was recorded; check the worker log."
             send_notification(title, message, priority="low")
 
     except Exception as e:
@@ -10090,6 +10130,7 @@ def process_pending_extensions(
         load_settings_document(settings_file)
     )
     if not extendable_bookings:
+        run_report.note("extensions", "Extensions: no saved extension targets are queued.")
         return total_booked, False
 
     from progressive_runtime import protected_event_ids
@@ -10139,6 +10180,10 @@ def process_pending_extensions(
             booking_date,
             tracker.get_hours_for_day(booking_date),
         )
+        run_report.choice(booking['date'], booking['room'],
+            sum(int(v)*m for v,m in zip(booking['startTime'].split(':'),(60,1))),
+            sum(int(v)*m for v,m in zip(booking['target_end'].split(':'),(60,1))),
+            'continue the saved extension target without exceeding your daily or peak allowance.')
         success, new_end, message = try_extend_booking(
             page,
             booking,
@@ -10148,6 +10193,9 @@ def process_pending_extensions(
             max_action_minutes=getattr(args, "max_action_minutes", None),
             agenda_reservations=all_reservations,
         )
+        run_report.note(f"extension:{booking['date']}:{booking['room']}:{booking['startTime']}",
+            f"Extension {booking['date']} {booking['room']} {booking['startTime']}-{booking['endTime']} toward {booking['target_end']}: "
+            + (f"confirmed through {new_end}." if success else str(message)))
         if success:
             extensions_made += 1
             total_booked += 1
@@ -10881,8 +10929,6 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 [f"Quota full ({used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS}h)", *booking_details],
             )
 
-            send_notification("AsimutBooker - Quota Full",
-                            "Advance quota full. The next run will recheck short-notice availability and released quota.")
 
             if not args.headless:
                 print("\nKeeping browser open for 10 seconds...")
@@ -12768,6 +12814,7 @@ def main(argv=None):
     except SettingsError as exc:
         print(f"ERROR: {exc}")
         print("Autonomous booking stopped because the saved settings cannot be trusted.")
+        save_history(0, 0, [f"Saved settings could not be validated: {exc}"], outcome="failed")
         return 3
 
     runtime_lock = SingleInstanceLock(APP_DIR / "data" / "booker-runtime.lock")
@@ -12775,6 +12822,7 @@ def main(argv=None):
     completed_token = _run_verified_details.set(completed_details)
     extension_failures = []
     failures_token = _run_extension_failures.set(extension_failures)
+    report_token = run_report.start(sys.modules[__name__], settings, practice_plan)
     try:
         acquired = runtime_lock.acquire()
         wait_seconds = (
@@ -12797,6 +12845,7 @@ def main(argv=None):
         if not acquired:
             print("Another AsimutBooker run is already active; this run did not refresh data.")
             return 6
+        run_report.preferences(settings, practice_plan)
         with booking_preference_run(settings_file, settings):
             install_booking_rules(settings)
             result = run_booking(args, settings, practice_plan, room_preferences) or 0
@@ -12806,20 +12855,22 @@ def main(argv=None):
         return 130
     except AutonomousLoginError as exc:
         print(f"ERROR: Autonomous login could not complete: {exc}")
+        save_history(len(completed_details), 0, [f"Sign-in failed: {exc}", *completed_details], outcome="failed")
         return 2
     except QuotaWait as exc:
         print(f"WAITING: {exc}. No further booking attempts in this run.")
+        run_report.note("site-refusal", f"ASIMUT refused the attempted booking/edit: {exc}. No further attempts this run.")
         if list_pending_mutation_receipts():
             message = f"Reconciliation required after quota refusal: {exc}"
             print(message)
             save_history(len(completed_details), 0, [message, *completed_details],
-                         notify=False, outcome='reconciliation_required')
+                         outcome='reconciliation_required')
             return 5
-        save_history(len(completed_details), 0, [f"Waiting: {exc}", *completed_details], notify=False)
+        save_history(len(completed_details), 0, [f"Waiting: {exc}", *completed_details])
         return 0
     except QuotaPolicyError as exc:
         print(f"Booking paused: {exc}. Earlier verified changes are retained.")
-        save_history(len(completed_details), 0, [str(exc), *completed_details], notify=False, outcome='failed')
+        save_history(len(completed_details), 0, [str(exc), *completed_details], outcome='failed')
         return 4
     except (RoomCatalogError, LiveRoomPolicyError) as exc:
         print(f"ERROR: Live room policy could not be verified: {exc}")
@@ -12828,6 +12879,8 @@ def main(argv=None):
         return 4
     except SettingsError as exc:
         print(f"Booking stopped: {exc}")
+        if not isinstance(exc, BookingPreferencesChanged):
+            save_history(len(completed_details), 0, [f"Settings could not be validated: {exc}", *completed_details], outcome="failed")
         return 3
     except BookingVerificationError as exc:
         message = f"RECONCILIATION REQUIRED: {exc}"
@@ -12841,7 +12894,7 @@ def main(argv=None):
         )
         send_notification(
             "AsimutBooker needs attention",
-            str(exc),
+            run_report.message(str(exc)),
             priority="high",
         )
         return 5
@@ -12854,6 +12907,7 @@ def main(argv=None):
         runtime_lock.release()
         _run_verified_details.reset(completed_token)
         _run_extension_failures.reset(failures_token)
+        run_report.finish(report_token)
 
 
 if __name__ == "__main__":

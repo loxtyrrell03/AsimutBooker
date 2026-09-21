@@ -7,6 +7,7 @@ from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
 from booking_timing import scheduled_work_fits
 from advance_preferences import load_advance_quota
+import booking_run_report as report
 
 
 def reserve_advance_credit(opportunities, planning, *, active, release_lead_minutes=None):
@@ -36,6 +37,7 @@ def prioritise_daily_practice(engine, page, settings, practice_plan, args, track
     remain authoritative, and all actual writes use the existing guarded paths.
     """
     today = datetime.now().date()
+    report.observe(tracker)
     if (any(getattr(args, flag, False) for flag in (
             'horizon_only','extensions_only','upgrades_only','upgrade_dry_run',
             'plan_only','check_only','agenda_only'))
@@ -82,6 +84,8 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                  if now.date() <= day <= (now + timedelta(minutes=engine.FREE_HORIZON_MINUTES)).date()
                  and not engine.is_date_disabled(day, disabled)
                  and (not args.only_date or day.isoformat() == args.only_date))
+    if engine.is_date_disabled(now.date(), disabled):
+        report.note("free:disabled", "Today is disabled in your practice dates; no new practice requested.")
     def open_day(day, today):
         engine.open_practice_room_overview(page, today)
         if day != today:
@@ -92,6 +96,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
     for _ in range(10):
         if not scheduled_work_fits(args, now=datetime.now(), reserve_seconds=120, edge_work=True):
             operation_stage('Leaving time for the next prepared booking window')
+            report.note('timing', 'Further checks deferred to leave preparation time for the next booking window.')
             break
         if args.max_actions is not None and total_actions >= args.max_actions:
             break
@@ -102,6 +107,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             planning_context, tracker, practice_plan, disabled,
             time_prefs=preferences, now=now)
         candidates = []
+        plan_reasons = {}
         future_candidates = []
         boundary = None
         if (getattr(args,'scheduled',False) and getattr(args,'target_time',None)
@@ -110,7 +116,9 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             if 0 < (value-now).total_seconds() <= 180:
                 boundary=value
         for day in days:
-            if not engine.fragmentation_allows_new_booking(tracker, day)[0]:
+            fragmentation_ok, fragmentation_reason = engine.fragmentation_allows_new_booking(tracker, day)
+            if not fragmentation_ok:
+                report.note(f"free:{day}", f"{day}: {fragmentation_reason}")
                 continue
             remaining = engine.remaining_target_hours(practice_plan, day, tracker.get_hours_for_day(day))
             if remaining is None:
@@ -118,8 +126,14 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                            if not engine.is_date_disabled(d, disabled)]
                 remaining = max(0, engine.MAX_ROLLING_QUOTA_HOURS / max(1, len(enabled))
                                 - tracker.get_hours_for_day(day))
+            unfilled = remaining
             remaining = max(0, remaining - targets.get(day.isoformat(), 0) / 60)
             if remaining * 60 < engine.MINIMUM_BLOCK_MINUTES:
+                reason = ('daily target already met by confirmed practice' if unfilled <= 0 else
+                    f'{targets.get(day.isoformat(), 0)}m held for unconfirmed extensions; {round(unfilled*60)}m still needed'
+                    if targets.get(day.isoformat(), 0) else
+                    f'only {round(remaining*60)}m still needed, below the {engine.MINIMUM_BLOCK_MINUTES}m minimum booking')
+                report.note(f"free:{day}", f"{day}: {reason}.")
                 continue
             open_day(day, now.date())
             gaps=engine.get_available_slots(page)
@@ -136,6 +150,8 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 now=now, target_minutes=int((tracker.get_hours_for_day(day) + remaining) * 60),
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
                 free_horizon_only=True)
+            report.day_plan(day, day_plan, opportunities, planning, now=now)
+            plan_reasons[day] = day_plan.reason
             chosen = engine._runtime_ordered_day_opportunities(
                 opportunities, day_plan, planning, now=now)
             candidates.extend((item, remaining) for item in chosen if item.unlock_at <= now)
@@ -179,6 +195,9 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
         slot = (engine._opportunity_to_horizon_candidate(item, target_boundary=item.unlock_at,
                     free_horizon=True) if prepare_edge else engine._opportunity_to_normal_slot(item))
         slot['free_horizon_intent'] = True
+        slot['decision_reason'] = (f'Fill {round(remaining*60)}m still needed on {day} using the last-minute window; '
+            f'{report.priority_text(planning)}. {plan_reasons.get(day, "")}. '
+            'Longer intended sessions are extended only when allowed.')
         result, actual = engine.attempt_booking_with_room_fallback(
             page, slot, day, tracker,
             (day - now.date()).days, remaining_daily_hours=remaining,
@@ -186,6 +205,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             daily_planning=planning, only_room=args.only_room,
             planning_context=planning_context, free_horizon_only=True, horizon=prepare_edge)
         if not result:
+            report.note('attempt', 'The selected last-minute booking was not confirmed. This pass stopped instead of repeatedly trying it.')
             args._short_notice_declined = True
             print('  [Free horizon] Booking was not approved; ending this pass without retrying it.')
             break

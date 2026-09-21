@@ -1,6 +1,7 @@
 """Fresh weekly discovery and guarded execution of preferred-room allocations."""
 from datetime import datetime, timedelta
 import time
+import booking_run_report as report
 
 from advance_planner import AdvanceDay, allocate_advance_week
 from booking_rules import load_booking_rules
@@ -223,7 +224,7 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
     for day in engine.booking_window_dates(now.date()):
         if engine.is_date_disabled(day, disabled) or (practice_plan.target_for(day) or 0) <= 0:
             continue
-        operation_stage(f'Planning preferred practice across the week: {day:%a %d %b}…')
+        operation_stage(f'Planning preferred practice across the week: {day:%a %d %b}â€¦')
         open_day(engine, page, day, now.date())
         grids[day] = engine.get_available_slots(page)
     attempts = set()
@@ -248,6 +249,12 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
             and item.target_date not in declined_days
             and (item.target_date, item.room, item.start_minutes, item.end_minutes) not in attempts]
         if not candidates:
+            waiting = [item for allocation in allocations for item in allocation.sessions if item.unlock_at > now]
+            if waiting:
+                first = min(waiting, key=lambda item:item.unlock_at)
+                report.note("advance", f"Advance allocation held for {first.target_date} {first.room} {first.start_text}-{first.end_text}; opens {first.unlock_at:%a %d %b %H:%M}.")
+            else:
+                report.note("advance", "No further advance block fits the current credit, allocation settings and fresh availability.")
             break
         item, allocation = min(candidates, key=lambda pair: (
             0 if pair[0].unlock_at > now else 1, pair[0].unlock_at,
@@ -269,6 +276,13 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
         slot = (engine._opportunity_to_horizon_candidate(item, target_boundary=item.unlock_at)
                 if horizon else engine._opportunity_to_normal_slot(item))
         quota = load_advance_quota(settings)
+        distribution = {'balanced':'spread across the week', 'weighted':'weighted toward your chosen days',
+            'concentrated':'grouped into fewer days', 'quality':'allocated for room/time quality'}.get(quota.distribution, quota.distribution)
+        preferred_rooms = ', '.join(rooms_for(quota, engine.PRIORITY_ROOMS))
+        periods = windows_for(quota, item.target_date)
+        period_text = '; '.join(f'{report.clock(a)}-{report.clock(z)}' for a,z in periods) if periods else 'your general preferred times'
+        slot['decision_reason'] = (f'{allocation.minutes} advance minutes allocated to {item.target_date}; credit {distribution}. '
+            f'Advance rooms: {preferred_rooms}. Times: {period_text}.')
         result, actual = engine.attempt_booking_with_room_fallback(page, slot, item.target_date, tracker,
             (item.target_date-now.date()).days, remaining_daily_hours=item.potential_minutes/60,
             max_action_minutes=args.max_action_minutes,
@@ -283,6 +297,7 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
             # this date are attempted in this pass. Quota/uncertainty exceptions
             # still stop the run through the existing guarded mutation path.
             declined_days.add(item.target_date)
+            report.note(f"advance:{item.target_date}", f"{item.target_date}: no booking confirmed; preserving this date's share and checking other dates.")
         else:
             total_actions += 1
             if horizon:
