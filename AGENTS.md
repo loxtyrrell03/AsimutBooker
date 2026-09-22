@@ -1,3 +1,22 @@
+## 2026-09-22 Room now design proposals (awaiting selection)
+
+- `docs/design/2026-09-22-room-now/` contains three editable desktop/phone SVG
+  proposals: A Today panel, B persistent action bar, C global button and sheet.
+  Shared state and narrow-layout boards cover duration setup, help, progress,
+  shorter matches, empty/error results, Stop, recovery and booking details.
+  All example data is invented. No design has been selected or implemented.
+- The user chose earliest start over waiting for a better duration match, and
+  requested a Longest possible option with a selectable maximum (e.g. two hours).
+  The proposed shared contract is one create-only session today: earliest
+  eligible start, closest/longest duration within the chosen ceiling, then
+  saved room ranking. See the design README for safeguards and handoff details.
+  Existing Find a room buttons currently open Assistant; `run_booker` can also
+  upgrade/extend and cannot directly guarantee this new contract.
+- All five SVG boards render without text-width/bounds failures; the static
+  gallery loads without horizontal overflow at 390/1040px. Phone 320px and PC
+  760px boards were visually inspected. This is prototype evidence only; no
+  application code, live preferences, reservations, service or build changed.
+
 ## 2026-09-22 bounded retry of inconsistent session horizon reads
 
 - A live session cutoff that cannot fit any independently observed request

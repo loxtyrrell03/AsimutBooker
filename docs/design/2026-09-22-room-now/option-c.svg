@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="935" viewBox="0 0 1460 935" role="img" aria-label="C — Global button and sheet; invented examples">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="28" y="41" font-size="30" font-weight="650" fill="#1d2430" text-anchor="start">C  Global button and sheet</text>
+<text x="28" y="73" font-size="16" font-weight="400" fill="#667080" text-anchor="start">One header button opens a focused booking sheet on phone and a dialog on PC.</text>
+<text x="28" y="104" font-size="12" font-weight="400" fill="#667080" text-anchor="start">DESIGN PREVIEW · All bookings and availability are invented examples.</text>
+<rect x="28" y="137" width="1010" height="650" rx="20" fill="#f8fafc" stroke="#cdd7e3"/>
+<rect x="29" y="138" width="1008" height="70" rx="20" fill="#ffffff" stroke="#ffffff"/>
+<rect x="53" y="156" width="32" height="32" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<path d="M62 181v-11" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M69 181v-21" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M76 181v-16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<text x="96" y="179" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Asimut</text>
+<text x="233" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Today</text>
+<text x="300" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">My Week</text>
+<text x="389" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Calendar</text>
+<text x="484" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Assistant</text>
+<text x="579" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Settings</text>
+<rect x="827" y="152" width="189" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="921.5" y="179.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="171">Find a room now</text>
+<path d="M28 209h1010" stroke="#e1e6ee"/>
+<rect x="1072" y="137" width="360" height="716" rx="25" fill="#f8fafc" stroke="#cdd7e3"/>
+<rect x="1092" y="156" width="32" height="32" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<path d="M1101 181v-11" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M1108 181v-21" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M1115 181v-16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<text x="1135" y="179" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Asimut</text>
+<text x="1135" y="203" font-size="11" font-weight="400" fill="#667080" text-anchor="start">Connected</text>
+<path d="M1072 219h360" stroke="#e1e6ee"/>
+<rect x="1073" y="786" width="358" height="66" rx="23" fill="#ffffff" stroke="#ffffff"/>
+<path d="M1073 786h358" stroke="#e1e6ee"/>
+<rect x="1078.0" y="793" width="69.6" height="49" rx="11" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="1112.8" y="814" font-size="19" font-weight="400" fill="#0868d9" text-anchor="middle">◷</text>
+<text x="1112.8" y="834" font-size="10" font-weight="400" fill="#0868d9" text-anchor="middle" data-max-width="67.6">Today</text>
+<text x="1182.3999999999999" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">≡</text>
+<text x="1182.3999999999999" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">My Week</text>
+<text x="1252.0" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">▦</text>
+<text x="1252.0" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">Calendar</text>
+<text x="1321.6" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">◇</text>
+<text x="1321.6" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">Assistant</text>
+<text x="1391.2" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">⚙</text>
+<text x="1391.2" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">Settings</text>
+<text x="60" y="264" font-size="32" font-weight="650" fill="#1d2430" text-anchor="start">Today</text>
+<rect x="60" y="295" width="455" height="157" rx="20" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="80" y="325" font-size="11" font-weight="650" fill="#0868d9" text-anchor="start">UP NEXT</text>
+<rect x="427" y="309" width="70" height="24" rx="12" fill="#e5f2eb" stroke="#e5f2eb"/>
+<text x="462.0" y="325" font-size="11" font-weight="650" fill="#246d4b" text-anchor="middle" data-max-width="60">Booked</text>
+<text x="80" y="364" font-size="26" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="415">Room Weston</text>
+<text x="80" y="396" font-size="18" font-weight="400" fill="#1d2430" text-anchor="start">Today · 17:00–18:00</text>
+<text x="80" y="430" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">View booking →</text>
+<text x="60" y="504" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Also today</text>
+<text x="60" y="542" font-size="16" font-weight="400" fill="#667080" text-anchor="start">15:00–16:00   Piano lesson</text>
+<text x="60" y="584" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">See my week →</text>
+<rect x="557" y="240" width="446" height="491" rx="22" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="970" y="275" font-size="25" font-weight="400" fill="#667080" text-anchor="middle">×</text>
+<text x="583" y="285" font-size="22" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="394">Find me a room now</text>
+<rect x="583" y="305" width="394" height="44" rx="11" fill="#f1f4f8" stroke="#f1f4f8"/>
+<rect x="780.0" y="309" width="193.0" height="36" rx="8" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="683.5" y="332" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="183.0">Preferred duration</text>
+<text x="876.5" y="332" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="183.0">Longest possible</text>
+<text x="583" y="377" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Maximum duration</text>
+<circle cx="722" cy="372" r="10" fill="#eaf3ff"/>
+<text x="722" y="376" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="583.0" y="389" width="94.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="630.0" y="416" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="86.0">30 min</text>
+<rect x="683.0" y="389" width="94.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="730.0" y="416" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="86.0">1 hour</text>
+<rect x="783.0" y="389" width="94.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="830.0" y="416" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="86.0">1½ hours</text>
+<rect x="883.0" y="389" width="94.0" height="44" rx="10" fill="#eaf3ff" stroke="#0868d9"/>
+<text x="930.0" y="416" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="86.0">2 hours</text>
+<text x="977" y="457" font-size="13" font-weight="400" fill="#0868d9" text-anchor="end" data-max-width="394">Custom duration ›</text>
+<rect x="583" y="476" width="394" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="780.0" y="503.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="376">Find me a room now</text>
+<text x="780.0" y="538" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="394">Books a room as soon as possible.</text>
+<path d="M583 577h394" stroke="#e1e6ee"/>
+<text x="583" y="610" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Room order</text>
+<text x="583" y="639" font-size="15" font-weight="400" fill="#0868d9" text-anchor="start">Use my saved room order</text>
+<text x="583" y="682" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Close</text>
+<rect x="1316" y="159" width="100" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="1366.0" y="186.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="82">Room now</text>
+<text x="1092" y="261" font-size="29" font-weight="650" fill="#1d2430" text-anchor="start">Today</text>
+<text x="1092" y="293" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Room Weston · 17:00–18:00</text>
+<rect x="1079" y="329" width="346" height="445" rx="22" fill="#ffffff" stroke="#e1e6ee"/>
+<rect x="1232.0" y="341" width="40" height="4" rx="2" fill="#c9d2df" stroke="#c9d2df"/>
+<text x="1402" y="378" font-size="23" font-weight="400" fill="#667080" text-anchor="middle">×</text>
+<text x="1096" y="384" font-size="22" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="312">Find me a room now</text>
+<rect x="1096" y="404" width="312" height="44" rx="11" fill="#f1f4f8" stroke="#f1f4f8"/>
+<rect x="1252.0" y="408" width="152.0" height="36" rx="8" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1176.0" y="431" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="142.0">Preferred duration</text>
+<text x="1328.0" y="431" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="142.0">Longest possible</text>
+<text x="1096" y="476" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Maximum duration</text>
+<circle cx="1235" cy="471" r="10" fill="#eaf3ff"/>
+<text x="1235" y="475" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="1096.0" y="488" width="73.5" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1132.75" y="515" font-size="12" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="65.5">30 min</text>
+<rect x="1175.5" y="488" width="73.5" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1212.25" y="515" font-size="12" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="65.5">1 hour</text>
+<rect x="1255.0" y="488" width="73.5" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1291.75" y="515" font-size="12" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="65.5">1½ hours</text>
+<rect x="1334.5" y="488" width="73.5" height="44" rx="10" fill="#eaf3ff" stroke="#0868d9"/>
+<text x="1371.25" y="515" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="65.5">2 hours</text>
+<text x="1408" y="556" font-size="13" font-weight="400" fill="#0868d9" text-anchor="end" data-max-width="312">Custom duration ›</text>
+<rect x="1096" y="575" width="312" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="1252.0" y="602.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="294">Find me a room now</text>
+<text x="1252.0" y="637" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="312">Books a room as soon as possible.</text>
+<path d="M1096 677h312" stroke="#e1e6ee"/>
+<text x="1096" y="707" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Your room order</text>
+<text x="1096" y="743" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Close</text>
+<text x="29" y="834" font-size="18" font-weight="650" fill="#1d2430" text-anchor="start">Open from any primary view; choose, book, return.</text>
+<text x="29" y="864" font-size="14" font-weight="400" fill="#667080" text-anchor="start">The global button opens a phone sheet or PC dialog without changing the current page.</text>
+<text x="29" y="886" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Keeps each page compact; one extra tap before booking.</text>
+</svg>

@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="985" viewBox="0 0 1460 985" role="img" aria-label="Room now at 320px phone and 760px PC widths">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="28" y="43" font-size="31" font-weight="650" fill="#1d2430" text-anchor="start">Small screens, the same controls</text>
+<text x="28" y="77" font-size="15" font-weight="400" fill="#667080" text-anchor="start">320px phone controls · 760px PC window · example data. The sheet content scrolls when the keyboard opens.</text>
+<rect x="28" y="125" width="320" height="740" rx="25" fill="#f8fafc" stroke="#cdd7e3"/>
+<rect x="48" y="144" width="32" height="32" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<path d="M57 169v-11" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M64 169v-21" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M71 169v-16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<text x="91" y="167" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Asimut</text>
+<text x="91" y="191" font-size="11" font-weight="400" fill="#667080" text-anchor="start">Connected</text>
+<path d="M28 207h320" stroke="#e1e6ee"/>
+<rect x="29" y="798" width="318" height="66" rx="23" fill="#ffffff" stroke="#ffffff"/>
+<path d="M29 798h318" stroke="#e1e6ee"/>
+<rect x="34.0" y="805" width="61.6" height="49" rx="11" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="64.8" y="826" font-size="19" font-weight="400" fill="#0868d9" text-anchor="middle">◷</text>
+<text x="64.8" y="846" font-size="10" font-weight="400" fill="#0868d9" text-anchor="middle" data-max-width="59.6">Today</text>
+<text x="126.39999999999999" y="826" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">≡</text>
+<text x="126.39999999999999" y="846" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="59.6">My Week</text>
+<text x="188.0" y="826" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">▦</text>
+<text x="188.0" y="846" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="59.6">Calendar</text>
+<text x="249.60000000000002" y="826" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">◇</text>
+<text x="249.60000000000002" y="846" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="59.6">Assistant</text>
+<text x="311.2" y="826" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">⚙</text>
+<text x="311.2" y="846" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="59.6">Settings</text>
+<text x="45" y="248" font-size="29" font-weight="650" fill="#1d2430" text-anchor="start">Today</text>
+<rect x="38" y="269" width="300" height="319" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="52" y="307" font-size="22" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="272">Find me a room now</text>
+<rect x="52" y="327" width="272" height="44" rx="11" fill="#f1f4f8" stroke="#f1f4f8"/>
+<rect x="188.0" y="331" width="132.0" height="36" rx="8" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="122.0" y="354" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="122.0">Preferred duration</text>
+<text x="254.0" y="354" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="122.0">Longest possible</text>
+<text x="52" y="399" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Maximum duration</text>
+<circle cx="191" cy="394" r="10" fill="#eaf3ff"/>
+<text x="191" y="398" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="52.0" y="411" width="63.5" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="83.75" y="438" font-size="12" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="55.5">30 min</text>
+<rect x="121.5" y="411" width="63.5" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="153.25" y="438" font-size="12" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="55.5">1 hour</text>
+<rect x="191.0" y="411" width="63.5" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="222.75" y="438" font-size="12" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="55.5">1½ hours</text>
+<rect x="260.5" y="411" width="63.5" height="44" rx="10" fill="#eaf3ff" stroke="#0868d9"/>
+<text x="292.25" y="438" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="55.5">2 hours</text>
+<text x="324" y="479" font-size="13" font-weight="400" fill="#0868d9" text-anchor="end" data-max-width="272">Custom duration ›</text>
+<rect x="52" y="498" width="272" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="188.0" y="525.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="254">Find me a room now</text>
+<text x="188.0" y="560" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="272">Books a room as soon as possible.</text>
+<rect x="38" y="603" width="300" height="157" rx="20" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="58" y="633" font-size="11" font-weight="650" fill="#0868d9" text-anchor="start">UP NEXT</text>
+<rect x="250" y="617" width="70" height="24" rx="12" fill="#e5f2eb" stroke="#e5f2eb"/>
+<text x="285.0" y="633" font-size="11" font-weight="650" fill="#246d4b" text-anchor="middle" data-max-width="60">Booked</text>
+<text x="58" y="672" font-size="26" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="260">Room Weston</text>
+<text x="58" y="704" font-size="18" font-weight="400" fill="#1d2430" text-anchor="start">Today · 17:00–18:00</text>
+<text x="58" y="738" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">View booking →</text>
+<rect x="385" y="125" width="760" height="570" rx="20" fill="#f8fafc" stroke="#cdd7e3"/>
+<rect x="386" y="126" width="758" height="70" rx="20" fill="#ffffff" stroke="#ffffff"/>
+<rect x="410" y="144" width="32" height="32" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<path d="M419 169v-11" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M426 169v-21" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M433 169v-16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<text x="453" y="167" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Asimut</text>
+<text x="408" y="235" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Today</text>
+<text x="475" y="235" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">My Week</text>
+<text x="564" y="235" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Calendar</text>
+<text x="659" y="235" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Assistant</text>
+<text x="754" y="235" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Settings</text>
+<rect x="934" y="140" width="189" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="1028.5" y="167.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="171">Find a room now</text>
+<path d="M385 262h760" stroke="#e1e6ee"/>
+<text x="410" y="303" font-size="29" font-weight="650" fill="#1d2430" text-anchor="start">Today</text>
+<rect x="409" y="324" width="712" height="329" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="429" y="361" font-size="23" font-weight="650" fill="#1d2430" text-anchor="start">Find me a room now</text>
+<rect x="429" y="384" width="337" height="44" rx="11" fill="#f1f4f8" stroke="#f1f4f8"/>
+<rect x="597.5" y="388" width="164.5" height="36" rx="8" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="515.25" y="411" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="154.5">Preferred duration</text>
+<text x="679.75" y="411" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="154.5">Longest possible</text>
+<text x="429" y="460" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Maximum duration</text>
+<circle cx="568" cy="455" r="10" fill="#eaf3ff"/>
+<text x="568" y="459" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="429.0" y="472" width="79.75" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="468.875" y="499" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="71.75">30 min</text>
+<rect x="514.75" y="472" width="79.75" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="554.625" y="499" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="71.75">1 hour</text>
+<rect x="600.5" y="472" width="79.75" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="640.375" y="499" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="71.75">1½ hours</text>
+<rect x="686.25" y="472" width="79.75" height="44" rx="10" fill="#eaf3ff" stroke="#0868d9"/>
+<text x="726.125" y="499" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="71.75">2 hours</text>
+<text x="766" y="540" font-size="13" font-weight="400" fill="#0868d9" text-anchor="end" data-max-width="337">Custom duration ›</text>
+<text x="798" y="404" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="300">Starts as soon as possible.</text>
+<text x="798" y="426" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="300">Uses your saved room order.</text>
+<rect x="798" y="463" width="299" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="947.5" y="490.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="281">Find me a room now</text>
+<text x="798" y="538" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="299">Books one session.</text>
+<text x="798" y="560" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="299">Up to your selected maximum.</text>
+<text x="429" y="624" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Custom duration opens a short, scrollable editor.</text>
+<rect x="1180" y="125" width="252" height="570" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1200" y="162" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Short viewport</text>
+<text x="1200" y="201" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">Keep the selected mode,</text>
+<text x="1200" y="228" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">duration and action visible.</text>
+<text x="1200" y="255" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">Allow the content to scroll.</text>
+<text x="1200" y="282" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212"></text>
+<text x="1200" y="309" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">The sheet has a visible</text>
+<text x="1200" y="336" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">Close control and returns</text>
+<text x="1200" y="363" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">focus to its launcher.</text>
+<text x="1200" y="390" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212"></text>
+<text x="1200" y="417" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">Bar reserves layout space;</text>
+<text x="1200" y="444" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">it never covers navigation,</text>
+<text x="1200" y="471" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="212">an editor or the composer.</text>
+<rect x="385" y="722" width="1047" height="143" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="407" y="758" font-size="22" font-weight="650" fill="#1d2430" text-anchor="start">One request, wherever you open it</text>
+<text x="407" y="792" font-size="15" font-weight="400" fill="#667080" text-anchor="start" data-max-width="1003">Returning to the panel shows progress or the result; it does not submit again.</text>
+<text x="407" y="814" font-size="15" font-weight="400" fill="#667080" text-anchor="start" data-max-width="1003">Duration controls stay readable at 320px. Help fits the viewport and works with touch, hover and keyboard.</text>
+<text x="28" y="930" font-size="15" font-weight="400" fill="#667080" text-anchor="start">A keeps the editor at the top of Today. B opens it from the action bar. C opens it from the header.</text>
+</svg>

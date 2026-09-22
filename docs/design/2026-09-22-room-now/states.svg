@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1510" viewBox="0 0 1460 1510" role="img" aria-label="Shared Room now states — complete flow for A, B and C">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="28" y="43" font-size="31" font-weight="650" fill="#1d2430" text-anchor="start">The complete booking flow</text>
+<text x="28" y="75" font-size="15" font-weight="400" fill="#667080" text-anchor="start">Shared by A, B and C. The same content appears in the Today panel, expanded bar, or booking sheet.</text>
+<text x="28" y="102" font-size="12" font-weight="400" fill="#667080" text-anchor="start">DESIGN PREVIEW · Invented examples. Search, booking and confirmations below do not perform real actions.</text>
+<rect x="28" y="128" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="160" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">1  Choose your duration</text>
+<rect x="48" y="177" width="410" height="44" rx="11" fill="#f1f4f8" stroke="#f1f4f8"/>
+<rect x="52" y="181" width="201.0" height="36" rx="8" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="152.5" y="204" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="191.0">Preferred duration</text>
+<text x="353.5" y="204" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="191.0">Longest possible</text>
+<text x="48" y="248" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Preferred duration</text>
+<circle cx="187" cy="243" r="10" fill="#eaf3ff"/>
+<text x="187" y="247" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="48.0" y="260" width="98.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="97.0" y="287" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="90.0">30 min</text>
+<rect x="152.0" y="260" width="98.0" height="44" rx="10" fill="#eaf3ff" stroke="#0868d9"/>
+<text x="201.0" y="287" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="90.0">1 hour</text>
+<rect x="256.0" y="260" width="98.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="305.0" y="287" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="90.0">1½ hours</text>
+<rect x="360.0" y="260" width="98.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="409.0" y="287" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="90.0">2 hours</text>
+<text x="458" y="328" font-size="13" font-weight="400" fill="#0868d9" text-anchor="end" data-max-width="410">Custom duration ›</text>
+<rect x="48" y="350" width="410" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="253.0" y="377.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="392">Find me a room now</text>
+<text x="253.0" y="415" font-size="12" font-weight="400" fill="#667080" text-anchor="middle">Books a room as soon as possible.</text>
+<rect x="505" y="128" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="525" y="160" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">2  Longest possible</text>
+<rect x="525" y="177" width="410" height="44" rx="11" fill="#f1f4f8" stroke="#f1f4f8"/>
+<rect x="730.0" y="181" width="201.0" height="36" rx="8" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="629.5" y="204" font-size="12" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="191.0">Preferred duration</text>
+<text x="830.5" y="204" font-size="12" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="191.0">Longest possible</text>
+<text x="525" y="248" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Maximum duration</text>
+<circle cx="664" cy="243" r="10" fill="#eaf3ff"/>
+<text x="664" y="247" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="525.0" y="260" width="98.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="574.0" y="287" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="90.0">30 min</text>
+<rect x="629.0" y="260" width="98.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="678.0" y="287" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="90.0">1 hour</text>
+<rect x="733.0" y="260" width="98.0" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="782.0" y="287" font-size="13" font-weight="400" fill="#1d2430" text-anchor="middle" data-max-width="90.0">1½ hours</text>
+<rect x="837.0" y="260" width="98.0" height="44" rx="10" fill="#eaf3ff" stroke="#0868d9"/>
+<text x="886.0" y="287" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="90.0">2 hours</text>
+<text x="935" y="328" font-size="13" font-weight="400" fill="#0868d9" text-anchor="end" data-max-width="410">Custom duration ›</text>
+<rect x="525" y="350" width="410" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="730.0" y="377.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="392">Find me a room now</text>
+<text x="730.0" y="415" font-size="12" font-weight="400" fill="#667080" text-anchor="middle">Books a room as soon as possible.</text>
+<rect x="982" y="128" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1002" y="160" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">3  Custom duration</text>
+<text x="1002" y="199" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Preferred duration</text>
+<rect x="1002" y="214" width="250" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1127.0" y="241.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="232">1 hour 15 minutes  ▾</text>
+<text x="1002" y="288" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Choose from currently permitted lengths.</text>
+<text x="1002" y="310" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">This choice is for this booking only.</text>
+<rect x="1002" y="351" width="245" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="1124.5" y="378.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="227">Use this duration</text>
+<rect x="1260" y="351" width="150" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1335.0" y="378.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="132">Cancel</text>
+<rect x="28" y="461" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="493" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">4  Search and check</text>
+<text x="48" y="537" font-size="25" font-weight="650" fill="#1d2430" text-anchor="start">Finding a room…</text>
+<text x="48" y="573" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Looking for up to 2 hours, starting soonest.</text>
+<text x="48" y="603" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">✓ Your timetable checked</text>
+<text x="48" y="633" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">● Checking available rooms</text>
+<rect x="48" y="684" width="130" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="113.0" y="711.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="112">Stop</text>
+<text x="198" y="712" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="260">Progress reflects actual steps.</text>
+<rect x="505" y="461" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="525" y="493" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">5  Booked, shorter match</text>
+<rect x="525" y="514" width="77" height="24" rx="12" fill="#e5f2eb" stroke="#e5f2eb"/>
+<text x="563.5" y="530" font-size="11" font-weight="650" fill="#246d4b" text-anchor="middle" data-max-width="67">Booked</text>
+<text x="525" y="572" font-size="26" font-weight="650" fill="#1d2430" text-anchor="start">Room Weston</text>
+<text x="525" y="608" font-size="21" font-weight="400" fill="#1d2430" text-anchor="start">Today · 14:15–15:00</text>
+<text x="525" y="644" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">45 min booked · you asked for 1 hour.</text>
+<text x="525" y="666" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">This was the closest match starting soonest.</text>
+<rect x="525" y="700" width="410" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="730.0" y="727.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="392">View booking</text>
+<rect x="982" y="461" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1002" y="493" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">6  No room available</text>
+<text x="1002" y="538" font-size="22" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">No eligible room left today.</text>
+<text x="1002" y="574" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">No room was booked.</text>
+<text x="1002" y="596" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">You can change the duration or check again.</text>
+<rect x="1002" y="635" width="242" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="1123.0" y="662.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="224">Try again</text>
+<rect x="1259" y="635" width="151" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1334.5" y="662.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="133">Edit duration</text>
+<text x="1002" y="714" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">If a later start is available today, book that</text>
+<text x="1002" y="736" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">earliest start and show its exact time.</text>
+<rect x="28" y="794" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="826" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">7  Booking result unclear</text>
+<rect x="45" y="851" width="416" height="130" rx="12" fill="#fff4de" stroke="#fff4de"/>
+<text x="59" y="882" font-size="20" font-weight="650" fill="#785717" text-anchor="start" data-max-width="388">Checking whether it booked</text>
+<text x="59" y="915" font-size="14" font-weight="400" fill="#785717" text-anchor="start" data-max-width="388">The connection was interrupted after Save.</text>
+<text x="59" y="937" font-size="14" font-weight="400" fill="#785717" text-anchor="start" data-max-width="388">Wait for the result before booking again.</text>
+<rect x="48" y="1016" width="410" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="253.0" y="1043.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="392">Check booking status</text>
+<rect x="505" y="794" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="525" y="826" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">8  Stop safely</text>
+<text x="525" y="874" font-size="25" font-weight="650" fill="#1d2430" text-anchor="start">Stopping…</text>
+<text x="525" y="915" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Finishing any booking already being saved.</text>
+<text x="525" y="937" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">We’ll show its confirmed result here.</text>
+<path d="M525 975h410" stroke="#e1e6ee"/>
+<text x="525" y="1012" font-size="18" font-weight="650" fill="#1d2430" text-anchor="start">Stopped before booking</text>
+<text x="525" y="1040" font-size="14" font-weight="400" fill="#667080" text-anchor="start">No reservation was made.</text>
+<text x="525" y="1072" font-size="12" font-weight="400" fill="#667080" text-anchor="start">If already saved: show the Booked result.</text>
+<rect x="982" y="794" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1002" y="826" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">9  A rule prevents booking</text>
+<text x="1002" y="874" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">Your practice hours start at 16:00.</text>
+<text x="1002" y="916" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Your strict time preference prevents this start.</text>
+<text x="1002" y="938" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">No room was booked.</text>
+<rect x="1002" y="1005" width="410" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1207.0" y="1032.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="392">Review preferred hours</text>
+<text x="1002" y="1078" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Also names quota, protected-time or access limits.</text>
+<rect x="28" y="1127" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="1159" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">10  Help and room settings</text>
+<text x="48" y="1201" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Maximum duration</text>
+<circle cx="198" cy="1196" r="10" fill="#eaf3ff"/>
+<text x="198" y="1200" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<rect x="48" y="1218" width="410" height="85" rx="12" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="64" y="1245" font-size="14" font-weight="400" fill="#1d2430" text-anchor="start" data-max-width="378">Starts as soon as possible. Takes the longest</text>
+<text x="64" y="1267" font-size="14" font-weight="400" fill="#1d2430" text-anchor="start" data-max-width="378">available session, up to your maximum.</text>
+<text x="442" y="1238" font-size="16" font-weight="400" fill="#0868d9" text-anchor="middle">×</text>
+<text x="48" y="1337" font-size="13" font-weight="400" fill="#0868d9" text-anchor="start" data-max-width="410">Rooms ›  Your saved room order and requirements</text>
+<text x="48" y="1375" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">No usable setup: open the existing Rooms editor.</text>
+<text x="48" y="1397" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Duration choices don’t change your daily target.</text>
+<rect x="505" y="1127" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="525" y="1159" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">11  Already running / offline</text>
+<text x="525" y="1206" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">Waiting for the current check…</text>
+<text x="525" y="1238" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Rechecks the start time when ready.</text>
+<rect x="525" y="1260" width="130" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="590.0" y="1287.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="112">Stop</text>
+<path d="M525 1322h410" stroke="#e1e6ee"/>
+<text x="525" y="1355" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start">Can’t connect to the PC</text>
+<text x="525" y="1386" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Keep the duration choice. Offer Reconnect.</text>
+<text x="525" y="1408" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Never silently send a booking after reconnecting.</text>
+<rect x="982" y="1127" width="450" height="309" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1002" y="1159" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="410">12  Verified booking details</text>
+<rect x="1002" y="1181" width="77" height="24" rx="12" fill="#e5f2eb" stroke="#e5f2eb"/>
+<text x="1040.5" y="1197" font-size="11" font-weight="650" fill="#246d4b" text-anchor="middle" data-max-width="67">Booked</text>
+<text x="1002" y="1238" font-size="26" font-weight="650" fill="#1d2430" text-anchor="start">Room Weston</text>
+<text x="1002" y="1270" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">Tuesday 22 September · 14:15–15:00</text>
+<text x="1002" y="1302" font-size="14" font-weight="400" fill="#667080" text-anchor="start">45 minutes of practice</text>
+<rect x="1002" y="1321" width="410" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1207.0" y="1348.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="392">Open in Asimut</text>
+<text x="1002" y="1392" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Reconfirm on college Wi-Fi when available.</text>
+<text x="1002" y="1417" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="410">Existing change and cancellation controls remain.</text>
+<text x="28" y="1486" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Search starts now and covers today. Uncertain Save results are reconciled before any further booking.</text>
+</svg>

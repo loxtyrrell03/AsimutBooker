@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="935" viewBox="0 0 1460 935" role="img" aria-label="B — Persistent action bar; invented examples">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="28" y="41" font-size="30" font-weight="650" fill="#1d2430" text-anchor="start">B  Persistent action bar</text>
+<text x="28" y="73" font-size="16" font-weight="400" fill="#667080" text-anchor="start">A compact booking bar stays within reach while you browse your schedule.</text>
+<text x="28" y="104" font-size="12" font-weight="400" fill="#667080" text-anchor="start">DESIGN PREVIEW · All bookings and availability are invented examples.</text>
+<rect x="28" y="137" width="1010" height="650" rx="20" fill="#f8fafc" stroke="#cdd7e3"/>
+<rect x="29" y="138" width="1008" height="70" rx="20" fill="#ffffff" stroke="#ffffff"/>
+<rect x="53" y="156" width="32" height="32" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<path d="M62 181v-11" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M69 181v-21" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M76 181v-16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<text x="96" y="179" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Asimut</text>
+<text x="233" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Today</text>
+<text x="300" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">My Week</text>
+<text x="389" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Calendar</text>
+<text x="484" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Assistant</text>
+<text x="579" y="182" font-size="14" font-weight="400" fill="#0868d9" text-anchor="start">Settings</text>
+<path d="M28 209h1010" stroke="#e1e6ee"/>
+<rect x="1072" y="137" width="360" height="716" rx="25" fill="#f8fafc" stroke="#cdd7e3"/>
+<rect x="1092" y="156" width="32" height="32" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<path d="M1101 181v-11" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M1108 181v-21" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<path d="M1115 181v-16" stroke="white" stroke-width="3" stroke-linecap="round"/>
+<text x="1135" y="179" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Asimut</text>
+<text x="1135" y="203" font-size="11" font-weight="400" fill="#667080" text-anchor="start">Connected</text>
+<path d="M1072 219h360" stroke="#e1e6ee"/>
+<rect x="1073" y="786" width="358" height="66" rx="23" fill="#ffffff" stroke="#ffffff"/>
+<path d="M1073 786h358" stroke="#e1e6ee"/>
+<rect x="1078.0" y="793" width="69.6" height="49" rx="11" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="1112.8" y="814" font-size="19" font-weight="400" fill="#0868d9" text-anchor="middle">◷</text>
+<text x="1112.8" y="834" font-size="10" font-weight="400" fill="#0868d9" text-anchor="middle" data-max-width="67.6">Today</text>
+<text x="1182.3999999999999" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">≡</text>
+<text x="1182.3999999999999" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">My Week</text>
+<text x="1252.0" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">▦</text>
+<text x="1252.0" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">Calendar</text>
+<text x="1321.6" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">◇</text>
+<text x="1321.6" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">Assistant</text>
+<text x="1391.2" y="814" font-size="19" font-weight="400" fill="#667080" text-anchor="middle">⚙</text>
+<text x="1391.2" y="834" font-size="10" font-weight="400" fill="#667080" text-anchor="middle" data-max-width="67.6">Settings</text>
+<text x="60" y="264" font-size="32" font-weight="650" fill="#1d2430" text-anchor="start">Today</text>
+<text x="61" y="292" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Tuesday 22 September</text>
+<rect x="60" y="320" width="556" height="219" rx="20" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="80" y="350" font-size="11" font-weight="650" fill="#0868d9" text-anchor="start">UP NEXT</text>
+<rect x="528" y="334" width="70" height="24" rx="12" fill="#e5f2eb" stroke="#e5f2eb"/>
+<text x="563.0" y="350" font-size="11" font-weight="650" fill="#246d4b" text-anchor="middle" data-max-width="60">Booked</text>
+<text x="80" y="389" font-size="26" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="516">Room Weston</text>
+<text x="80" y="421" font-size="18" font-weight="400" fill="#1d2430" text-anchor="start">Today · 17:00–18:00</text>
+<text x="80" y="453" font-size="14" font-weight="400" fill="#667080" text-anchor="start">1 hour of practice</text>
+<rect x="80" y="477" width="516" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="338.0" y="504.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="498">View booking</text>
+<rect x="640" y="320" width="365" height="219" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="665" y="357" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start">This week</text>
+<text x="665" y="414" font-size="33" font-weight="650" fill="#1d2430" text-anchor="start">8 hours</text>
+<text x="665" y="445" font-size="14" font-weight="400" fill="#667080" text-anchor="start">booked practice</text>
+<text x="665" y="502" font-size="15" font-weight="400" fill="#0868d9" text-anchor="start">See my week →</text>
+<text x="61" y="580" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Also today</text>
+<text x="62" y="622" font-size="16" font-weight="400" fill="#667080" text-anchor="start">15:00–16:00     Piano lesson</text>
+<rect x="45" y="674" width="976" height="95" rx="17" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="65" y="709" font-size="19" font-weight="650" fill="#1d2430" text-anchor="start">Room now</text>
+<text x="65" y="738" font-size="12" font-weight="400" fill="#667080" text-anchor="start">Books as soon as possible</text>
+<rect x="316" y="694" width="288" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="460.0" y="721.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="270">Longest possible · max 2h  ▾</text>
+<rect x="626" y="694" width="374" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="813.0" y="721.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="356">Find me a room now</text>
+<text x="1092" y="261" font-size="29" font-weight="650" fill="#1d2430" text-anchor="start">Today</text>
+<text x="1092" y="286" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Tuesday 22 September</text>
+<rect x="1086" y="310" width="332" height="219" rx="20" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="1106" y="340" font-size="11" font-weight="650" fill="#0868d9" text-anchor="start">UP NEXT</text>
+<rect x="1330" y="324" width="70" height="24" rx="12" fill="#e5f2eb" stroke="#e5f2eb"/>
+<text x="1365.0" y="340" font-size="11" font-weight="650" fill="#246d4b" text-anchor="middle" data-max-width="60">Booked</text>
+<text x="1106" y="379" font-size="26" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="292">Room Weston</text>
+<text x="1106" y="411" font-size="18" font-weight="400" fill="#1d2430" text-anchor="start">Today · 17:00–18:00</text>
+<text x="1106" y="443" font-size="14" font-weight="400" fill="#667080" text-anchor="start">1 hour of practice</text>
+<rect x="1106" y="467" width="292" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1252.0" y="494.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="274">View booking</text>
+<text x="1092" y="572" font-size="21" font-weight="650" fill="#1d2430" text-anchor="start">Also today</text>
+<text x="1092" y="606" font-size="15" font-weight="400" fill="#667080" text-anchor="start">15:00–16:00   Piano lesson</text>
+<rect x="1082" y="627" width="340" height="147" rx="17" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1097" y="656" font-size="14" font-weight="650" fill="#1d2430" text-anchor="start">Longest possible</text>
+<text x="1408" y="656" font-size="14" font-weight="400" fill="#0868d9" text-anchor="end">Max 2h ▾</text>
+<rect x="1095" y="671" width="314" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="1252.0" y="698.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="296">Find me a room now</text>
+<text x="1252.0" y="746" font-size="12" font-weight="400" fill="#667080" text-anchor="middle">Books a room as soon as possible.</text>
+<text x="29" y="834" font-size="18" font-weight="650" fill="#1d2430" text-anchor="start">Available while browsing Today, My Week and Calendar.</text>
+<text x="29" y="864" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Change mode or duration from the selector. Status replaces the bar during the request.</text>
+<text x="29" y="886" font-size="14" font-weight="400" fill="#667080" text-anchor="start">Very easy to reach while browsing; uses more persistent screen space.</text>
+</svg>
