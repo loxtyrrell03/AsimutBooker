@@ -8,11 +8,18 @@
 - Named refusals remain distinct from horizon, quota, duration, session and
   generic service errors. Exact create/edit/extension/transfer checks report
   the room refusal while preserving Save and receipt/recovery safeguards.
-- All 1,524 Python tests pass, followed by 98 focused checks for the final
+- All 1,524 Python tests pass, with 98 focused checks for the final
   classifier refinements. Authenticated write-blocked verification found six
   inaccessible rooms and retained 27 eligible choices, with all protected
   state unchanged. No diagnostic reservation was saved. Private evidence is
   under `artifacts/booker-monitor/room-access-*20260922*`.
+- Activated the verified source under both locks and reloaded only the idle
+  existing phone task. Protected data, task definitions, routes and phone shell
+  are unchanged. Exact HTTPS session/agenda/preferences and connected 320/390px
+  renders pass; physical-phone verification is not claimed. The normal 08:07
+  worker refreshed 27 eligible rooms, attempted none of the refused rooms and
+  completed normally with no pending receipt. Its current agenda and plan are
+  fresh; no additional reservation was created by this verification run.
 
 ## 2026-09-21 contained phone assistant scrolling
 
