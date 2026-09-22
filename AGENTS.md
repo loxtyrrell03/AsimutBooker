@@ -1,3 +1,26 @@
+## 2026-09-22 automatic checks after preference saves
+
+- Desktop, calendar, phone and assistant preference editors atomically record
+  the latest `preference_run` request alongside a changed preference document.
+  The shared `preference_runs` dispatcher coalesces quick saves, waits for
+  existing ownership and runs the normal guarded headless Booker. A later save
+  gets one follow-up; older results cannot consume it. Internal progress,
+  unchanged saves, Cancel and rejected forms do not trigger runs.
+- Existing Automatic booking Off choices remain authoritative. Failed attempts
+  stop rather than loop; busy ownership retains the request. Phone startup and
+  regular worker completion recover pending launches. No new task or service is
+  installed. A matching full ordinary run may fulfil the request, but scoped
+  checks and today-only fast passes cannot. Metadata does not alter preference
+  revisions or prepared-Save guards; actual changed controls still veto stale
+  Saves. See `docs/preference-save-runs.md` for the contract and limitations.
+- All 1,553 Python tests pass, including 18 new queue/ownership checks, plus
+  129 focused caller checks and 31 final scope/queue checks. The real hidden
+  subprocess fixture verifies waiting, latest-value coalescing and a mid-run
+  follow-up without ASIMUT access. Seventeen phone Node checks, TypeScript,
+  lint and build validation pass. Chromium/WebKit verify queued Save copy and
+  existing settings/calendar persistence at narrow widths. Source/fixture
+  evidence is separate from activation and real reservation outcomes.
+
 ## 2026-09-22 ready preferred free-window practice
 
 - With the verified peak exception enabled, the free-window day planner gives

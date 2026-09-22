@@ -1741,7 +1741,8 @@ class BookerToolSurface:
                 replace_overlapping=arguments["replace_overlapping"],
             )
 
-        record = update_settings(mutate, self.paths.settings)
+        from preference_runs import update_preferences
+        record = update_preferences(mutate, self.paths.settings)
         progress(
             "Future plan saved",
             "The autonomous Booker will use these targets as each date becomes bookable",
@@ -1836,8 +1837,9 @@ class BookerToolSurface:
                 changed["room_preferences"] = room_preferences_to_dict(value)
             return changed
 
-        changed = update_settings(mutate, self.paths.settings)
-        progress("Preferences saved", "The next plan refresh will use the updated settings")
+        from preference_runs import update_preferences
+        changed = update_preferences(mutate, self.paths.settings)
+        progress("Preferences saved", "A Booker check is queued when automatic booking is enabled")
         multi_session_dates = []
         practice_patch = patch.get("practice_plan")
         if isinstance(practice_patch, Mapping):

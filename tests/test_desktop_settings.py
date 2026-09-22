@@ -154,6 +154,7 @@ class DesktopSettingsTests(unittest.TestCase):
         self.root.update()
         saved = json.loads(self.settings.read_text())
         self.assertEqual(saved['practice_plan']['default_hours'], 4)
+        self.assertEqual(saved['preference_run']['state'], 'pending')
         self.assertTrue(saved['practice_plan']['enabled'])
         self.assertEqual(saved['time_preferences']['preset'], 'afternoon')
         self.assertTrue(saved['time_preferences']['strict_mode'])

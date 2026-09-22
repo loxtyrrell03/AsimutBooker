@@ -23,6 +23,8 @@ class DatedWindowTests(unittest.TestCase):
             'date_time_preferences': [{'date': '2026-09-01', 'window': window}],
         }, user_request='Book tomorrow afternoon')
         saved = load_settings(self.paths.settings)
+        request = saved.pop('preference_run')
+        self.assertEqual(request['state'], 'pending')
         self.assertEqual(saved, {**original, 'date_time_preferences': {'2026-09-01': window}})
         self.surface.dispatch('update_booker_preferences', {
             'request_quote': 'Restore usual times tomorrow',

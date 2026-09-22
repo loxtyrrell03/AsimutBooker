@@ -4,6 +4,7 @@ import { timeBoundaryLabel } from '../lib/time-boundaries';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgendaEvent, BookerSnapshot } from '../app/page';
 import type { Preferences, TimePreference } from '../lib/preferences';
+import { preferenceRunNotice } from '../lib/preferences';
 import { requestJson } from '../lib/api';
 import { selectedPlanSessions } from '../lib/plan_state';
 import { BookingDetails } from './quiet-focus';
@@ -93,7 +94,7 @@ export function PhoneCalendar({ booker, csrf, active, editable, onSaved, onRefre
     try {
       const { response, data } = await requestJson<Preferences & { message?: string }>('/api/v1/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf }, body: JSON.stringify({ revision: values.revision, changes }) });
       if (!response.ok) { setReloadRequired(response.status === 409 || response.status >= 500); setError(data.message || 'Calendar changes could not be saved.'); return; }
-      setValues(data); setEdits({}); setNotice('Calendar changes saved.'); onSaved();
+      setValues(data); setEdits({}); setNotice(`Calendar changes saved.${preferenceRunNotice(data)}`); onSaved();
     } catch { setReloadRequired(true); setError('Save result unknown. Reload saved values before saving again; your draft is retained.'); }
     finally { setWorking(false); setSaving(false); saveInFlight.current = false; }
   };

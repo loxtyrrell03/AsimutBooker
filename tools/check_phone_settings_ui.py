@@ -92,6 +92,8 @@ def check(dist):
             page.touchscreen.tap(box['x'] + box['width']/2, box['y'] + box['height']/2)
             expect(page.get_by_text('Preferences saved.', exact=False)).to_be_visible()
             expect(page.get_by_text('Daily goal: 6 hours per day.', exact=False)).to_be_visible()
+            expect(page.get_by_text('Booker check queued;', exact=False)).to_be_visible()
+            assert read_phone_preferences(settings)['preference_run']['state'] == 'pending'
             assert read_phone_preferences(settings)['practice_plan']['default_hours'] == 6
             page.set_viewport_size({'width': 390, 'height': 844})
             page.reload()

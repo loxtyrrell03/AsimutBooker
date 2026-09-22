@@ -69,7 +69,7 @@ def check(dist):
             page.get_by_role('button',name='Calendar',exact=True).tap()
             expect(page.get_by_label('Day start time',exact=True)).to_have_value('17:00')
             page.get_by_role('button',name='Save changes',exact=True).tap()
-            expect(page.get_by_text('Calendar changes saved.',exact=True)).to_be_visible()
+            expect(page.get_by_text('Calendar changes saved.',exact=False)).to_be_visible()
             saved=read_phone_preferences(settings)
             assert saved['disabled_dates']==['2030-10-15']
             assert saved['practice_plan']['date_overrides']['2030-10-15']==2.5
@@ -84,7 +84,7 @@ def check(dist):
             page.get_by_label('Selected days end',exact=True).select_option('rooms_closed')
             page.get_by_role('button',name='Apply preferred time',exact=True).tap()
             page.get_by_role('button',name='Save changes',exact=True).tap()
-            expect(page.get_by_text('Calendar changes saved.',exact=True)).to_be_visible()
+            expect(page.get_by_text('Calendar changes saved.',exact=False)).to_be_visible()
             saved=read_phone_preferences(settings)
             assert saved['disabled_dates']==['2030-10-15','2030-10-16','2030-10-17']
             assert saved['date_time_preferences']['2030-10-16']['start_time']=='rooms_open'
@@ -101,7 +101,7 @@ def check(dist):
             expect(page.get_by_role('button',name='Save changes',exact=True)).to_be_enabled()
             assert len(writes)==count
             page.get_by_role('button',name='Save changes',exact=True).tap()
-            expect(page.get_by_text('Calendar changes saved.',exact=True)).to_be_visible()
+            expect(page.get_by_text('Calendar changes saved.',exact=False)).to_be_visible()
             assert '2030-10-17' not in read_phone_preferences(settings)['date_time_preferences']
             for width in (320,390,844):
                 page.set_viewport_size({'width':width,'height':844 if width<800 else 390})

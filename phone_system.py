@@ -233,7 +233,8 @@ def run_local_action(action, args, root=ROOT):
                 atomic_write_json(path, {'rules': args['rules']}, backup=True)
             return {'message': 'Rules saved for the next Booker run.'}
         if action == 'events_save':
-            with settings_transaction(root / 'data/settings.json') as settings:
+            from preference_runs import preferences_transaction
+            with preferences_transaction(root / 'data/settings.json') as settings:
                 doc, identities, events = _event_document(root, settings)
                 _require_revision(doc['revision'], args['revision'])
                 if doc['stale']:

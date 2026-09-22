@@ -21,6 +21,7 @@ class CalendarPreferencesTests(DesktopSettingsTests):
         controls['strict'].set(True)
         controls['save'].invoke()
         saved = read_phone_preferences(self.settings)
+        self.assertEqual(saved['preference_run']['state'], 'pending')
         self.assertIn(day.isoformat(), saved['disabled_dates'])
         self.assertEqual(saved['practice_plan']['date_overrides'][day.isoformat()], 2.5)
         self.assertEqual(saved['date_time_preferences'][day.isoformat()]['start_time'], '17:00')

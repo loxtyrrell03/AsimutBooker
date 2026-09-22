@@ -3,13 +3,14 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 
-from app_settings import SETTINGS_FILE, load_settings, update_settings
+from app_settings import SETTINGS_FILE, load_settings
 from assistant_tools import BookerToolSurface, AssistantToolError
 from room_preferences import load_room_preferences, apply_room_preferences_update
 from booking_strategy import load_booking_strategy, apply_booking_strategy_update
 from date_time_preferences import load_date_time_preferences, apply_date_time_preferences
 from booking_rules import load_booking_rules, apply_booking_rules
 from advance_preferences import load_advance_quota, apply_advance_quota
+from preference_runs import update_preferences, public_status
 
 
 class PreferenceConflict(ValueError):
@@ -35,7 +36,7 @@ def preference_document(settings):
         'advance_quota': load_advance_quota(copy).to_dict(),
     }
     revision = sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
-    return {'revision': revision, **values}
+    return {'revision': revision, **values, 'preference_run': public_status(settings)}
 
 
 def read_phone_preferences(path=SETTINGS_FILE):
@@ -70,4 +71,5 @@ def save_phone_preferences(payload, path=SETTINGS_FILE):
                 getattr(BookerToolSurface, '_apply_' + name)(settings, patch)
         return preference_document(settings)
 
-    return update_settings(mutate, path)
+    update_preferences(mutate, path)
+    return read_phone_preferences(path)

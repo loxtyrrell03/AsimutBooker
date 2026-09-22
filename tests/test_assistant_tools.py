@@ -29,6 +29,7 @@ class AssistantToolSurfaceTests(unittest.TestCase):
                 'room_mode':'selected','room_order':['Corus','Weston']}},user_request=request)
         self.assertEqual(result['changed']['advance_quota']['distribution'],'concentrated')
         settings=load_settings(self.paths.settings)
+        self.assertEqual(settings['preference_run']['state'], 'pending')
         self.assertEqual(settings['unrelated_user_value'],{'preserve':True})
         self.assertEqual(settings['practice_plan']['default_hours'],2)
 

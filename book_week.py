@@ -12913,7 +12913,11 @@ def main(argv=None):
         with booking_preference_run(settings_file, settings):
             install_booking_rules(settings)
             result = run_booking(args, settings, practice_plan, room_preferences) or 0
-            return result or (1 if extension_failures else 0)
+            code = result or (1 if extension_failures else 0)
+            if code == 0:
+                from preference_runs import complete_matching_run
+                complete_matching_run(settings_file, settings, args)
+            return code
     except KeyboardInterrupt:
         print("Booking run cancelled.")
         return 130
@@ -12972,6 +12976,8 @@ def main(argv=None):
         _run_verified_details.reset(completed_token)
         _run_extension_failures.reset(failures_token)
         run_report.finish(report_token)
+        from preference_runs import kick
+        kick(settings_file)
 
 
 if __name__ == "__main__":

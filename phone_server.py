@@ -1574,6 +1574,8 @@ def serve(config: PhoneServerConfig) -> None:
     if not STATIC_DIR.joinpath("index.html").is_file():
         raise PhoneServerError("Phone app build is missing; run the phone build first")
     app = PhoneApplication(config)
+    from preference_runs import kick
+    kick()
     server = PhoneHTTPServer((config.host, config.port), app)
     LOGGER.info("phone service listening on exact loopback")
     stopped = threading.Event()

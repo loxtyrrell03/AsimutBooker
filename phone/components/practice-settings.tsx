@@ -7,6 +7,7 @@ import { Settings2 } from 'lucide-react';
 import { requestJson } from '../lib/api';
 
 import type { Preferences, DailyPlanning } from '../lib/preferences';
+import { preferenceRunNotice } from '../lib/preferences';
 import { HelpTip } from './help-tip';
 import { BookingRulesFields } from './booking-rules-fields';
 import { AdvanceQuotaFields } from './advance-quota-fields';
@@ -90,8 +91,8 @@ export function PracticeSettings({ csrf, enabled, onSaved, targetLabel, timeLabe
         setError(result.message || result.detail || 'Settings could not be saved. Reload settings and try again.'); return;
       }
       setValues(result as Preferences); setSection(null); setNotice(section === 'goal'
-        ? `Preferences saved. Daily goal: ${result.practice_plan.enabled ? `${result.practice_plan.default_hours} hours per day` : 'off'}. Future booking runs will use your changes.`
-        : 'Preferences saved. Future booking runs will use your changes.'); onSaved();
+        ? `Preferences saved. Daily goal: ${result.practice_plan.enabled ? `${result.practice_plan.default_hours} hours per day` : 'off'}.${preferenceRunNotice(result)}`
+        : `Preferences saved.${preferenceRunNotice(result)}`); onSaved();
     } catch {
       setReloadRequired(true);
       setError('The save result could not be checked. Reload settings before trying again.');

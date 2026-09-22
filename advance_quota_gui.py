@@ -195,10 +195,10 @@ def show_editor(app):
                     raise ValueError('Advance quota changed elsewhere. Cancel and reopen this editor before saving.')
                 apply_advance_quota(settings, validated.to_dict())
             # A settings conflict leaves the draft open without disabling unrelated controls.
-            from app_settings import update_settings
+            from preference_runs import update_preferences
             import gui
             if not app.settings_available: raise ValueError('Settings are unavailable. Reopen after resolving the settings error.')
-            update_settings(mutate, gui.SETTINGS_FILE)
+            update_preferences(mutate, gui.SETTINGS_FILE)
         except (SettingsError, TypeError, ValueError) as exc:
             error.set(str(exc)); return
         app._refresh_booking_plan_display()

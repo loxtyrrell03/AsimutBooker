@@ -22,8 +22,8 @@ from app_settings import (
     SettingsError,
     atomic_write_json,
     load_settings as strict_load_settings,
-    update_settings as atomic_update_settings,
 )
+from preference_runs import update_preferences as atomic_update_settings
 from agenda_snapshot import (
     AGENDA_SNAPSHOT_FILE,
     read_agenda_snapshot,

@@ -16,6 +16,7 @@ export type AdvanceQuota = {
   reserve_minutes: number; wait_for_opening: boolean; fallback_lead_minutes: number | null;
 };
 export type Preferences = {
+  preference_run?: { state: 'pending' | 'running' | 'completed' | 'failed' | 'paused'; message: string } | null;
   advance_quota: AdvanceQuota;
   booking_rules: BookingRules;
   revision: string;
@@ -27,6 +28,12 @@ export type Preferences = {
   room_preferences: { ordered_rooms: string[]; excluded_rooms: string[]; acceptable_instrument_tags: string[];
     acceptable_room_type_tags: string[]; required_feature_terms: string[]; minimum_block_minutes: number; allow_fragmented_sessions: boolean };
 };
+
+export function preferenceRunNotice(values: Preferences): string {
+  if (values.preference_run?.state === 'pending') return ' Booker check queued; it will wait if another run is active.';
+  if (values.preference_run?.state === 'running') return ' Booker is checking your changes.';
+  return '';
+}
 
 export type BookingRules = { preset: 'new' | 'legacy' | 'custom'; rolling_quota_hours: number;
   free_horizon_overrides_peak: boolean; peak_quota_minutes: number; free_horizon_minutes: number; peak_start_minutes: number; peak_end_minutes: number };
