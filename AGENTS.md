@@ -9,7 +9,13 @@
 - Two regressions reproduced the missing refresh before repair. All 97 focused
   planner, quota, extension and upgrade checks pass, including three new runner
   checks covering refresh ordering, refused upgrades and short-pass scope.
-  Activation and live plan verification are recorded separately below.
+- Activated `0671224` under assistant/runtime/dispatcher ownership without a
+  service restart or protected-state changes. The next ordinary worker reached
+  the zero-credit path and published all eight plan dates; the private phone
+  session then reported fresh agenda and plan data with no pending receipts.
+  Verification did not create or edit reservations. Evidence is retained under
+  `artifacts/booker-monitor/quota-plan-*.json`; this is API, not physical-phone,
+  proof. The worker continued its normal guarded upgrade sweep afterward.
 
 ## 2026-09-22 installed Asimut operating skill
 
