@@ -15,6 +15,16 @@
   the final source, including ten new dated-preference/readiness regressions.
   These are synthetic and intercepted-browser checks; activation and real
   reservation evidence must be recorded separately.
+- Activated source `2966cd1` under both locks and reloaded only the idle phone
+  backend, preserving settings, protected state, task definitions and routes.
+  A bounded retry saved two additional morning reservations with zero rolling
+  and peak balance; both receipts and a later complete agenda verify them and
+  the daily target is now met. A write-blocked eight-date refresh preserved
+  preferences, published a current plan and found no pending receipt. Exact
+  private HTTPS and connected 320/390px phone checks pass; physical-phone
+  verification is not claimed. Private evidence is under
+  `artifacts/booker-monitor/free-ready*`. Existing desktop processes need
+  reopening to load the new planning code.
 
 ## 2026-09-22 live room permission filtering
 
