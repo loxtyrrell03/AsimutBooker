@@ -1,3 +1,16 @@
+## 2026-09-22 weekly plan refresh with exhausted advance credit
+
+- Ordinary new-rule runs refresh the weekly display from fresh grids in
+  read-only mode before the final upgrade sweep when advance credit is empty.
+  A subsequent exact-site upgrade quota refusal therefore cannot indefinitely
+  starve the plan refresh. Short scheduled passes, explicit scopes and legacy
+  planning retain their existing scan limits. Booking rules and preferences are
+  unchanged; planned sessions remain distinct from confirmed reservations.
+- Two regressions reproduced the missing refresh before repair. All 97 focused
+  planner, quota, extension and upgrade checks pass, including three new runner
+  checks covering refresh ordering, refused upgrades and short-pass scope.
+  Activation and live plan verification are recorded separately below.
+
 ## 2026-09-22 installed Asimut operating skill
 
 - `skills/asimut/` is the versioned source for the installed

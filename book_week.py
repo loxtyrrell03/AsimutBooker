@@ -10984,7 +10984,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             browser.close()
             return 0
 
-        # A same-duration room edit does not consume additional advance quota.
+        # Same-duration edits still require exact site approval at zero credit.
         # Extensions-only runs still need to examine eligible short-notice edits.
         if tracker.is_quota_full() and not getattr(args, 'extensions_only', False):
             used_hours = tracker.get_total_booking_hours()
@@ -10994,6 +10994,14 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             print(f"You have {used_hours:.1f}/{MAX_ROLLING_QUOTA_HOURS} hours of reservations in the current window.")
             print("Further advance bookings wait until quota is released; short-notice bookings remain eligible.")
             print("="*60)
+
+            # Keep the week display current even while advance credit is empty.
+            # Publish from fresh grids before an upgrade can end this run with a
+            # quota refusal. Fast scheduled passes have already returned above;
+            # scoped/legacy operations retain their existing discovery limits.
+            if advance_allocation_enabled(settings, practice_plan, args):
+                run_advance_allocation(sys.modules[__name__], page, policy, settings,
+                    practice_plan, args, tracker, total_booked, booking_details, read_only=True)
 
             total_booked, tracker = process_room_upgrades(
                 sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)

@@ -170,6 +170,51 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.mocks['process_pending_extensions'].assert_not_called()
         self.mocks['process_room_upgrades'].assert_not_called()
 
+    def prepare_full_quota_run(self):
+        self.tracker.is_quota_full.return_value = True
+        self.mocks['process_pending_extensions'].side_effect = None
+        self.mocks['process_pending_extensions'].return_value = (0, True)
+        self.stack.enter_context(mock.patch('short_notice_bookings.run_short_notice_pass',
+            return_value=(0, self.tracker)))
+        return self.stack.enter_context(mock.patch('advance_runtime.run',
+            return_value=(0, self.tracker, True)))
+
+    def test_full_quota_refreshes_week_plan_before_final_upgrade_sweep(self):
+        advance = self.prepare_full_quota_run()
+        def upgrade(*args):
+            if args[4].only_date is None:
+                advance.assert_called_once()
+                self.assertTrue(advance.call_args.kwargs['read_only'])
+                self.assertIs(advance.call_args.args[6], self.tracker)
+            return args[6], args[5]
+        self.mocks['process_room_upgrades'].side_effect = upgrade
+        self.assertEqual(self.new_rule_run(), 0)
+        advance.assert_called_once()
+        self.assertEqual(self.mocks['process_room_upgrades'].call_count, 2)
+
+    def test_full_quota_upgrade_refusal_cannot_starve_read_only_plan_refresh(self):
+        advance = self.prepare_full_quota_run()
+        def upgrade(*args):
+            if args[4].only_date is None:
+                raise b.QuotaWait('Requested booking exceeds your quota')
+            return args[6], args[5]
+        self.mocks['process_room_upgrades'].side_effect = upgrade
+        with self.assertRaises(b.QuotaWait):
+            self.new_rule_run()
+        advance.assert_called_once()
+        self.assertTrue(advance.call_args.kwargs['read_only'])
+
+    def test_full_quota_fast_pass_keeps_daily_scope_without_weekly_scan(self):
+        advance = self.prepare_full_quota_run()
+        self.args.scheduled = True
+        self.args.target_time = None
+        self.assertEqual(self.new_rule_run(), 0)
+        advance.assert_not_called()
+        self.progressive.assert_not_called()
+        self.assertEqual(self.mocks['process_room_upgrades'].call_count, 1)
+        self.assertEqual(self.mocks['process_room_upgrades'].call_args.args[4].only_date,
+                         str(date.today()))
+
     def test_recovered_quota_refusal_rebuilds_agenda_and_retains_action_budget(self):
         updated = mock.Mock(agenda_events=[{'eventId': 123, 'isReservation': True}])
         self.mocks['BookingTracker'].side_effect = [self.tracker, updated]
