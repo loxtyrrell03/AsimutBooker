@@ -48,6 +48,7 @@ data/assistant_state.json
 data/assistant_state.json.lock
 data/assistant_state.json.bak
 data/assistant-mutation.lock
+data/preference-dispatch.lock
 data/phone-server.lock
 data/phone_server_config.json
 data/phone_server_config.json.lock

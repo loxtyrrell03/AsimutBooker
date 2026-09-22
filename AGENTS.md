@@ -20,6 +20,17 @@
   lint and build validation pass. Chromium/WebKit verify queued Save copy and
   existing settings/calendar persistence at narrow widths. Source/fixture
   evidence is separate from activation and real reservation outcomes.
+- Activated source `0a7048a` and phone build `20260922-preference-runs` under
+  the assistant/runtime/dispatcher locks after the worker completed. Reloaded
+  only the idle phone backend; protected data, saved preferences, task
+  definitions and every Serve route were unchanged. Exact private HTTPS assets,
+  session, preference API and connected Chromium/WebKit 320/390px renders pass.
+  The existing automatic schedule is enabled. Activation and verification made
+  no preference or reservation changes; save-triggered execution has isolated
+  real-process and browser fixture proof, not a fabricated live preference edit.
+  Existing desktop windows must reopen; existing phone pages should reload for
+  the new confirmation text. Private proof is in
+  `artifacts/preference-runs-20260922/`.
 
 ## 2026-09-22 ready preferred free-window practice
 
