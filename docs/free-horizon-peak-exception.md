@@ -34,6 +34,19 @@ Upgrade capacity checks also preserve attainable free-window practice at zero
 advance credit. Conflicts, room access/horizons, durations, daily targets, saved
 time preferences, room order, breaks and receipt/recovery requirements remain.
 
+With the exception enabled, eligible free-window practice within the effective
+preferred times is not withheld to conserve peak credit for a future opening.
+The daily portfolio keeps useful time first, then favours preferred sessions
+whose minimum booking is already eligible, before session count and ordinary
+room/time ranking. This also prevents trimming a useful morning block merely
+to reserve more of the daily target for an evening room. Future extension intent
+remains unconfirmed and every actual saved interval must fit its window.
+Date-specific time preferences apply here; ordinary advance planning and waiting
+for preferred times when current slots lie outside them retain their rules.
+Comfort refinement cannot replace this ready preferred practice with future
+promises. Prepared-booking notifications use the exact projected candidate's
+reason, rather than the earlier waiting plan's explanation.
+
 An exact ASIMUT refusal still stops the pass; no local setting authorizes Save.
 Changing this switch invalidates display plans and vetoes stale prepared Saves.
 Run reports and assistant contract revision 11 explain the conditional exception.

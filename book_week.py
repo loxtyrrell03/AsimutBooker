@@ -7475,6 +7475,7 @@ def build_display_day_plan(
         )),
         same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
         existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
+        prefer_ready_sessions=free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK,
     )
     # The planner returns members in desirability order. Runtime can act only
     # on unlocked members, so preserve that order within each group while
@@ -7489,6 +7490,7 @@ def build_display_day_plan(
         future,
         daily_planning,
         now=now,
+        free_horizon_peak_exempt=free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK,
     )
     selected_current = [item for item in selected_plan if item.unlock_at <= now]
     if (
@@ -7514,6 +7516,7 @@ def build_display_day_plan(
             same_room_gap_minutes=SAME_ROOM_GAP_MINUTES,
             existing_sessions=tracker_sessions(tracker, target_date, daily_planning),
             required_opportunity=decision.selected,
+            prefer_ready_sessions=free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK,
         )
         selected_plan = tuple(
             item for item in selected_plan if item.unlock_at <= now

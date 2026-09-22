@@ -10,6 +10,17 @@ from advance_preferences import load_advance_quota
 import booking_run_report as report
 
 
+def candidate_reason(day_plan, opportunity):
+    """Bind the explanation to the exact selected session, including preparation."""
+    for candidate in (day_plan.primary, *day_plan.additional):
+        if (candidate is not None and candidate.room == opportunity.room
+                and candidate.date == opportunity.target_date.isoformat()
+                and candidate.start_time == opportunity.start_text
+                and candidate.end_time == opportunity.end_text):
+            return candidate.reason
+    return 'Selected from the current non-overlapping daily plan'
+
+
 def reserve_advance_credit(opportunities, planning, *, active, release_lead_minutes=None):
     """Delay routine extras until the saved fallback lead when credit is held."""
     if not active:
@@ -107,7 +118,6 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             planning_context, tracker, practice_plan, disabled,
             time_prefs=preferences, now=now)
         candidates = []
-        plan_reasons = {}
         future_candidates = []
         boundary = None
         if (getattr(args,'scheduled',False) and getattr(args,'target_time',None)
@@ -151,10 +161,10 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 reserved_peak_minutes=peak_holds.get(day.isoformat(), 0),
                 free_horizon_only=True)
             report.day_plan(day, day_plan, opportunities, planning, now=now)
-            plan_reasons[day] = day_plan.reason
             chosen = engine._runtime_ordered_day_opportunities(
                 opportunities, day_plan, planning, now=now)
-            candidates.extend((item, remaining) for item in chosen if item.unlock_at <= now)
+            candidates.extend((item, remaining, candidate_reason(day_plan, item))
+                              for item in chosen if item.unlock_at <= now)
             if not chosen and day_plan.primary is not None:
                 print(f'  [Free horizon] {day_plan.reason}')
             if boundary is not None:
@@ -166,7 +176,8 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                     reserved_peak_minutes=peak_holds.get(day.isoformat(),0), free_horizon_only=True)
                 projected_order = engine._runtime_ordered_day_opportunities(
                     opportunities, projected, planning, now=boundary)
-                future_candidates.extend((item,remaining) for item in projected_order
+                future_candidates.extend((item, remaining, candidate_reason(projected, item))
+                    for item in projected_order
                     if now < item.unlock_at <= boundary)
         prepare_edge = not candidates and bool(future_candidates)
         if not candidates:
@@ -177,7 +188,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             else:
                 print('  [Free horizon] No eligible short-notice booking is currently available for the remaining targets.')
                 break
-        item, remaining = min(candidates, key=lambda pair: engine.opportunity_rank(pair[0], planning, now=now))
+        item, remaining, reason = min(candidates, key=lambda pair: engine.opportunity_rank(pair[0], planning, now=now))
         day = item.target_date
         if prepare_edge:
             natural_opening = datetime.combine(day, local_time()) + timedelta(
@@ -196,7 +207,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                     free_horizon=True) if prepare_edge else engine._opportunity_to_normal_slot(item))
         slot['free_horizon_intent'] = True
         slot['decision_reason'] = (f'Fill {round(remaining*60)}m still needed on {day} using the last-minute window; '
-            f'{report.priority_text(planning)}. {plan_reasons.get(day, "")}. '
+            f'{report.priority_text(planning)}. {reason}. '
             'Longer intended sessions are extended only when allowed.')
         result, actual = engine.attempt_booking_with_room_fallback(
             page, slot, day, tracker,

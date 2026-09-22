@@ -489,12 +489,28 @@ def opportunity_rank(opportunity: BookingOpportunity, planning, *, now: datetime
     if getattr(planning, "priority_mode") == "room_first":
         return (*soft_quality, opportunity.room_priority, group, *quality)
     return (*soft_quality, group, *quality, opportunity.room_priority)
+
+
+def ready_preferred_minutes(opportunity, *, now):
+    """Preferred intent backed by a currently eligible minimum booking."""
+    if opportunity.unlock_at > now:
+        return 0
+    window = opportunity.soft_preferred_window
+    if window is None:
+        return opportunity.potential_minutes
+    if (opportunity.start_minutes < window[0]
+            or opportunity.start_minutes + opportunity.initial_minutes > window[1]):
+        return 0
+    return min(opportunity.end_minutes, window[1]) - opportunity.start_minutes
+
+
 def choose_horizon_opportunity(
     current: Sequence[BookingOpportunity],
     future: Sequence[BookingOpportunity],
     planning,
     *,
     now: datetime,
+    free_horizon_peak_exempt: bool = False,
 ) -> OpportunityDecision:
     """Choose the best current edge or explain why a later edge is safer.
 
@@ -507,6 +523,19 @@ def choose_horizon_opportunity(
     if not current_sorted:
         return OpportunityDecision("none", None, (), 0, "No exact edge is free now")
     best_current = current_sorted[0]
+    if free_horizon_peak_exempt:
+        # These sources have an eligible free-window prefix. A preferred-time
+        # prefix does not spend scarce peak credit, so a later room opening
+        # cannot justify withholding it. Keep ordinary soft-time foresight
+        # when the only ready choices start outside the user's chosen window.
+        preferred_current = [item for item in current_sorted
+                             if ready_preferred_minutes(item, now=now)]
+        if preferred_current:
+            return OpportunityDecision(
+                "book_now", preferred_current[0], tuple(preferred_current[1:4]), 0,
+                "Ready within your preferred times: the free-window peak exception "
+                "applies, so no peak allowance is held for later rooms",
+            )
     if not getattr(planning, "enabled") or not getattr(planning, "hold_early_peak_edges"):
         return OpportunityDecision(
             "book_now",
@@ -574,7 +603,8 @@ def choose_horizon_opportunity(
         selected,
         tuple(distinct_rooms[1:4]),
         held_peak,
-        f"Skipped {best_current.start_text} to preserve {held_peak} peak minutes "
+        (f"Skipped {best_current.start_text} to preserve {held_peak} peak minutes "
+         if held_peak else f"Skipped {best_current.start_text} to wait ") +
         f"for {len(distinct_rooms)} better visible later room option(s); "
         f"best is {selected.start_text}-{selected.end_text} in {selected.room}",
     )
@@ -584,6 +614,7 @@ def select_day_plan(
     opportunities, planning, *, now, target_minutes, allow_fragmented_sessions,
     remaining_peak_minutes=None, same_room_gap_minutes=0, rank_key=None,
     required_opportunity=None, existing_sessions=(), quality_score=None,
+    prefer_ready_sessions=False,
 ):
     """Keep primary booking coverage, then refine optional session comfort."""
     from session_preferences import refine_plan
@@ -591,11 +622,15 @@ def select_day_plan(
     baseline = _select_day_plan(opportunities, planning, now=now,
         target_minutes=target_minutes, allow_fragmented_sessions=allow_fragmented_sessions,
         remaining_peak_minutes=remaining_peak_minutes, same_room_gap_minutes=same_room_gap_minutes,
-        rank_key=rank_key, required_opportunity=required_opportunity, quality_score=quality_score)
+        rank_key=rank_key, required_opportunity=required_opportunity, quality_score=quality_score,
+        prefer_ready_sessions=prefer_ready_sessions)
     refined = refine_plan(baseline, opportunities, planning, now=now,
         remaining_peak_minutes=remaining_peak_minutes, same_room_gap_minutes=same_room_gap_minutes,
         allow_fragmented_sessions=allow_fragmented_sessions, rank_key=rank_key,
         required_opportunity=required_opportunity, existing_sessions=existing_sessions)
+    if prefer_ready_sessions and sum(ready_preferred_minutes(i, now=now) for i in refined) < sum(
+            ready_preferred_minutes(i, now=now) for i in baseline):
+        return baseline
     if quality_score is not None:
         def quality(plan):
             rows = [quality_score(item) for item in plan]
@@ -617,6 +652,7 @@ def _select_day_plan(
     rank_key=None,
     required_opportunity: BookingOpportunity | None = None,
     quality_score=None,
+    prefer_ready_sessions: bool = False,
 ) -> tuple[BookingOpportunity, ...]:
     """Select a desirable whole-day portfolio within the daily target.
 
@@ -624,7 +660,9 @@ def _select_day_plan(
     advances monotonically through the 96-slot day and retains only the target,
     peak allowance, and same-room cooldowns that can affect a continuation.
     With no soft-time tradeoff, coverage and session count retain their exact
-    optima. With penalized intervals, weighted useful time takes precedence over
+    optima by default. Free-window readiness can prefer currently eligible
+    preferred minutes before session count, without reducing useful coverage.
+    With penalized intervals, weighted useful time takes precedence over
     filling the target. That search is bounded and retains a feasible greedy
     fallback; quotas, overlap and same-room gaps are always hard constraints. When
     ``required_opportunity`` is supplied, the result must include a variant
@@ -671,6 +709,7 @@ def _select_day_plan(
     def candidate_quality(item: BookingOpportunity) -> tuple:
         return (
             *((tuple(-v for v in quality_score(item)),) if quality_score is not None else ()),
+            *((-ready_preferred_minutes(item, now=now),) if prefer_ready_sessions else ()),
             rank_key(item),
             -item.potential_minutes,
             item.room,
@@ -780,6 +819,7 @@ def _select_day_plan(
     chronological_keys = tuple(
         (item.start_minutes, item.end_minutes, item.room) for item in variants
     )
+    ready_values = tuple(ready_preferred_minutes(item, now=now) for item in variants)
 
     @lru_cache(maxsize=None)
     def portfolio_key(plan: tuple[int, ...]) -> tuple:
@@ -791,6 +831,7 @@ def _select_day_plan(
                     tuple(sorted(chronological_keys[index] for index in plan)))
         return (
             -sum(values[index] for index in plan),
+            *((-sum(ready_values[index] for index in plan),) if prefer_ready_sessions else ()),
             len(plan),
             tuple(sorted(qualities[index] for index in plan)),
             tuple(sorted(chronological_keys[index] for index in plan)),
@@ -863,7 +904,7 @@ def _select_day_plan(
             ),
         )
 
-    if soft_tradeoff or custom_values:
+    if soft_tradeoff or custom_values or prefer_ready_sessions:
         # Never fall back to maximum raw hours when preference scoring is active.
         # Seed a deterministic feasible plan so a busy grid can hit the search
         # bound without turning a poor time into a compulsory target filler.

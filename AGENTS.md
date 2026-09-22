@@ -1,3 +1,21 @@
+## 2026-09-22 ready preferred free-window practice
+
+- With the verified peak exception enabled, the free-window day planner gives
+  ready preferred practice priority over future room openings after useful-time
+  coverage. It does not withhold or needlessly shorten an available morning
+  session to preserve peak credit or daily target for an evening room. Dated
+  preferred windows apply; normal advance foresight and outside-window soft
+  preferences retain their behavior. Comfort refinement preserves ready time.
+- Exact prefix/window checks, room ranking, extension holds, daily targets,
+  conflicts and receipt recovery remain authoritative. Prepared success reasons
+  now follow the exact projected candidate rather than the earlier waiting plan.
+  Zero-peak waits no longer claim to preserve zero minutes. The rules revision
+  invalidates old display plans and prepared contexts.
+- The full Python suite passes 1,532 checks, followed by 142 focused checks on
+  the final source, including ten new dated-preference/readiness regressions.
+  These are synthetic and intercepted-browser checks; activation and real
+  reservation evidence must be recorded separately.
+
 ## 2026-09-22 live room permission filtering
 
 - Catalog discovery now retains exact, room-bound ASIMUT access refusals from
