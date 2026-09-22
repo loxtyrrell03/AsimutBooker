@@ -10,7 +10,15 @@
   and a complete mocked no-Save catalog refresh. All 102 focused catalog,
   live-policy, access and horizon checks pass, including intercepted Chromium
   prepared-Save fixtures. No horizon, quota, timing guard or preference changes
-  are part of this repair. Activation and live verification remain separate.
+  are part of this repair.
+- Activated `bee4056` under assistant/runtime/dispatcher ownership without a
+  service restart. The authenticated no-Save catalog check completed; subsequent
+  scheduled 15:37, 15:42 and 15:52 runs refreshed live policy normally. The full
+  pass published a current weekly plan and respected an exact-site quota refusal.
+  No pending receipt remained, and the private phone agenda/plan were current.
+  Evidence and activation-check limitations are retained under
+  `artifacts/booker-monitor/session-policy-retry/`. Recovery of a malformed first
+  response is fixture-proven; the live responses did not exercise the retry.
 
 ## 2026-09-22 weekly plan refresh with exhausted advance credit
 
