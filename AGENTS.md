@@ -1,3 +1,17 @@
+## 2026-09-22 bounded retry of inconsistent session horizon reads
+
+- A live session cutoff that cannot fit any independently observed request
+  minute gets one fresh read after one second, with a 15-second request timeout.
+  The failed response and clock sample are discarded; the new response must
+  pass the same strict policy and unique-minute validation. Schema errors,
+  invalid duration rules and ambiguous observations do not trigger retries.
+  Persistent mismatches still stop before room checks or cache publication.
+- Eight new regressions cover recovery, retry bounds, invalid/ambiguous policy
+  and a complete mocked no-Save catalog refresh. All 102 focused catalog,
+  live-policy, access and horizon checks pass, including intercepted Chromium
+  prepared-Save fixtures. No horizon, quota, timing guard or preference changes
+  are part of this repair. Activation and live verification remain separate.
+
 ## 2026-09-22 weekly plan refresh with exhausted advance credit
 
 - Ordinary new-rule runs refresh the weekly display from fresh grids in

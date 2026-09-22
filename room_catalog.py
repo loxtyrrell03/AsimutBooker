@@ -206,6 +206,10 @@ class RoomCatalogError(RuntimeError):
     """Raised when live or cached catalog evidence cannot be trusted."""
 
 
+class _SessionObservationMismatch(RoomCatalogError):
+    """A session cutoff does not fit the independently observed minute."""
+
+
 @dataclass(frozen=True)
 class SessionPolicy:
     """The live booking limits exposed by ``session-context/me``."""
@@ -457,9 +461,12 @@ def parse_session_context(payload: Any, observed_at: datetime) -> SessionPolicy:
     )
     if booking_horizon.second or booking_horizon.microsecond:
         raise RoomCatalogError("me.booking_horizon must be exact to the minute")
-    global_minutes = _wall_clock_minutes(
-        observed, booking_horizon, "global booking horizon"
-    )
+    try:
+        global_minutes = _wall_clock_minutes(
+            observed, booking_horizon, "global booking horizon"
+        )
+    except RoomCatalogError as exc:
+        raise _SessionObservationMismatch(str(exc)) from exc
     minimum = _minute_quantity(
         me.get("minimum_booking_length"), "me.minimum_booking_length"
     )
@@ -1848,28 +1855,24 @@ def _intersect_clock_offset_bounds(
     return lower, upper
 
 
-def refresh_from_site(
+def _read_live_session_policy(
     page: Any,
-    *,
-    path: Path = ROOM_CATALOG_FILE,
-    save: bool = True,
-    observed_at: datetime | None = None,
-) -> RoomCatalog:
-    """Build and optionally cache a complete catalog from an authenticated page.
+) -> tuple[Any, SessionPolicy, tuple[float, float] | None]:
+    """Allow one fresh GET after a cutoff/minute mismatch; never widen evidence.
 
-    The function performs only read-only GETs, one navigation to an ``eventId=0``
-    form, and direct ``event/type=check`` requests.  No partial snapshot is
-    returned or persisted.
+    A proxy/application minute disagreement can briefly outlast the existing
+    HTTP Date uncertainty. Discard that response and its clock sample. A fresh
+    response must still pass every normal rule and unique-minute check. Schema
+    errors and ambiguous observations do not qualify for a retry.
     """
-
-    clock_samples: list[tuple[float, float]] = []
-    if observed_at is None:
+    for attempt in range(2):
         session_started_at = datetime.now(tz=SITE_TIMEZONE)
         session_payload, session_server_time = _get_json(
             page,
             SESSION_CONTEXT_PATH,
             "session context",
             include_server_time=True,
+            timeout_ms=15000,
         )
         session_finished_at = datetime.now(tz=SITE_TIMEZONE)
         session_clock_bounds = _server_clock_offset_bounds(
@@ -1877,8 +1880,6 @@ def refresh_from_site(
             session_finished_at,
             session_server_time,
         )
-        if session_clock_bounds is not None:
-            clock_samples.append(session_clock_bounds)
         session_candidates = _request_observation_candidates(
             session_started_at,
             session_finished_at,
@@ -1895,6 +1896,11 @@ def refresh_from_site(
                 session_errors.append(exc)
         if len(parsed_sessions) != 1:
             if not parsed_sessions and session_errors:
+                if attempt == 0 and all(isinstance(error, _SessionObservationMismatch)
+                                        for error in session_errors):
+                    print("Session policy minute mismatch; retrying one read-only request.")
+                    page.wait_for_timeout(1000)
+                    continue
                 raise RoomCatalogError(
                     "Session policy could not be aligned to its request minute: "
                     f"{session_errors[-1]}"
@@ -1902,7 +1908,28 @@ def refresh_from_site(
             raise RoomCatalogError(
                 "Session policy matched more than one request minute"
             )
-        session = parsed_sessions[0]
+        return session_payload, parsed_sessions[0], session_clock_bounds
+
+
+def refresh_from_site(
+    page: Any,
+    *,
+    path: Path = ROOM_CATALOG_FILE,
+    save: bool = True,
+    observed_at: datetime | None = None,
+) -> RoomCatalog:
+    """Build and optionally cache a complete catalog from an authenticated page.
+
+    The function performs only read-only GETs, one navigation to an ``eventId=0``
+    form, and direct ``event/type=check`` requests.  No partial snapshot is
+    returned or persisted.
+    """
+
+    clock_samples: list[tuple[float, float]] = []
+    if observed_at is None:
+        session_payload, session, session_clock_bounds = _read_live_session_policy(page)
+        if session_clock_bounds is not None:
+            clock_samples.append(session_clock_bounds)
     else:
         session_payload = _get_json(page, SESSION_CONTEXT_PATH, "session context")
         session = parse_session_context(session_payload, observed_at)
