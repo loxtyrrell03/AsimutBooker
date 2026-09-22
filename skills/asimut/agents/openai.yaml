@@ -1,0 +1,3 @@
+interface:
+  display_name: "Asimut Booker"
+  short_description: "Manage ASIMUT rooms, bookings and preferences"

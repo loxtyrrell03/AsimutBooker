@@ -1,3 +1,25 @@
+## 2026-09-22 installed Asimut operating skill
+
+- `skills/asimut/` is the versioned source for the installed
+  `C:/Users/Lox/.codex/skills/asimut` skill. It recognizes Asimut/Azimuth requests
+  and routes settings, availability, booking management and diagnosis through
+  the canonical app. Keep the installed seven-file copy in sync after changes;
+  validate it with the system skill creator's `quick_validate.py`.
+- Its JSON command bridge imports `BookerToolSurface` and shared revision-checked
+  phone preferences. Same-process batches retain current-turn selection ownership,
+  bind the actual authorizing request, and stop on uncertain/partial results.
+  Read-only mode rejects booking/preference mutations before dispatch. No second
+  service, scheduler, profile or booking engine is created.
+- Exact clock requests must not be mapped to the automatic planner's looser
+  date/room scope. The skill documents guarded existing helpers/browser paths
+  for edits outside the typed tools, manual protections and receipt/agenda proof.
+- Twelve isolated bridge regressions and all 64 focused assistant/bridge checks
+  pass. The installed skill validates and its live schema, preferences,
+  protections and context reads pass with settings, history, receipts and agenda
+  hashes unchanged. Source/installed files match. This verification created no
+  reservation or preference change; private proof is under
+  `artifacts/booker-monitor/asimut-skill/`.
+
 ## 2026-09-22 manual reservation edits remain authoritative
 
 - Complete agenda scans compare each reservation with its last observed tuple.
