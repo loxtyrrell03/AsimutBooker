@@ -16,7 +16,16 @@
   See `docs/manual-cancellations.md` for lifecycle and explicit reopening.
 - All 1,582 Python tests pass, including 29 new edit/queued-Save regressions,
   plus the existing real Chromium editor/prepared-Save and transfer recovery
-  fixtures. These are source/fixture checks; activation is recorded separately.
+  fixtures. Manual-edit behavior has fixture/browser proof; no real reservation
+  was edited to test this protection.
+- Activated `cf2d28e` under the assistant/runtime/dispatcher locks and reloaded
+  only the idle phone backend. Protected state, task definitions, phone assets
+  and all Serve routes were unchanged. A write-blocked eight-date refresh
+  published a current plan with nine agenda events and zero pending receipts;
+  every candidate respects the protected intervals. Exact private HTTPS session,
+  preferences and connected 320/390px phone renders pass. These are PC-browser
+  checks, not physical-phone proof. Existing desktop processes must reopen.
+  Private activation/verification evidence: `artifacts/manual-edits-20260922/`.
 
 ## 2026-09-22 automatic checks after preference saves
 
