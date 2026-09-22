@@ -2,6 +2,8 @@
 import contextlib
 import copy
 import unittest
+import tempfile
+from pathlib import Path
 from datetime import date
 from types import SimpleNamespace
 from unittest import mock
@@ -27,6 +29,9 @@ class ProgressiveSeedGuardTests(unittest.TestCase):
         self.save.is_enabled.return_value = True
         self.page.get_by_role.return_value = self.save
         self.engine = mock.Mock()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.engine.settings_file = Path(self.tmp.name) / 'settings.json'
         self.engine.BookingVerificationError = b.BookingVerificationError
         self.engine.get_room_slot_coordinates.return_value = {"x": 10, "y": 20}
         self.engine.enter_new_booking_form.return_value = True
@@ -72,6 +77,17 @@ class ProgressiveSeedGuardTests(unittest.TestCase):
                          [mock.call(trial=True, timeout=3000), mock.call(no_wait_after=True, timeout=5000)])
         self.engine.wait_for_created_booking_outcome.assert_called_once()
         self.mark.assert_called_once_with(self.parent, 'destination')
+
+    def test_manual_pin_blocks_destination_before_child_or_save(self):
+        from app_settings import save_settings
+        r = reservation(self.parent['transfer']['originals'][0])
+        save_settings({'manual_booking_overrides': {str(r.event_id):
+            {k:r.as_booking()[k] for k in ('date','room','startTime','endTime')}}}, self.engine.settings_file)
+        with self.assertRaises(b.BookingPreferencesChanged):
+            save_seed(self.engine, self.prepared, self.parent)
+        self.record.assert_not_called()
+        self.mark.assert_not_called()
+        self.assertEqual(self.save.click.call_args_list, [mock.call(trial=True, timeout=3000)])
 
     def test_wrong_parent_role_or_desired_tuple_never_reaches_save(self):
         changes = [
@@ -352,6 +368,8 @@ class ProgressiveCancelBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
+        folder = self.stack.enter_context(tempfile.TemporaryDirectory())
+        self.stack.enter_context(mock.patch.object(b, 'settings_file', Path(folder)/'settings.json'))
         self.parent = {'id': 'parent', 'kind': 'transfer', 'transfer': transfer_fixture('complete')}
         self.original = reservation(self.parent['transfer']['originals'][0])
         self.page, self.cancel = mock.MagicMock(), mock.Mock()

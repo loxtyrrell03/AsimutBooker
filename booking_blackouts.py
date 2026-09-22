@@ -1,9 +1,8 @@
 """Persistent time windows that autonomous booking must leave untouched.
 
-Blackouts are created only after a cancellation has been proved by a complete
-agenda scan.  They are intentionally room-independent: cancelling a practice
-session means the user asked to keep that part of the day free, not merely to
-avoid the room that happened to be booked.
+Blackouts protect time released by verified cancellations and manual time edits,
+or explicitly protected by the owner. They are room-independent: removing time
+from a session must not cause the booker to refill it in another room.
 """
 
 from __future__ import annotations

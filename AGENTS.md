@@ -1,3 +1,23 @@
+## 2026-09-22 manual reservation edits remain authoritative
+
+- Complete agenda scans compare each reservation with its last observed tuple.
+  A manual trim or shift protects the removed interval in every room and pins
+  the edited reservation against automatic extensions, upgrades, consolidation
+  and progressive transfers. Room-only edits pin the room without a blackout.
+  Stale extension goals retire; confirmed practice still counts toward targets.
+- Exact verified receipt transitions distinguish the booker's own changes.
+  Pending transactions retain their earlier baseline; verified retired and
+  compensated donors do not create false cancellation windows. Observation times
+  are metadata; pins/blackouts invalidate prepared Saves and cached plans.
+  Final mutation guards also check pins, including queued/staged operations.
+- Explicit time-edit receipts pin their final reservation, including recovery.
+  Ordinary untouched bookings retain smart extensions/upgrades. Protection starts
+  with the next complete scan and cannot reconstruct unobserved older changes.
+  See `docs/manual-cancellations.md` for lifecycle and explicit reopening.
+- All 1,582 Python tests pass, including 29 new edit/queued-Save regressions,
+  plus the existing real Chromium editor/prepared-Save and transfer recovery
+  fixtures. These are source/fixture checks; activation is recorded separately.
+
 ## 2026-09-22 automatic checks after preference saves
 
 - Desktop, calendar, phone and assistant preference editors atomically record
@@ -118,9 +138,10 @@
   blackouts. Every production `scan_agenda` caller uses the persistent scan hook,
   after completeness validation and before display publication. Failed tracking
   writes stop the scan; existing Save preference checks stop stale decisions.
-- Missing dates retain evidence, expired sessions do not block, same-ID edits
-  update the baseline, pending internal originals await recovery and verified
-  consolidation donors retire without exclusions. Explicit assistant
+- Missing dates retain evidence and expired sessions do not block. Same-ID edits
+  now receive the manual-edit protection described above. Pending internal
+  originals await recovery and verified consolidation donors retire without
+  exclusions. Explicit assistant
   `reopen_booking_window` remains authoritative and is not undone by later scans.
 - Tracking starts with observed bookings; it cannot reconstruct older removals
   or bookings created and cancelled between scans. ASIMUT does not identify the

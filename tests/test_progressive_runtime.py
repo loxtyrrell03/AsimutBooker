@@ -63,6 +63,8 @@ class SimContext:
         self.policy = SimpleNamespace(room_order=('Best', 'Fallback'), minimum_block_minutes=30,
             horizon_minutes_for=lambda room: 5*24*60, site_clock_offset_bounds=(0, 0))
         self.engine = SimpleNamespace(BookingVerificationError=VerificationError,
+            booking_save_boundary=b.booking_save_boundary,
+            settings_file=state.STATE_FILE.with_name("settings.json"),
             parse_confirmed_event_id=parse_confirmed_event_id,
             list_pending_mutation_receipts=journal.list_pending,
             verify_mutation_receipt=journal.mark_verified, resolve_mutation_receipt=journal.mark_resolved,
@@ -184,6 +186,19 @@ class ProgressiveRuntimeTests(unittest.TestCase):
 
     def execute(self, **limits):
         return runtime.execute_transfer(self.ctx, self.plan, self.saved, SimpleNamespace(**limits))
+
+    def test_new_manual_pin_vetoes_queued_transfer_before_source_changes(self):
+        from app_settings import save_settings
+        from booking_preferences_guard import BookingPreferencesChanged
+        save_settings({'manual_booking_overrides': {'42':
+            {k: self.original.as_booking()[k] for k in ('date', 'room', 'startTime', 'endTime')}}},
+            self.ctx.engine.settings_file)
+        with self.assertRaises(BookingPreferencesChanged):
+            self.execute()
+        self.assertFalse(self.ctx.edits)
+        self.assertFalse(self.ctx.cancels)
+        self.assertFalse(self.ctx.creates)
+        self.assertFalse(journal.list_pending())
 
     def pending_parent(self):
         return next(r for r in journal.list_pending() if r['kind'] == 'transfer')

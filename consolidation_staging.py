@@ -112,6 +112,8 @@ def fresh_staging_arguments(engine, page, day, *, verified_tracker=None):
         engine.scan_agenda(page, tracker, now.date(), ignored_events=ignored,
                           window_dates=policy.booking_dates(now.date()), snapshot_path=engine.AGENDA_SNAPSHOT_FILE)
     events, ignored_ids = planning_events(engine, tracker, ignored)
+    from manual_booking_overrides import manual_booking_ids
+    ignored_ids = set(ignored_ids) | manual_booking_ids(settings)
     engine.open_practice_room_overview(page, now.date())
     if day != now.date():
         engine.navigate_to_day(page, (day - now.date()).days, 0, base_date=now.date())
@@ -222,6 +224,8 @@ def execute_staged_consolidation(engine, page, change, *, revalidate, dry_run, f
         return dict(event_id=r.event_id, room=r.room, date=str(r.day),
                     start=r.as_booking()['startTime'], end=r.as_booking()['endTime'])
     with engine.booking_save_boundary():
+        from manual_booking_overrides import assert_automatic_change_allowed
+        assert_automatic_change_allowed([r.event_id for r in change.originals], path=engine.settings_file)
         if engine.list_pending_mutation_receipts():
             raise engine.BookingVerificationError('An unresolved mutation blocks consolidation staging')
         receipt = engine.record_pending_consolidation(room=change.replacement.room, booking_date=str(change.replacement.day),

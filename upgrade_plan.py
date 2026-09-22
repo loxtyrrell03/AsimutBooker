@@ -11,7 +11,7 @@ PLAN_FILE = Path(__file__).resolve().parent / 'data' / 'upgrade_plan.json'
 
 def publish_upgrade_plan(days, *, settings, status, actions, path=PLAN_FILE):
     controls = {key: settings.get(key) for key in ('room_preferences', 'time_preferences', 'date_time_preferences',
-                'booking_strategy', 'practice_plan', 'disabled_dates', 'ignored_events', 'rebooking_blackouts')}
+                'booking_strategy', 'practice_plan', 'disabled_dates', 'ignored_events', 'rebooking_blackouts', 'manual_booking_overrides')}
     fingerprint = hashlib.sha256(json.dumps(controls, sort_keys=True).encode()).hexdigest()
     document = dict(version=1, observed_at=datetime.now(timezone.utc).isoformat(),
                     settings_fingerprint=fingerprint, status=status, verified_actions=actions, days=days)

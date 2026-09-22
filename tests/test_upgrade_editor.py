@@ -164,6 +164,7 @@ class UpgradeEditorTests(unittest.TestCase):
         self.context.route("**/*", self.site)
         self.page = self.context.new_page()
         patches = [
+            mock.patch.object(b, "settings_file", self.path.with_name("settings.json")),
             mock.patch.object(b, "ACTIVE_ROOM_POLICY", SimpleNamespace(all_room_location_ids={"Best": 1})),
             mock.patch.object(b, "LIVE_CATALOG_ROOM_NAMES", ("Fallback", "Best")),
             mock.patch.object(b, "safe_goto", side_effect=lambda page, url: page.goto(url)),
@@ -323,6 +324,17 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertEqual(self.persisted, self.original)
         self.assertFalse(self.path.exists())
         self.assertFalse(self.save_calls)
+
+    def test_manual_edit_pin_blocks_queued_upgrade_at_final_save(self):
+        from app_settings import save_settings
+        from manual_booking_overrides import KEY
+        save_settings({KEY: {'42': {k: self.original.as_booking()[k]
+            for k in ('date', 'room', 'startTime', 'endTime')}}}, b.settings_file)
+        with self.assertRaises(b.BookingPreferencesChanged):
+            self.run_edit()
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.save_calls)
+        self.assertFalse(self.path.exists())
 
     def test_long_revalidation_does_not_leave_a_dirty_editor_open(self):
         def revalidate():

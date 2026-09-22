@@ -16,7 +16,7 @@ class BookingPreferencesChanged(SettingsError):
 _CONTROL_KEYS = (
     "time_preferences", "practice_plan", "disabled_dates", "room_preferences",
     "booking_strategy", "ignored_events", "rebooking_blackouts", "date_time_preferences",
-    "booking_rules", "advance_quota",
+    "booking_rules", "advance_quota", "manual_booking_overrides",
 )
 _ACTIVE_RUN = ContextVar("booking_preference_snapshot", default=None)
 

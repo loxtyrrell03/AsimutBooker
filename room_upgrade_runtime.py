@@ -196,6 +196,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
 
     def planner_arguments(day, fresh, gaps, extensions, at):
         events, ignored_ids = planning_events(engine, fresh, ignored_events)
+        from manual_booking_overrides import manual_booking_ids
+        ignored_ids = set(ignored_ids) | manual_booking_ids(settings)
         prefs = resolve_time_preferences(engine.load_time_preferences(settings), day)
         blocked = [(a * 60, b * 60) for a, b in engine.blackout_conflict_ranges(blackouts).get(day.isoformat(), ())]
         return dict(events=events, available_data=gaps,
@@ -232,7 +234,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                      and (max_actions is None or total_actions + c.action_count <= max_actions))
 
     def eligible_originals(events, at):
-        protected = protected_event_ids()
+        from manual_booking_overrides import manual_booking_ids
+        protected = protected_event_ids() | manual_booking_ids(settings)
         return [e for e in events if e.get("isReservation") is True and e["eventId"] not in previewed_ids
                 and e['eventId'] not in protected
                 and e["room"] in policy.room_order

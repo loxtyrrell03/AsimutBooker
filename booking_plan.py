@@ -89,6 +89,7 @@ _FINGERPRINT_SETTINGS_KEYS = (
     "date_time_preferences",
     "practice_plan",
     "rebooking_blackouts",
+    "manual_booking_overrides",
     "disabled_dates",
     "room_preferences",
     "ignored_events",

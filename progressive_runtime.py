@@ -129,6 +129,8 @@ class LiveContext:
         from room_upgrade_runtime import planning_events
         e, day = self.engine, self.day
         events, ignored_ids = planning_events(e, self.tracker, self.ignored)
+        from manual_booking_overrides import manual_booking_ids
+        ignored_ids = set(ignored_ids) | manual_booking_ids(self.settings)
         blocked = [(a*60, b*60) for a,b in e.blackout_conflict_ranges(self.blackouts).get(day.isoformat(), ())]
         return dict(events=events, available_data=self.gaps, policy=self.policy,
             now=datetime.now().astimezone(), time_preferences=resolve_time_preferences(e.load_time_preferences(self.settings), day),
@@ -406,8 +408,12 @@ def execute_transfer(ctx, plan, saved, args):
         t = transaction_payload(plan, plan_id=saved['id'], baseline_ids=ctx.tracker.agenda_active_event_ids,
                                 minimum_minutes=ctx.policy.minimum_block_minutes, seed=plan.seed,
                                 adjustment_order=[r.event_id for r, _ in adjustments])
-        parent = record_pending('transfer', room=plan.replacement.room, booking_date=plan.target.day.isoformat(),
-            start=time_text(plan.replacement.start), end=time_text(plan.replacement.end), transfer=t)
+        from manual_booking_overrides import assert_automatic_change_allowed
+        with e.booking_save_boundary():
+            assert_automatic_change_allowed([r.event_id for r in plan.originals] +
+                ([plan.seed.event_id] if plan.seed else []), path=e.settings_file)
+            parent = record_pending('transfer', room=plan.replacement.room, booking_date=plan.target.day.isoformat(),
+                start=time_text(plan.replacement.start), end=time_text(plan.replacement.end), transfer=t)
         for old, new in adjustments:
             if new is None:
                 ctx.write_cancel(parent, old)

@@ -342,6 +342,11 @@ def save_seed(engine, prepared, receipt, *, role='seed'):
     engine.dismiss_reservation_time_picker(page)
     save.click(trial=True, timeout=3000)
     with engine.booking_save_boundary():
+        from manual_booking_overrides import assert_automatic_change_allowed
+        protected_sources = [r['event_id'] for r in t['originals']]
+        if t.get('seed_before'):
+            protected_sources.append(t['seed_before']['event_id'])
+        assert_automatic_change_allowed(protected_sources, path=engine.settings_file)
         if (engine.list_pending_mutation_receipts() != [receipt]
                 or not engine.is_new_booking_form_url(page.url)
                 or not engine.booking_summary_matches(engine.page_booking_snapshot(page), desired.room,

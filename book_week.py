@@ -54,6 +54,9 @@ from app_settings import (
 from booking_preferences_guard import (
     BookingPreferencesChanged, booking_preference_run, booking_save_boundary,
 )
+from manual_booking_overrides import (
+    manual_booking_ids, extension_is_pinned, assert_automatic_change_allowed,
+)
 from agenda_snapshot import (
     AGENDA_SNAPSHOT_FILE,
     AgendaSnapshotError,
@@ -2392,7 +2395,7 @@ def load_extendable_bookings(settings=None):
         age_seconds = (comparable_now - created_at).total_seconds()
         if age_seconds < -300:
             raise SettingsError("Extendable booking creation timestamp is in the future")
-        if booking_date >= today:
+        if booking_date >= today and not extension_is_pinned(booking, settings):
             valid_bookings.append(booking)
     return valid_bookings
 
@@ -3525,6 +3528,8 @@ def cancel_reservation_exact(
                     or transfer_revalidate() is not True):
                 raise BookingVerificationError('Transfer cancellation lost its fresh boundary proof')
         with booking_save_boundary() if parent_receipt is not None else nullcontext():
+            if parent_receipt is not None:
+                assert_automatic_change_allowed([event_id], path=settings_file)
             if transfer_receipt is not None:
                 # Record attempt only after exact target proof and the final
                 # preference/Stop guard, immediately before the destructive click.
@@ -3826,6 +3831,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             timeout=UPGRADE_SAVE_TIMEOUT_MS,
         ) as pending_save:
             with booking_save_boundary():
+                if not time_edit:
+                    assert_automatic_change_allowed([r.event_id for r in upgrade.originals], path=settings_file)
                 if not pending_allows_step() or not form_matches(replacement) or not save.is_enabled():
                     raise BookingVerificationError("Room upgrade changed or became blocked before Save")
                 settled_at = datetime.now().astimezone() + timedelta(minutes=freeze_minutes)
@@ -4342,6 +4349,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
                 with booking_save_boundary():
+                    assert_automatic_change_allowed([parse_confirmed_event_id(event_url)], path=settings_file)
                     try:
                         receipt = record_pending_extension(
                             room=room,
@@ -9595,6 +9603,8 @@ def protect_time_edit_release(receipt):
     from booking_time_edits import time_edit_from_receipt
     edit = time_edit_from_receipt(receipt)
     windows = add_rebooking_blackout(*edit.released_window, path=settings_file)
+    from manual_booking_overrides import pin_explicit_time_edit
+    pin_explicit_time_edit(receipt, path=settings_file)
     clear_booking_plan()
     return windows
 
@@ -12788,6 +12798,7 @@ def _load_and_validate_runtime_settings():
     except BookingStrategyError as exc:
         raise SettingsError(str(exc)) from exc
     load_rebooking_blackouts(settings)
+    manual_booking_ids(settings)
     load_extendable_bookings(settings)
     list_pending_mutation_receipts()
     try:

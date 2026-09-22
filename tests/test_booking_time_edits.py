@@ -177,6 +177,8 @@ class TimeEditReceiptTests(unittest.TestCase):
              mock.patch.object(engine, "verify_mutation_receipt", side_effect=lambda rid, **kw: receipts.mark_verified(rid, path=self.path, **kw)):
             engine.reconcile_pending_mutation_receipts(mock.Mock(), [new])
         self.assertEqual(load_rebooking_blackouts(__import__('json').loads(settings.read_text()))[0].end_time, "13:30")
+        from manual_booking_overrides import manual_booking_ids
+        self.assertEqual(manual_booking_ids(__import__('json').loads(settings.read_text())), {42})
         self.assertFalse(receipts.list_pending(self.path))
 
     def test_missing_changed_or_duplicate_outcomes_remain_pending(self):

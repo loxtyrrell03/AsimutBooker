@@ -127,6 +127,15 @@ class UpgradeRuntimeTests(unittest.TestCase):
         self.scan.assert_not_called()
         self.edit.assert_not_called()
 
+    def test_manually_edited_original_is_not_an_upgrade_or_consolidation_source(self):
+        tracker = self.prepare_runner()
+        event = self.events[0]
+        self.settings['manual_booking_overrides'] = {str(event['eventId']):
+            {k: event[k] for k in ('date', 'room', 'startTime', 'endTime')}}
+        count, _ = self.run_runner(tracker)
+        self.assertEqual(count, 0)
+        self.edit.assert_not_called()
+
     def test_scan_that_consumes_remaining_window_does_not_start_an_edit(self):
         tracker=self.prepare_runner()
         self.args.scheduled=True
