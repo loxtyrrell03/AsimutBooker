@@ -1220,10 +1220,15 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         if payload is None:
             return
-        if path in {"/api/v1/system/jobs", "/api/v1/system/stop"}:
+        if path in {"/api/v1/system/jobs", "/api/v1/system/stop", "/api/v1/system/room-now-review", "/api/v1/system/room-now-delivery"}:
             try:
                 operations = self.app.assistant.operations
-                result = operations.stop(payload) if path.endswith("/stop") else operations.submit(payload)
+                if path.endswith('/room-now-delivery'):
+                    result = operations.check_room_now_delivery(payload)
+                elif path.endswith('/room-now-review'):
+                    result = operations.review_room_now(payload)
+                else:
+                    result = operations.stop(payload) if path.endswith("/stop") else operations.submit(payload)
                 self._json(HTTPStatus.ACCEPTED, result)
             except SystemConflict as exc:
                 self._error(HTTPStatus.CONFLICT, "operation_conflict", str(exc))

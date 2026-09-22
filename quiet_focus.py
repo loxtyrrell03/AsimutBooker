@@ -168,7 +168,6 @@ class TodayPanel(ScrollPage):
         ttk.Button(week,text='See my week →',command=on_week,style='QuietLink.TButton').pack(side='right')
         self.goal=label(self.body,size=13,color=MUTED);self.goal.pack(anchor='w',pady=(2,10))
         actions=tk.Frame(self.body,bg=PAGE);actions.pack(fill='x',pady=(8,14))
-        ttk.Button(actions,text='Find a room',command=on_find,style='Primary.TButton').pack(side='left')
         ttk.Button(actions,text='Ask Assistant',command=lambda:on_ask('')).pack(side='left',padx=10)
         footer=tk.Frame(self.body,bg=PAGE);footer.pack(fill='x')
         self.freshness=label(footer,size=12,color=MUTED);self.freshness.pack(side='left')
@@ -199,7 +198,7 @@ class TodayPanel(ScrollPage):
             self.room.configure(text='Make room for practice.' if available else 'Let’s check your bookings.')
             self.when.configure(text='No upcoming practice booking' if available else 'Your agenda is unavailable')
             self.duration.configure(text='in your last checked agenda' if available else 'Refresh to see your next session')
-            self.reconfirm.configure(text='Choose a date and time with the assistant.')
+            self.reconfirm.configure(text='Use Find me a room now above to book the earliest available session.')
             self.details.configure(text='Find a room' if available else 'Refresh bookings',command=self.on_find if available else self.on_refresh)
         for child in self.events.winfo_children():child.destroy()
         rows=view['also_today'] if available else []

@@ -6001,6 +6001,7 @@ def try_book_slot(
     remaining_daily_hours=None,
     max_action_minutes=None,
     time_prefs=None,
+    before_save=None,
 ):
     """Attempt one slot and return its exact verified receipt, or False."""
     operation_stage('Checking a booking opportunity…')
@@ -6405,6 +6406,10 @@ def try_book_slot(
         print(f"  [DEBUG] Save button at: x={btn_box['x']:.0f}, y={btn_box['y']:.0f}" if btn_box else "  [DEBUG] Save button box: None")
 
         with booking_save_boundary():
+            if before_save is not None:
+                before_save({'room': room, 'date': as_date(target_date).isoformat(),
+                             'start': book_start, 'end': book_end,
+                             'duration_minutes': booking_duration})
             try:
                 receipt = record_pending_create(
                     room=room,
@@ -10793,6 +10798,15 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
         refresh_quota_balances(page, tracker, live_dates)
 
+        if getattr(args, 'room_now_mode', None):
+            from room_now import run as run_room_now
+            result = run_room_now(sys.modules[__name__], page, args, settings,
+                                  practice_plan, tracker, today=today, live_dates=live_dates)
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return result
+
         # Read-only runs can prove a secured replacement but never retire donors.
         if not getattr(args, "plan_only", False) and not getattr(args, "upgrade_dry_run", False):
             for receipt in list_pending_mutation_receipts():
@@ -12403,6 +12417,10 @@ def _scheduled_target_time(now=None):
 def build_argument_parser():
     parser = argparse.ArgumentParser(description="Book RWCMD practice rooms safely")
     parser.add_argument("--headless", action="store_true", help="Run without a browser window")
+    parser.add_argument('--room-now-mode', choices=('preferred', 'longest'))
+    parser.add_argument('--room-now-minutes', type=int)
+    parser.add_argument('--room-now-requested-at')
+    parser.add_argument('--room-now-output')
     parser.add_argument(
         "--target-time",
         metavar="HH:MM",
@@ -12562,6 +12580,8 @@ def _cancellation_requested(args):
 
 
 def _validate_cli_args(parser, args):
+    from room_now import validate_cli
+    validate_cli(parser, args)
     from booking_time_edits import time_edit_requested, edit_from_args
     if time_edit_requested(args):
         try:
@@ -12906,7 +12926,12 @@ def main(argv=None):
     extension_failures = []
     failures_token = _run_extension_failures.set(extension_failures)
     report_token = run_report.start(sys.modules[__name__], settings, practice_plan)
+    assistant_lock = None
     try:
+        if getattr(args, 'room_now_mode', None):
+            from app_settings import InterProcessFileLock
+            assistant_lock = InterProcessFileLock(APP_DIR / 'data/assistant-mutation.lock', timeout=0)
+            assistant_lock.acquire()
         acquired = runtime_lock.acquire()
         wait_seconds = (
             180 if args.scheduled
@@ -12992,6 +13017,8 @@ def main(argv=None):
         return 1
     finally:
         runtime_lock.release()
+        if assistant_lock is not None:
+            assistant_lock.release()
         _run_verified_details.reset(completed_token)
         _run_extension_failures.reset(failures_token)
         run_report.finish(report_token)

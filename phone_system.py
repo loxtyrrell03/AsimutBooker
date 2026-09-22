@@ -15,7 +15,7 @@ from event_identity import event_identity_v2, legacy_event_identity, resolve_ign
 from runtime_guard import SingleInstanceLock
 
 ROOT = Path(__file__).resolve().parent
-RUN_ACTIONS = {'run', 'run_visible', 'login', 'scan', 'agenda', 'plan'}
+RUN_ACTIONS = {'run', 'run_visible', 'login', 'scan', 'agenda', 'plan', 'room_now'}
 WRITE_ACTIONS = {'schedule_install', 'schedule_remove', 'history_clear', 'events_save',
                  'config_save', 'cleanup', 'reopen'}
 VIEWS = {'scan', 'schedule', 'history', 'events', 'config', 'logs', 'cleanup', 'protected'}
@@ -39,9 +39,13 @@ def validate_action(action, args):
         raise ValueError('Choose a supported action.')
     fields = {'scan': {'dates'}, 'history_clear': {'revision'},
               'events_save': {'revision', 'changes'}, 'config_save': {'revision', 'rules'},
-              'cleanup': {'revision'}, 'reopen': {'revision', 'window'}}.get(action, set())
+              'cleanup': {'revision'}, 'reopen': {'revision', 'window'},
+              'room_now': {'mode', 'minutes'}}.get(action, set())
     if set(args) != fields:
         raise ValueError('The action has unexpected fields.')
+    if action == 'room_now':
+        from room_now import validate_choices
+        validate_choices(args)
     if 'revision' in fields and (not isinstance(args['revision'], str) or
                                 re.fullmatch('[a-f0-9]{64}', args['revision']) is None):
         raise ValueError('Reload this page before saving.')

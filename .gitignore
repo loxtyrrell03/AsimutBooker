@@ -61,6 +61,9 @@ data/phone_assistant_state.json.lock
 data/phone_assistant_state.json.bak
 data/phone_operations/
 data/desktop_operations/
+data/desktop_room_now.json*
+data/desktop-room-now.lock
+data/room_now_preferences.json*
 data/desktop_cancellation.json*
 data/desktop-cancellation.lock
 config/config.yaml.bak

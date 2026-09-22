@@ -1,21 +1,28 @@
-## 2026-09-22 Room now design proposals (awaiting selection)
+## 2026-09-22 Find me a room now on Today
 
-- `docs/design/2026-09-22-room-now/` contains three editable desktop/phone SVG
-  proposals: A Today panel, B persistent action bar, C global button and sheet.
-  Shared state and narrow-layout boards cover duration setup, help, progress,
-  shorter matches, empty/error results, Stop, recovery and booking details.
-  All example data is invented. No design has been selected or implemented.
-- The user chose earliest start over waiting for a better duration match, and
-  requested a Longest possible option with a selectable maximum (e.g. two hours).
-  The proposed shared contract is one create-only session today: earliest
-  eligible start, closest/longest duration within the chosen ceiling, then
-  saved room ranking. See the design README for safeguards and handoff details.
-  Existing Find a room buttons currently open Assistant; `run_booker` can also
-  upgrade/extend and cannot directly guarantee this new contract.
-- All five SVG boards render without text-width/bounds failures; the static
-  gallery loads without horizontal overflow at 390/1040px. Phone 320px and PC
-  760px boards were visually inspected. This is prototype evidence only; no
-  application code, live preferences, reservations, service or build changed.
+- The user selected design A in `docs/design/2026-09-22-room-now/`. Phone and
+  PC Today show Preferred duration and Longest possible with a chosen ceiling
+  of 30-120 minutes. Local drafts do not change practice preferences or enable
+  automatic scheduling. Existing Find actions focus this panel.
+- `room_now.py` uses the common fresh policy, complete agenda and exact-create
+  engine for one session today: earliest eligible quarter-hour start, longest
+  legal duration within the ceiling, then saved room rank. Soft time preferences
+  cannot delay it; strict windows, disabled dates, minimums, targets, conflicts,
+  manual protections, extension holds, quotas and access remain authoritative.
+  Requests expire after five minutes and permit at most eight definite refusals.
+- Phone and PC share `phone_operation_worker.py`; durable IDs, ownership and
+  cooperative Stop prevent duplicate or stale Saves. The exact attempt is saved
+  before Save. Success requires a verified receipt and newer complete agenda;
+  uncertain outcomes expose read-only recovery. Lost phone delivery is closed
+  before a delayed submission can arrive. No extension, upgrade, split or
+  background watch is part of this action.
+- Source verification: the full 1,623-test suite passes, followed by 93 focused
+  checks on final source including 33 room-now tests. All 17 phone Node checks,
+  TypeScript, lint and private-origin build validation pass. Chromium/WebKit
+  cover 320/390px, reduced height, help, retained choices, Stop, recovery and
+  lost delivery; existing Assistant scroll tests pass. PC controls pass at
+  760/1040px. These fixtures create no real reservation. Activation is separate;
+  existing PC windows must reopen to load the new controls.
 
 ## 2026-09-22 bounded retry of inconsistent session horizon reads
 

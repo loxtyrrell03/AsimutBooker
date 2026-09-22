@@ -1,6 +1,7 @@
 # Find me a room now — design review
 
-Status: three proposals for selection; application behavior is not implemented.
+Status: the user selected **A — Today panel**. Phone and PC implementations
+use the shared create-only worker in `room_now.py`.
 All rooms, availability, times and outcomes in the mockups are invented examples.
 
 Open `index.html` for the gallery. Each editable `option-*.svg` shows phone and
@@ -80,9 +81,23 @@ button. Stop prevents further Saves but allows in-flight verification to finish;
 it never cancels a reservation already saved. A definite no-Save rejection can
 try a bounded next candidate within the same request scope.
 
-## Current-source findings and implementation handoff
+## Implementation
 
-- `phone/components/quiet-focus.tsx` and `quiet_focus_gui.py` currently route
+`room_now.py` ranks fresh eligible quarter-hour intervals by start, duration
+and saved room order. `phone_operation_worker.py` is shared by both clients.
+Each request expires after five minutes and tries at most eight definite
+refusals; it never proceeds after an uncertain Save. Per-device duration
+drafts do not change booking preferences or enable automatic scheduling.
+The exact attempt is persisted before Save; recovery refreshes the agenda
+and verifies its receipt without submitting another booking. Undelivered
+phone request IDs are closed before a delayed submission can arrive.
+
+The tests use synthetic data and intercepted browser APIs. No real reservation
+was created to test this feature. Activation evidence is recorded in AGENTS.md.
+
+## Design-time source findings
+
+- `phone/components/quiet-focus.tsx` and `quiet_focus_gui.py` previously routed
   Find a room into an assistant draft. The new action needs a deterministic
   shared create-only path, not a reformulated assistant prompt.
 - `assistant_tools.py: run_booker` selects a plan action and may upgrade or

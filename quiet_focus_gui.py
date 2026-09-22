@@ -164,15 +164,25 @@ class QuietFocusGUI:
         self.settings_scroll._bind_wheel()
 
         self.today_panel = TodayPanel(self.today_tab,
-            on_find=lambda:self._quiet_ask('Help me find a practice room. Ask which date and time I want.'),
+            on_find=self._focus_room_now,
             on_week=lambda:self._select_quiet_page('week'), on_ask=self._quiet_ask,
             on_refresh=self._refresh_quiet_agenda, on_details=self._show_quiet_booking)
         self.today_panel.pack(fill=tk.BOTH, expand=True)
+        from room_now_gui import RoomNowPanel
+        self.room_now_panel = RoomNowPanel(self.today_panel.body,
+            on_details=self._show_quiet_booking, on_refresh=self._refresh_quiet_views,
+            other_busy=lambda:self.is_running or self.login_operation_in_progress)
+        self.room_now_panel.pack(fill='x',pady=(0,18),before=self.today_panel.hero.master)
         self.week_panel = WeekPanel(self.week_tab, on_calendar=lambda:self.show_calendar_dialog(initial_view='week'),
             on_refresh=self._refresh_quiet_agenda, on_details=self._show_quiet_booking)
         self.week_panel.pack(fill=tk.BOTH, expand=True)
         self.main_notebook.bind('<<NotebookTabChanged>>', self._on_quiet_page_changed)
         self._sync_quiet_navigation()
+
+    def _focus_room_now(self):
+        self._select_quiet_page('today')
+        self.today_panel.canvas.yview_moveto(0)
+        self.room_now_panel.start_button.focus_set()
 
     def _show_advanced_tools(self):
         old=self._detail_pages.get('tools')

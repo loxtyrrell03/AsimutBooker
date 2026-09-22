@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Clock3, DoorOpen, MessageCircle, RefreshCw } from 'lucide-react';
 import type { AgendaEvent, BookerSnapshot } from '../app/page';
 import { durationMinutes, hoursLabel, todaySummary } from '../lib/today_state';
@@ -9,9 +9,9 @@ function dateName(date: string) {
   return new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(`${date}T12:00:00`));
 }
 
-export function TodayView({ booker, refreshing, onRefresh, onWeek, onAsk, onDetails, preview }: {
+export function TodayView({ booker, refreshing, onRefresh, onWeek, onAsk, onDetails, preview, roomNow }: {
   booker: BookerSnapshot; refreshing: boolean; onRefresh: () => void;
-  onWeek: () => void; onAsk: (prompt: string) => void; onDetails: (event: AgendaEvent) => void; preview: boolean;
+  onWeek: () => void; onAsk: (prompt: string) => void; onDetails: (event: AgendaEvent) => void; preview: boolean; roomNow?: ReactNode;
 }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 30_000); return () => window.clearInterval(timer); }, []);
@@ -24,6 +24,7 @@ export function TodayView({ booker, refreshing, onRefresh, onWeek, onAsk, onDeta
     {preview && <p className="preview-notice">Design preview · sample bookings</p>}
     {stale && <output className="quiet-notice">Showing your last checked bookings. {refreshing ? 'Updating…' : 'Refresh to check for changes.'}</output>}
     {booker.status.pending_mutations > 0 && <p className="quiet-notice" role="alert">A booking result needs checking. Open Settings to review it.</p>}
+    {roomNow}
     <div className="today-top-grid">
       <article className="next-booking">
         <div className="next-eyebrow"><span>{view.inProgress ? 'HAPPENING NOW' : 'UP NEXT'}</span>{view.next && <span className="booked-pill">{stale ? 'Last checked' : 'Booked'}</span>}</div>
@@ -36,7 +37,7 @@ export function TodayView({ booker, refreshing, onRefresh, onWeek, onAsk, onDeta
           <button className="quiet-primary" onClick={() => onDetails(view.next!)}>View booking</button>
         </> : <><h2>{booker.agenda.available ? 'Make room for practice.' : 'Let’s check your bookings.'}</h2>
           <p className="empty-next">{booker.agenda.available ? 'No upcoming practice booking in your last checked agenda.' : 'Your agenda is unavailable. Refresh to see your next session.'}</p>
-          <button className="quiet-primary" onClick={booker.agenda.available ? () => onAsk('Help me find a practice room. Ask which date and time I want.') : onRefresh} disabled={refreshing}>{booker.agenda.available ? 'Find a room' : 'Refresh bookings'}</button></>}
+          {(!roomNow || !booker.agenda.available) && <button className="quiet-primary" onClick={booker.agenda.available ? () => onAsk('Help me find a practice room. Ask which date and time I want.') : onRefresh} disabled={refreshing}>{booker.agenda.available ? 'Find a room' : 'Refresh bookings'}</button>}</>}
       </article>
       <article className="week-glance"><h2>This week</h2><p className="week-total">{booker.agenda.available ? hoursLabel(view.weekMinutes) : '—'}</p><p>{stale ? 'booked in your last checked agenda' : 'booked in your checked agenda'}</p>
         {practice.enabled && practice.default_hours !== null && <p className="daily-goal">Daily goal <strong>{practice.default_hours} hours</strong></p>}
@@ -46,7 +47,6 @@ export function TodayView({ booker, refreshing, onRefresh, onWeek, onAsk, onDeta
       {!booker.agenda.available ? <p className="quiet-muted">Refresh to check the rest of your day.</p> : view.alsoToday.length ? view.alsoToday.map((event, index) => <button className="today-event" key={`${event.room}-${event.start_time}-${index}`} onClick={() => event.is_reservation ? onDetails(event) : onWeek()}>
         <span className="today-event-time"><strong>{event.start_time}</strong><span>{event.end_time}</span></span><span className="today-event-copy"><strong>{event.is_reservation ? `Room ${event.room}` : event.title}</strong><span>{event.is_reservation ? 'Booked practice' : event.room}</span></span><ArrowRight /></button>) : <p className="quiet-muted">{stale ? 'No other sessions in the last checked agenda.' : 'Nothing else coming up in your checked agenda today.'}</p>}
     </section>
-    <button className="quiet-primary find-room" onClick={() => onAsk('Help me find a practice room. Ask which date and time I want.')}>Find a room</button>
     <button className="ask-card" onClick={() => onAsk('')}><MessageCircle /><span><strong>Need to change your plans?</strong><span>Ask Assistant</span></span><ArrowRight /></button>
     <output className="today-freshness">{refreshing ? 'Checking your bookings…' : booker.agenda.observed_at ? `Last checked ${new Intl.DateTimeFormat('en-GB', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:booker.timezone}).format(new Date(booker.agenda.observed_at))}` : 'Not checked yet'}</output>
   </section>;

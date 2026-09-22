@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronRight, RefreshCw } from 'lucide-react';
 import { requestJson } from '../lib/api';
 import { HelpTip } from './help-tip';
+import type { RoomNowBooking } from './room-now';
 
 type Gap = { date: string; room: string; start: string; end: string; minutes: number };
-export type SystemJob = { request_id: string; action: string; active: boolean; state: string; text: string; updated_at?: string; result?: { scan?: { observed_at: string; rows: Gap[]; scanned_dates: string[]; unavailable_dates: string[] } } | null };
+export type SystemJob = { request_id: string; action: string; active: boolean; state: string; text: string; updated_at?: string; result?: { booking?: RoomNowBooking; requested_minutes?: number; scan?: { observed_at: string; rows: Gap[]; scanned_dates: string[]; unavailable_dates: string[] } } | null };
 type View = 'schedule' | 'run' | 'scan' | 'history' | 'events' | 'logs' | 'config' | 'cleanup' | 'protected' | 'about';
 type Rules = { rolling_quota: number; same_room_gap_minutes: number; peak_hours: { start: string; end: string; max_hours: number } };
 type ScanResult = { observed_at: string; rows: Gap[]; scanned_dates: string[]; unavailable_dates: string[] };
@@ -143,7 +144,7 @@ export function SystemTools({ csrf, enabled, active, job, onJob, onSaved, onEdit
       <p>{job.text}</p>
       {job.active && <progress aria-label="PC operation progress" />}
       <div className="system-actions">
-        {job.active && ['run', 'run_visible', 'scan', 'agenda', 'plan', 'login'].includes(job.action) && <button type="button" disabled={working || job.state === 'stopping'} onClick={() => void stop()}>{job.state === 'stopping' ? 'Stopping…' : 'Stop operation'}</button>}
+        {job.active && ['run', 'run_visible', 'scan', 'agenda', 'plan', 'login', 'room_now'].includes(job.action) && <button type="button" disabled={working || job.state === 'stopping'} onClick={() => void stop()}>{job.state === 'stopping' ? 'Stopping…' : 'Stop operation'}</button>}
         <button type="button" onClick={() => void checkJob(true)}>Reload status</button>
       </div>
       {job.state === 'uncertain' && <p>Review this page and the latest agenda, then use the outcome review in Assistant before another action.</p>}

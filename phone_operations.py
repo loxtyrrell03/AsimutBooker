@@ -81,13 +81,44 @@ class PhoneOperations:
         with self.service._request_lock:
             if not self.active or self.job['request_id'] != request_id:
                 raise SystemConflict('This operation is no longer running. Reload its status.')
-            if self.job['action'] not in {'run', 'run_visible', 'scan', 'agenda', 'plan', 'login'}:
+            if self.job['action'] not in {'run', 'run_visible', 'scan', 'agenda', 'plan', 'login', 'room_now'}:
                 raise SystemConflict('This short settings operation must finish before another action.')
             directory = self.directory / request_id
             directory.mkdir(parents=True, exist_ok=True)
             (directory / 'stop').touch()
             self._update(state='stopping', text='Stop requested. Waiting for the current step and any booking verification to finish…')
             return {'accepted': True, 'job': self.snapshot()}
+
+    def review_room_now(self, payload):
+        if set(payload) != {'request_id'}:
+            raise ValueError('Choose the room request to check.')
+        request_id = str(UUID(payload['request_id']))
+        with self.service._request_lock:
+            if (not self.job or self.job.get('request_id') != request_id
+                    or self.job.get('action') != 'room_now' or self.active or self.service.is_busy):
+                raise SystemConflict('Wait for the current request, then check its status.')
+            self._update(active=True, state='checking', text='Checking the booking in your latest agenda…')
+            self.thread = threading.Thread(target=self._run, args=(request_id, 'room_now_review', {}), daemon=True)
+            try:
+                self.thread.start()
+            except Exception:
+                self._update(active=False, state='uncertain', text='The booking check could not start. Try Check booking status again.')
+                raise
+            return {'accepted': True, 'job': self.snapshot()}
+
+    def check_room_now_delivery(self, payload):
+        """Close an undelivered ID so a delayed HTTP request cannot book later."""
+        if set(payload) != {'request_id'}:
+            raise ValueError('Choose the request to check.')
+        request_id = str(UUID(payload['request_id']))
+        with self.service._request_lock:
+            if self.job and self.job.get('request_id') == request_id:
+                return {'job': self.snapshot(), 'not_started': False}
+            if self.service.ledger.lookup(request_id) is None:
+                self.service.ledger.reserve(request_id)
+                self.service.ledger.mark(request_id, 'rejected')
+                return {'job': self.snapshot(), 'not_started': True}
+            raise SystemConflict('This request needs outcome review before another booking.')
 
     def _run(self, request_id, action, args):
         acquired = False
@@ -98,7 +129,9 @@ class PhoneOperations:
             else:
                 directory = self.directory / request_id
                 directory.mkdir(parents=True, exist_ok=True)
-                if (directory / 'stop').exists():
+                if action == 'room_now':
+                    atomic_write_json(directory / 'submitted.json', {'requested_at': self.job['started_at']})
+                if (directory / 'stop').exists() and action != 'room_now_review':
                     result = {'state': 'stopped', 'message': 'Stopped before starting.'}
                 else:
                     self._update(state='running', text='Starting the PC operation…')

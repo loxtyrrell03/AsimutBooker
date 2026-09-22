@@ -40,6 +40,7 @@ import { SystemTools, type SystemJob } from '@/components/system-tools';
 import { PhoneCalendar } from '@/components/phone-calendar';
 import { PracticeSettings } from '@/components/practice-settings';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
+import { RoomNow } from '@/components/room-now';
 import { requestJson } from '@/lib/api';
 
 const PRIVATE_ORIGIN = process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || '';
@@ -1731,7 +1732,7 @@ export default function HomePage() {
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
       <div className={tab === 'assistant' ? 'assistant-scroll' : undefined} ref={scrollRef}>
         <div className="app-content">
-          {systemJob?.active && tab !== 'status' && <output className="system-job system-global"><strong>PC operation in progress</strong><p>{systemJob.text}</p><button type="button" onClick={() => setTab('status')}>View operation / Stop</button></output>}
+          {systemJob?.active && tab !== 'status' && !(tab === 'today' && systemJob.action === 'room_now') && <output className="system-job system-global"><strong>{systemJob.action === 'room_now' ? 'Finding a room…' : 'PC operation in progress'}</strong><p>{systemJob.text}</p><button type="button" onClick={() => setTab(systemJob.action === 'room_now' ? 'today' : 'status')}>View operation / Stop</button></output>}
           {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
             {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
             <div><strong>{cancelling ? 'Cancelling booking' : 'Cancellation update'}</strong>
@@ -1763,8 +1764,9 @@ export default function HomePage() {
             </div>
           )}
 
-          {tab === 'today' && booker && (selectedBooking ? <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} /> :
-            <TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview} />)}
+          {tab === 'today' && booker && selectedBooking && <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} />}
+          {booker && <div hidden={tab !== 'today' || Boolean(selectedBooking)}><TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview}
+            roomNow={<RoomNow csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onDetails={setSelectedBooking} />} /></div>}
           {tab === 'assistant' && (
             <div className="assistant-view">
               {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}

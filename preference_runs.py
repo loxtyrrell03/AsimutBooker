@@ -101,7 +101,7 @@ def complete_matching_run(path, settings, args):
     if any(getattr(args, name, False) for name in (
             'only_date', 'only_room', 'check_only', 'agenda_only', 'plan_only',
             'upgrade_dry_run', 'horizon_only', 'extensions_only', 'upgrades_only',
-            'max_actions', 'max_action_minutes')):
+            'max_actions', 'max_action_minutes', 'room_now_mode')):
         return
     if getattr(args, 'scheduled', False) and not getattr(args, 'target_time', None):
         return  # Intervening scheduled passes may check only today's practice.

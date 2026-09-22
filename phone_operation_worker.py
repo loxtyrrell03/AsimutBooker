@@ -12,7 +12,8 @@ from runtime_guard import SingleInstanceAlreadyRunning
 
 
 def execute(action, args, directory, *, root=ROOT, booker_main=None):
-    validate_action(action, args)
+    if action != 'room_now_review':
+        validate_action(action, args)
     directory = Path(directory)
     stop = directory / 'stop'
     rows, scanned = [], []
@@ -36,6 +37,13 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
 
     progress('Starting the PC operation…')
     try:
+        if action == 'room_now_review':
+            from room_now import review_result
+            if booker_main is None:
+                from book_week import main as booker_main
+            if booker_main(['--headless', '--agenda-only']) != 0:
+                return {'state': 'uncertain', 'message': 'The booking could not be checked. Try Check booking status again.'}
+            return review_result(directory, root)
         with owned_operation(stop, progress, availability):
             check_operation_stop()
             if action in RUN_ACTIONS:
@@ -45,11 +53,25 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                          'login': ['--headless', '--login-only'],
                          'scan': ['--headless', '--check-only', '--check-dates', *args.get('dates', [])],
                          'agenda': ['--headless', '--agenda-only'],
-                         'plan': ['--headless', '--plan-only']}[action]
+                         'plan': ['--headless', '--plan-only']}.get(action)
+                if action == 'room_now':
+                    from room_now import cli_flags, RoomNowRequest, local_now
+                    from datetime import datetime
+                    from app_settings import SettingsError
+                    submitted = json.loads((directory / 'submitted.json').read_text(encoding='utf-8'))
+                    try:
+                        RoomNowRequest(args['mode'], args['minutes'], datetime.fromisoformat(submitted['requested_at'])).check_current(local_now())
+                    except SettingsError as exc:
+                        return {'state': 'blocked', 'message': str(exc)}
+                    flags = cli_flags(args, submitted['requested_at'], directory / 'room-now.json')
                 code = booker_main(flags)
                 from mutation_receipts import list_pending
                 if list_pending(root / 'data/mutation_receipts.json'):
                     return {'state': 'uncertain', 'message': 'A booking outcome needs reconciliation. Refresh the agenda and review System health.'}
+                if action == 'room_now' and (directory / 'room-now.json').exists():
+                    return json.loads((directory / 'room-now.json').read_text(encoding='utf-8'))
+                if action == 'room_now' and code == 0:
+                    return {'state': 'blocked', 'message': 'Asimut refused this booking. No room was confirmed; review the latest booking activity.'}
                 if code == 0:
                     result = {'state': 'completed', 'message': {
                         'run': 'Booker run completed. Refresh the agenda to see the result.',
@@ -82,7 +104,10 @@ def main():
     payload = json.loads(sys.stdin.read(24000))
     request_id = str(UUID(payload['request_id']))
     # The parent chooses only a UUID below one fixed operations root.
-    directory = ROOT / 'data/phone_operations' / request_id
+    surface = payload.get('surface', 'phone')
+    if surface not in {'phone', 'desktop'}:
+        raise ValueError('Unsupported operation surface')
+    directory = ROOT / 'data' / ('desktop_operations' if surface == 'desktop' else 'phone_operations') / request_id
     result = execute(payload['action'], payload['args'], directory)
     atomic_write_json(directory / 'result.json', result)
 
