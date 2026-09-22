@@ -17,8 +17,10 @@
   pass published a current weekly plan and respected an exact-site quota refusal.
   No pending receipt remained, and the private phone agenda/plan were current.
   Evidence and activation-check limitations are retained under
-  `artifacts/booker-monitor/session-policy-retry/`. Recovery of a malformed first
-  response is fixture-proven; the live responses did not exercise the retry.
+  `artifacts/booker-monitor/session-policy-retry/`. The normal 16:12 worker later
+  encountered a real minute mismatch, recovered with the single fresh read,
+  continued policy/agenda checks and completed normally. This gives live retry
+  evidence in addition to the malformed-response fixtures.
 
 ## 2026-09-22 weekly plan refresh with exhausted advance credit
 
