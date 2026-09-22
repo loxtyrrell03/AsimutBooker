@@ -23,6 +23,14 @@
   lost delivery; existing Assistant scroll tests pass. PC controls pass at
   760/1040px. These fixtures create no real reservation. Activation is separate;
   existing PC windows must reopen to load the new controls.
+- Activated source `791a086` and phone build `20260922-room-now` under the
+  assistant/runtime/dispatcher locks; reloaded only the idle existing phone
+  backend. Protected data including browser state, both task definitions and
+  all Serve routes are unchanged. Exact private HTTPS assets, session,
+  preferences, fresh agenda and connected Today controls pass in Chromium and
+  WebKit at 320/390px. Reload existing phone pages; reopen PC windows. No live
+  reservation was created for testing and no physical-phone proof is claimed.
+  Private activation and render evidence: `artifacts/room-now-20260922/`.
 
 ## 2026-09-22 bounded retry of inconsistent session horizon reads
 
