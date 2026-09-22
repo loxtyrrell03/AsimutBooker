@@ -497,6 +497,9 @@ def refresh_live_room_policy(page, preferences, *, today=None):
     catalog = refresh_room_catalog(page)
     policy = build_live_room_policy(catalog, preferences)
     install_live_room_policy(policy, today=today)
+    for room in catalog.rooms:
+        if getattr(room, "permission_refusal", None):
+            print(f"  Room unavailable to this account: {room.permission_refusal}")
     horizons = sorted(set(policy.room_horizon_minutes.values()), reverse=True)
     horizon_text = ", ".join(format_horizon_minutes(value) for value in horizons)
     print(
@@ -935,7 +938,7 @@ def _visible_room_permission_refusal(page, room):
         try:
             element = page.locator(selector).first
             if element.count() > 0 and element.is_visible():
-                reason = room_permission_refusal_text(element.text_content())
+                reason = room_permission_refusal_text(element.text_content(), room)
                 if reason:
                     return RoomPermissionRefusal(room, reason)
         except Exception:
@@ -1025,7 +1028,7 @@ def refresh_new_booking_validation(page, expected_end_time, *, expected_start_ti
         response.body()
         document = response.json()
         check_quota_refusal(document)
-        refusal = response_room_permission_refusal(document)
+        refusal = response_room_permission_refusal(document, expected_room)
         if refusal:
             return False, refusal
         if not check_response_has_explicit_success(document):
@@ -1092,7 +1095,7 @@ def refresh_extension_validation(page, end_input, booking, expected_end_time):
         response.body()
         document = response.json()
         check_quota_refusal(document)
-        refusal = response_room_permission_refusal(document)
+        refusal = response_room_permission_refusal(document, booking.get("room"))
         if refusal:
             return False, refusal
         if not check_response_has_explicit_success(document):
@@ -3789,7 +3792,7 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             raise ValueError("Asimut did not approve the exact room/time change")
         check_payload = response.json()
         check_quota_refusal(check_payload)
-        refusal = response_room_permission_refusal(check_payload)
+        refusal = response_room_permission_refusal(check_payload, replacement.room)
         if refusal:
             for record in upgrade.originals:
                 verify(record)
@@ -3862,7 +3865,7 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             if transaction_receipt is None:
                 resolve_mutation_receipt(receipt["id"], resolution="Room upgrade rejected; exact original reservation verified intact")
             print("UPGRADE NOT APPLIED: original reservation verified intact")
-            refusal = response_room_permission_refusal(payload)
+            refusal = response_room_permission_refusal(payload, replacement.room)
             if refusal:
                 return RoomPermissionRefusal(replacement.room, refusal)
             return False
@@ -4254,7 +4257,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                 print(f"    Extension not saved: {validation_detail}")
                 run_report.note("refusal", f"Extension refused: {validation_detail}; no Save attempted.")
                 safe_goto(page, ASIMUT_AGENDA_URL)
-                refusal = room_permission_refusal_text(validation_detail)
+                refusal = room_permission_refusal_text(validation_detail, room)
                 if refusal:
                     return RoomPermissionRefusal(room, refusal)
                 return False
@@ -6192,7 +6195,7 @@ def try_book_slot(
             print(f"  Booking not saved: {validation_detail}")
             run_report.note("refusal", f"{room}: {validation_detail}; no Save attempted.")
             go_back(page, days_ahead)
-            refusal = room_permission_refusal_text(validation_detail)
+            refusal = room_permission_refusal_text(validation_detail, room)
             return RoomPermissionRefusal(room, refusal) if refusal else False
 
         # Read back the values to verify
@@ -8828,7 +8831,7 @@ def try_horizon_snipe(
         )
         go_back(page, days_ahead)
         run_report.note("refusal", f"{room}: boundary check refused the booking: {validation_detail}; no Save attempted.")
-        refusal = room_permission_refusal_text(validation_detail)
+        refusal = room_permission_refusal_text(validation_detail, room)
         if refusal:
             return RoomPermissionRefusal(room, refusal)
         return False

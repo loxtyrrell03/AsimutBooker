@@ -1,3 +1,19 @@
+## 2026-09-22 live room permission filtering
+
+- Catalog discovery now retains exact, room-bound ASIMUT access refusals from
+  its existing no-Save checks. A valid horizon does not prove booking access.
+  The live policy excludes refused rooms from all candidate paths but keeps
+  their identities for complete grids. Saved room order and exclusions are
+  untouched; permission evidence is run-local and never restored from cache.
+- Named refusals remain distinct from horizon, quota, duration, session and
+  generic service errors. Exact create/edit/extension/transfer checks report
+  the room refusal while preserving Save and receipt/recovery safeguards.
+- All 1,524 Python tests pass, followed by 98 focused checks for the final
+  classifier refinements. Authenticated write-blocked verification found six
+  inaccessible rooms and retained 27 eligible choices, with all protected
+  state unchanged. No diagnostic reservation was saved. Private evidence is
+  under `artifacts/booker-monitor/room-access-*20260922*`.
+
 ## 2026-09-21 contained phone assistant scrolling
 
 - Assistant uses a viewport-bounded flex layout: header, composer and navigation

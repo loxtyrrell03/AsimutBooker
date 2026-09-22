@@ -210,7 +210,7 @@ def preflight_transfer_destination(engine, prepared, plan):
         page.remove_listener('request', request_seen)
         page.remove_listener('response', response_seen)
     if not ok:
-        refusal = room_permission_refusal_text(detail)
+        refusal = room_permission_refusal_text(detail, desired.room)
         if refusal:
             return RoomPermissionRefusal(desired.room, refusal)
         # The ordinary edit helper rejects personal overlap/peak quota. Only
@@ -226,7 +226,7 @@ def preflight_transfer_destination(engine, prepared, plan):
         if response.ok is not True or not check_matches(response.request):
             return False
         document = response.json()
-        refusal = response_room_permission_refusal(document)
+        refusal = response_room_permission_refusal(document, desired.room)
         if refusal:
             return RoomPermissionRefusal(desired.room, refusal)
         return _only_removed_personal_conflicts(document, plan,
@@ -257,7 +257,7 @@ def prepare_existing_destination(engine, page, plan):
     refusal = engine._visible_room_permission_refusal(page, seed.room)
     if refusal is not None:
         return refusal
-    reason = room_permission_refusal_text(detail) if not ok else None
+    reason = room_permission_refusal_text(detail, seed.room) if not ok else None
     if reason:
         return RoomPermissionRefusal(seed.room, reason)
     engine.dismiss_reservation_time_picker(page)
@@ -325,7 +325,7 @@ def save_seed(engine, prepared, receipt, *, role='seed'):
         return False
     if not ok:
         refusal = engine._visible_room_permission_refusal(page, desired.room)
-        if refusal is None and room_permission_refusal_text(detail):
+        if refusal is None and room_permission_refusal_text(detail, desired.room):
             refusal = RoomPermissionRefusal(desired.room, detail)
         print(f'TRANSFER NOT SAVED: {detail}')
         return refusal if refusal is not None else False

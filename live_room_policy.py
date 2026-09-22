@@ -241,6 +241,16 @@ def build_live_room_policy(catalog: Any, preferences: RoomPreferences) -> LiveRo
     all_room_names = tuple(by_name)
     overview_url = canonical_overview_url(all_room_names, location_ids)
 
+    # Visibility and a horizon do not establish permission to reserve a room.
+    # Keep every identity for complete grids, but never plan an explicitly
+    # refused room. This is run-local evidence, not a saved user exclusion.
+    room_order = tuple(
+        name for name in room_order
+        if not getattr(by_name.get(name), "permission_refusal", None)
+    )
+    if not room_order:
+        raise LiveRoomPolicyError("Live room permissions leave no eligible rooms")
+
     horizons: dict[str, int] = {}
     selected_metadata: dict[str, Mapping[str, Any]] = {}
     for room_name in room_order:

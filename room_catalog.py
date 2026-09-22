@@ -29,6 +29,7 @@ from urllib.parse import parse_qsl, urlencode, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
+from room_access import response_named_room_refusal
 
 
 class _EuropeLondonFallback(tzinfo):
@@ -263,6 +264,10 @@ class RoomCatalogRoom:
     horizon_minutes: int
     booking_cutoff: datetime
     closed_hours: tuple[tuple[datetime, datetime], ...] = ()
+
+    # Fresh check evidence only. Cached display catalogs never grant or deny
+    # access, and every live refresh observes permission again.
+    permission_refusal: str | None = field(default=None, compare=False)
 
     @property
     def horizon_days(self) -> float:
@@ -1114,6 +1119,9 @@ def build_catalog(
                 horizon_minutes=evidence.horizon_minutes,
                 booking_cutoff=normalized_cutoff,
                 closed_hours=location.closed_hours,
+                permission_refusal=response_named_room_refusal(
+                    check_payloads[location.location_id], location.name
+                ),
             )
         )
     catalog = RoomCatalog(

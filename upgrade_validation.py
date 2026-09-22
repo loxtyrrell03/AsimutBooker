@@ -6,6 +6,7 @@ import re
 from urllib.parse import urlsplit
 
 from room_upgrades import local_instant
+from room_access import named_room_refusal_text, response_named_room_refusal
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ _SLOT_CONSTRAINT = re.compile(
 )
 
 
-def room_permission_refusal_text(value):
+def room_permission_refusal_text(value, room=None):
     """Recognize room permissions, excluding service failures and slot limits.
 
     A generic 403, 'access denied', quota limit or 'not allowed' does not prove
@@ -65,6 +66,9 @@ def room_permission_refusal_text(value):
     """
     if not isinstance(value, str):
         return None
+    named = named_room_refusal_text(value, room)
+    if named:
+        return named
     text = " ".join(value.split())
     if (not text or _SESSION_OR_SERVICE_ERROR.search(text)
             or _SLOT_CONSTRAINT.search(text) or not _ROOM_PERMISSION.search(text)):
@@ -77,7 +81,7 @@ def session_or_service_error_text(value):
     return isinstance(value, str) and bool(_SESSION_OR_SERVICE_ERROR.search(value))
 
 
-def response_room_permission_refusal(document):
+def response_room_permission_refusal(document, room=None):
     """Return the reason from a rejected exact check, not from HTTP status.
 
     Inspect only known message fields. Malformed or mixed service-error
@@ -110,7 +114,12 @@ def response_room_permission_refusal(document):
     if not isinstance(top_messages, dict):
         return None
     collect(top_messages.get("errors", []))
-    if any(_SESSION_OR_SERVICE_ERROR.search(text) or _SLOT_CONSTRAINT.search(text) for text in messages):
+    if any(_SESSION_OR_SERVICE_ERROR.search(text) for text in messages):
+        return None
+    named = response_named_room_refusal(document, room)
+    if named:
+        return named
+    if any(_SLOT_CONSTRAINT.search(text) for text in messages):
         return None
     return next((reason for text in messages if (reason := room_permission_refusal_text(text))), None)
 
