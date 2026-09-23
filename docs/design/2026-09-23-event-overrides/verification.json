@@ -1,0 +1,50 @@
+[
+  {
+    "file": "option-a.svg",
+    "text_overflow": []
+  },
+  {
+    "file": "option-b.svg",
+    "text_overflow": []
+  },
+  {
+    "file": "option-c.svg",
+    "text_overflow": []
+  },
+  {
+    "file": "states.svg",
+    "text_overflow": []
+  },
+  {
+    "file": "narrow.svg",
+    "text_overflow": []
+  },
+  {
+    "gallery_width": 320,
+    "scrollWidth": 320,
+    "width": 320,
+    "images": true,
+    "links": true
+  },
+  {
+    "gallery_width": 390,
+    "scrollWidth": 390,
+    "width": 390,
+    "images": true,
+    "links": true
+  },
+  {
+    "gallery_width": 760,
+    "scrollWidth": 760,
+    "width": 760,
+    "images": true,
+    "links": true
+  },
+  {
+    "gallery_width": 1040,
+    "scrollWidth": 1040,
+    "width": 1040,
+    "images": true,
+    "links": true
+  }
+]

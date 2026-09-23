@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="1402" viewBox="0 0 1460 1402" role="img" aria-label="Shared flow — exact events, clear scope">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="24" y="42" font-size="29" font-weight="650" fill="#1d2430" text-anchor="start">Shared flow — exact events, clear scope</text>
+<text x="24" y="74" font-size="15" font-weight="400" fill="#667080" text-anchor="start" data-max-width="1412">All three options use these states. A saved override and a one-off search choice have different lifetimes.</text>
+<text x="24" y="98" font-size="12" font-weight="400" fill="#667080" text-anchor="start">DESIGN PREVIEW · All events, rooms, dates and outcomes are invented examples.</text>
+<rect x="24" y="126" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="42" y="157" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">First use / toggle off</text>
+<text x="42" y="196" font-size="14" font-weight="650" fill="#1d2430" text-anchor="start">Override events</text>
+<rect x="302" y="177" width="42" height="24" rx="12" fill="#c9d1dc" stroke="#c9d1dc"/>
+<circle cx="314" cy="189" r="9" fill="white"/>
+<text x="42" y="234" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No extra events selected.</text>
+<text x="42" y="257" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saved overrides: 1 event · View</text>
+<text x="42" y="280" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Choose events only if you will skip them.</text>
+<rect x="42" y="350" width="302" height="44" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<text x="193.0" y="377.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="286">Find me a room now</text>
+<rect x="384" y="126" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="402" y="157" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Toggle on / nothing selected</text>
+<text x="402" y="196" font-size="14" font-weight="650" fill="#1d2430" text-anchor="start">Override events</text>
+<rect x="662" y="177" width="42" height="24" rx="12" fill="#0868d9" stroke="#0868d9"/>
+<circle cx="692" cy="189" r="9" fill="white"/>
+<text x="402" y="234" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">This search only</text>
+<text x="402" y="257" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Select the events you will skip.</text>
+<text x="402" y="280" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No extra events will be overridden.</text>
+<rect x="402" y="350" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="553.0" y="377.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Choose events</text>
+<rect x="744" y="126" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="762" y="157" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Select / apply to this search</text>
+<text x="762" y="197" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">✓ Performance workshop</text>
+<text x="762" y="220" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Today · 14:00–15:30 · Studio 1</text>
+<text x="762" y="243" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">□ Ensemble rehearsal · 16:00–17:00</text>
+<text x="762" y="266" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saved: Seminar · 11:00–12:00</text>
+<rect x="762" y="317" width="180" height="24" rx="12" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="852.0" y="333" font-size="11" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="170">This search only</text>
+<rect x="762" y="350" width="302" height="44" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<text x="913.0" y="377.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="286">Use 1 selected event</text>
+<rect x="1104" y="126" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1122" y="157" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Help / hover, focus or tap</text>
+<text x="1122" y="197" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Allow practice during selected events.</text>
+<text x="1122" y="220" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Events stay on your calendar.</text>
+<text x="1122" y="243" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Only saved choices affect later searches.</text>
+<text x="1122" y="266" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Close × or Escape; return focus.</text>
+<rect x="1122" y="350" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1273.0" y="377.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Close help</text>
+<rect x="24" y="432" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="42" y="463" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Review / persistent save</text>
+<text x="42" y="503" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Allow practice during 1 event?</text>
+<text x="42" y="526" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Performance workshop · Wed 23 Sep</text>
+<text x="42" y="549" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">14:00–15:30 · Studio 1</text>
+<text x="42" y="572" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saving queues an automatic check.</text>
+<text x="42" y="595" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Cancel keeps your saved choices.</text>
+<rect x="42" y="656" width="302" height="44" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<text x="193.0" y="683.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="286">Save override</text>
+<rect x="384" y="432" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="402" y="463" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Saved / automatic booking off</text>
+<text x="402" y="503" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saved for this dated event.</text>
+<text x="402" y="526" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Automatic booking is off.</text>
+<text x="402" y="549" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Room-now will use this saved choice.</text>
+<text x="402" y="572" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No automatic check was started.</text>
+<rect x="402" y="623" width="180" height="24" rx="12" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="492.0" y="639" font-size="11" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="170">Practice allowed</text>
+<rect x="402" y="656" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="553.0" y="683.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">View event</text>
+<rect x="744" y="432" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="762" y="463" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Loading / refreshing</text>
+<text x="762" y="503" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Checking your events…</text>
+<text x="762" y="526" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Keep the draft visible while refreshing.</text>
+<text x="762" y="549" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Event selection is unavailable until</text>
+<text x="762" y="572" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">the complete agenda is checked.</text>
+<rect x="762" y="656" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="913.0" y="683.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Refreshing…</text>
+<rect x="1104" y="432" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1122" y="463" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Empty / no eligible events</text>
+<text x="1122" y="503" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No remaining college events today.</text>
+<text x="1122" y="526" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Your saved choices still apply.</text>
+<text x="1122" y="549" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Try another date in Event overrides.</text>
+<text x="1122" y="572" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Search filter: No matching events.</text>
+<rect x="1122" y="656" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1273.0" y="683.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Back to room search</text>
+<rect x="24" y="738" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="42" y="769" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Unavailable / stale agenda</text>
+<text x="42" y="809" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Could not check your events.</text>
+<text x="42" y="832" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No new override has been applied.</text>
+<text x="42" y="855" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Your draft is retained.</text>
+<text x="42" y="878" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Refresh before selecting or saving.</text>
+<rect x="42" y="962" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="193.0" y="989.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Refresh events</text>
+<rect x="384" y="738" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="402" y="769" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Changed event / stale save</text>
+<text x="402" y="809" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">This event changed since you selected it.</text>
+<text x="402" y="832" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Review its current time before trying again.</text>
+<text x="402" y="855" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Other draft choices are retained.</text>
+<text x="402" y="878" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Nothing was saved.</text>
+<rect x="402" y="962" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="553.0" y="989.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Review changed event</text>
+<rect x="744" y="738" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="762" y="769" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Finding / progress and Stop</text>
+<text x="762" y="809" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Finding a room…</text>
+<text x="762" y="832" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Override: Performance workshop</text>
+<text x="762" y="855" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">This request only · 14:00–15:30</text>
+<text x="762" y="878" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saved overrides: 1 event also applies.</text>
+<text x="762" y="901" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Choices are locked during this request.</text>
+<rect x="762" y="962" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="913.0" y="989.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Stop</text>
+<rect x="1104" y="738" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1122" y="769" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Stopped / clear temporary choice</text>
+<text x="1122" y="809" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Stopped before booking.</text>
+<text x="1122" y="832" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No room was booked.</text>
+<text x="1122" y="855" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Temporary overrides cleared.</text>
+<text x="1122" y="878" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saved event choices are unchanged.</text>
+<rect x="1122" y="962" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1273.0" y="989.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Start a new search</text>
+<rect x="24" y="1044" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="42" y="1075" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Booked / verified result</text>
+<text x="42" y="1115" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Room Weston · Today · 14:15–15:15</text>
+<text x="42" y="1138" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">1 hour booked</text>
+<text x="42" y="1161" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Overlaps Performance workshop</text>
+<text x="42" y="1184" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Allowed for this search only.</text>
+<text x="42" y="1207" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">The lesson stays on your calendar.</text>
+<rect x="42" y="1235" width="180" height="24" rx="12" fill="#eaf3ff" stroke="#eaf3ff"/>
+<text x="132.0" y="1251" font-size="11" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="170">Booked</text>
+<rect x="42" y="1268" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="193.0" y="1295.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">View booking</text>
+<rect x="384" y="1044" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="402" y="1075" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">No room / exact site refusal</text>
+<text x="402" y="1115" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">No eligible room could be booked.</text>
+<text x="402" y="1138" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">An actual site refusal remains visible:</text>
+<text x="402" y="1161" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">“ASIMUT did not allow this overlap.”</text>
+<text x="402" y="1184" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Temporary overrides cleared.</text>
+<rect x="402" y="1268" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="553.0" y="1295.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Review events</text>
+<rect x="744" y="1044" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="762" y="1075" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Uncertain / lost delivery</text>
+<text x="762" y="1115" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">The booking result needs checking.</text>
+<text x="762" y="1138" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">The original request keeps its choices.</text>
+<text x="762" y="1161" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Check the outcome before a new search.</text>
+<text x="762" y="1184" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Do not submit a duplicate booking.</text>
+<rect x="762" y="1268" width="302" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="913.0" y="1295.0" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="286">Check booking status</text>
+<rect x="1104" y="1044" width="338" height="284" rx="14" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="1122" y="1075" font-size="17" font-weight="650" fill="#1d2430" text-anchor="start" data-max-width="302">Restore this event as a conflict</text>
+<text x="1122" y="1115" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Practice will avoid this event again.</text>
+<text x="1122" y="1138" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">An existing overlapping room booking</text>
+<text x="1122" y="1161" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">will remain. View it to make changes.</text>
+<text x="1122" y="1184" font-size="13" font-weight="400" fill="#667080" text-anchor="start" data-max-width="302">Saving queues a check if automation is on.</text>
+<rect x="1122" y="1268" width="302" height="44" rx="10" fill="#0868d9" stroke="#0868d9"/>
+<text x="1273.0" y="1295.0" font-size="13" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="286">Save: avoid this event</text>
+<text x="24" y="1380" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Phone sheets scroll above fixed actions; PC panels use the same wording and state transitions. These are proposed states, not live results.</text>
+</svg>

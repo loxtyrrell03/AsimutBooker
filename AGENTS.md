@@ -1,3 +1,25 @@
+## 2026-09-23 event override design review
+
+- `docs/design/2026-09-23-event-overrides/` contains three editable SVG options:
+  inline event switches (recommended), calendar selection, and a dedicated event
+  manager. Shared flow and narrow boards cover event details, Settings, room-now,
+  saved versus temporary scope, Save/Cancel, help, loading/errors and recovery.
+  All examples are invented. A design choice is still pending; no runtime or
+  preference behavior has been changed or activated by this milestone.
+- Proposed saved choices cover exact dated college events; room-now's Override
+  events toggle selects additional events for one request only. Existing saved
+  choices stay visible separately. Event/booking distinctions, genuine site
+  refusals, protected time and receipt verification must remain authoritative.
+- Existing `ignored_events` already reach `scan_agenda` and room-now, but controls
+  are buried in advanced tools. The final create warning checks and explicit
+  time-edit validation independently reject clashes. Implementation must address
+  every affected consumer, distinguish proven selected-event warnings from real
+  refusals, and retain exact identity/revision checks. See the design README for
+  legacy reservation-override and same-tuple identity limitations.
+- Headless local SVG bounds and gallery checks pass at 320/390/760/1040px; all
+  five rendered boards were inspected. This is prototype layout evidence only,
+  not live booking, deployed app, interaction or physical-phone verification.
+
 ## 2026-09-22 Find me a room now on Today
 
 - The user selected design A in `docs/design/2026-09-22-room-now/`. Phone and
