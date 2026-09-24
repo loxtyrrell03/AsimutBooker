@@ -1,3 +1,24 @@
+## 2026-09-24 grand-piano-only room eligibility
+
+- The owner requires grand pianos only. Preserve the saved room-type filter and
+  exclusions when editing preferences. Merely removing rooms from the ranked
+  list is insufficient: live discovery appends new rooms automatically.
+- ASIMUT identifies ordinary grand rooms by `Practice: Grand Piano` and
+  `Practice: Grand Piano x 2`. Weston uses room type `B0.08`; its inventory
+  explicitly lists two grand pianos. The saved accepted room types cover these
+  three values. Instrument tags alone omit the pianos in ordinary practice rooms.
+- The live audit permits 16 rooms and excludes 19 saved/live entries, including
+  upright, piano-free, specialist and currently unverified rooms. Corus has no
+  piano listed in its current ASIMUT metadata and remains excluded until the
+  owner or fresh authoritative evidence confirms a grand. A3.39 and B1.06 are
+  absent from the current catalog and remain excluded as unverified.
+- Existing shared policy enforces these filters in automatic creation, room-now,
+  extensions, upgrades and transfers. Thirty-four preference/policy tests pass;
+  direct checks reject newly discovered upright, empty and unknown rooms. An
+  authenticated no-Save scan confirms 16 eligible rooms. Only room preferences
+  changed; existing reservations and other controls were preserved. Private
+  audit evidence is ignored under `artifacts/grand-piano-only-20260924/`.
+
 ## 2026-09-23 event override design review
 
 - `docs/design/2026-09-23-event-overrides/` contains three editable SVG options:
