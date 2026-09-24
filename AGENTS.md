@@ -18,6 +18,11 @@
   authenticated no-Save scan confirms 16 eligible rooms. Only room preferences
   changed; existing reservations and other controls were preserved. Private
   audit evidence is ignored under `artifacts/grand-piano-only-20260924/`.
+- An explicitly requested Corus restoration was subsequently verified through
+  the existing editor, receipts and a complete refreshed agenda, then pinned
+  against automatic changes. This one-off edit does not change the automatic
+  grand-only filters or establish Corus's instrument inventory. Evidence is
+  ignored under `artifacts/evening-room-repair-20260924/`.
 
 ## 2026-09-23 event override design review
 
