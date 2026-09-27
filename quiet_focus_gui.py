@@ -73,6 +73,8 @@ class QuietFocusGUI:
         self._sync_quiet_navigation()
         if self.main_notebook.select() == str(self.rooms_tab):
             self.room_availability.activate()
+        else:
+            self.room_availability.deactivate()
         if (self.main_notebook.select() == str(self.calendar_tab)
                 and getattr(self, 'calendar_dialog', None) is None):
             self.show_calendar_dialog()

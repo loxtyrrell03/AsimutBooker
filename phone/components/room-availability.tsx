@@ -9,7 +9,7 @@ import './room-availability.css';
 type Interval = { start: number; end: number; kind: 'booked' | 'closed'; label: string; event_id: string | null };
 type Room = { name: string; closes: string | null; closed_all_day: boolean; intervals: Interval[] };
 type Day = { date: string; observed_at: string; stale: boolean; rooms: Room[] };
-type Grid = { days: Record<string, Day>; message: string };
+type Grid = { days: Record<string, Day>; message: string; revision?: string | null };
 const clock = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const localDate = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const shift = (day: string, n: number) => { const d = new Date(`${day}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
@@ -37,11 +37,13 @@ export function RoomAvailability({ active, csrf, enabled, job, onJob }: { active
   const [detail, setDetail] = useState<{ room: string; date: string; item: Interval } | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const serial = useRef(false);
+  const autoAttempts = useRef(new Set<string>());
   const scanActive = job?.active && job.action === 'scan';
   const day = grid.days[selected];
   const days = Array.from({ length: 7 }, (_, i) => shift(week, i));
   const today = localDate();
-  const refreshDates = days.filter(d => d >= today && d <= shift(today, 7));
+  const refreshKey = days.filter(d => d >= today && d <= shift(today, 7)).join(',');
+  const refreshDates = refreshKey ? refreshKey.split(',') : [];
   const rooms = day?.rooms.filter(room => room.name.toLowerCase().includes(query.toLowerCase())) ?? [];
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -59,19 +61,28 @@ export function RoomAvailability({ active, csrf, enabled, job, onJob }: { active
     return () => { controller.abort(); window.clearTimeout(start); window.clearInterval(poll); };
   }, [active, csrf, scanActive, job?.updated_at, load]);
   useEffect(() => { if (detail) dialog.current?.showModal(); else dialog.current?.close(); }, [detail]);
-  const refresh = async () => {
-    if (serial.current || !enabled || job?.active || !refreshDates.length) return;
+  const attemptKey = `${grid.revision}:${week}`;
+  const refresh = useCallback(async () => {
+    if (serial.current || !enabled || job?.active || !refreshKey) return;
+    autoAttempts.current.add(attemptKey);
     serial.current = true; setWorking(true); setError('');
     try {
       const { response, data } = await requestJson<{ job: SystemJob; message?: string }>('/api/v1/system/jobs', {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Asimut-CSRF': csrf },
-        body: JSON.stringify({ request_id: crypto.randomUUID(), action: 'scan', args: { dates: refreshDates } }),
+        body: JSON.stringify({ request_id: crypto.randomUUID(), action: 'scan', args: { dates: refreshKey.split(',') } }),
       });
       if (!response.ok) throw new Error(data.message || 'The Booker is busy. Try Refresh when it finishes.');
       onJob(data.job);
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not start the refresh.'); }
     finally { serial.current = false; setWorking(false); }
-  };
+  }, [enabled, job?.active, refreshKey, attemptKey, csrf, onJob]);
+  useEffect(() => {
+    if (!active || loading || error || !grid.revision || !enabled || job?.active ||
+        !refreshKey.split(',').includes(selected) || autoAttempts.current.has(attemptKey)) return;
+    if (!refreshKey.split(',').some(d => !grid.days[d] || grid.days[d].stale)) return;
+    const start = window.setTimeout(() => void refresh(), 0);
+    return () => window.clearTimeout(start);
+  }, [active, loading, error, grid, enabled, job?.active, selected, attemptKey, refreshKey, refresh]);
   const stop = async () => {
     if (!job || working) return;
     setWorking(true);
@@ -101,7 +112,7 @@ export function RoomAvailability({ active, csrf, enabled, job, onJob }: { active
         {room.intervals.filter(i => i.kind === 'closed').map((item, i) => <div key={`closed-${i}`} className="room-grid-closed" style={{ left: `${(item.start - 420) / 960 * 100}%`, width: `${(item.end - item.start) / 960 * 100}%` }} title={`Closed ${clock(item.start)}–${clock(item.end)}`}><span>Closed</span></div>)}
         {stack.items.map((item, i) => <button key={i} className="room-grid-booking" style={{ left: `${(item.start - 420) / 960 * 100}%`, width: `${(item.end - item.start) / 960 * 100}%`, top: item.lane * 60 + 5 }} aria-label={`${room.name}: ${item.label}, ${clock(item.start)} to ${clock(item.end)}`} onClick={() => setDetail({ room: room.name, date: selected, item })}><strong>{item.label}</strong><span>{clock(item.start)}–{clock(item.end)}</span></button>)}
       </div></div>; })}
-    </section><div className="room-grid-legend"><span><i />Free space</span><span><i className="booked" />Booked</span><span><i className="closed" />Closed</span><span className="room-grid-swipe">Scroll time ↔</span></div></> : <div className="room-grid-empty"><strong>{loading ? 'Loading room availability…' : day ? (query ? 'No matching rooms' : 'No eligible rooms') : 'No room grid for this day yet'}</strong><p>{day ? 'Your saved room filters determine which rooms appear here.' : refreshDates.includes(selected) ? (scanActive ? 'This day will appear when its check finishes.' : grid.message || 'Refresh this week to read its room availability.') : 'This date is outside the current live scan window. Previously checked dates remain visible.'}</p></div>}
+    </section><div className="room-grid-legend"><span><i />Free space</span><span><i className="booked" />Booked</span><span><i className="closed" />Closed</span><span className="room-grid-swipe">Scroll time ↔</span></div></> : <div className="room-grid-empty"><strong>{loading || scanActive ? 'Loading room availability…' : day ? (query ? 'No matching rooms' : 'No eligible rooms') : 'No room grid for this day yet'}</strong><p>{day ? (query ? 'Try a different room name.' : 'Your saved room filters determine which rooms appear here.') : refreshDates.includes(selected) ? (scanActive ? 'This day will appear when its check finishes.' : job?.active || !enabled ? 'Waiting for the Booker to become available.' : error || (job?.action === 'scan' && !job.active ? 'Select Refresh to try again.' : grid.message) || 'Refresh this week to read its room availability.') : 'This date is outside the current live scan window. Previously checked dates remain visible.'}</p></div>}
     <dialog className="room-grid-dialog" ref={dialog} onCancel={() => setDetail(null)} onClose={() => setDetail(null)}>{detail && <><button className="room-grid-dismiss" aria-label="Close booking details" onClick={() => setDetail(null)}><X /></button><h3>{detail.item.label}</h3><p>{detail.room} · {labelDate(detail.date, { weekday: 'long', day: 'numeric', month: 'long' })}</p><strong>{clock(detail.item.start)}–{clock(detail.item.end)}</strong><p>Booking text as shown by ASIMUT.</p>{detail.item.event_id && <a href={`https://rwcmd.asimut.net/arrangement?eventId=${detail.item.event_id}`} target="_blank" rel="noreferrer">Open in ASIMUT ↗</a>}</>}</dialog>
   </section>;
 }

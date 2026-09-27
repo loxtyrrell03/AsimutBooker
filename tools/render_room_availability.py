@@ -4,7 +4,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from tests.test_desktop_settings import DesktopSettingsTests
@@ -26,6 +26,8 @@ def main():
     doc=normalize_day(day,fixture(),['B0.13','B1.15']);doc['stale']=False
     doc['rooms'] += [{**doc['rooms'][0],'name':f'Example {i}'} for i in range(12)]
     app.room_availability.reader=read_grid if args.live else lambda:{'days':{day:doc},'message':''}
+    # Rendering a cached grid must never dispatch a real scan.
+    app.room_availability.scanner=Mock(active=False,text='',state=None)
     prefix='live-' if args.live else ''
     try:
         root.attributes('-alpha',1);root.update_idletasks()

@@ -10,7 +10,7 @@ import math
 import copy
 from pathlib import Path
 
-from app_settings import InterProcessFileLock, atomic_write_json, load_settings
+from app_settings import InterProcessFileLock, SettingsError, atomic_write_json, load_settings
 from room_preferences import load_room_preferences, room_preferences_to_dict
 from room_catalog import SITE_TIMEZONE
 
@@ -163,14 +163,17 @@ def publish_day(day, snapshot, eligible, revision, *, root=ROOT):
 
 def read_grid(*, root=ROOT, now=None):
     now = now or datetime.now(timezone.utc)
+    revision = None
     try:
         revision = room_revision(load_settings(Path(root) / 'data/settings.json'))
         value = json.loads((Path(root) / 'data/room_grid.json').read_text(encoding='utf-8'))
         if value.get('version') != 1 or value.get('room_revision') != revision:
-            return {'days': {}, 'message': 'Refresh to load rooms for your current room preferences.'}
+            return {'days': {}, 'revision': revision, 'message': 'Room filters changed. Availability needs a new check.'}
         for day in value['days'].values():
             age = (now - datetime.fromisoformat(day['observed_at'])).total_seconds()
             day['stale'] = not 0 <= age <= 300
-        return {'days': value['days'], 'message': ''}
+        return {'days': value['days'], 'revision': revision, 'message': ''}
+    except SettingsError:
+        return {'days': {}, 'revision': None, 'message': 'Room settings could not be read. Check Settings before refreshing.'}
     except (OSError, ValueError, KeyError, TypeError):
-        return {'days': {}, 'message': 'Refresh to load room availability from ASIMUT.'}
+        return {'days': {}, 'revision': revision, 'message': 'Room availability has not been loaded yet.'}

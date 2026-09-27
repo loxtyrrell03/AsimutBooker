@@ -83,6 +83,16 @@ class RoomGridTests(unittest.TestCase):
             atomic_write_json(settings, {'room_preferences': {'excluded_rooms': ['B0.13']}})
             self.assertEqual(read_grid(root=root)['days'], {})
             self.assertNotIn('Alex', json.dumps(read_grid(root=root)))
+            self.assertNotEqual(read_grid(root=root)['revision'], fresh['revision'])
+
+    def test_unreadable_settings_explain_failure_without_authorizing_auto_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'data/settings.json'
+            path.parent.mkdir(); path.write_text('{broken')
+            result = read_grid(root=tmp)
+            self.assertEqual(result['days'], {})
+            self.assertIsNone(result['revision'])
+            self.assertIn('settings could not be read', result['message'])
 
     def test_hook_scoped_and_worker_only_requests_check_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,6 +128,74 @@ class RoomGridHTTPTests(unittest.TestCase):
 
 
 class RoomGridLayoutTests(unittest.TestCase):
+    def test_real_navigation_recovers_missing_and_invalidated_cache_without_retrying_stop(self):
+        from tests.test_desktop_settings import DesktopSettingsTests
+        from room_catalog import SITE_TIMEZONE
+        fixture_app = DesktopSettingsTests(); fixture_app.setUp()
+        self.addCleanup(fixture_app.doCleanups)
+        app, root = fixture_app.app, fixture_app.root
+        root.attributes('-alpha', 0); root.deiconify(); root.geometry('1200x850')
+        panel = app.room_availability
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp)
+            settings = store/'data/settings.json'
+            atomic_write_json(settings, {})
+            panel.reader = lambda: read_grid(root=store)
+            class Scanner:
+                active = False
+                state = None
+                text = ''
+                calls = []
+                def start(self, dates):
+                    self.calls.append(dates); self.active = True
+                    self.state, self.text = 'running', 'Reading rooms…'
+                def stop(self):
+                    self.active = False
+                    self.state, self.text = 'stopped', 'Stopped. Select Refresh to try again.'
+            panel.scanner = Scanner()
+            busy = [True]
+            panel.other_busy = lambda: busy[0]
+            app._select_quiet_page('rooms'); root.update()
+            self.assertEqual(panel.scanner.calls, [])
+            self.assertEqual(panel.empty_title.cget('text'), 'Waiting for the Booker…')
+            def poll():
+                if panel.after_id: panel.after_cancel(panel.after_id)
+                panel.poll(); root.update()
+            busy[0] = False
+            poll()
+            self.assertEqual(len(panel.scanner.calls), 1)
+            self.assertEqual(panel.empty_title.cget('text'), 'Loading room availability…')
+            self.assertTrue(panel.empty.winfo_ismapped())
+            today = datetime.now(SITE_TIMEZONE).date().isoformat()
+            for day in panel.scanner.calls[0]:
+                publish_day(day, fixture(), ['B0.13','B1.15'], room_revision({}), root=store)
+            panel.scanner.active = False; panel.scanner.state = 'completed'
+            app._select_quiet_page('rooms'); root.update()
+            self.assertTrue(panel.booking_widgets)
+            self.assertFalse(panel.empty.winfo_ismapped())
+            self.assertEqual(len(panel.scanner.calls), 1)
+            # Reproduce the reported failure with actual settings/cache reads.
+            changed = {'room_preferences': {'excluded_rooms': ['B0.13']}}
+            atomic_write_json(settings, changed)
+            poll()
+            self.assertEqual(len(panel.scanner.calls), 2)
+            self.assertFalse(panel.booking_widgets, 'Old excluded room remained visible')
+            self.assertIn('Loading', panel.empty_title.cget('text'))
+            panel.scanner.stop()
+            app._select_quiet_page('rooms'); root.update()
+            self.assertEqual(len(panel.scanner.calls), 2, 'Stop must not silently restart')
+            self.assertIn('Stopped', panel.empty_message.cget('text'))
+            panel.refresh_button.invoke(); root.update()
+            self.assertEqual(len(panel.scanner.calls), 3, 'Explicit retry must still work')
+            publish_day(today, fixture(), ['B1.15'], room_revision(changed), root=store)
+            panel.scanner.active = False; panel.scanner.state = 'completed'
+            app._select_quiet_page('rooms'); root.update()
+            self.assertEqual([r['name'] for r in panel.document['days'][today]['rooms']], ['B1.15'])
+            self.assertFalse(panel.empty.winfo_ismapped(), 'A fully closed room must still be displayed')
+            app._select_quiet_page('settings'); root.update()
+            self.assertFalse(panel.active)
+            self.assertIsNone(panel.after_id)
+
     def test_resize_fills_timeline_and_centres_controls_at_ultrawide_and_small_sizes(self):
         from tests.test_desktop_settings import DesktopSettingsTests
         from room_catalog import SITE_TIMEZONE

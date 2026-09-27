@@ -23,12 +23,14 @@ class RoomGridScan:
         self.lock = SingleInstanceLock(self.root / 'data/desktop-room-grid.lock')
         self.active = False
         self.text = ''
+        self.state = None
         self.folder = None
 
     def start(self, dates):
         if self.active or not self.lock.acquire():
             raise ValueError('A room refresh is already running.')
         self.active = True
+        self.state = 'running'
         self.text = 'Checking room availability…'
         self.folder = self.root / 'data/desktop_operations' / str(uuid4())
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -64,7 +66,9 @@ class RoomGridScan:
                 time.sleep(.5)
             result = json.loads((self.folder / 'result.json').read_text(encoding='utf-8'))
             self.text = result['message']
+            self.state = result['state']
         except Exception:
+            self.state = 'failed'
             self.text = 'Room refresh did not finish. Retry when the Booker is idle.'
         finally:
             self.active = False
@@ -88,6 +92,9 @@ class RoomAvailabilityPanel(tk.Frame):
         self.week = self.selected - timedelta(days=self.selected.weekday())
         self.document = {'days': {}}
         self.signature = None
+        self.active = False
+        self.auto_attempts = set()
+        self.notice = ''
         self.after_id = None
         self.booking_widgets = []
         head = tk.Frame(self.body, bg=PAGE); head.pack(fill='x')
@@ -145,6 +152,12 @@ class RoomAvailabilityPanel(tk.Frame):
         self.track.bind('<Shift-MouseWheel>', lambda e: self.xview('scroll', -int(e.delta / 120), 'units'))
         self.track.bind('<Left>', lambda e: self.xview('scroll', -1, 'units'))
         self.track.bind('<Right>', lambda e: self.xview('scroll', 1, 'units'))
+        self.empty = tk.Frame(holder, bg=WHITE, padx=30, pady=30)
+        self.empty_title = tk.Label(self.empty, bg=WHITE, fg='#1d2430', font=('Segoe UI', -22, 'bold'))
+        self.empty_title.pack(pady=(0, 12))
+        self.empty_message = tk.Label(self.empty, bg=WHITE, fg=MUTED, font=('Segoe UI', -16), justify='center', wraplength=500)
+        self.empty_message.pack()
+        self.empty.bind('<Configure>', lambda e: self.empty_message.configure(wraplength=max(100, e.width-60)))
         self.details = tk.Frame(self.body, bg=WHITE, padx=14, pady=12)
         self.details_label = tk.Label(self.details, bg=WHITE, anchor='w', justify='left', font=('Segoe UI', -17))
         self.details_label.pack(side='left', fill='both', expand=True)
@@ -176,45 +189,68 @@ class RoomAvailabilityPanel(tk.Frame):
         self.render()
 
     def activate(self):
-        self.document = self.reader(); self.render()
+        self.active = True
+        self.document = self.reader()
+        self._maybe_refresh()
+        self.render()
         if self.after_id is None:
             self.after_id = self.after(1500, self.poll)
 
+    def deactivate(self):
+        self.active = False
+        if self.after_id:
+            self.after_cancel(self.after_id)
+            self.after_id = None
+
+    def _refresh_dates(self):
+        today = datetime.now(SITE_TIMEZONE).date()
+        return [(self.week + timedelta(days=i)).isoformat() for i in range(7)
+                if today <= self.week + timedelta(days=i) <= today + timedelta(days=7)]
+
+    def _maybe_refresh(self):
+        revision = self.document.get('revision')
+        key = (revision, self.week)
+        dates = self._refresh_dates()
+        if (not self.active or not revision or self.selected.isoformat() not in dates
+                or key in self.auto_attempts or self.scanner.active or self.other_busy()):
+            return
+        if any(not self.document.get('days', {}).get(d) or self.document['days'][d].get('stale') for d in dates):
+            self.refresh()
+
     def poll(self):
         self.after_id = None
-        if not self.winfo_exists(): return
+        if not self.winfo_exists() or not self.active: return
         self.document = self.reader()
-        signature = json.dumps(self.document, sort_keys=True)
+        self._maybe_refresh()
+        signature = json.dumps([self.document, self.scanner.active, self.scanner.text, self.other_busy()], sort_keys=True)
         if signature != self.signature:
             self.signature = signature; self.render()
-        self.status.set(self.scanner.text or self.status.get())
-        self.stop_button.state(['!disabled'] if self.scanner.active else ['disabled'])
-        self.refresh_button.state(['disabled'] if self.scanner.active or self.other_busy() else ['!disabled'])
         self.after_id = self.after(1500, self.poll)
 
     def today(self):
         self.selected = datetime.now(SITE_TIMEZONE).date()
-        self.week = self.selected - timedelta(days=self.selected.weekday()); self.render()
+        self.week = self.selected - timedelta(days=self.selected.weekday()); self._maybe_refresh(); self.render()
 
     def change_week(self, n):
         self.week += timedelta(days=n); self.choose(self.week)
 
     def choose(self, day):
-        self.selected = day; self.details.pack_forget(); self.render()
+        self.selected = day; self.details.pack_forget(); self._maybe_refresh(); self.render()
 
     def refresh(self):
-        today = datetime.now(SITE_TIMEZONE).date()
-        dates = [(self.week + timedelta(days=i)).isoformat() for i in range(7)
-                 if today <= self.week + timedelta(days=i) <= today + timedelta(days=7)]
+        dates = self._refresh_dates()
         if not dates:
             self.status.set('This week is outside the current live scan window.'); return
         if self.other_busy():
             self.status.set('Wait for the current Booker operation to finish.'); return
+        # One automatic attempt per room-filter revision/week. Stop and failures
+        # remain stopped; explicit Refresh is always available to retry.
+        self.auto_attempts.add((self.document.get('revision'), self.week))
         try:
-            self.scanner.start(dates); self.status.set(self.scanner.text)
+            self.scanner.start(dates); self.notice = ''; self.status.set(self.scanner.text)
         except (ValueError, OSError) as exc:
-            self.status.set(str(exc))
-        self.activate()
+            self.notice = str(exc)
+        self.render()
 
     def xview(self, *args):
         self.track.xview(*args); self.axis.xview_moveto(self.track.xview()[0])
@@ -248,13 +284,36 @@ class RoomAvailabilityPanel(tk.Frame):
         else:
             self.subtitle.set('Your bookable rooms')
             self.status.set(self.document.get('message') or 'No room grid for this day yet. Refresh this week to check.')
+            self.details.pack_forget()
+        if self.scanner.active or getattr(self.scanner, 'state', None) in {'failed', 'rejected', 'uncertain', 'stopped'}:
+            self.status.set(self.scanner.text)
+        elif self.notice and not day:
+            self.status.set(self.notice)
+        rooms = [r for r in (day or {}).get('rooms', []) if self.query.get().casefold() in r['name'].casefold()]
+        if rooms:
+            self.empty.place_forget()
+        else:
+            if day:
+                title = 'No matching rooms' if self.query.get() else 'No eligible rooms'
+                message = 'Try a different room name.' if self.query.get() else 'Your saved room filters determine which rooms appear here.'
+            elif self.selected.isoformat() not in self._refresh_dates():
+                title, message = 'No saved availability for this date', 'Choose a day in the current booking window to check live availability.'
+            elif self.scanner.active:
+                title, message = 'Loading room availability…', self.scanner.text
+            elif self.other_busy():
+                title, message = 'Waiting for the Booker…', 'Rooms will load when the current operation finishes.'
+            else:
+                title, message = 'Room availability is not loaded', self.notice or self.scanner.text or self.document.get('message') or 'Select Refresh to try again.'
+            self.empty_title.configure(text=title)
+            self.empty_message.configure(text=message)
+            self.empty.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.empty.lift()
         width, y = max(1280,self.track.winfo_width()), 0
         self.rendered_width = width
         for hour in range(7, 24):
             x = (hour - 7) * width / 16
             self.axis.create_text(x + (7 if hour < 23 else -7), 23, text=f'{hour:02d}:00', anchor='w' if hour < 23 else 'e', fill=MUTED, font=('Segoe UI', -15))
-        for room in (day or {}).get('rooms', []):
-            if self.query.get().casefold() not in room['name'].casefold(): continue
+        for room in rooms:
             ends, booked = [], []
             for item in room['intervals']:
                 if item['kind'] != 'booked': continue
@@ -294,4 +353,5 @@ class RoomAvailabilityPanel(tk.Frame):
         if self.track.winfo_width() >= width: self.xbar.grid_remove()
         else: self.xbar.grid()
         self.stop_button.state(['!disabled'] if self.scanner.active else ['disabled'])
+        self.refresh_button.state(['disabled'] if self.scanner.active or self.other_busy() else ['!disabled'])
         self.axis.xview_moveto(self.track.xview()[0])

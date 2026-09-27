@@ -40,6 +40,20 @@
   desktops and are not whole-window visual proof. The original full 1,652-test
   suite and 34 focused follow-up checks pass. Existing PC windows must reopen
   to load the corrected layout; phone assets do not require another release.
+- Cache recovery: a room-filter change correctly invalidated the old grid but
+  originally left both clients waiting for manual Refresh. The private API now
+  supplies the current room-filter revision. An active Rooms view starts one
+  check-only scan per revision/week for missing or stale dates, waits for known
+  busy work, and stops retrying after Stop/failure until explicit Refresh. Hidden
+  native tabs stop polling. Invalid settings cannot start an automatic scan.
+  The PC shows loading/waiting/error/empty content instead of an empty time axis.
+- Recovery regressions exercise real native navigation and settings/cache files,
+  invalidation while the view is open, busy-to-idle loading, Stop/retry and room
+  exclusions. All 36 focused desktop/backend tests, 17 phone Node tests,
+  TypeScript/lint/build and Chromium/WebKit 320/390/1040px recovery checks pass.
+  A guarded check-only scan restored eight dates with the current 17 eligible
+  rooms; native rendering reads that actual cache. Recovery evidence is ignored
+  under `artifacts/room-grid-repair-20260927/`.
 
 ## 2026-09-27 future free-window display plans
 

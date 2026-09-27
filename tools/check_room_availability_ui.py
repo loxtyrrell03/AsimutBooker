@@ -98,8 +98,36 @@ def check(dist):
             page.get_by_role('button',name='Stop',exact=True).click()
             expect(page.get_by_text('Stopped. Use Refresh to try again.',exact=True)).to_be_visible()
             assert len(calls)==1 and not errors, (calls,errors)
+            # A real cache invalidation must start loading without pressing Refresh.
+            state['job']=None
+            state['grid']={'days':{},'revision':'changed-filters','message':'Room filters changed.'}
+            page.get_by_role('navigation',name='Main navigation').get_by_role('button',name='Today',exact=True).click()
+            page.get_by_role('button',name='Rooms',exact=True).click()
+            expect(page.get_by_text('Loading room availability…',exact=True)).to_be_visible()
+            expect(page.get_by_role('button',name='Stop',exact=True)).to_be_visible()
+            assert len(calls)==2, calls
+            expect(page.locator('.room-grid-name')).to_have_count(0)
+            # Completion publishes each requested date; the displayed grid returns.
+            state['grid']['days']={d:{**document,'date':d} for d in calls[-1]['args']['dates']}
+            state['job']={**state['job'],'active':False,'state':'completed','text':'Availability scan completed.',
+                          'updated_at':datetime.now(timezone.utc).isoformat()}
+            expect(page.locator('.room-grid-name').first).to_contain_text('B0.13',timeout=15000)
+            expect(page.get_by_role('button',name='Stop',exact=True)).to_have_count(0,timeout=15000)
+            assert len(calls)==2, 'Successful scan restarted itself'
+            # A second preference revision is a new attempt. Stop remains final.
+            state['grid']={'days':{},'revision':'changed-again','message':'Room filters changed.'}
+            page.get_by_role('navigation',name='Main navigation').get_by_role('button',name='Today',exact=True).click()
+            page.get_by_role('button',name='Rooms',exact=True).click()
+            expect(page.get_by_role('button',name='Stop',exact=True)).to_be_visible()
+            assert len(calls)==3
+            page.get_by_role('button',name='Stop',exact=True).click()
+            page.get_by_role('navigation',name='Main navigation').get_by_role('button',name='Today',exact=True).click()
+            page.get_by_role('button',name='Rooms',exact=True).click()
+            expect(page.get_by_text('Stopped. Use Refresh to try again.',exact=True)).to_be_visible()
+            expect(page.get_by_text('No room grid for this day yet',exact=True)).to_be_visible()
+            assert len(calls)==3 and not errors, (calls,errors)
             browser.close()
-    print('Rooms: Chromium/WebKit 320/390/1040, fixed axes, details, filters, help, navigation, refresh and Stop passed.')
+    print('Rooms: Chromium/WebKit 320/390/1040 layout, details, filters, help, automatic cache recovery and Stop passed.')
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--dist',type=Path,required=True)
