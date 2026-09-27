@@ -5163,6 +5163,9 @@ class AsimutBookerGUI(QuietFocusGUI):
                 self._refresh_history_list(tree)
                 self.log("Booking history cleared.", "info")
 
+    def _edit_week_day(self, date_key):
+        return open_calendar_preferences(self, [date_key], SETTINGS_FILE, owner='week')
+
     def show_calendar_dialog(self, initial_view=None):
         """Open the persistent calendar page for booking days and agenda events."""
         self.main_notebook.select(self.calendar_tab)

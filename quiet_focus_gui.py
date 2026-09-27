@@ -186,7 +186,7 @@ class QuietFocusGUI:
             other_busy=lambda:self.is_running or self.login_operation_in_progress)
         self.room_now_panel.pack(fill='x',pady=(0,18),before=self.today_panel.hero.master)
         self.week_panel = WeekPanel(self.week_tab, on_calendar=lambda:self.show_calendar_dialog(initial_view='week'),
-            on_refresh=self.refresh_booking_plan, on_details=self._show_quiet_booking)
+            on_refresh=self.refresh_booking_plan, on_details=self._show_quiet_booking,on_edit_day=self._edit_week_day)
         self.week_panel.pack(fill=tk.BOTH, expand=True)
         from room_grid_gui import RoomAvailabilityPanel
         self.room_availability = RoomAvailabilityPanel(self.rooms_tab,

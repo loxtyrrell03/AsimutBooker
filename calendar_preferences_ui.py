@@ -7,7 +7,7 @@ from tkinter import ttk
 from phone_preferences import read_phone_preferences, save_phone_preferences, PreferenceConflict
 
 
-def open_calendar_preferences(app, dates, settings_path):
+def open_calendar_preferences(app, dates, settings_path, *, owner='calendar'):
     dates = sorted({value.isoformat() if isinstance(value, date) else value for value in dates})
     dates = [value for value in dates if value >= date.today().isoformat()]
     if not dates:
@@ -15,22 +15,23 @@ def open_calendar_preferences(app, dates, settings_path):
     key = 'dates:' + ','.join(dates)
     previous = getattr(app, '_detail_pages', {}).get(key)
     if previous is not None and previous.winfo_exists():
+        previous.owner=owner
         app.main_notebook.select(previous.host)
         return previous
-    window = app._open_detail_page(key, owner='calendar')
+    window = app._open_detail_page(key, owner=owner)
     window.title('Calendar practice settings')
     window.geometry('740x620')
     window.minsize(680, 580)
     window.transient(app.root)
     body = ttk.Frame(window, padding=20)
     body.pack(fill='both', expand=True)
-    ttk.Label(body, text='Practice dates', font=(app.ui_font_family, 20, 'bold')).pack(anchor='w')
+    ttk.Label(body, text='Day settings' if len(dates)==1 else 'Practice dates', font=(app.ui_font_family, 20, 'bold')).pack(anchor='w')
     status = tk.StringVar()
     ttk.Label(body, textvariable=status, wraplength=650, foreground='#b73332').pack(fill='x', pady=8)
     content = ttk.Frame(body)
     content.pack(fill='both', expand=True)
     left = ttk.Frame(content)
-    left.pack(side='left', fill='y', padx=(0, 20))
+    if len(dates)>1: left.pack(side='left', fill='y', padx=(0, 20))
     ttk.Label(left, text='Select dates to change').pack(anchor='w')
     choices = tk.Listbox(left, selectmode='extended', exportselection=False, width=21, height=16,
                          font=(app.ui_font_family, 12), selectbackground='#0868d9')
@@ -49,10 +50,10 @@ def open_calendar_preferences(app, dates, settings_path):
     start, end = tk.StringVar(), tk.StringVar()
     strict = tk.BooleanVar()
     default_label = tk.StringVar()
-    ttk.Checkbutton(right, text='Book on these dates', variable=enabled).pack(anchor='w', pady=8)
+    ttk.Checkbutton(right, text='Book on this day' if len(dates)==1 else 'Book on these dates', variable=enabled).pack(anchor='w', pady=8)
     ttk.Label(right, text='Target hours (blank uses daily target)').pack(anchor='w')
     ttk.Spinbox(right, from_=.5, to=12, increment=.5, textvariable=hours, width=12).pack(anchor='w', pady=(4, 14))
-    ttk.Label(right, text='Preferred time for these dates').pack(anchor='w')
+    ttk.Label(right, text='Preferred time for this day' if len(dates)==1 else 'Preferred time for these dates').pack(anchor='w')
     modes = ttk.Combobox(right, textvariable=mode, values=('Use default time', 'Custom time', 'Any time'), state='readonly')
     modes.pack(fill='x', pady=(4, 8))
     ttk.Label(right, textvariable=default_label, foreground='#667080', wraplength=410).pack(anchor='w')
@@ -67,7 +68,7 @@ def open_calendar_preferences(app, dates, settings_path):
     end_control.grid(row=1, column=1, sticky='w', padx=(16, 0), pady=5)
     strict_control = ttk.Checkbutton(right, text='Only book within these times', variable=strict)
     strict_control.pack(anchor='w', pady=8)
-    ttk.Label(right, text='Turning dates off leaves existing reservations in place.', wraplength=400).pack(anchor='w', pady=12)
+    ttk.Label(right, text='Turning a day off leaves existing reservations in place.', wraplength=400).pack(anchor='w', pady=12)
     draft_note = tk.StringVar()
     ttk.Label(right, textvariable=draft_note, foreground='#0868d9', wraplength=400).pack(anchor='w')
     document = {}
@@ -92,7 +93,7 @@ def open_calendar_preferences(app, dates, settings_path):
                  {'enabled': mode.get() == 'Custom time', 'start_time': 'rooms_open' if start.get() == 'Rooms open' else start.get(), 'end_time': 'rooms_closed' if end.get() == 'Rooms closed' else end.get(), 'strict_mode': strict.get()}}
         for key in loaded_selection[0]:
             drafts[key] = {**drafts.get(key, {}), field: value[field]}
-        draft_note.set(f'{len(drafts)} changed dates · Save changes to apply')
+        draft_note.set('Unsaved changes for this day' if len(dates)==1 else f'{len(drafts)} changed dates · Save changes to apply')
         update_controls()
 
     def show_selection(*_):
@@ -150,11 +151,19 @@ def open_calendar_preferences(app, dates, settings_path):
             if isinstance(getattr(app, 'calendar_day_snapshot', None), dict):
                 app.calendar_day_snapshot[key] = value['enabled']
         document.clear(); document.update(saved); drafts.clear()
+        target_editor=getattr(app,'settings_editors',{}).get('Practice target')
+        target_draft=tuple(v.get() for v in target_editor['variables']) if target_editor else None
+        if target_editor and target_draft==target_editor['baseline']: target_draft=None
         app.load_practice_plan_settings()
+        if target_draft:
+            for variable,value in zip(target_editor['variables'],target_draft): variable.set(value)
         app.load_booking_days()
-        app._refresh_calendar()
+        if getattr(app,'calendar_dialog',None) is not None:
+            app._refresh_calendar()
         app._update_days_summary()
-        draft_note.set('Calendar settings saved')
+        app._refresh_booking_plan_display()
+        app._refresh_quiet_views()
+        draft_note.set('Day settings saved. Your plan will update automatically.' if len(dates)==1 else 'Calendar settings saved')
         status.set('')
 
     for variable, field in ((enabled, 'enabled'), (hours, 'hours'), (mode, 'time'), (start, 'time'), (end, 'time'), (strict, 'time')):

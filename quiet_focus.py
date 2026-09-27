@@ -240,9 +240,10 @@ class WeekEventCard(RoundedCard):
 
 
 class WeekPanel(ScrollPage):
-    def __init__(self,parent,*,on_calendar,on_refresh,on_details):
+    def __init__(self,parent,*,on_calendar,on_refresh,on_details,on_edit_day=None):
         super().__init__(parent)
         self.on_details=on_details
+        self.on_edit_day=on_edit_day
         self.body=tk.Frame(self.content,bg=PAGE,padx=24,pady=24);self.body.pack(fill='both',expand=True)
         head=tk.Frame(self.body,bg=PAGE);head.pack(fill='x')
         label(head,'My Week',size=32,bold=True).pack(side='left')
@@ -260,6 +261,7 @@ class WeekPanel(ScrollPage):
                                       state=tk.DISABLED if plan_refreshing else tk.NORMAL)
         self.plan_status.configure(text=plan_notice or ('Previous plan shown below. Refresh to check it again.' if plan_stale else ''))
         for child in self.rows.winfo_children():child.destroy()
+        self.day_edit_buttons={}
         today=datetime.now(ZoneInfo('Europe/London')).date().isoformat()
         grouped={}
         for event in events:
@@ -273,9 +275,14 @@ class WeekPanel(ScrollPage):
         if not available:label(self.rows,'Your agenda is unavailable. Refresh before relying on these plans.',color=MUTED,wraplength=600).pack(anchor='w',pady=20)
         if not grouped and available:label(self.rows,'No upcoming sessions in the last checked agenda.',color=MUTED).pack(anchor='w',pady=20)
         for day,day_events in sorted(grouped.items()):
-            heading=label(self.rows,datetime.fromisoformat(day).strftime('%A, %d %B'),size=19,bold=True,color='#B73332' if day in closed_dates else INK)
+            header=tk.Frame(self.rows,bg=PAGE);header.pack(fill='x',pady=(20,10))
+            heading=label(header,datetime.fromisoformat(day).strftime('%A, %d %B'),size=19,bold=True,color='#B73332' if day in closed_dates else INK)
             if day in closed_dates or day in off_dates: heading.configure(font=('Segoe UI',-19,'bold overstrike'))
-            heading.pack(anchor='w',pady=(20,10))
+            heading.pack(side='left')
+            if self.on_edit_day:
+                button=ttk.Button(header,text='Edit day',style='QuietLink.TButton',command=lambda key=day:self.on_edit_day(key))
+                button.pack(side='right')
+                self.day_edit_buttons[day]=button
             if day in closed_dates or day in off_dates:
                 label(self.rows,'Practice rooms closed' if day in closed_dates else 'Booking off',color='#B73332' if day in closed_dates else MUTED,size=13).pack(anchor='w',pady=(0,6))
             sessions=[(event['startTime'],0,event) for event in day_events]

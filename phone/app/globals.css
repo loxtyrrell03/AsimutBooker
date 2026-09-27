@@ -95,7 +95,7 @@ html:has(.tab-assistant), body:has(.tab-assistant) { overflow:hidden; overscroll
 /* Explicit whole-day room closures remain distinct from bookings and plans. */
 .day-section.rooms-closed { background: #fee2e2; border: 1px solid #fca5a5; border-radius: 12px; padding: 14px; }
 .booking-off-key { text-decoration: line-through; text-decoration-thickness: 2px; }
-.day-section.rooms-closed > h3, .closed-key { color: #b91c1c; text-decoration: line-through; text-decoration-thickness: 2px; }
+.day-section.rooms-closed > h3, .day-section.rooms-closed .week-day-heading h3, .closed-key { color: #b91c1c; text-decoration: line-through; text-decoration-thickness: 2px; }
 .closure-label { color: #b91c1c; font-size: .85rem; margin: 4px 0 8px; }
 .closed-day-surface { position: relative; isolation: isolate; background-color: #fff1f2; }
 .closure-cross { position: absolute; inset: 6px; width: calc(100% - 12px); height: calc(100% - 12px); color: var(--red); opacity: .65; pointer-events: none; z-index: -1; }
@@ -177,3 +177,7 @@ html:has(.tab-assistant), body:has(.tab-assistant) { overflow:hidden; overscroll
 .schedule-view .view-heading { flex-wrap:wrap; }
 .schedule-view .view-heading>div { flex:1 1 180px; min-width:0; }
 .schedule-view .view-heading>button { width:auto; flex-shrink:0; }
+
+.week-day-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.week-day-heading h3 { min-width:0; margin-bottom:0; }
+.week-day-heading button { min-height:44px; flex-shrink:0; }

@@ -725,13 +725,16 @@ function ScheduleView({
   cancelling,
   onRefresh,
   refreshing,
+  onEditDay,
 }: {
   booker: BookerSnapshot;
   onCancelBooking: (event: AgendaEvent) => void;
   cancelling: boolean;
   onRefresh: () => void;
   refreshing: boolean;
+  onEditDay: (date: string) => void;
 }) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: booker.timezone || 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const groups = useMemo(() => {
     const result = new Map<string, AgendaEvent[]>();
     for (const day of booker.plan.days) result.set(day.date, []);
@@ -858,7 +861,9 @@ function ScheduleView({
             return (
               <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed closed-day-surface' : ''}`} key={date}>
                 {booker.agenda.closed_dates?.includes(date) && <ClosedDayCross />}
-                <h3>{dateLabel(date, true)}</h3>
+                <div className="week-day-heading"><h3>{dateLabel(date, true)}</h3>
+                  {date >= today && <button type="button" className="quiet-link" aria-label={`Edit day: ${dateLabel(date, true)}`} onClick={() => onEditDay(date)}>Edit day</button>}
+                </div>
                 {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
                 {events.map((event, index) => (
                   <article className="agenda-card" key={`${event.start_time}-${event.room}-${index}`}>
@@ -1045,6 +1050,7 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
 
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('today');
+  const [weekEditDate, setWeekEditDate] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [systemJob, setSystemJob] = useState<SystemJob | null>(null);
@@ -1469,7 +1475,7 @@ export default function HomePage() {
 
   useEffect(() => {
     window.scrollTo(0, 0);
-  }, [tab]);
+  }, [tab, weekEditDate]);
 
   useEffect(() => {
     if (tab !== 'assistant') return;
@@ -1806,9 +1812,10 @@ export default function HomePage() {
               {!busy && messages.length < 4 && <StarterPrompts onPick={choosePrompt} />}
             </div>
           )}
-          {tab === 'schedule' && booker && (
-            <ScheduleView booker={booker} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
-          )}
+          {booker && <div hidden={tab !== 'schedule'}>
+            {weekEditDate ? <PhoneCalendar key={weekEditDate} singleDay={weekEditDate} onClose={() => setWeekEditDate(null)} booker={booker} csrf={csrf} active={tab === 'schedule'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /> :
+              <ScheduleView booker={booker} onEditDay={setWeekEditDate} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />}
+          </div>}
           {booker && <div hidden={tab !== 'rooms'}><RoomAvailability active={tab === 'rooms'} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview} job={systemJob} onJob={applySystemJob} /></div>}
           {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
           {booker && <div hidden={tab !== 'status'}>

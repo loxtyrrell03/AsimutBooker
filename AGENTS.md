@@ -1,3 +1,26 @@
+## 2026-09-27 per-day settings directly from My Week
+
+- Each current/future date in PC and phone My Week has Edit day. It opens the
+  existing date-specific preference controls for just that date: target hours,
+  preferred start/end including room boundaries, soft/strict time, and booking
+  on/off. Blank hours and Use default time restore inheritance. Global settings
+  and other dates are preserved; booking off does not cancel reservations.
+- PC reuses calendar_preferences_ui with a My Week return destination and does
+  not require opening/scanning Calendar first. Single-date forms omit the bulk
+  date selector. Saving preserves an unrelated unsaved global-target draft.
+- Phone reuses PhoneCalendar in a single-date mode with its own retained draft;
+  its Save payload is constrained to that date and cannot submit a separate
+  Calendar draft. Tab navigation retains edits, Cancel discards them, and the
+  existing revision conflict/reload and uncertain-save handling remain intact.
+  Successful saves use the shared preference dispatcher to update the plan.
+- Verification: 39 focused Python checks, 17 Node tests, TypeScript/lint/build,
+  native 760/1040px renders and Chromium/WebKit 320/390/844px checks pass. Tests
+  cover exact date scope, defaults, Save/Cancel, other drafts, stale writes,
+  calendar bulk editing, weekly plans and visible short-viewport phone Save.
+  All writes use isolated fixtures; no owner's dated preference was changed.
+  Private evidence: artifacts/week-day-settings-20260927/. Activation follows
+  separately; existing PC windows need reopening for these controls.
+
 ## 2026-09-27 explicit settings Save and reliable weekly replanning
 
 - PC Practice target, Preferred time and Booking strategy retain drafts until

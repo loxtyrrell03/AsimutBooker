@@ -146,5 +146,55 @@ class WeekAndSettingsTests(unittest.TestCase):
             scan.assert_not_called()
         app._week_watch_id=None
 
+    def test_edit_day_opens_exact_date_without_calendar_and_saves_only_that_day(self):
+        app=self.app
+        day=(datetime.now().date()+timedelta(days=1)).isoformat()
+        other=(datetime.now().date()+timedelta(days=2)).isoformat()
+        value=self.saved();value['practice_plan']['date_overrides']={other:2}
+        self.settings.write_text(json.dumps(value))
+        app.practice_default_hours.set('5')  # An unrelated unsaved Settings draft.
+        app.week_panel.update_data([],available=True,stale=False,closed_dates=[day])
+        app.week_panel.day_edit_buttons[day].invoke()
+        editor=app._detail_pages['dates:'+day]
+        self.assertEqual(editor.owner,'week')
+        controls=editor.calendar_controls
+        self.assertEqual(controls['dates'].size(),1)
+        controls['hours'].set('3.5');controls['mode'].set('Custom time')
+        controls['start'].set('16:00');controls['end'].set('Rooms closed');controls['strict'].set(True)
+        controls['enabled'].set(False)
+        self.assertNotIn(day,self.saved()['practice_plan']['date_overrides'])
+        controls['save'].invoke()
+        from phone_preferences import read_phone_preferences
+        saved=read_phone_preferences(self.settings)
+        self.assertEqual(saved['practice_plan']['default_hours'],6)
+        self.assertEqual(saved['practice_plan']['date_overrides'],{other:2,day:3.5})
+        self.assertEqual(saved['date_time_preferences'][day],{'enabled':True,'start_time':'16:00','end_time':'rooms_closed','strict_mode':True})
+        self.assertFalse(saved['time_preferences']['enabled'])
+        self.assertEqual(saved['disabled_dates'],[day])
+        self.assertEqual(app.practice_default_hours.get(),'5')
+        self.assertEqual(app.settings_editors['Practice target']['note'].cget('text'),'Unsaved changes')
+        self.kick.assert_called_once()
+        controls['hours'].set('4.5')
+        editor.back()
+        reopened=app._edit_week_day(day)
+        self.assertIs(reopened,editor)
+        self.assertEqual(controls['hours'].get(),'4.5')
+        editor.destroy()  # Cancel discards only this date's unsaved form.
+        self.assertEqual(self.saved()['practice_plan']['date_overrides'][day],3.5)
+        self.assertEqual(app.main_notebook.select(),str(app.week_tab))
+
+    def test_day_editor_restores_default_without_changing_other_dates(self):
+        app=self.app
+        day=(datetime.now().date()+timedelta(days=1)).isoformat()
+        value=self.saved();value['practice_plan']['date_overrides']={day:3.5}
+        value['date_time_preferences']={day:{'enabled':True,'start_time':'16:00','end_time':'20:00','strict_mode':True}}
+        self.settings.write_text(json.dumps(value))
+        editor=app._edit_week_day(day);controls=editor.calendar_controls
+        controls['hours'].set('');controls['mode'].set('Use default time')
+        controls['save'].invoke()
+        self.assertNotIn(day,self.saved()['practice_plan']['date_overrides'])
+        self.assertNotIn(day,self.saved()['date_time_preferences'])
+        editor.destroy()
+
 
 if __name__=='__main__': unittest.main()
