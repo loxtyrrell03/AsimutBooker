@@ -90,10 +90,12 @@ SVG_SNAPSHOT_JS = """(configuredRooms) => {
     return {renderer:'svg', rooms:grid.rows.map(row => {
         const origin = grid.toScreen(grid.atHour(7), (row.top+row.bottom)/2);
         const next = grid.toScreen(grid.atHour(8), (row.top+row.bottom)/2);
-        return {room:row.room, clickOriginX:origin.x, clickPixelsPerHour:next.x-origin.x, clickY:origin.y,
+        return {room:row.room, locationId:row.id, clickOriginX:origin.x, clickPixelsPerHour:next.x-origin.x, clickY:origin.y,
             blockedRanges:grid.blockers.filter(b => b.bottom > row.top+0.1 && b.top < row.bottom-0.1 && b.right > b.left)
                 .map(b => ({startHour:7+(b.left-grid.atHour(7))/grid.perHour,
-                    endHour:7+(b.right-grid.atHour(7))/grid.perHour, closed:b.closed}))};
+                    endHour:7+(b.right-grid.atHour(7))/grid.perHour, closed:b.closed,
+                    label: b.closed ? '' : (b.el.getAttribute('aria-label') || '').trim(),
+                    eventId: b.el.getAttribute('data-event-id') || b.el.closest('[data-event-id]')?.getAttribute('data-event-id') || null}))};
     })};
 } """
 

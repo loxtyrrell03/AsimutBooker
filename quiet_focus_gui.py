@@ -31,8 +31,9 @@ class QuietFocusGUI:
         self.topbar.columnconfigure(0,weight=1,uniform='nav-side')
         self.topbar.columnconfigure(2,weight=1,uniform='nav-side')
         self.quiet_nav={}
-        for i,(key,text) in enumerate((('today','Today'),('week','My Week'),('calendar','Calendar'),('assistant','Assistant'),('settings','Settings'))):
-            button=ttk.Button(nav,text=text,style='QuietNav.TButton',command=lambda k=key:self._select_quiet_page(k))
+        style.configure('RoomsNav.QuietNav.TButton', padding=(10,12), width=0)
+        for i,(key,text) in enumerate((('today','Today'),('week','My Week'),('rooms','Rooms'),('calendar','Calendar'),('assistant','Assistant'),('settings','Settings'))):
+            button=ttk.Button(nav,text=text,style='RoomsNav.QuietNav.TButton',command=lambda k=key:self._select_quiet_page(k))
             button.grid(row=0,column=i,padx=3)
             self.quiet_nav[key]=button
         def fit(event):
@@ -53,7 +54,7 @@ class QuietFocusGUI:
         return DetailPage(self,key,owner)
 
     def _select_quiet_page(self, page):
-        targets = {'today': self.today_tab, 'week': self.week_tab, 'calendar': self.calendar_tab, 'assistant': self.assistant_tab, 'settings': self.preferences_page}
+        targets = {'today': self.today_tab, 'week': self.week_tab, 'rooms': self.rooms_tab, 'calendar': self.calendar_tab, 'assistant': self.assistant_tab, 'settings': self.preferences_page}
         if page == 'calendar':
             self.show_calendar_dialog()
             return
@@ -61,6 +62,8 @@ class QuietFocusGUI:
         if page == 'settings' and hasattr(self, 'settings_hub'):
             self._show_settings_hub()
         self._sync_quiet_navigation()
+        if page == 'rooms':
+            self.room_availability.activate()
         if page in ('today', 'week'):
             self._refresh_quiet_views()
 
@@ -68,6 +71,8 @@ class QuietFocusGUI:
         """Initialize pages for every notebook selection, including native tabs."""
         if not self.topbar.winfo_exists(): return
         self._sync_quiet_navigation()
+        if self.main_notebook.select() == str(self.rooms_tab):
+            self.room_availability.activate()
         if (self.main_notebook.select() == str(self.calendar_tab)
                 and getattr(self, 'calendar_dialog', None) is None):
             self.show_calendar_dialog()
@@ -75,7 +80,7 @@ class QuietFocusGUI:
     def _sync_quiet_navigation(self, _event=None):
         if not self.topbar.winfo_exists(): return
         selected = self.main_notebook.select()
-        for key, target in (('today', self.today_tab), ('week', self.week_tab), ('calendar', self.calendar_tab), ('assistant', self.assistant_tab), ('settings', self.preferences_page)):
+        for key, target in (('today', self.today_tab), ('week', self.week_tab), ('rooms', self.rooms_tab), ('calendar', self.calendar_tab), ('assistant', self.assistant_tab), ('settings', self.preferences_page)):
             active = selected == str(target) or key == 'settings' and selected in (str(self.system_tab), str(self.activity_tab))
             active = active or any(selected == str(detail.host) and detail.owner == key for detail in self._detail_pages.values())
             self.quiet_nav[key].state(['selected'] if active else ['!selected'])
@@ -176,6 +181,10 @@ class QuietFocusGUI:
         self.week_panel = WeekPanel(self.week_tab, on_calendar=lambda:self.show_calendar_dialog(initial_view='week'),
             on_refresh=self._refresh_quiet_agenda, on_details=self._show_quiet_booking)
         self.week_panel.pack(fill=tk.BOTH, expand=True)
+        from room_grid_gui import RoomAvailabilityPanel
+        self.room_availability = RoomAvailabilityPanel(self.rooms_tab,
+            other_busy=lambda: self.is_running or self.login_operation_in_progress)
+        self.room_availability.pack(fill=tk.BOTH, expand=True)
         self.main_notebook.bind('<<NotebookTabChanged>>', self._on_quiet_page_changed)
         self._sync_quiet_navigation()
 

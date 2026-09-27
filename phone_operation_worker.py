@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from app_settings import atomic_write_json
-from operation_control import owned_operation, check_operation_stop
+from operation_control import owned_operation, check_operation_stop, observe_room_grid
 from phone_system import ROOT, RUN_ACTIONS, SystemConflict, run_local_action, timestamp, validate_action
 from runtime_guard import SingleInstanceAlreadyRunning
 
@@ -35,6 +35,12 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                                  'end': f'{end // 60:02d}:{end % 60:02d}', 'minutes': end - start})
         progress(f'Read room availability for {key}.')
 
+    def grid(target_date, snapshot, eligible, settings, page):
+        from room_grid import publish_day, room_revision, enrich_grid
+        if page is not None:
+            snapshot = enrich_grid(page, target_date, snapshot, eligible)
+        publish_day(target_date.isoformat(), snapshot, eligible, room_revision(settings), root=root)
+
     progress('Starting the PC operation…')
     try:
         if action == 'room_now_review':
@@ -44,7 +50,7 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
             if booker_main(['--headless', '--agenda-only']) != 0:
                 return {'state': 'uncertain', 'message': 'The booking could not be checked. Try Check booking status again.'}
             return review_result(directory, root)
-        with owned_operation(stop, progress, availability):
+        with owned_operation(stop, progress, availability), observe_room_grid(grid):
             check_operation_stop()
             if action in RUN_ACTIONS:
                 if booker_main is None:

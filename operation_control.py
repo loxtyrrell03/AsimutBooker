@@ -4,6 +4,23 @@ from contextvars import ContextVar
 from app_settings import SettingsError
 
 _CONTROL = ContextVar('owned_operation', default=None)
+_GRID = ContextVar('room_grid_observer', default=None)
+
+
+@contextmanager
+def observe_room_grid(callback):
+    token = _GRID.set(callback)
+    try:
+        yield
+    finally:
+        _GRID.reset(token)
+
+
+def report_room_grid(target_date, snapshot, eligible, settings, page=None):
+    check_operation_stop()
+    callback = _GRID.get()
+    if callback is not None:
+        callback(target_date, snapshot, eligible, settings, page)
 
 
 class OperationStopped(SettingsError):

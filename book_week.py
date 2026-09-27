@@ -5434,7 +5434,9 @@ def get_practice_room_grid_snapshot(page, configured_rooms=None):
                 const style = element.getAttribute('style') || '';
                 const left = parseStylePct(style, 'left') || 0;
                 const width = parseStylePct(style, 'width') || 0;
-                return { startHour: pctToHour(left), endHour: pctToHour(left + width), closed: false };
+                return { startHour: pctToHour(left), endHour: pctToHour(left + width), closed: false,
+                    label: clean(element.textContent || element.getAttribute('aria-label')),
+                    eventId: element.getAttribute('data-event-id') || null };
             });
             const closedRanges = Array.from(
                 day.querySelectorAll('.location-closed')
@@ -10779,6 +10781,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
                 available_data = get_available_slots(page)
                 report_available_gaps(target_date, available_data)
+                from operation_control import report_room_grid
+                report_room_grid(target_date, get_practice_room_grid_snapshot(page), PRIORITY_ROOMS, settings, page)
                 slot_count = sum(
                     len(room.get("slots", [])) for room in available_data
                 )

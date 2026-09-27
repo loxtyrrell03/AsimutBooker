@@ -1,3 +1,28 @@
+## 2026-09-27 room availability tabs
+
+- PC and phone have a separate Rooms tab: a seven-day selector, rooms down the
+  left, a horizontally scrollable time grid, closing times, bookings and details.
+  It uses the existing Quiet Focus palette. The owner authorized one SVG mockup
+  followed immediately by implementation; the editable board is in
+  `docs/design/2026-09-27-room-availability/mockup.svg` with invented examples.
+- `room_grid.py` publishes a private display cache from the existing owned
+  check-only worker. Only freshly eligible `PRIORITY_ROOMS` are published;
+  changed room preferences invalidate the cache. Fully occupied/closed rooms stay
+  visible. Each date has its own checked time; missing/stale dates are explicit.
+  The cache cannot authorize a booking. Refresh and Stop reuse worker ownership.
+- ASIMUT's SVG stores event IDs separately from names. Display enrichment reads
+  its ordinary event-detail GET endpoint, four at a time with bounded timeouts,
+  and binds names to exact event ID, room ID, date and interval. It retains names
+  and titles, not participant IDs/usernames/raw payloads. Failed detail reads
+  retain busy intervals. Exact location metadata supplies closures and removes
+  duplicate closure-event overlays. No Save path is added.
+- Native 760/1040px renders and Chromium/WebKit 320/390/1040px checks exercise
+  actual navigation, fixed axes, details, filtering, help, Refresh and Stop.
+  TypeScript, lint, 17 Node tests and focused Python checks pass. A read-only
+  live scan verified eight dates and 16 eligible rooms with names and actual
+  weekday/weekend closures. This is source and PC-browser proof; activation is
+  separate. Private evidence is in `artifacts/room-grid-20260927/` (ignored).
+
 ## 2026-09-27 future free-window display plans
 
 - Weekly publication previews free-window practice on every freshly scanned

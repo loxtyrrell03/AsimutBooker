@@ -41,12 +41,13 @@ import { PhoneCalendar } from '@/components/phone-calendar';
 import { PracticeSettings } from '@/components/practice-settings';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
 import { RoomNow } from '@/components/room-now';
+import { RoomAvailability } from '@/components/room-availability';
 import { requestJson } from '@/lib/api';
 
 const PRIVATE_ORIGIN = process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || '';
 const subscribeBrowserSnapshot = () => () => undefined;
 
-type Tab = 'today' | 'assistant' | 'schedule' | 'calendar' | 'status';
+type Tab = 'today' | 'assistant' | 'schedule' | 'calendar' | 'status' | 'rooms';
 type ConnectionState = 'connecting' | 'online' | 'offline';
 
 type ChatMessage = {
@@ -1011,6 +1012,7 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
   const items: Array<{ id: Tab; label: string; icon: typeof MessageCircle }> = [
     { id: 'today', label: 'Today', icon: Home },
     { id: 'schedule', label: 'My Week', icon: CalendarDays },
+    { id: 'rooms', label: 'Rooms', icon: Clock3 },
     { id: 'calendar', label: 'Calendar', icon: CalendarDays },
     { id: 'assistant', label: 'Assistant', icon: MessageCircle },
     { id: 'status', label: 'Settings', icon: Settings2 },
@@ -1789,6 +1791,7 @@ export default function HomePage() {
           {tab === 'schedule' && booker && (
             <ScheduleView booker={booker} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />
           )}
+          {booker && <div hidden={tab !== 'rooms'}><RoomAvailability active={tab === 'rooms'} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview} job={systemJob} onJob={applySystemJob} /></div>}
           {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
           {booker && <div hidden={tab !== 'status'}>
             <StatusView booker={booker} active={tab === 'status'} systemJob={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} refreshing={refreshing} csrf={csrf} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={refreshSnapshot} />

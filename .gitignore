@@ -63,6 +63,8 @@ data/phone_operations/
 data/desktop_operations/
 data/desktop_room_now.json*
 data/desktop-room-now.lock
+data/room_grid.json*
+data/desktop-room-grid.lock
 data/room_now_preferences.json*
 data/desktop_cancellation.json*
 data/desktop-cancellation.lock

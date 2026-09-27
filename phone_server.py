@@ -1122,6 +1122,12 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == "/api/v1/room-grid":
+            if self._authorized() is None:
+                return
+            from room_grid import read_grid
+            self._json(HTTPStatus.OK, read_grid())
+            return
         if path.startswith("/api/v1/system/"):
             if self._authorized() is None:
                 return

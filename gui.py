@@ -1801,12 +1801,14 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.activity_tab = activity_tab
         self.today_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.week_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
+        self.rooms_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.calendar_tab = ttk.Frame(self.main_notebook, style="Page.TFrame")
         self.assistant_tab = assistant_tab
         self.preferences_page = preferences_page
         self.system_tab = overview_tab
         self.main_notebook.add(self.today_tab, text="Today")
         self.main_notebook.add(self.week_tab, text="My Week")
+        self.main_notebook.add(self.rooms_tab, text="Rooms")
         self.main_notebook.add(self.calendar_tab, text="Calendar")
         self.main_notebook.add(assistant_tab, text="Assistant")
         self.main_notebook.add(self.preferences_page, text="Settings")
