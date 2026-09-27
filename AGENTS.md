@@ -22,6 +22,24 @@
   live scan verified eight dates and 16 eligible rooms with names and actual
   weekday/weekend closures. This is source and PC-browser proof; activation is
   separate. Private evidence is in `artifacts/room-grid-20260927/` (ignored).
+- Phone build `20260927-rooms` is active at the unchanged private origin. The
+  existing idle phone task was reloaded under assistant/runtime/dispatcher
+  ownership. Exact HTTPS assets, session, authenticated room-grid API and live
+  Chromium/WebKit 320/390px navigation/details pass for eight dates, 16 rooms and
+  463 displayed bookings. The restart regenerated only the empty assistant's
+  thread ID among startup-time JSON changes; existing messages remained empty.
+  The independent deployment verifier passes. Physical-phone proof is absent.
+- Owner feedback exposed the original fixed 1280px timeline on an ultrawide PC.
+  The Rooms page now centres a bounded 2440px body, groups the date controls,
+  uses 16px booking/17px room text, and expands the actual timeline to its canvas
+  viewport. Narrow windows keep horizontal scrolling. The date selector, axes,
+  detail panel and legend retain their space during resize. Tests must set
+  `root.maxsize` and assert the realized window width: Tk silently limited the
+  earlier wide fixtures. Actual geometry is checked at 760/1040/1920/3440px;
+  full off-screen native screenshots can contain black areas on smaller test
+  desktops and are not whole-window visual proof. The original full 1,652-test
+  suite and 34 focused follow-up checks pass. Existing PC windows must reopen
+  to load the corrected layout; phone assets do not require another release.
 
 ## 2026-09-27 future free-window display plans
 

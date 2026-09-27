@@ -115,3 +115,33 @@ class RoomGridHTTPTests(unittest.TestCase):
             self.assertEqual(status,200)
             self.assertIn('no-store',headers['Cache-Control'])
             self.assertEqual(json.loads(body)['days'],{})
+
+
+class RoomGridLayoutTests(unittest.TestCase):
+    def test_resize_fills_timeline_and_centres_controls_at_ultrawide_and_small_sizes(self):
+        from tests.test_desktop_settings import DesktopSettingsTests
+        from room_catalog import SITE_TIMEZONE
+        fixture_app = DesktopSettingsTests(); fixture_app.setUp()
+        self.addCleanup(fixture_app.doCleanups)
+        app, root = fixture_app.app, fixture_app.root
+        root.maxsize(5000,3000)
+        root.attributes('-alpha',0);root.deiconify()
+        day=datetime.now(SITE_TIMEZONE).date().isoformat()
+        doc=normalize_day(day,fixture(),['B0.13','B1.15']);doc['stale']=False
+        panel=app.room_availability
+        panel.reader=lambda:{'days':{day:doc},'message':''}
+        app._select_quiet_page('rooms')
+        for width in (760,1040,1920,3440,1040):
+            with self.subTest(width=width):
+                root.geometry(f'{width}x900');root.update()
+                self.assertEqual(root.winfo_width(),width)
+                self.assertEqual(panel.rendered_width,max(1280,panel.track.winfo_width()))
+                centre=panel.winfo_rootx()+panel.winfo_width()/2
+                self.assertLess(abs(panel.body.winfo_rootx()+panel.body.winfo_width()/2-centre),2)
+                self.assertLess(abs(panel.date_controls.winfo_rootx()+panel.date_controls.winfo_width()/2-centre),2)
+                self.assertLessEqual(panel.date_controls.winfo_width(),1000)
+                self.assertEqual(panel.booking_font.cget('size'),-16)
+                panel.booking_widgets[0].invoke();root.update()
+                self.assertTrue(panel.details.winfo_ismapped())
+                self.assertLessEqual(panel.legend.winfo_rooty()+panel.legend.winfo_height(),panel.winfo_rooty()+panel.winfo_height())
+                panel.details.pack_forget()
