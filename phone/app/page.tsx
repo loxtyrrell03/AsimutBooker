@@ -128,6 +128,7 @@ export type BookerSnapshot = {
     generated_at: string;
     summary: string;
     days: PlanDay[];
+    refresh?: { state: string; message: string };
   };
   preferences: {
     practice_plan: {
@@ -754,6 +755,7 @@ function ScheduleView({
     () => booker.plan.days.flatMap((day) => selectedPlanSessions(day)),
     [booker.plan.days],
   );
+  const planUpdating = refreshing || ['pending', 'running'].includes(booker.plan.refresh?.state || '');
   return (
     <section className="view-page schedule-view" aria-labelledby="schedule-title">
       <div className="view-heading">
@@ -765,8 +767,9 @@ function ScheduleView({
             {booker.agenda.stale ? ' · updating recommended' : ''}
           </p>
         </div>
-        <Button aria-label="Refresh schedule" disabled={refreshing} onClick={onRefresh} size="icon-lg" variant="outline">
-          <RefreshCw className={refreshing ? 'spin-slow' : ''} />
+        <Button disabled={planUpdating} onClick={onRefresh} variant="outline">
+          <RefreshCw className={planUpdating ? 'spin-slow' : ''} />
+          {planUpdating ? 'Updating plan…' : 'Refresh plan'}
         </Button>
       </div>
 
@@ -795,10 +798,10 @@ function ScheduleView({
         </div>
       </div>
 
-      {refreshing && (
+      {planUpdating && (
         <output className="refresh-state-line">
           <RefreshCw className="spin-slow" />
-          Checking Asimut for current bookings and a fresh plan…
+          Updating your plan{booker.preferences.practice_plan.enabled ? ` for ${booker.preferences.practice_plan.default_hours} hours per day` : ''}…
         </output>
       )}
 
@@ -826,13 +829,15 @@ function ScheduleView({
         <output className="attention-card">
           <RefreshCw className={refreshing ? 'spin-slow' : ''} />
           <div>
-            <strong>Showing the last generated plan</strong>
+            <strong>{planUpdating ? 'Previous plan · updating' : 'Previous plan · refresh needed'}</strong>
             <p>
-              Generated {timeAgo(booker.plan.generated_at)}. Potential blocks remain visible
-              for context and are refreshed live before the Booker acts.
+              Generated {timeAgo(booker.plan.generated_at)}. These sessions may change to match your saved settings.
             </p>
           </div>
         </output>
+      )}
+      {!planUpdating && booker.plan.stale && ['failed','paused'].includes(booker.plan.refresh?.state || '') && (
+        <p role="alert" className="quiet-notice">The last plan check did not finish. Select Refresh plan to try again.</p>
       )}
       {!booker.plan.available && (
         <div className="empty-inline">No generated plan is available yet. Tap refresh to build one.</div>
@@ -880,7 +885,7 @@ function ScheduleView({
                     <div className="plan-date">
                       <span>
                         {Math.round(day.existing_minutes / 60 * 10) / 10}h booked ·{' '}
-                        {Math.round(day.target_minutes / 60 * 10) / 10}h target
+                        {Math.round(day.target_minutes / 60 * 10) / 10}h {booker.plan.stale ? 'previous target' : 'target'}
                         {plannedMinutes > 0
                           ? ` · ${Math.round(plannedMinutes / 60 * 10) / 10}h across ${sessions.length} planned ${sessions.length === 1 ? 'session' : 'sessions'}`
                           : ''}
@@ -893,7 +898,7 @@ function ScheduleView({
                             <div><Clock3 /></div>
                             <div>
                               <Badge variant="outline">
-                                {sessions.length > 1 ? `Session ${index + 1} · ` : ''}Not booked yet
+                                {booker.plan.stale ? 'Previous plan · ' : sessions.length > 1 ? `Session ${index + 1} · ` : ''}Not booked yet
                               </Badge>
                               <h4>{candidate.start_time}–{candidate.end_time}</h4>
                               <p>{candidate.room}</p>
@@ -1509,13 +1514,26 @@ export default function HomePage() {
 
   useEffect(() => {
     if ((tab !== 'schedule' && tab !== 'today' && tab !== 'calendar') || connection !== 'online' || preview || !csrf || busy) return;
+    if (['pending','running'].includes(booker?.plan.refresh?.state || '')) return;
     const initial = window.setTimeout(() => void refreshLiveSchedule(false), 0);
     const timer = window.setInterval(() => void refreshLiveSchedule(false), 5 * 60_000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);
     };
-  }, [busy, connection, csrf, preview, refreshLiveSchedule, tab]);
+  }, [busy, connection, csrf, preview, refreshLiveSchedule, tab, booker?.plan.refresh?.state]);
+
+  useEffect(() => {
+    if (preview || connection !== 'online' || !['schedule','calendar','status'].includes(tab)
+      || !['pending','running'].includes(booker?.plan.refresh?.state || '')) return;
+    let pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try { await refreshSnapshot(); } finally { pending = false; }
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [booker?.plan.refresh?.state, connection, preview, refreshSnapshot, tab]);
 
   const send = useCallback(async (retryPending = false) => {
     const pending = pendingDeliveryRef.current;

@@ -300,6 +300,8 @@ def _plan_context(path: Path, settings_path: Path) -> dict[str, Any]:
         "stale": result.stale,
         "freshness_reason": result.reason,
     }
+    from preference_runs import public_status
+    payload['refresh'] = public_status(settings)
     if result.snapshot is None:
         return payload
     snapshot = result.snapshot

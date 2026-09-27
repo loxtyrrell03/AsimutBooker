@@ -189,20 +189,19 @@ def run_pending(*, root=ROOT, booker_main=None, enabled=None, sleep=time.sleep,
                 try:
                     allowed = (enabled or automatic_booking_enabled)()
                 except Exception:
-                    settle(path, request_id, 'failed', 'Settings saved; automatic booking status could not be checked.')
-                    continue
-                if not allowed:
-                    settle(path, request_id, 'paused', 'Settings saved; automatic booking is off or needs attention.')
-                    continue
+                    # Planning is read-only even when automatic booking cannot
+                    # be enabled or verified. Off must not leave My Week empty.
+                    allowed = False
                 latest = pending(load_settings(path))
                 if not latest or latest['id'] != request_id:
                     continue
-                settle(path, request_id, 'running', 'Booker is checking the saved preferences.')
+                settle(path, request_id, 'running', 'Booker is checking the saved preferences.' if allowed else
+                    'Refreshing the practice plan without booking.')
                 print(f'{timestamp()} Starting preference check {request_id}', flush=True)
                 if booker_main is None:
                     from book_week import main as booker_main
                 try:
-                    code = booker_main(['--headless'])
+                    code = booker_main(['--headless'] if allowed else ['--headless','--plan-only'])
                 except Exception:
                     LOGGER.exception('Preference check ended without a normal result')
                     code = 1
@@ -211,7 +210,8 @@ def run_pending(*, root=ROOT, booker_main=None, enabled=None, sleep=time.sleep,
                     settle(path, request_id, 'pending', 'Waiting for the current Booker run to finish.')
                 else:
                     settle(path, request_id, 'completed' if code == 0 else 'failed',
-                        'Booker checked the saved preferences.' if code == 0 else
+                        ('Booker checked the saved preferences.' if allowed else
+                         'Practice plan refreshed without booking.') if code == 0 else
                         'Booker could not finish this check. Review its latest activity.', code=code)
                 print(f'{timestamp()} Preference check {request_id}: exit {code}', flush=True)
             finally:

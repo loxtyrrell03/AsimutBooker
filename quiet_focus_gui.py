@@ -1,5 +1,6 @@
 """Quiet Focus shell adapter for the existing desktop controller."""
 from datetime import datetime
+from pathlib import Path
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -65,6 +66,7 @@ class QuietFocusGUI:
         if page == 'rooms':
             self.room_availability.activate()
         if page in ('today', 'week'):
+            self._refresh_booking_plan_display()
             self._refresh_quiet_views()
 
     def _on_quiet_page_changed(self, _event=None):
@@ -75,6 +77,8 @@ class QuietFocusGUI:
             self.room_availability.activate()
         else:
             self.room_availability.deactivate()
+        if self.main_notebook.select() == str(self.week_tab):
+            self._watch_week_plan()
         if (self.main_notebook.select() == str(self.calendar_tab)
                 and getattr(self, 'calendar_dialog', None) is None):
             self.show_calendar_dialog()
@@ -167,6 +171,7 @@ class QuietFocusGUI:
                 style_section(child)
         for card in self.settings_sections.values():
             style_section(card.content)
+        self._install_explicit_settings_saves()
         self._build_settings_hub(preferences)
         self.settings_scroll._bind_wheel()
 
@@ -181,7 +186,7 @@ class QuietFocusGUI:
             other_busy=lambda:self.is_running or self.login_operation_in_progress)
         self.room_now_panel.pack(fill='x',pady=(0,18),before=self.today_panel.hero.master)
         self.week_panel = WeekPanel(self.week_tab, on_calendar=lambda:self.show_calendar_dialog(initial_view='week'),
-            on_refresh=self._refresh_quiet_agenda, on_details=self._show_quiet_booking)
+            on_refresh=self.refresh_booking_plan, on_details=self._show_quiet_booking)
         self.week_panel.pack(fill=tk.BOTH, expand=True)
         from room_grid_gui import RoomAvailabilityPanel
         self.room_availability = RoomAvailabilityPanel(self.rooms_tab,
@@ -220,22 +225,115 @@ class QuietFocusGUI:
         self.today_panel.update_data(events, available=snapshot is not None, stale=result.stale, checked=checked, goal=goal)
         plan_result = getattr(self, 'booking_plan_result', None)
         planned = []
-        if plan_result and plan_result.snapshot and not plan_result.stale:
+        if plan_result and plan_result.snapshot:
             for day in plan_result.snapshot.days:
                 candidates = ([day.primary] if day.primary else []) + list(day.additional)
                 planned.extend(candidate for candidate in candidates if candidate.potential_minutes > 0)
         from room_catalog import closed_practice_dates
+        from preference_runs import public_status
+        saved = self.load_settings()
+        request = public_status(saved) or {}
+        refreshing = bool(getattr(self, '_quiet_plan_refresh_active', False) or request.get('state') in ('pending','running'))
+        notice = getattr(self, '_quiet_plan_refresh_notice', '')
+        if refreshing:
+            target = saved.get('practice_plan', {}).get('default_hours')
+            notice = f'Updating your plan for {target:g} hours per day…' if isinstance(target,(int,float)) else 'Updating your practice plan…'
+            if plan_result and plan_result.stale and plan_result.snapshot:
+                notice += ' Previous plan shown until the new check finishes.'
+        elif request.get('state') in ('failed','paused') and plan_result and plan_result.stale:
+            notice = 'The last plan check did not finish. Select Refresh plan to try again.'
         self.week_panel.update_data(events, available=snapshot is not None, stale=result.stale, checked=checked, planned=planned,
             closed_dates=closed_practice_dates(getattr(self,'room_catalog',None)),off_dates=getattr(self,'disabled_dates',()),
-            plan_days=plan_result.snapshot.days if plan_result and plan_result.snapshot and not plan_result.stale else (),
-            plan_stale=bool(plan_result and plan_result.stale))
+            plan_days=plan_result.snapshot.days if plan_result and plan_result.snapshot else (),
+            plan_stale=bool(plan_result and plan_result.stale), plan_refreshing=refreshing,plan_notice=notice)
         self.today_panel.refresh_button.configure(state=tk.DISABLED if self.is_running else tk.NORMAL)
+
+    def _watch_week_plan(self):
+        """Follow shared files while My Week is visible, without another site scan."""
+        if getattr(self, '_week_watch_id', None):
+            return
+        def poll():
+            self._week_watch_id=None
+            if getattr(self,'_closing',False) or self.main_notebook.select()!=str(self.week_tab):
+                return
+            root=Path(__file__).resolve().parent
+            signature=[]
+            for name in ('settings.json','booking_plan.json','agenda_snapshot.json'):
+                try: signature.append((root/'data'/name).stat().st_mtime_ns)
+                except OSError: signature.append(None)
+            signature.extend((self.is_running,getattr(self,'_quiet_plan_refresh_notice','')))
+            if signature!=getattr(self,'_week_file_signature',None):
+                self._week_file_signature=signature
+                self._refresh_booking_plan_display()
+                self._refresh_quiet_views()
+            self._week_watch_id=self.root.after(1500,poll)
+        poll()
+
+    def _quiet_plan_refresh_finished(self,code):
+        self._quiet_plan_refresh_active=False
+        self._quiet_plan_refresh_notice=('Plan refreshed.' if code==0 else
+            'Plan refresh stopped. Your previous plan is still shown.' if code==130 else
+            'Plan refresh did not finish. Your previous plan is still shown; select Refresh plan to retry.')
+
+    def _install_explicit_settings_saves(self):
+        """Keep quick-control edits local until their visible Save is selected."""
+        self.settings_editors={}
+        specs=(
+            ('Practice target',(self.practice_plan_enabled,self.practice_default_hours),
+             self.on_practice_plan_changed,self.load_practice_plan_settings,self._update_practice_plan_ui_state),
+            ('Preferred time',(self.time_prefs_enabled,self.time_prefs_preset,self.time_prefs_strict,
+                               self.custom_start_time,self.custom_end_time),
+             self.save_time_preferences,self.load_time_preferences,self._update_time_prefs_ui_state),
+            ('Booking strategy',(self.reverse_date_order,),
+             self.save_strategy_settings,self.load_strategy_settings,lambda:None))
+        for key,variables,save,restore,update_ui in specs:
+            card=self.settings_sections[key].content
+            before=card.winfo_children()[1]
+            row=tk.Frame(card,bg=WHITE);row.pack(fill='x',pady=(4,8),before=before)
+            note=label(card,'Saved',size=13,color=MUTED)
+            note.pack(fill='x',pady=(0,8),before=before)
+            editor={'variables':variables,'baseline':tuple(v.get() for v in variables),'loading':False,'note':note}
+            def changed(*_args,e=editor,ui=update_ui):
+                if e['loading']: return
+                ui()
+                dirty=tuple(v.get() for v in e['variables'])!=e['baseline']
+                e['save'].configure(state=tk.NORMAL if dirty and self.settings_available else tk.DISABLED)
+                e['cancel'].configure(state=tk.NORMAL if dirty else tk.DISABLED)
+                e['note'].configure(text='Unsaved changes' if dirty else 'Saved')
+            def finish(callback,e=editor,saving=False):
+                e['loading']=True
+                try:
+                    result=callback()
+                    if saving and not result:
+                        e['note'].configure(text='Changes were not saved. Check the values and try again.')
+                        return
+                    e['baseline']=tuple(v.get() for v in e['variables'])
+                    e['save'].configure(state=tk.DISABLED);e['cancel'].configure(state=tk.DISABLED)
+                    e['note'].configure(text='Saved. Your plan will update automatically.' if saving else 'Changes discarded.')
+                finally: e['loading']=False
+            editor['save']=ttk.Button(row,text='Save changes',style='Primary.TButton',state=tk.DISABLED,
+                command=lambda f=finish,s=save:f(s,saving=True))
+            editor['save'].pack(side='left',padx=(0,10))
+            editor['cancel']=ttk.Button(row,text='Cancel',state=tk.DISABLED,command=lambda f=finish,r=restore:f(r))
+            editor['cancel'].pack(side='left')
+            self._settings_controls.append(editor['save'])
+            for variable in variables: variable.trace_add('write',changed)
+            self.settings_editors[key]=editor
+        self.practice_plan_enable_cb.configure(command=self._update_practice_plan_ui_state)
+        self.practice_default_spin.configure(command=lambda:None)
+        self.practice_default_spin.unbind('<FocusOut>')
+        self.practice_default_spin.bind('<Return>',lambda _event:self.settings_editors['Practice target']['save'].invoke())
+        for control in (self.time_prefs_enable_cb,self.time_prefs_strict_cb):
+            control.configure(command=self._update_time_prefs_ui_state)
+        for control in (self.time_prefs_dropdown,self.custom_start_time_control,self.custom_end_time_control):
+            control.bind('<<ComboboxSelected>>',lambda _event:self._update_time_prefs_ui_state())
+        self.reverse_date_order_cb.configure(command=lambda:None)
 
     def _build_settings_hub(self,parent):
         self.settings_grid.pack_forget()
         # The original direct controls stay mounted in their editor, retaining drafts.
         self.settings_back=ttk.Button(parent,text='← Settings',style='QuietLink.TButton',command=self._show_settings_hub)
-        self.settings_save_note=label(parent,'Changes in these quick controls save automatically.',size=13,color=MUTED)
+        self.settings_save_note=label(parent,'',size=13,color=MUTED)
         self.settings_hub=tk.Frame(parent,bg=PAGE)
         self.settings_hub.pack(fill='x',before=self.settings_links)
         self.settings_tiles={}
@@ -287,7 +385,6 @@ class QuietFocusGUI:
         self.settings_grid.columnconfigure(1,weight=0)
         self.settings_sections[key].grid(row=0,column=0,columnspan=2,sticky='ew',padx=0)
         self.settings_grid.pack(fill='x',before=self.settings_links)
-        self.settings_save_note.pack(anchor='w',pady=(4,10),before=self.settings_grid)
         self.settings_scroll.canvas.yview_moveto(0)
 
     def _refresh_quiet_agenda(self):

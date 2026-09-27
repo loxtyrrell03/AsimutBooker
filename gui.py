@@ -2445,7 +2445,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         snapshot = result.snapshot
         generated_local = snapshot.generated_at.astimezone().strftime("%d %b %H:%M")
         if result.stale:
-            self.booking_plan_headline_var.set("Plan needs refresh — potential blocks are hidden")
+            self.booking_plan_headline_var.set("Previous plan — refresh needed")
             self.booking_plan_detail_var.set(
                 f"{result.reason} Last generated {generated_local}. A stale plan is never used for booking."
             )
@@ -2798,7 +2798,7 @@ class AsimutBookerGUI(QuietFocusGUI):
     def refresh_booking_plan(self):
         """Generate a fresh plan through the runtime's isolated read-only mode."""
 
-        if self.is_running:
+        if self.is_running or self.login_operation_in_progress:
             messagebox.showwarning(
                 "Already Running",
                 "Wait for the current booker or plan refresh to finish.",
@@ -2812,9 +2812,12 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.stop_btn.config(state=tk.NORMAL)
         self.log("Refreshing the forward booking plan (read only)...", "info")
         self.progress_var.set("Refreshing booking plan — no Save or edit actions allowed...")
+        self._quiet_plan_refresh_active=True
+        self._quiet_plan_refresh_notice=''
+        self._refresh_quiet_views()
         threading.Thread(
             target=self._run_booker_thread,
-            args=(True, ("--plan-only",), "Plan refresh"),
+            args=(True, ("--plan-only", "--wait-for-runtime-seconds", "180"), "Plan refresh"),
             daemon=False,
         ).start()
 
@@ -2875,6 +2878,8 @@ class AsimutBookerGUI(QuietFocusGUI):
 
             self.running_process.wait()
             exit_code = self.running_process.returncode
+            if operation_name == 'Plan refresh':
+                post(lambda code=exit_code:self._quiet_plan_refresh_finished(code))
 
             if self._desktop_stop_path and self._desktop_stop_path.exists():
                 post(lambda: self.log('Stopped. Any bookings already verified remain in the agenda.', 'info'))
@@ -2891,6 +2896,8 @@ class AsimutBookerGUI(QuietFocusGUI):
                 )
 
         except Exception as e:
+            if operation_name == 'Plan refresh':
+                post(lambda:self._quiet_plan_refresh_finished(1))
             post(
                 lambda message=f"Error running {operation_name.lower()}: {e}": self.log(message, "error"),
             )
@@ -3922,13 +3929,13 @@ class AsimutBookerGUI(QuietFocusGUI):
     def on_practice_plan_changed(self):
         """Validate and persist the compact practice-plan controls."""
         if not self.settings_available:
-            return
+            return False
         try:
             default_hours = self._validated_default_practice_hours()
         except PracticePlanError as exc:
             self._restore_practice_plan_controls()
             messagebox.showerror("Invalid Practice Target", str(exc))
-            return
+            return False
 
         enabled = self.practice_plan_enabled.get()
         previous_plan = self.practice_plan
@@ -3955,10 +3962,12 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         if self._update_settings(mutate):
             self._install_confirmed_practice_plan(saved_plan[0])
+            return True
         else:
             # The click/spinbox callback has already changed the Tk variables.
             # Never leave those unsaved values visible after a failed write.
             self._restore_practice_plan_controls()
+            return False
 
     def _restore_practice_plan_controls(self):
         """Restore compact controls to the last plan confirmed in settings."""

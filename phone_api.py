@@ -302,6 +302,8 @@ def build_phone_snapshot(*, paths: ContextPaths | None = None) -> dict[str, Any]
             "generated_at": _text(plan.get("generated_at")),
             "summary": _text(plan.get("summary"), fallback="No current booking plan"),
             "days": days,
+            "refresh": {"state": _text(_mapping(plan.get('refresh')).get('state')),
+                        "message": _text(_mapping(plan.get('refresh')).get('message'))},
         },
         "preferences": {
             "practice_plan": {

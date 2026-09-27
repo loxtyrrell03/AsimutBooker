@@ -33,16 +33,25 @@ def check(dist):
         state = {'busy': False, 'messages': [], 'event_cursor': 0, 'stream_generation': 'closures-test',
                  'booker': booker, 'unresolved_reserved_count': 0}
         for engine in ('chromium', 'webkit'):
+            booker['plan'].update(stale=True,refresh=None)
+            for day in booker['plan']['days']: day['target_minutes']=180
             browser = getattr(playwright, engine).launch(headless=True)
             page = browser.new_page(viewport={'width': 390, 'height': 844}, is_mobile=True,
                                     has_touch=True, service_workers='block')
             page.add_init_script('window.EventSource = class { addEventListener() {} close() {} };')
             errors = []
+            live_requests = []
+            fail_refresh = False
             page.on('pageerror', lambda error: errors.append(str(error)))
 
             def intercept(route):
                 path = urlsplit(route.request.url).path
                 if path.startswith('/api/'):
+                    if path.endswith('/live-refresh'):
+                        live_requests.append(route.request.post_data_json)
+                        if fail_refresh:
+                            route.fulfill(status=503,content_type='application/json',body='{}')
+                            return
                     body = {'csrf_token': 'test', 'bootstrap': state} if path.endswith('/session') else state
                     route.fulfill(content_type='application/json', body=json.dumps(body))
                 else:
@@ -65,7 +74,7 @@ def check(dist):
             expect(booked_day.locator('.potential-card')).to_have_count(2)
             expect(sections.nth(2).locator('.potential-card')).to_have_count(2)
             expect(page.locator('.plan-section')).to_have_count(0)
-            expect(page.get_by_text('Showing the last generated plan')).to_be_visible()
+            expect(page.get_by_text('Previous plan · refresh needed')).to_be_visible()
             for width in (320, 390, 844):
                 page.set_viewport_size({'width': width, 'height': 844})
                 booked_day.scroll_into_view_if_needed()
@@ -78,9 +87,38 @@ def check(dist):
             page.get_by_role('button', name='My Week', exact=True).last.click()
             expect(page.locator('.potential-card')).to_have_count(4)
             booker['agenda']['available'] = True
+
+            # A save immediately invalidates the old plan. Keep its sessions
+            # visible and follow local snapshots without launching another scan.
+            booker['preferences']['practice_plan'].update(enabled=True,default_hours=4)
+            booker['plan']['refresh']={'state':'running','message':'Checking the saved preferences.'}
+            live_requests.clear()
+            page.reload()
+            page.get_by_role('button',name='My Week',exact=True).last.click()
+            expect(page.get_by_text('Previous plan · updating',exact=True)).to_be_visible()
+            expect(page.get_by_text('Updating your plan for 4 hours per day…',exact=True)).to_be_visible()
+            expect(page.locator('.potential-card')).to_have_count(4)
+            expect(page.get_by_role('button',name='Updating plan…',exact=True)).to_be_disabled()
+            assert not live_requests, live_requests
+            for day in booker['plan']['days']: day['target_minutes']=240
+            booker['plan'].update(stale=False,refresh={'state':'completed','message':'Plan refreshed.'})
+            expect(page.locator('.plan-date').first).to_contain_text('4h target',timeout=10000)
+            expect(page.get_by_text('Previous plan · updating',exact=True)).to_have_count(0)
+            refresh=page.get_by_role('button',name='Refresh plan',exact=True)
+            expect(refresh).to_be_enabled()
+            fail_refresh=True
+            refresh.click()
+            expect(page.get_by_text('Live Asimut refresh did not finish. The last checked schedule remains visible.',exact=True)).to_be_visible()
+            expect(page.locator('.potential-card')).to_have_count(4)
+            expect(refresh).to_be_enabled()
+            assert live_requests[-1]=={'scope':'plan','force':True}, live_requests
+            fail_refresh=False
+            refresh.click()
+            expect(page.get_by_text('Live Asimut refresh did not finish. The last checked schedule remains visible.',exact=True)).to_have_count(0)
+            expect(refresh).to_be_enabled()
             assert not errors, errors
             browser.close()
-            print(f'PASS {engine}: matching dates, plan-only dates, multiple sessions, stale/unavailable agenda, and narrow layouts')
+            print(f'PASS {engine}: matching dates, multiple sessions, stale retention, four-hour replanning, explicit refresh/failure/retry, and narrow layouts')
 
 
 if __name__ == '__main__':

@@ -124,7 +124,7 @@ class DesktopSettingsTests(unittest.TestCase):
         app.time_prefs_dropdown.set('Custom...')
         app.custom_start_time.set('Rooms open')
         app.custom_end_time.set('Rooms closed')
-        app.on_time_prefs_changed()
+        app.settings_editors['Preferred time']['save'].invoke()
         saved = json.loads(self.settings.read_text())
         self.assertEqual(saved['time_preferences']['start_boundary'], 'rooms_open')
         self.assertEqual(saved['time_preferences']['end_boundary'], 'rooms_closed')
@@ -134,12 +134,14 @@ class DesktopSettingsTests(unittest.TestCase):
         self.assertEqual(app.custom_end_time.get(), 'Rooms closed')
         app.custom_start_time_control.set('12:00')
         app.custom_start_time_control.event_generate('<<ComboboxSelected>>')
+        self.assertEqual(json.loads(self.settings.read_text())['time_preferences']['start_boundary'], 'rooms_open')
+        app.settings_editors['Preferred time']['save'].invoke()
         saved = json.loads(self.settings.read_text())['time_preferences']
         self.assertNotIn('start_boundary', saved)
         self.assertEqual(saved['custom_start_hour'], 12)
         self.assertEqual(saved['end_boundary'], 'rooms_closed')
 
-    def test_controls_persist_directly_and_survive_navigation(self):
+    def test_controls_wait_for_explicit_save_and_survive_navigation(self):
         app = self.app
         self.assertNotIn('Advanced preferences', [app.main_notebook.tab(tab, 'text') for tab in app.main_notebook.tabs()])
         app.assistant_panel.composer.insert('1.0', 'An existing draft')
@@ -152,6 +154,9 @@ class DesktopSettingsTests(unittest.TestCase):
         app.time_prefs_strict_cb.invoke()
         app.reverse_date_order_cb.invoke()
         self.root.update()
+        self.assertEqual(json.loads(self.settings.read_text()), {'unrelated': {'keep': True}})
+        for key in ('Practice target', 'Preferred time', 'Booking strategy'):
+            app.settings_editors[key]['save'].invoke()
         saved = json.loads(self.settings.read_text())
         self.assertEqual(saved['practice_plan']['default_hours'], 4)
         self.assertEqual(saved['preference_run']['state'], 'pending')

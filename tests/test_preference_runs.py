@@ -127,12 +127,19 @@ class PreferenceRunTests(unittest.TestCase):
                 main.assert_called_once()
                 self.assertEqual(self.request()['state'], 'failed')
 
-    def test_explicit_automatic_off_prevents_run(self):
+    def test_explicit_automatic_off_refreshes_only_the_display_plan(self):
         self.save(6)
-        main = Mock()
+        main = Mock(return_value=0)
         runs.run_pending(root=self.root, booker_main=main, enabled=lambda: False)
-        main.assert_not_called()
-        self.assertEqual(self.request()['state'], 'paused')
+        main.assert_called_once_with(['--headless','--plan-only'])
+        self.assertEqual(self.request()['state'], 'completed')
+        self.assertIn('without booking',self.request()['message'])
+
+    def test_unreadable_automatic_status_permits_only_a_display_refresh(self):
+        self.save(4)
+        main=Mock(return_value=0)
+        runs.run_pending(root=self.root,booker_main=main,enabled=Mock(side_effect=OSError('unavailable')))
+        main.assert_called_once_with(['--headless','--plan-only'])
 
     def test_second_dispatcher_cannot_run_in_parallel(self):
         self.save(6)

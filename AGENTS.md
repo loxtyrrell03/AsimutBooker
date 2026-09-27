@@ -1,3 +1,29 @@
+## 2026-09-27 explicit settings Save and reliable weekly replanning
+
+- PC Practice target, Preferred time and Booking strategy retain drafts until
+  Save changes; Cancel restores saved values and navigation preserves drafts.
+  Existing detailed/phone editors keep their explicit Save controls. My Week
+  on both clients has a labelled Refresh plan action using the owned read-only
+  plan worker. PC waits up to 180 seconds for existing runtime ownership.
+- A preference save invalidates the old plan immediately, but both My Week
+  views retain and label its sessions/targets as Previous plan during refresh.
+  PC watches local snapshot files only while My Week is visible. Phone follows
+  local snapshots during pending/running preference checks without starting a
+  duplicate site scan. Completion replaces the old plan; failure permits retry.
+- The preference dispatcher uses plan-only mode when automatic booking is off
+  or cannot be verified. It leaves the schedule unchanged. Healthy enabled
+  booking still uses the normal guarded worker. See docs/preference-save-runs.md.
+- The owner's current saved goal is four hours. Its completed normal preference
+  check produced a 28 September Corus plan of 13:00–14:30 alongside 150 booked
+  minutes. Earlier six-hour forecast times below are historical, not overrides.
+- Source verification: 141 focused Python checks, the real hidden dispatcher
+  fixture, 17 phone Node checks, TypeScript/lint and private-origin build pass.
+  Native PC fixtures render at 760/1040px; Chromium/WebKit exercise retained
+  plans, new four-hour targets, Refresh/failure/retry at 320/390/844px and existing
+  settings Save/Cancel/persistence checks. No reservation or real preference was
+  changed for these tests. Activation is recorded separately; existing PC
+  windows must reopen. Evidence: artifacts/week-replan-20260927/ (ignored).
+
 ## 2026-09-27 room availability tabs
 
 - PC and phone have a separate Rooms tab: a seven-day selector, rooms down the
@@ -103,7 +129,8 @@
   entry; all 15 already qualify through their explicit grand room type. There
   are now 17 eligible rooms. Specialist rooms with incomplete metadata remain
   unverified, not confirmed piano-free. See `docs/room-instrument-evidence.md`.
-- The shared current plan selects Corus 13:00–15:00 on 28 September. Offline
+- At the then-saved six-hour goal, the plan selected Corus 13:00–15:00 on
+  28 September. Offline
   replay of the fresh grid through the scheduled execution path prepares its
   13:00–13:30 seed for 08:30 and retains the 15:00 extension target. Booking
   remains subject to fresh availability and site approval. Future booking work

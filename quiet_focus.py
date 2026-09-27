@@ -246,13 +246,19 @@ class WeekPanel(ScrollPage):
         self.body=tk.Frame(self.content,bg=PAGE,padx=24,pady=24);self.body.pack(fill='both',expand=True)
         head=tk.Frame(self.body,bg=PAGE);head.pack(fill='x')
         label(head,'My Week',size=32,bold=True).pack(side='left')
-        ttk.Button(head,text='Plan my practice',command=on_calendar,style='Primary.TButton').pack(side='right')
+        self.refresh_button=ttk.Button(head,text='Refresh plan',command=on_refresh,style='Primary.TButton')
+        self.refresh_button.pack(side='right')
+        ttk.Button(head,text='Practice days',command=on_calendar,style='QuietLink.TButton').pack(side='right',padx=12)
         self.status=label(self.body,size=13,color=MUTED);self.status.pack(anchor='w',pady=16)
+        self.plan_status=label(self.body,size=13,color=MUTED,wraplength=650)
+        self.plan_status.pack(fill='x',pady=(0,8))
         self.rows=tk.Frame(self.body,bg=PAGE);self.rows.pack(fill='x')
-        ttk.Button(self.body,text='Refresh bookings',command=on_refresh,style='QuietLink.TButton').pack(anchor='w',pady=16)
 
-    def update_data(self,events,*,available,stale,checked='',planned=(),closed_dates=(),off_dates=(),plan_days=(),plan_stale=False):
+    def update_data(self,events,*,available,stale,checked='',planned=(),closed_dates=(),off_dates=(),plan_days=(),plan_stale=False,plan_refreshing=False,plan_notice=''):
         self.status.configure(text=('Last checked agenda · ' if stale else 'Booked practice and college events · ')+ (checked or 'Not checked yet'))
+        self.refresh_button.configure(text='Updating plan…' if plan_refreshing else 'Refresh plan',
+                                      state=tk.DISABLED if plan_refreshing else tk.NORMAL)
+        self.plan_status.configure(text=plan_notice or ('Previous plan shown below. Refresh to check it again.' if plan_stale else ''))
         for child in self.rows.winfo_children():child.destroy()
         today=datetime.now(ZoneInfo('Europe/London')).date().isoformat()
         grouped={}
@@ -264,8 +270,6 @@ class WeekPanel(ScrollPage):
             if day.date>=today:grouped.setdefault(day.date,[])
         for day in closed_dates:
             if day>=today:grouped.setdefault(day,[])
-        if plan_stale:
-            label(self.rows,'Your practice plan needs a refresh. Bookings below are from the last checked agenda.',color=MUTED,wraplength=650).pack(fill='x',pady=8)
         if not available:label(self.rows,'Your agenda is unavailable. Refresh before relying on these plans.',color=MUTED,wraplength=600).pack(anchor='w',pady=20)
         if not grouped and available:label(self.rows,'No upcoming sessions in the last checked agenda.',color=MUTED).pack(anchor='w',pady=20)
         for day,day_events in sorted(grouped.items()):
@@ -279,6 +283,8 @@ class WeekPanel(ScrollPage):
             for _,is_plan,item in sorted(sessions,key=lambda entry:entry[:2]):
                 if is_plan:
                     state = f'Planned extension · {item.confirmed_minutes} min already booked' if item.confirmed_minutes else 'Planned · not booked yet'
+                    if plan_stale:
+                        state='Previous plan · not confirmed'
                     card=WeekEventCard(self.rows,start=item.start_time,end=item.end_time,
                                        title=item.room,state=state,planned=True)
                 else:
@@ -291,6 +297,6 @@ class WeekPanel(ScrollPage):
                 card.pack(fill='x',pady=5)
             plan_day=next((item for item in plan_days if item.date==day),None)
             if plan_day:
-                label(self.rows,f'Daily target: {plan_day.target_minutes/60:g} hours',size=13,color=MUTED).pack(anchor='w',pady=8)
+                label(self.rows,f'{"Previous target" if plan_stale else "Daily target"}: {plan_day.target_minutes/60:g} hours',size=13,color=MUTED).pack(anchor='w',pady=8)
                 if not plan_day.primary and not plan_day.additional and plan_day.reason:
                     label(self.rows,plan_day.reason,size=13,color=MUTED,wraplength=650).pack(fill='x')

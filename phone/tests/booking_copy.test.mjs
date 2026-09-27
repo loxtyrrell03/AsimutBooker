@@ -26,7 +26,9 @@ test('schedule performs live refreshes and keeps last checked data visible', () 
   assert.match(pageSource, /requestJson<Bootstrap>\('\/api\/v1\/live-refresh'/);
   assert.match(pageSource, /scope: 'plan'/);
   assert.match(pageSource, /5 \* 60_000/);
-  assert.match(pageSource, /Showing the last generated plan/);
+  assert.match(pageSource, /Previous plan · refresh needed/);
+  assert.match(pageSource, /Previous plan · updating/);
+  assert.match(pageSource, /Refresh plan/);
   assert.match(pageSource, /Showing the last checked agenda/);
   assert.doesNotMatch(pageSource, /Potential plan hidden/);
 });

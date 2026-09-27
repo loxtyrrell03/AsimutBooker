@@ -50,6 +50,14 @@ class AssistantDependencyContractTests(unittest.TestCase):
 
 
 class AssistantContextTests(unittest.TestCase):
+    def test_pending_plan_refresh_is_available_before_the_first_plan(self):
+        settings = json.loads(self.paths.settings.read_text())
+        settings['preference_run'] = {'id': 'private-request', 'state': 'pending', 'message': 'Check queued.'}
+        atomic_write_json(self.paths.settings, settings)
+        plan = build_assistant_context(paths=self.paths)['sections']['plan']
+        self.assertFalse(plan['available'])
+        self.assertEqual(plan['refresh'], {'state': 'pending', 'message': 'Check queued.'})
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
