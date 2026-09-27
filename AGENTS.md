@@ -68,20 +68,51 @@
   snapshot through their normal refresh. Private evidence:
   `artifacts/future-plans-20260927/`.
 
-## 2026-09-24 grand-piano-only room eligibility
+## 2026-09-27 grand-piano inventory correction and scheduler recognition
+
+- The owner explicitly confirms that Corus Recital Room has a grand piano.
+  Its sparse ASIMUT inventory is missing information, not evidence of no piano.
+  Corus (location 93, type `B0.03`) is restored to saved eligibility at its
+  existing second rank. The four accepted types now include `B0.03` alongside
+  the ordinary grand types and Weston's `B0.08`. Preserve this confirmation.
+- A fresh 33-room audit finds 15 ordinary grand rooms with no piano inventory
+  entry; all 15 already qualify through their explicit grand room type. There
+  are now 17 eligible rooms. Specialist rooms with incomplete metadata remain
+  unverified, not confirmed piano-free. See `docs/room-instrument-evidence.md`.
+- The shared current plan selects Corus 13:00–15:00 on 28 September. Offline
+  replay of the fresh grid through the scheduled execution path prepares its
+  13:00–13:30 seed for 08:30 and retains the 15:00 extension target. Booking
+  remains subject to fresh availability and site approval. Future booking work
+  belongs in Booker's existing worker; do not create Codex automations for it.
+- Scheduler status accepts the installed headless WScript wrapper only after
+  checking its entire script against the canonical hidden, synchronous batch
+  invocation, including UTF-16/UTF-8 encoding. Previously the healthy running
+  task was misreported as broken, pausing save-triggered checks. Disabled tasks,
+  altered scripts and all other task-contract drift still fail validation.
+  No Windows task, launcher, recurrence or hosting route was changed.
+- Verification includes 148 scheduler, preference-dispatch and free-window
+  booking/extension tests, plus the existing room preference/policy checks.
+  Live task inspection now reports the existing enabled task healthy; the
+  Corus preference check has resumed through the application's dispatcher.
+- A write-blocked eight-date refresh preserves other preferences/reservations,
+  finds no pending receipt and publishes Corus to both My Week views. PC
+  760/1040px and connected Chromium/WebKit 320/390px renders pass; no physical
+  phone or future booking success is claimed. Private audit, execution replay
+  and render proof: `artifacts/corus-correction-20260927/`.
+
+## 2026-09-24 grand-piano-only room eligibility (updated 27 September)
 
 - The owner requires grand pianos only. Preserve the saved room-type filter and
   exclusions when editing preferences. Merely removing rooms from the ranked
   list is insufficient: live discovery appends new rooms automatically.
 - ASIMUT identifies ordinary grand rooms by `Practice: Grand Piano` and
   `Practice: Grand Piano x 2`. Weston uses room type `B0.08`; its inventory
-  explicitly lists two grand pianos. The saved accepted room types cover these
-  three values. Instrument tags alone omit the pianos in ordinary practice rooms.
-- The live audit permits 16 rooms and excludes 19 saved/live entries, including
-  upright, piano-free, specialist and currently unverified rooms. Corus has no
-  piano listed in its current ASIMUT metadata and remains excluded until the
-  owner or fresh authoritative evidence confirms a grand. A3.39 and B1.06 are
-  absent from the current catalog and remain excluded as unverified.
+  explicitly lists two grand pianos. Instrument tags alone omit the pianos in
+  ordinary practice rooms. Corus is now owner-confirmed and accepted as above.
+- The original audit permitted 16 rooms; Corus's correction increases this to
+  17. Upright, explicitly piano-free and unverified specialist rooms remain
+  excluded. A3.39 and B1.06 are absent from the current catalog and remain
+  unverified; this does not establish that they lack grand pianos.
 - Existing shared policy enforces these filters in automatic creation, room-now,
   extensions, upgrades and transfers. Thirty-four preference/policy tests pass;
   direct checks reject newly discovered upright, empty and unknown rooms. An
@@ -90,8 +121,8 @@
   audit evidence is ignored under `artifacts/grand-piano-only-20260924/`.
 - An explicitly requested Corus restoration was subsequently verified through
   the existing editor, receipts and a complete refreshed agenda, then pinned
-  against automatic changes. This one-off edit does not change the automatic
-  grand-only filters or establish Corus's instrument inventory. Evidence is
+  against automatic changes. That one-off edit did not establish its inventory;
+  the owner's later confirmation now supersedes the old exclusion. Evidence is
   ignored under `artifacts/evening-room-repair-20260924/`.
 
 ## 2026-09-23 event override design review

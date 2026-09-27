@@ -301,6 +301,47 @@ class GuiSchedulerHelpersTests(unittest.TestCase):
                 self.assertFalse(parsed["healthy"])
                 self.assertIn(reason, parsed["problem"])
 
+    def test_windowless_scheduler_requires_the_exact_hidden_booker_command(self):
+        payload = self._healthy_task_payload()
+        command = f'"{payload["Execute"]}" {payload["Arguments"]}'.replace('"', '""')
+        script = '\n'.join([
+            'Option Explicit', 'Dim shell, result',
+            'Set shell = CreateObject("WScript.Shell")',
+            f'shell.CurrentDirectory = "{payload["WorkingDirectory"]}"',
+            f'result = shell.Run("{command}", 0, True)',
+            'WScript.Quit result',
+        ])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ProgramData": directory}):
+            wrapper = Path(directory) / 'HeadlessStartup' / 'AsimutBooker_Recurring-windowless.vbs'
+            wrapper.parent.mkdir()
+            hidden = dict(payload, Execute=str(Path(payload['Execute']).with_name('wscript.exe')),
+                          Arguments=f'//B //Nologo "{wrapper}"')
+            for encoding in ('utf-16', 'utf-8', 'utf-8-sig'):
+                wrapper.write_text(script, encoding=encoding)
+                self.assertTrue(parse_recurring_task_status(json.dumps(hidden))['healthy'])
+            for changed in (
+                script.replace('--scheduled', '--check-only'),
+                script.replace('run_booker.bat', 'other.bat'),
+                script.replace(', 0, True)', ', 1, True)'),
+                script.replace('shell.CurrentDirectory = ', 'anotherDirectory = '),
+                script + '\nshell.Run "other.exe", 0, True',
+            ):
+                with self.subTest(script=changed):
+                    wrapper.write_text(changed, encoding='utf-8')
+                    self.assertFalse(parse_recurring_task_status(json.dumps(hidden))['healthy'])
+            wrapper.unlink()
+            self.assertFalse(parse_recurring_task_status(json.dumps(hidden))['healthy'])
+
+    def test_windowless_scheduler_preserves_disabled_and_trigger_checks(self):
+        payload = self._healthy_task_payload()
+        with patch('gui._verified_windowless_recurring_action', return_value=True):
+            for changes, reason in (({'Enabled': False}, 'task is disabled'),
+                                    ({'Interval': 'PT30M'}, 'wrong repetition window'),
+                                    ({'ActionCount': 2}, 'wrong action count')):
+                parsed = parse_recurring_task_status(json.dumps(dict(payload, **changes)))
+                self.assertFalse(parsed['healthy'])
+                self.assertIn(reason, parsed['problem'])
+
     @patch("gui.subprocess.run")
     def test_query_treats_only_the_exact_missing_exit_as_not_installed(self, run):
         run.return_value.returncode = 3

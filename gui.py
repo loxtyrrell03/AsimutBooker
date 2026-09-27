@@ -436,6 +436,37 @@ def _expected_recurring_action(app_dir: Path = APP_DIR) -> tuple[str, str, str]:
     return execute, arguments, str(root)
 
 
+def _verified_windowless_recurring_action(execute: str, arguments: str) -> bool:
+    """Recognize the installed hidden wrapper only when its whole command matches.
+
+    The host's headless launcher retains the same batch file and scheduled
+    arguments. Checking only wscript or the wrapper filename would hide drift.
+    """
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    wrapper = (Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+               / "HeadlessStartup" / "AsimutBooker_Recurring-windowless.vbs")
+    if (not _same_windows_path(execute, str(system_root / "System32" / "wscript.exe"))
+            or arguments != f'//B //Nologo "{wrapper}"'):
+        return False
+    command, flags, directory = _expected_recurring_action()
+    escaped_command = f'"{command}" {flags}'.replace('"', '""')
+    expected = [
+        'Option Explicit',
+        'Dim shell, result',
+        'Set shell = CreateObject("WScript.Shell")',
+        f'shell.CurrentDirectory = "{directory}"',
+        f'result = shell.Run("{escaped_command}", 0, True)',
+        'WScript.Quit result',
+    ]
+    try:
+        raw = wrapper.read_bytes()
+        encoding = "utf-16" if raw.startswith((b'\xff\xfe', b'\xfe\xff')) else "utf-8-sig"
+        contents = raw.decode(encoding)
+    except (OSError, UnicodeError):
+        return False
+    return [line.strip() for line in contents.splitlines() if line.strip()] == expected
+
+
 def parse_recurring_task_status(payload: str) -> dict[str, Any]:
     """Validate the recurring task's complete safety-relevant shape."""
     try:
@@ -506,9 +537,10 @@ def parse_recurring_task_status(payload: str) -> dict[str, Any]:
         reasons.append("task is disabled")
     if next_run == "Not scheduled":
         reasons.append("no next run")
-    if not _same_windows_path(execute, expected_execute):
+    windowless = _verified_windowless_recurring_action(execute, arguments)
+    if not _same_windows_path(execute, expected_execute) and not windowless:
         reasons.append("wrong executable")
-    if arguments != expected_arguments:
+    if arguments != expected_arguments and not windowless:
         reasons.append("wrong launcher arguments")
     if not _same_windows_path(value["WorkingDirectory"], expected_working_directory):
         reasons.append("wrong working directory")
