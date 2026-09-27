@@ -54,6 +54,16 @@
   A guarded check-only scan restored eight dates with the current 17 eligible
   rooms; native rendering reads that actual cache. Recovery evidence is ignored
   under `artifacts/room-grid-repair-20260927/`.
+- Recovery build `20260927-rooms-recovery` is active at the unchanged private
+  origin. Reloaded only the idle phone task under all three ownership locks;
+  owner data, task definitions and Serve routes were preserved. Exact assets,
+  authenticated eight-day/17-room data, connected Chromium/WebKit 320/390px
+  renders and the independent deployment verifier pass. Reopen existing PC
+  windows for automatic loading; the restored shared cache also serves old
+  windows. A connected browser then exercised the real automatic path: entering
+  Rooms submitted exactly one check-only job, which completed and displayed 17
+  fresh rooms without booking or preference writes. No physical-phone
+  verification is claimed.
 
 ## 2026-09-27 future free-window display plans
 
