@@ -20,6 +20,15 @@
   All writes use isolated fixtures; no owner's dated preference was changed.
   Private evidence: artifacts/week-day-settings-20260927/. Activation follows
   separately; existing PC windows need reopening for these controls.
+- Source `2ea4c5b` and phone build `20260927-week-day-settings` are active at the
+  unchanged private origin. Static assets were published under all three
+  ownership locks without restarting the phone process. Settings, sessions,
+  other owner state, task definitions and Serve routes were preserved. Exact
+  HTTPS assets/session/preferences and connected Chromium/WebKit 320/390px
+  My Week -> Edit day -> Cancel -> reopen checks pass, retaining the saved
+  four-hour default. No real preference or reservation was changed. Phone
+  pages need reloading; existing PC windows need reopening. This is PC-browser
+  verification, not physical-phone proof.
 
 ## 2026-09-27 explicit settings Save and reliable weekly replanning
 
