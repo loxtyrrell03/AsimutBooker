@@ -23,6 +23,15 @@
   settings Save/Cancel/persistence checks. No reservation or real preference was
   changed for these tests. Activation is recorded separately; existing PC
   windows must reopen. Evidence: artifacts/week-replan-20260927/ (ignored).
+- Activated source 09e9a6b and phone build `20260927-week-replan` at the unchanged
+  private origin. Reloaded only the idle existing phone task under all three
+  ownership locks; protected owner state, task definitions and Serve routes
+  were preserved. Exact HTTPS assets/session, connected Chromium/WebKit
+  320/390px Week/settings renders and the real Refresh plan action pass. The
+  refreshed four-hour plan keeps Corus 13:00–14:30 with an 08:30 initial opening;
+  this is a future intention, not a reservation. Preferences remain unchanged
+  and no receipt is pending. Reload phone pages and reopen existing PC windows
+  for the new controls; physical-phone verification is not claimed.
 
 ## 2026-09-27 room availability tabs
 
