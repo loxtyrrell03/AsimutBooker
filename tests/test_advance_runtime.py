@@ -1,6 +1,7 @@
 import contextlib
 import io
 import unittest
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from unittest.mock import Mock, patch
 
@@ -94,7 +95,8 @@ class AdvanceRuntimeTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(actions, 5)
         self.assertGreaterEqual(tracker.get_remaining_quota_hours(), 1.5)
-        waiting = [row for row in self.publications[-1] if row.primary and row.primary.state == 'waiting']
+        waiting = [row for row in self.publications[-1] if row.primary and row.primary.state == 'waiting'
+                   and 'advance minutes allocated' in row.primary.reason]
         self.assertEqual(len(waiting), 2)
 
     def test_read_only_week_discovery_never_mutates(self):
@@ -131,6 +133,113 @@ class AdvanceRuntimeTests(unittest.TestCase):
         self.assertEqual(row.primary.state, 'ready')
         self.assertEqual(row.existing_minutes, 0)
         self.attempt.assert_not_called()
+
+    def test_empty_credit_forecasts_each_future_day_and_exact_seed_opening(self):
+        self.tracker.live_quota_minutes = 0
+        self.practice = b.PracticePlan(enabled=True, default_hours=6)
+        with patch.multiple(b, FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True):
+            self.run_week(read_only=True)
+        rows = self.publications[-1]
+        self.assertEqual(len(rows), 7)
+        for row in rows:
+            candidates = (row.primary, *row.additional)
+            self.assertIsNotNone(row.primary)
+            self.assertEqual(row.existing_minutes, 0)
+            self.assertEqual(sum(c.potential_minutes for c in candidates), 360)
+            for candidate in candidates:
+                start = datetime.fromisoformat(f'{row.date}T{candidate.start_time}')
+                self.assertEqual(candidate.unlock_at.replace(tzinfo=None),
+                    start + timedelta(minutes=candidate.initial_minutes - 300))
+                self.assertEqual(candidate.state, 'waiting')
+                self.assertIn('Booking can start', candidate.reason)
+                self.assertIn('Not booked yet', candidate.reason)
+        self.assertEqual(self.tracker.get_total_booking_hours(), 0)
+        self.attempt.assert_not_called()
+
+    def test_preview_extends_partial_advance_plan_without_spending_credit_or_overlapping(self):
+        with patch.object(b, 'FREE_HORIZON_OVERRIDES_PEAK', True):
+            days, allocations, context = runtime.plan_from_grids(b, self.grids, self.settings,
+                self.practice, self.tracker, self.args, now=self.now)
+            # Hold refresh is an existing planning step; publication must be read-only.
+            before = deepcopy(self.tracker.__dict__)
+            runtime.publish(b, days, allocations, context, Mock(), self.settings, self.tracker,
+                            now=self.now, grids=self.grids)
+        self.assertEqual(before, self.tracker.__dict__)
+        self.assertEqual(sum(a.minutes for a in allocations), 360)
+        for row, allocation in zip(self.publications[-1], allocations):
+            candidates = (row.primary, *row.additional)
+            self.assertEqual(row.existing_minutes, 0)
+            self.assertEqual(sum(c.potential_minutes for c in candidates), 240)
+            self.assertTrue(all(any(c.room == a.room and c.start_time == a.start_text
+                and c.end_time == a.end_text for c in candidates) for a in allocation.sessions))
+            for left in candidates:
+                for right in candidates:
+                    if left is right:
+                        continue
+                    self.assertTrue(left.end_time <= right.start_time or right.end_time <= left.start_time)
+                    if left.room == right.room and left.end_time <= right.start_time:
+                        self.assertGreaterEqual(runtime._minutes(right.start_time) - runtime._minutes(left.end_time), 60)
+
+    def test_future_preview_keeps_conflicts_room_filter_peak_limit_and_target(self):
+        day = self.days[0]
+        self.tracker.live_quota_minutes = 0
+        self.tracker.add_existing_event(day, 12, 13, is_reservation=True, room='Weston')
+        self.tracker.add_existing_event(day, 16, 17)  # class/manual protection
+        self.grids[day].append({'room':'Excluded', 'slots':[{'startHour':12,'endHour':22}]})
+        with patch.object(b, 'booking_window_dates', return_value=(day,)), \
+             patch.object(b, 'FREE_HORIZON_OVERRIDES_PEAK', False):
+            self.run_week(read_only=True)
+        row = self.publications[-1][0]
+        self.assertEqual(row.existing_minutes, 60)
+        self.assertIsNotNone(row.primary)
+        for candidate in (row.primary, *row.additional):
+            self.assertIn(candidate.room, b.PRIORITY_ROOMS)
+            self.assertGreaterEqual(candidate.start_time, '17:00')
+        self.assertLessEqual(sum(c.potential_minutes for c in (row.primary, *row.additional)), 180)
+
+    def test_weekly_forecast_does_not_authorize_early_booking(self):
+        self.tracker.live_quota_minutes = 0
+        self.run_week()
+        self.assertTrue(all(row.primary for row in self.publications[-1]))
+        self.attempt.assert_not_called()
+        self.assertEqual(self.events, [])
+
+    def test_scoped_read_only_refresh_also_forecasts_beyond_today_with_foresight_off(self):
+        day = self.days[-1]
+        self.args.only_date = day.isoformat()
+        self.tracker.live_quota_minutes = 0
+        self.practice = b.PracticePlan(enabled=True, default_hours=6)
+        with patch.object(b, 'datetime', wraps=datetime) as clock, \
+             patch.object(b, 'open_practice_room_overview'), \
+             patch.object(b, 'navigate_to_day', return_value=7), \
+             patch.object(b, 'wait_for_practice_room_grid'), \
+             patch.object(b, 'get_available_slots', return_value=self.grids[day]), \
+             patch.multiple(b, FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True):
+            clock.now.return_value = self.now
+            b.generate_read_only_booking_plan(None, Mock(), self.settings, self.practice,
+                self.tracker, {'enabled':False}, b.DailyPlanningPreferences(enabled=False),
+                set(), self.args, today=self.now.date())
+        row = self.publications[-1][0]
+        self.assertEqual(row.date, day.isoformat())
+        self.assertIsNotNone(row.primary)
+        self.assertEqual(sum(c.potential_minutes for c in (row.primary, *row.additional)), 360)
+        self.assertTrue(all(c.state == 'waiting' for c in (row.primary, *row.additional)))
+        self.attempt.assert_not_called()
+
+    def test_disabled_dates_fragmentation_and_zero_free_horizon_remain_authoritative(self):
+        day = self.days[0]
+        self.tracker.live_quota_minutes = 0
+        self.tracker.add_existing_event(day, 12, 13, is_reservation=True, room='Weston')
+        with patch.object(b, 'booking_window_dates', return_value=(day,)), \
+             patch.object(b, 'ALLOW_FRAGMENTED_SESSIONS', False):
+            self.run_week(read_only=True)
+        self.assertIsNone(self.publications[-1][0].primary)
+        with patch.object(b, 'FREE_HORIZON_MINUTES', 0):
+            self.run_week(read_only=True)
+        self.assertTrue(all(row.primary is None for row in self.publications[-1]))
+        with patch.object(b, 'load_disabled_dates', return_value={day.isoformat()}):
+            self.run_week(read_only=True)
+        self.assertNotIn(day.isoformat(), [row.date for row in self.publications[-1]])
 
     def test_free_preview_reserves_extension_time_and_can_publish_remaining_session(self):
         self.now = datetime(2026, 9, 21, 14, 36)

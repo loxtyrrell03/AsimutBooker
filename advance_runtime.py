@@ -1,5 +1,5 @@
 """Fresh weekly discovery and guarded execution of preferred-room allocations."""
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import booking_run_report as report
 
@@ -10,6 +10,7 @@ from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
 from session_preferences import tracker_sessions
 from dataclasses import replace
+from copy import copy
 from advance_preferences import load_advance_quota, rooms_for, windows_for
 
 
@@ -172,31 +173,48 @@ def publish(engine, days, allocations, context, policy, settings, tracker, *, no
             primary=candidates[0] if candidates else None, additional=candidates[1:], backups=(),
             held_peak_minutes=min(peak_limit, sum(item.peak_minutes for item in allocation.sessions)),
             reason=reason)
-        if (not candidates and grids is not None
-                and now.date() <= day.target_date <= (now + timedelta(minutes=engine.FREE_HORIZON_MINUTES)).date()
-                and day.target_minutes > day.confirmed_minutes):
+        if (grids is not None and day.target_date >= now.date()
+                and day.target_minutes > day.confirmed_minutes + day.held_target_minutes + allocation.minutes
+                and engine.fragmentation_allows_new_booking(tracker, day.target_date)[0]
+                and (not candidates or engine.ALLOW_FRAGMENTED_SESSIONS)):
             from short_notice_bookings import reserve_advance_credit
+            # Reserve advance selections only in this display projection. They
+            # remain unconfirmed and never change the live execution tracker.
+            preview_tracker = copy(tracker)
+            preview_tracker.extension_holds = [*getattr(tracker, 'extension_holds', ()), *(
+                dict(room=item.room, date=day.target_date.isoformat(),
+                     startTime=item.start_text, target_end=item.end_text)
+                for item in sessions)]
+            held_peak = context['extension_peak_by_date'].get(day.target_date.isoformat(), 0)
+            held_peak += sum(item.peak_minutes for item in sessions)
             preferences = engine.load_time_preferences(settings)
             free_options = engine.build_day_booking_opportunities(
-                grids.get(day.target_date, []), day.target_date, tracker, preferences, planning,
+                grids.get(day.target_date, []), day.target_date, preview_tracker, preferences, planning,
                 now=now, remaining_daily_hours=max(0, day.target_minutes-day.confirmed_minutes
-                    - day.held_target_minutes)/60,
-                reserved_peak_minutes=context['extension_peak_by_date'].get(day.target_date.isoformat(), 0),
+                    - day.held_target_minutes-allocation.minutes)/60,
+                reserved_peak_minutes=held_peak,
                 free_horizon_only=True, include_free_horizon_intent=True)
             free_options = reserve_advance_credit(free_options, planning, active=not tracker.is_quota_full(),
                 release_lead_minutes=load_advance_quota(settings).fallback_lead_minutes)
-            if free_options and engine.fragmentation_allows_new_booking(tracker, day.target_date)[0]:
-                row = engine.build_display_day_plan(day.target_date, free_options, tracker, planning,
+            if free_options:
+                preview = engine.build_display_day_plan(day.target_date, free_options, preview_tracker, planning,
                     now=now, target_minutes=day.target_minutes,
-                    reserved_daily_minutes=day.held_target_minutes,
-                    reserved_peak_minutes=context['extension_peak_by_date'].get(day.target_date.isoformat(), 0),
-                    free_horizon_only=True)
+                    reserved_daily_minutes=day.held_target_minutes+allocation.minutes,
+                    reserved_peak_minutes=held_peak,
+                    free_horizon_only=True, include_future_outside_foresight=True)
+                if preview.primary:
+                    combined = (*candidates, preview.primary, *preview.additional)
+                    row = replace(preview, primary=combined[0], additional=combined[1:],
+                        status='planned' if combined[0].state == 'ready' else 'waiting',
+                        held_peak_minutes=min(peak_limit, row.held_peak_minutes + preview.held_peak_minutes),
+                        reason=('Advance bookings and future free-window practice planned'
+                                if candidates else preview.reason))
         rows.append(engine.attach_extension_progress(row, context, now=now))
     minutes = sum(item.minutes for item in allocations)
     planned_days = sum(bool(item.sessions) for item in allocations)
     active = any(row.primary for row in rows)
-    summary = (f'{minutes/60:g}h planned in preferred rooms across {planned_days} days' if minutes
-               else 'Last-minute practice planned; advance bookings wait for quota' if active
+    summary = (f'{minutes/60:g}h allocated for advance booking across {planned_days} days' if minutes
+               else 'Future free-window practice planned; not booked yet' if active
                else 'Waiting for advance credit or preferred-room availability; daily checks continue')
     return engine.publish_booking_plan(rows, policy, settings, now=now,
         summary=summary, status='active' if active else 'idle')

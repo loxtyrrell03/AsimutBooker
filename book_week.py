@@ -7469,7 +7469,10 @@ def build_display_day_plan(
         ]
     selection_minutes = min(
         remaining_minutes,
-        (FREE_HORIZON_MINUTES if free_horizon_only else
+        # A full-day preview spans successive free windows. The horizon limits
+        # each request's timing, not the total practice forecast for a day.
+        (remaining_minutes if free_horizon_only and include_future_outside_foresight else
+         FREE_HORIZON_MINUTES if free_horizon_only else
          _hours_to_quarter_minutes(tracker.get_remaining_quota_hours()) or 0),
     )
     if remaining_weekly_minutes is not None:
@@ -7618,6 +7621,16 @@ def build_display_day_plan(
         )
         for item in selected_plan[1:]
     )
+    if free_horizon_only and include_future_outside_foresight:
+        def free_window_label(candidate):
+            opening = candidate.unlock_at.strftime('%a %d %b at %H:%M')
+            timing = f'Booking can start {opening}' if candidate.state == 'waiting' else 'Ready for a live booking check'
+            return replace(candidate, reason=(
+                f'{timing}, initially for {candidate.initial_minutes} minutes; '
+                'later extensions depend on availability. Not booked yet.'))
+        if primary is not None:
+            primary = free_window_label(primary)
+        additional = tuple(free_window_label(item) for item in additional)
     ranked = sorted(
         opportunities,
         key=lambda item: opportunity_rank(item, daily_planning, now=now),
@@ -10507,7 +10520,7 @@ def generate_read_only_booking_plan(
                 after_peak_mode="longest_first",
             )
         )
-        free_preview = (target_date <= (now + timedelta(minutes=FREE_HORIZON_MINUTES)).date()
+        free_preview = (FREE_HORIZON_MINUTES >= MINIMUM_BLOCK_MINUTES
                         and target_date >= now.date()
                         and remaining_weekly_minutes - planned_weekly_minutes < (effective_daily_remaining or 0) * 60)
         opportunities = build_day_booking_opportunities(
@@ -10533,8 +10546,8 @@ def generate_read_only_booking_plan(
             - planned_weekly_minutes,
         )
         if free_preview:
-            available_weekly_for_new = FREE_HORIZON_MINUTES
-        if uses_time_aware_planner(daily_planning, time_prefs):
+            available_weekly_for_new = int(round((effective_daily_remaining or 0) * 60))
+        if free_preview or uses_time_aware_planner(daily_planning, time_prefs):
             day_plan = build_display_day_plan(
                 target_date,
                 opportunities,
@@ -10563,10 +10576,11 @@ def generate_read_only_booking_plan(
                 reserved_peak_minutes=extension_peak_minutes,
             )
         newly_selected = (() if day_plan.primary is None else (day_plan.primary,)) + day_plan.additional
-        planned_weekly_minutes += min(max(0, remaining_weekly_minutes - planned_weekly_minutes), sum(
-            candidate.potential_minutes - candidate.confirmed_minutes
-            for candidate in newly_selected
-        ))
+        if not free_preview:
+            planned_weekly_minutes += min(max(0, remaining_weekly_minutes - planned_weekly_minutes), sum(
+                candidate.potential_minutes - candidate.confirmed_minutes
+                for candidate in newly_selected
+            ))
 
         day_plan = attach_extension_progress(
             day_plan,

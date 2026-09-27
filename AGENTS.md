@@ -1,3 +1,30 @@
+## 2026-09-27 future free-window display plans
+
+- Weekly publication previews free-window practice on every freshly scanned
+  future date, beyond the immediate execution foresight. Partial advance
+  allocations reserve their intervals, same-room gaps, target and peak capacity
+  in a separate display projection before adding free-window sessions. Confirmed
+  totals and the execution tracker remain unchanged.
+- Full-day previews may span successive five-hour windows up to the saved daily
+  target; five hours is not a daily forecast cap. Each candidate retains its
+  exact initial-block opening time and explicit unbooked/extension wording.
+  Scoped and disabled-foresight read-only refreshes also show future candidates;
+  projected free sessions never consume the shared advance allocation budget.
+- Execution foresight, exact full-interval Save checks, room filters, conflicts,
+  manual protections, extension holds, fragmentation and peak policy are intact.
+  Existing PC My Week and phone My Week consume the same display snapshot, so
+  this repair requires no phone bundle change or service/desktop restart.
+- Verification: 215 focused planner, quota, extension, display and Save-isolation
+  tests plus five desktop tests pass. Two new regressions fail on the previous
+  source. Chromium/WebKit planned-date fixtures pass at 320/390/844px. A fresh
+  authenticated eight-date scan with non-check writes blocked publishes plans
+  on all seven future dates, preserves preference controls and leaves no pending
+  receipt. The same current plan renders in PC My Week at 760/1040px and the
+  connected private HTTPS phone app in Chromium/WebKit at 320/390px; physical
+  phone verification is not claimed. Existing windows/pages receive the shared
+  snapshot through their normal refresh. Private evidence:
+  `artifacts/future-plans-20260927/`.
+
 ## 2026-09-24 grand-piano-only room eligibility
 
 - The owner requires grand pianos only. Preserve the saved room-type filter and
