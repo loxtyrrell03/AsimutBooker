@@ -31,6 +31,7 @@ def planning_events(engine, tracker, ignored_events):
     events = copy.deepcopy(tracker.agenda_events)
     ignored = resolve_ignored_event_keys(ignored_events, events).ignored_v2_keys
     ignored_ids = set()
+    ignored_ids.update(tracker.tempo_coordination.protected_ids())
     for event in events:
         if event_identity_v2(event) in ignored:
             event["blocksConflict"] = False
@@ -200,7 +201,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         ignored_ids = set(ignored_ids) | manual_booking_ids(settings)
         prefs = resolve_time_preferences(engine.load_time_preferences(settings), day)
         blocked = [(a * 60, b * 60) for a, b in engine.blackout_conflict_ranges(blackouts).get(day.isoformat(), ())]
-        return dict(events=events, available_data=gaps,
+        blocked.extend((a * 60, b * 60) for a, b in fresh.tempo_coordination.blocked_ranges(day))
+        return dict(events=events, available_data=fresh.tempo_coordination.constrain_availability(gaps, day),
             policy=policy, now=at, time_preferences=prefs, planning=planning,
             peak_start=int(engine.PEAK_START * 60), peak_end=int(engine.PEAK_END * 60),
             peak_limit=int(engine.MAX_PEAK_HOURS * 60),

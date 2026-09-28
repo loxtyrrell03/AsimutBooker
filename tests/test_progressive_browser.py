@@ -380,7 +380,7 @@ class ProgressiveCancelBoundaryTests(unittest.TestCase):
                                                               side_effect=lambda *args: self.order.append('marker')))
         self.cancel.click.side_effect = lambda **kwargs: self.order.append('click')
         @contextlib.contextmanager
-        def guard():
+        def guard(**_interval):
             self.order.append('guard')
             yield
         self.stack.enter_context(mock.patch.object(b, 'booking_save_boundary', guard))
@@ -417,7 +417,7 @@ class ProgressiveCancelBoundaryTests(unittest.TestCase):
 
     def test_changed_preferences_at_guard_do_not_record_attempt(self):
         @contextlib.contextmanager
-        def changed_preferences():
+        def changed_preferences(**_interval):
             raise b.BookingPreferencesChanged('Date disabled during preparation')
             yield
         with mock.patch.object(b, 'booking_save_boundary', changed_preferences):
@@ -491,7 +491,7 @@ class ProgressiveTransferEditorTests(unittest.TestCase):
     def test_changed_preferences_after_preparation_leave_no_attempt_marker(self):
         parent = self.parent('initial')
         @contextlib.contextmanager
-        def changed_preferences():
+        def changed_preferences(**_interval):
             self.assertEqual(parent['transfer']['started_steps'], [])
             self.assertEqual(self.page.get_by_role('textbox', name='Start time', exact=True).input_value(), '12:30')
             raise b.BookingPreferencesChanged('Preferences changed during preparation')

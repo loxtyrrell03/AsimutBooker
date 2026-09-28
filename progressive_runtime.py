@@ -132,7 +132,8 @@ class LiveContext:
         from manual_booking_overrides import manual_booking_ids
         ignored_ids = set(ignored_ids) | manual_booking_ids(self.settings)
         blocked = [(a*60, b*60) for a,b in e.blackout_conflict_ranges(self.blackouts).get(day.isoformat(), ())]
-        return dict(events=events, available_data=self.gaps, policy=self.policy,
+        blocked.extend((a*60, b*60) for a,b in self.tracker.tempo_coordination.blocked_ranges(day))
+        return dict(events=events, available_data=self.tracker.tempo_coordination.constrain_availability(self.gaps, day), policy=self.policy,
             now=datetime.now().astimezone(), time_preferences=resolve_time_preferences(e.load_time_preferences(self.settings), day),
             planning=load_booking_strategy(self.settings).daily_planning, seed=seed,
             peak_start=int(e.PEAK_START*60), peak_end=int(e.PEAK_END*60),
@@ -409,7 +410,9 @@ def execute_transfer(ctx, plan, saved, args):
                                 minimum_minutes=ctx.policy.minimum_block_minutes, seed=plan.seed,
                                 adjustment_order=[r.event_id for r, _ in adjustments])
         from manual_booking_overrides import assert_automatic_change_allowed
-        with e.booking_save_boundary():
+        with e.booking_save_boundary(day=plan.replacement.day, start=time_text(plan.replacement.start),
+                end=time_text(plan.replacement.end), room=plan.replacement.room,
+                event_ids=[r.event_id for r in plan.originals] + ([plan.seed.event_id] if plan.seed else [])):
             assert_automatic_change_allowed([r.event_id for r in plan.originals] +
                 ([plan.seed.event_id] if plan.seed else []), path=e.settings_file)
             parent = record_pending('transfer', room=plan.replacement.room, booking_date=plan.target.day.isoformat(),

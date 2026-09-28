@@ -1,3 +1,55 @@
+## 2026-09-28 optional Tempo task and practice coordination
+
+- Tempo may publish `Documents/Apps/Tempo/data/coordination.json` through
+  `tempo_coordination.publish_snapshot`, using the canonical Booker Python.
+  This opt-in versioned local contract adds conflicts to the existing engine;
+  it does not create a second scheduler, alter saved preferences, impersonate
+  ASIMUT events or consume quota. Existing services, identities and routes stay
+  unchanged. No file/disabled mode leaves standalone scheduling unchanged.
+- The version-1 document has a stable instance ID, monotonic revision, explicit
+  date scope (at most 35 dates), at most 24-hour validity, ordinary-task busy
+  intervals, selected practice windows with exact room choices, and protected
+  confirmed event IDs. Empty room choices mean any otherwise eligible room.
+  An accepted interval must fit a single practice window, including the whole
+  edited reservation when extending. Other booking policies still apply.
+- Publish with the expected previous revision. Exact retries are idempotent;
+  replacement uses the same interprocess lock as the final Save boundary.
+  First activation (and re-enabling) additionally acquires the existing runtime
+  lock before the coordination lock, rejecting a busy worker without stopping
+  it. This prevents a previously loaded worker from crossing activation.
+  The adjacent `.accepted.json` retains the last accepted scope across process
+  restarts and interrupted publication. Missing, expired, corrupt or rolled-back
+  input blocks new actions only on accepted dates until Tempo republishes; an
+  explicit revisioned disabled document releases coordination. Never delete
+  the sidecar as a way to disable the integration.
+- Each owned run pins its coordination revision. Every fresh tracker installs
+  the external conflicts without adding agenda/reservation records. Ordinary,
+  horizon, extension, room-upgrade, consolidation and transfer paths enforce
+  the constraints; final create/edit checks validate the complete interval and
+  current revision before recording/clicking Save. Protected confirmed IDs
+  stay fixed for automatic edits/cancellation; explicit manual cancellation
+  retains its existing exact-identity flow. Tempo must omit a newly created
+  prefix from protection if it is still meant to finish a planned extension.
+- Display plan fingerprints include the accepted coordination revision so old
+  standalone plans cannot appear current after activation. Native Tempo state
+  should distinguish a planning hold from a verified ASIMUT reservation.
+- After the first authoritative agenda scan, an immutable run-local target
+  overlay includes accepted practice task demand above a saved default. It
+  counts the union of confirmed intervals and accepted windows, so prefixes
+  count once and new bookings do not continually increase the target. Disabled
+  planning/dates, automatic Off and all room/quota policies retain authority;
+  saved targets are never rewritten by coordination. Raw room grids remain
+  unfiltered observations so Tempo can propose the next joint plan elsewhere.
+- Source verification: 374 focused Python checks, including 25 new synthetic
+  coordination tests, pass. Coverage includes lock/CAS races, publication
+  interruption, persisted missing/corrupt/expired scope, room restrictions,
+  complete extension intervals, protected IDs, quota-neutral tracker rebuilds,
+  cached-plan invalidation and existing create/upgrade/receipt behavior. Tests
+  use temporary coordination files; no real coordination plan was published,
+  no reservation was made and no service was restarted for this milestone.
+  Scheduled workers load this source on their next run; existing long-lived
+  clients retain their loaded source until ordinarily relaunched.
+
 ## 2026-09-27 per-day settings directly from My Week
 
 - Each current/future date in PC and phone My Week has Edit day. It opens the

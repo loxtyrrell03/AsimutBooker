@@ -175,6 +175,16 @@ def booking_plan_fingerprint(
         ) from exc
     relevant["advanced_config_sha256"] = hashlib.sha256(config_bytes).hexdigest()
     relevant["college_rules_revision"] = RULES_REVISION
+    # The optional local schedule is a real planning input. A cached standalone
+    # plan must not masquerade as the newly coordinated plan (or vice versa).
+    from tempo_coordination import current_snapshot, CoordinationError
+    try:
+        coordination = current_snapshot()
+        if coordination.enabled:
+            relevant["tempo_coordination"] = coordination.fingerprint
+            relevant["tempo_coordination_problem"] = coordination.problem
+    except CoordinationError as exc:
+        raise BookingPlanError(str(exc)) from exc
     try:
         canonical = json.dumps(
             relevant,

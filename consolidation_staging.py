@@ -119,14 +119,17 @@ def fresh_staging_arguments(engine, page, day, *, verified_tracker=None):
         engine.navigate_to_day(page, (day - now.date()).days, 0, base_date=now.date())
     engine.wait_for_practice_room_grid(page, day)
     gaps = engine.get_available_slots(page)
-    return dict(events=events, available_data=gaps, policy=policy, now=datetime.now().astimezone(),
+    return dict(events=events, available_data=tracker.tempo_coordination.constrain_availability(gaps, day),
+        policy=policy, now=datetime.now().astimezone(),
         time_preferences=resolve_time_preferences(engine.load_time_preferences(settings), day), planning=planning,
         peak_start=int(engine.PEAK_START * 60), peak_end=int(engine.PEAK_END * 60),
         peak_limit=int(engine.MAX_PEAK_HOURS * 60),
             free_horizon_overrides_peak=getattr(engine, "FREE_HORIZON_OVERRIDES_PEAK", False) is True,
             free_horizon_minutes=engine.FREE_HORIZON_MINUTES, same_room_gap=engine.SAME_ROOM_GAP_MINUTES,
         freeze_minutes=planning.upgrade_freeze_hours * 60,
-        blocked_intervals=[(a * 60, b * 60) for a, b in engine.blackout_conflict_ranges(blackouts).get(str(day), ())],
+        blocked_intervals=[(a * 60, b * 60) for a, b in (
+            list(engine.blackout_conflict_ranges(blackouts).get(str(day), ()))
+            + tracker.tempo_coordination.blocked_ranges(day))],
         protected_extensions=engine.load_extendable_bookings(), ignored_event_ids=ignored_ids)
 
 
@@ -223,7 +226,9 @@ def execute_staged_consolidation(engine, page, change, *, revalidate, dry_run, f
     def record(r):
         return dict(event_id=r.event_id, room=r.room, date=str(r.day),
                     start=r.as_booking()['startTime'], end=r.as_booking()['endTime'])
-    with engine.booking_save_boundary():
+    with engine.booking_save_boundary(day=change.replacement.day,
+            start=change.replacement.as_booking()['startTime'], end=change.replacement.as_booking()['endTime'],
+            room=change.replacement.room, event_ids=[r.event_id for r in change.originals]):
         from manual_booking_overrides import assert_automatic_change_allowed
         assert_automatic_change_allowed([r.event_id for r in change.originals], path=engine.settings_file)
         if engine.list_pending_mutation_receipts():

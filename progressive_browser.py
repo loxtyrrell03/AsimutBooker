@@ -341,7 +341,9 @@ def save_seed(engine, prepared, receipt, *, role='seed'):
         return False
     engine.dismiss_reservation_time_picker(page)
     save.click(trial=True, timeout=3000)
-    with engine.booking_save_boundary():
+    with engine.booking_save_boundary(day=desired.day, start=time_text(desired.start),
+            end=time_text(desired.end), room=desired.room,
+            event_ids=[r['event_id'] for r in t['originals']]):
         from manual_booking_overrides import assert_automatic_change_allowed
         protected_sources = [r['event_id'] for r in t['originals']]
         if t.get('seed_before'):

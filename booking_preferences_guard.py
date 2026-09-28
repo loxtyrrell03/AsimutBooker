@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app_settings import InterProcessFileLock, SettingsError, load_settings
 from operation_control import check_operation_stop
+from tempo_coordination import CoordinationError, coordination_run, save_boundary as tempo_save_boundary
 
 
 class BookingPreferencesChanged(SettingsError):
@@ -33,13 +34,14 @@ def booking_preference_run(path, settings):
     path = Path(path)
     token = _ACTIVE_RUN.set((path, _controls(settings), path.exists()))
     try:
-        yield
+        with coordination_run():
+            yield
     finally:
         _ACTIVE_RUN.reset(token)
 
 
 @contextmanager
-def booking_save_boundary():
+def _settings_save_boundary():
     """Hold the shared settings lock only across the receipt and Save click.
 
     Main installs the snapshot for all production booking/extension runs. Direct
@@ -69,3 +71,13 @@ def booking_save_boundary():
         yield
     finally:
         lock.release()
+
+
+@contextmanager
+def booking_save_boundary(**interval):
+    """Serialize settings and Tempo's accepted plan with the exact Save intent."""
+    try:
+        with _settings_save_boundary(), tempo_save_boundary(**interval):
+            yield
+    except CoordinationError as exc:
+        raise BookingPreferencesChanged(str(exc)) from exc

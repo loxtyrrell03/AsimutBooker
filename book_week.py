@@ -54,6 +54,7 @@ from app_settings import (
 from booking_preferences_guard import (
     BookingPreferencesChanged, booking_preference_run, booking_save_boundary,
 )
+from tempo_coordination import current_snapshot as tempo_coordination_snapshot
 from manual_booking_overrides import (
     manual_booking_ids, extension_is_pinned, assert_automatic_change_allowed,
 )
@@ -3527,7 +3528,7 @@ def cancel_reservation_exact(
             if (list_pending_mutation_receipts() != [transfer_receipt]
                     or transfer_revalidate() is not True):
                 raise BookingVerificationError('Transfer cancellation lost its fresh boundary proof')
-        with booking_save_boundary() if parent_receipt is not None else nullcontext():
+        with booking_save_boundary(event_ids=[event_id]) if parent_receipt is not None else nullcontext():
             if parent_receipt is not None:
                 assert_automatic_change_allowed([event_id], path=settings_file)
             if transfer_receipt is not None:
@@ -3830,7 +3831,9 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
             lambda result: upgrade_request_matches(result.request, upgrade, location_id, operation="save"),
             timeout=UPGRADE_SAVE_TIMEOUT_MS,
         ) as pending_save:
-            with booking_save_boundary():
+            with booking_save_boundary(day=replacement.day, start=time_text(replacement.start),
+                    end=time_text(replacement.end), room=replacement.room,
+                    event_ids=[r.event_id for r in upgrade.originals], automatic=not time_edit):
                 if not time_edit:
                     assert_automatic_change_allowed([r.event_id for r in upgrade.originals], path=settings_file)
                 if not pending_allows_step() or not form_matches(replacement) or not save.is_enabled():
@@ -4348,7 +4351,8 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                     )
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
-                with booking_save_boundary():
+                with booking_save_boundary(day=date_str, start=start_time, end=new_end_time,
+                        room=room, event_ids=[event_id]):
                     assert_automatic_change_allowed([parse_confirmed_event_id(event_url)], path=settings_file)
                     try:
                         receipt = record_pending_extension(
@@ -4521,6 +4525,13 @@ def try_extend_booking(
 
     target_parts = target_end.split(':')
     target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
+    coordination = tracker.tempo_coordination if tracker is not None else tempo_coordination_snapshot()
+    if booking.get("eventId") in coordination.protected_ids():
+        return False, None, "This confirmed reservation is protected by Tempo"
+    if coordination.scoped(date_str):
+        target_end_hour = coordination.allowed_end(date_str, start_hour, target_end_hour, room)
+        if target_end_hour <= current_end_hour:
+            return False, None, coordination.problem or "Tempo's practice window leaves no time to extend"
 
     if _soft_time_window(time_prefs) is not None:
         preferred_target = soft_time_extension_end(
@@ -5022,6 +5033,12 @@ class BookingTracker:
         self.peak_hours_by_day = {}  # Per-day peak minutes: {date_key: minutes}
         self.reservation_hours_by_day = {}  # Per-day reservation hours: {date_key: hours}
         self.existing_reservation_hours = 0.0  # Total hours from existing reservations
+        # Local plan constraints are not ASIMUT events and never consume quota.
+        # Install on every rebuild, including upgrade/transfer proof trackers.
+        self.tempo_coordination = tempo_coordination_snapshot()
+        if self.tempo_coordination.enabled:
+            for day in self.tempo_coordination.document["dates"]:
+                self.conflict_ranges[day] = self.tempo_coordination.blocked_ranges(day)
 
     def add_existing_event(
         self,
@@ -5226,6 +5243,8 @@ class BookingTracker:
         """Check if a booking is allowed by all rules."""
         end_hour = start_hour + duration_minutes / 60
         duration_hours = duration_minutes / 60
+        if not self.tempo_coordination.permits(date, start_hour, end_hour, room):
+            return False, self.tempo_coordination.problem or "Outside Tempo's accepted practice time"
 
         # Rule: Min duration
         if duration_minutes < MIN_BOOKING_MINUTES:
@@ -6407,7 +6426,7 @@ def try_book_slot(
         btn_box = save_btn.bounding_box()
         print(f"  [DEBUG] Save button at: x={btn_box['x']:.0f}, y={btn_box['y']:.0f}" if btn_box else "  [DEBUG] Save button box: None")
 
-        with booking_save_boundary():
+        with booking_save_boundary(day=target_date, start=book_start, end=book_end, room=room):
             if before_save is not None:
                 before_save({'room': room, 'date': as_date(target_date).isoformat(),
                              'start': book_start, 'end': book_end,
@@ -6877,7 +6896,8 @@ def build_day_booking_opportunities(
             continue
         room_priority = PRIORITY_ROOMS.index(room_name)
         room_blocks = (tracker.get_same_room_blocked_ranges(target_date, room_name)
-                       + tracker.extension_blocked_ranges(target_date, room_name))
+                       + tracker.extension_blocked_ranges(target_date, room_name)
+                       + tracker.tempo_coordination.blocked_ranges(target_date, room_name))
         for raw_gap in room_data.get("slots", ()):
             raw_start = float(raw_gap["startHour"])
             raw_end = float(raw_gap["endHour"])
@@ -8932,7 +8952,7 @@ def try_horizon_snipe(
     save_x = save_box["x"] + save_box["width"] / 2
     save_y = save_box["y"] + save_box["height"] / 2
 
-    with booking_save_boundary():
+    with booking_save_boundary(day=target_date, start=book_start, end=book_end, room=room):
         try:
             receipt = record_pending_create(
                 room=room,
@@ -9944,6 +9964,8 @@ def calculate_extension_capacity_holds(
     )
     for booking in ordered:
         date_key = booking["date"]
+        if booking.get("eventId") in tracker.tempo_coordination.protected_ids():
+            continue
         if (
             booking["room"] not in PRIORITY_ROOMS
             or date_key not in live_dates
@@ -9956,6 +9978,8 @@ def calculate_extension_capacity_holds(
         start_time = clock_minutes(booking["startTime"])
         current_end = clock_minutes(booking["endTime"])
         target_end = clock_minutes(booking["target_end"])
+        target_end = int(round(tracker.tempo_coordination.allowed_end(
+            date_key, start_time / 60, target_end / 60, booking["room"]) * 60))
         start_hour = start_time / 60
         current_end_hour = current_end / 60
         if _soft_time_window(time_prefs) is not None:
@@ -10694,6 +10718,11 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             tracker,
             reconciled_blackouts or (),
         )
+        # Accepted Tempo practice tasks can exceed the saved default target.
+        # Keep that demand local to this run and count confirmed prefixes once.
+        practice_plan = tracker.tempo_coordination.practice_plan_overlay(
+            practice_plan, tracker.reservation_ranges)
+        run_report.preferences(settings, practice_plan)
 
         if getattr(args, "agenda_only", False):
             persist_storage_state(context)
