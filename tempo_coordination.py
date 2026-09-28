@@ -182,6 +182,15 @@ class Snapshot:
     def protected_ids(self):
         return set(self.document["protected_event_ids"]) if self.enabled else set()
 
+    def planning_blocker(self, day):
+        if not self.scoped(day):
+            return ""
+        if self.problem:
+            return self.problem
+        if not any(window["date"] == _date(day) for window in self.document["windows"]):
+            return "Tempo has no accepted practice window for this date; replan in Tempo to resume automatic booking"
+        return ""
+
     def blocked_ranges(self, day, room=None):
         """Hours blocked by Tempo, without reservation/quota accounting."""
         key = _date(day)

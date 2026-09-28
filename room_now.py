@@ -216,9 +216,10 @@ def run(engine, page, args, settings, practice_plan, tracker, *, today, live_dat
             with operation_verification():
                 operation_stage('Confirming your booking in the agenda…')
                 proof_tracker = engine.BookingTracker()
-                _, events = engine.scan_agenda(page, proof_tracker, today,
+                engine.scan_agenda(page, proof_tracker, today,
                     ignored_events=engine.load_ignored_events(settings), window_dates=live_dates,
                     snapshot_path=engine.AGENDA_SNAPSHOT_FILE)
+                events = proof_tracker.agenda_events
             from mutation_receipts import load_journal
             journal = load_journal()
             booking = confirmed_booking(saved, journal['receipts'].get(saved['receipt_id']), events)

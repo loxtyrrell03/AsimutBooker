@@ -165,7 +165,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 opportunities, day_plan, planning, now=now)
             candidates.extend((item, remaining, candidate_reason(day_plan, item))
                               for item in chosen if item.unlock_at <= now)
-            if not chosen and day_plan.primary is not None:
+            if not chosen:
                 print(f'  [Free horizon] {day_plan.reason}')
             if boundary is not None:
                 # Use the same complete day decision at the imminent boundary.

@@ -7564,6 +7564,8 @@ def build_display_day_plan(
     candidate_state = "potential"
     held_peak = 0
     reason = "No suitable free opportunity is currently visible"
+    if not opportunities:
+        reason = tracker.tempo_coordination.planning_blocker(target_date) or reason
     if remaining_minutes < MINIMUM_BLOCK_MINUTES:
         if existing_minutes >= target_minutes:
             status = "complete"
@@ -10732,7 +10734,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             from fill_range import review_result
             from app_settings import atomic_write_json
             output = Path(args.fill_review_output)
-            result = review_result(output.parent, APP_DIR)
+            result = review_result(output.parent, APP_DIR, filename=output.name)
             atomic_write_json(output, result)
             persist_storage_state(context)
             context.close()

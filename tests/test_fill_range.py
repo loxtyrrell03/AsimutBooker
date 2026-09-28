@@ -171,7 +171,9 @@ class FillTests(unittest.TestCase):
             fake.try_book_slot.side_effect=save
             def scan(*a,**kw):
                 tracker.agenda_events=[event()]+[event(b['start'],b['end'],b['room'],int(b['receipt_id'])) for b in calls]
-                return len(tracker.agenda_events),tracker.agenda_events
+                # The real scan returns reservation summaries, without the
+                # isReservation discriminator held in the complete tracker.
+                return len(tracker.agenda_events),[{k:v for k,v in e.items() if k!='isReservation'} for e in tracker.agenda_events]
             fake.scan_agenda.side_effect=scan
             with patch('fill_range.scoped_tracker',return_value=tracker),patch('fill_range.candidates',side_effect=lambda *a:([choices[len(calls)]],[])),patch('mutation_receipts.load_journal',return_value={'receipts':receipts}):
                 run(fake,None,args,{},tracker,today=NOW.date(),live_dates=[NOW.date()])
@@ -191,6 +193,28 @@ class FillTests(unittest.TestCase):
             self.assertFalse(snap.permits(NOW.date(),13,14,'Other'))
             self.assertFalse(Snapshot(doc,Path('unused'),'expired').permits(NOW.date(),11,11.5,'Other'))
         self.assertFalse(snap.permits(NOW.date(),11,11.5,'Other'))
+
+    def test_recovery_uses_exact_cli_output_and_full_agenda(self):
+        from fill_range import review_result
+        from mutation_receipts import record_pending_create, mark_verified
+        from agenda_snapshot import publish_agenda_snapshot
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); observed=datetime.now(LONDON); day=observed.date().isoformat()
+            attempt={'room':'Other','date':day,'start':'13:00','end':'14:30',
+                     'duration_minutes':90,'requested_at':observed.isoformat()}
+            output=root/'custom-result.json'
+            output.write_text(json.dumps({'state':'uncertain','attempted':attempt,
+                'range':{'date':day,'start_time':'13:00','end_time':'14:30'}}))
+            receipt_path=root/'data/mutation_receipts.json'
+            receipt=record_pending_create(room='Other',booking_date=day,start='13:00',end='14:30',path=receipt_path)
+            mark_verified(receipt['id'],event_url='https://rwcmd.asimut.net/arrangement?eventId=99',path=receipt_path)
+            proof={**event('13:00','14:30','Other',99),'date':day,'title':'Reservation'}
+            publish_agenda_snapshot([proof],[observed.date()],observed_at=datetime.now(LONDON),path=root/'data/agenda_snapshot.json')
+            with patch('fill_range.local_now',return_value=observed):
+                result=review_result(root,root,filename=output.name)
+            self.assertEqual(result['state'],'completed')
+            self.assertEqual(result['bookings'][0]['event_id'],99)
+            self.assertEqual(set(json.loads((root/'data/settings.json').read_text())['manual_booking_overrides']),{'99'})
 
 
 if __name__=='__main__':unittest.main()

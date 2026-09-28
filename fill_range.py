@@ -295,9 +295,10 @@ def run(engine, page, args, settings, tracker, *, today, live_dates):
             try:
                 with operation_verification():
                     proof_tracker = engine.BookingTracker()
-                    _, proof_events = engine.scan_agenda(page, proof_tracker, today,
+                    engine.scan_agenda(page, proof_tracker, today,
                         ignored_events=engine.load_ignored_events(settings), window_dates=live_dates,
                         snapshot_path=engine.AGENDA_SNAPSHOT_FILE)
+                    proof_events = proof_tracker.agenda_events
                     from mutation_receipts import load_journal
                     booking = confirmed_booking(saved, load_journal()['receipts'].get(saved['receipt_id']), proof_events)
                 bookings.append(booking)
@@ -324,11 +325,11 @@ def run(engine, page, args, settings, tracker, *, today, live_dates):
                 raise
 
 
-def review_result(directory, root):
+def review_result(directory, root, *, filename='fill-range.json'):
     """Read-only reconciliation; never resumes the old fill request."""
     from agenda_snapshot import read_agenda_snapshot
     from mutation_receipts import load_journal
-    path = Path(directory)/'fill-range.json'
+    path = Path(directory)/filename
     if not path.exists():
         return {'state': 'stopped', 'message': 'This fill did not record a booking attempt. You can make a fresh request.'}
     old = json.loads(path.read_text(encoding='utf-8'))

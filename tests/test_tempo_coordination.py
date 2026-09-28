@@ -54,6 +54,18 @@ class TempoCoordinationTests(unittest.TestCase):
             pass
         self.assertFalse(self.path.parent.exists())
 
+    def test_missing_practice_window_explains_why_booking_is_blocked(self):
+        self.publish(document(windows=[]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        self.assertIn("no accepted practice window", snapshot.planning_blocker(DAY))
+        self.assertEqual(snapshot.planning_blocker(DAY + timedelta(days=1)), "")
+        self.assertFalse(snapshot.permits(DAY, 13, 14.5, "Practice A"))
+        with tempo.coordination_run(self.path, now=NOW):
+            plan = booker.build_display_day_plan(DAY, [], booker.BookingTracker(),
+                booker.DailyPlanningPreferences(), now=NOW.replace(tzinfo=None),
+                target_minutes=240, free_horizon_only=True)
+        self.assertIn("no accepted practice window", plan.reason)
+
     def test_noop_retry_and_compare_and_swap(self):
         self.assertEqual(self.publish(expected_revision=0)["revision"], 1)
         self.assertTrue(self.publish(expected_revision=0)["unchanged"])

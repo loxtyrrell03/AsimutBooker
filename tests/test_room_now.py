@@ -168,7 +168,8 @@ class RoomNowRuntimeTests(unittest.TestCase):
         saved={'receipt_id':'proof','room':'Top','date':str(NOW.date()),'start':'14:15','end':'16:15','duration_minutes':120}
         receipt={**saved,'status':'verified','kind':'create','event_url':'https://rwcmd.asimut.net/arrangement?eventId=99'}
         event={'room':'Top','date':str(NOW.date()),'startTime':'14:15','endTime':'16:15','isReservation':True,'eventId':99}
-        fake.scan_agenda.return_value=(1,[event])
+        fake.scan_agenda.return_value=(1,[{k:v for k,v in event.items() if k!='isReservation'}])
+        fake.BookingTracker.return_value.agenda_events=[event]
         fake.try_book_slot.side_effect=lambda *a,**k:(k['before_save'](saved),saved)[1]
         with patch('room_now.local_now',return_value=NOW),patch('room_now.candidates',return_value=[candidate]),patch('mutation_receipts.load_journal',return_value={'receipts':{'proof':receipt}}):
             run(fake,None,args,{},None,tracker,today=NOW.date(),live_dates=[NOW.date()])

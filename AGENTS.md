@@ -1,3 +1,24 @@
+## 2026-09-28 missed practice and exact-create confirmation repair
+
+- Tempo's daily-goal planner reused confirmed room time after already counting
+  it toward the target, consuming its missing minutes without publishing new
+  windows. The correction is in Tempo commit `ded1913` (247 synthetic checks).
+  Named tasks still reuse booked rooms. Do not disable coordination to repair it.
+- Missing/expired Tempo practice windows now have an explicit explanation in
+  My Week plans and the scheduled free-horizon log; they must not masquerade as
+  room unavailability. Accepted dates and busy-task constraints remain enforced.
+- Fill time range and Room now verify against `proof_tracker.agenda_events`.
+  `scan_agenda`'s second return value is a reservation summary without the
+  `isReservation` discriminator, so it cannot feed exact confirmation. Previous
+  code saved successfully but left the result uncertain. Recovery remains
+  read-only, binds the exact custom CLI output filename and pins verified fills.
+- All 88 focused confirmation, fill ownership, daily-planner and coordination
+  checks pass, including the real scan return shape and custom-path recovery.
+  A live requested partial Corus booking was independently receipt/agenda
+  verified and pinned; no uncertain Save was replayed. Private evidence is in
+  `artifacts/corus-missed-20260928/`. Scheduled/explicit workers load this source
+  on their next run; no new scheduler, preference change or route is needed.
+
 ## 2026-09-28 explicit time-range fill engine and design
 
 - `fill_range.py` adds an isolated create-only operation shared by phone/PC
