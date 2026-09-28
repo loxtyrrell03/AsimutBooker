@@ -60,7 +60,8 @@ class PhoneOperations:
             self.service.ledger.reserve(request_id)
             try:
                 self._update(request_id=request_id, action=action, active=True, state='queued',
-                             text='Waiting for the current agenda check…', started_at=timestamp(), result=None)
+                             text='Waiting for the current agenda check…', started_at=timestamp(), result=None,
+                             range=dict(args) if action == 'fill_range' else None)
             except Exception:
                 self.job = {'request_id': request_id, 'active': False, 'state': 'uncertain',
                             'text': 'The operation could not be recorded. Review its status before continuing.'}

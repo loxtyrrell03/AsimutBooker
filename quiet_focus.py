@@ -240,10 +240,11 @@ class WeekEventCard(RoundedCard):
 
 
 class WeekPanel(ScrollPage):
-    def __init__(self,parent,*,on_calendar,on_refresh,on_details,on_edit_day=None):
+    def __init__(self,parent,*,on_calendar,on_refresh,on_details,on_edit_day=None,on_fill_day=None):
         super().__init__(parent)
         self.on_details=on_details
         self.on_edit_day=on_edit_day
+        self.on_fill_day=on_fill_day
         self.body=tk.Frame(self.content,bg=PAGE,padx=24,pady=24);self.body.pack(fill='both',expand=True)
         head=tk.Frame(self.body,bg=PAGE);head.pack(fill='x')
         label(head,'My Week',size=32,bold=True).pack(side='left')
@@ -262,6 +263,7 @@ class WeekPanel(ScrollPage):
         self.plan_status.configure(text=plan_notice or ('Previous plan shown below. Refresh to check it again.' if plan_stale else ''))
         for child in self.rows.winfo_children():child.destroy()
         self.day_edit_buttons={}
+        self.day_fill_buttons={}
         today=datetime.now(ZoneInfo('Europe/London')).date().isoformat()
         grouped={}
         for event in events:
@@ -283,6 +285,10 @@ class WeekPanel(ScrollPage):
                 button=ttk.Button(header,text='Edit day',style='QuietLink.TButton',command=lambda key=day:self.on_edit_day(key))
                 button.pack(side='right')
                 self.day_edit_buttons[day]=button
+            if self.on_fill_day:
+                button=ttk.Button(header,text='Fill time range',style='QuietLink.TButton',command=lambda key=day:self.on_fill_day(key))
+                button.pack(side='right',padx=(0,12))
+                self.day_fill_buttons[day]=button
             if day in closed_dates or day in off_dates:
                 label(self.rows,'Practice rooms closed' if day in closed_dates else 'Booking off',color='#B73332' if day in closed_dates else MUTED,size=13).pack(anchor='w',pady=(0,6))
             sessions=[(event['startTime'],0,event) for event in day_events]

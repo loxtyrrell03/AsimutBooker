@@ -41,6 +41,7 @@ import { PhoneCalendar } from '@/components/phone-calendar';
 import { PracticeSettings } from '@/components/practice-settings';
 import { BookingDetails, TodayView } from '@/components/quiet-focus';
 import { RoomNow } from '@/components/room-now';
+import { FillRange } from '@/components/fill-range';
 import { RoomAvailability } from '@/components/room-availability';
 import { requestJson } from '@/lib/api';
 
@@ -726,6 +727,7 @@ function ScheduleView({
   onRefresh,
   refreshing,
   onEditDay,
+  onFillDay,
 }: {
   booker: BookerSnapshot;
   onCancelBooking: (event: AgendaEvent) => void;
@@ -733,6 +735,7 @@ function ScheduleView({
   onRefresh: () => void;
   refreshing: boolean;
   onEditDay: (date: string) => void;
+  onFillDay: (date: string) => void;
 }) {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: booker.timezone || 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const groups = useMemo(() => {
@@ -862,7 +865,7 @@ function ScheduleView({
               <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed closed-day-surface' : ''}`} key={date}>
                 {booker.agenda.closed_dates?.includes(date) && <ClosedDayCross />}
                 <div className="week-day-heading"><h3>{dateLabel(date, true)}</h3>
-                  {date >= today && <button type="button" className="quiet-link" aria-label={`Edit day: ${dateLabel(date, true)}`} onClick={() => onEditDay(date)}>Edit day</button>}
+                  {date >= today && <div className="week-day-actions"><button type="button" className="quiet-link" aria-label={`Fill time range: ${dateLabel(date, true)}`} onClick={() => onFillDay(date)}>Fill time range</button><button type="button" className="quiet-link" aria-label={`Edit day: ${dateLabel(date, true)}`} onClick={() => onEditDay(date)}>Edit day</button></div>}
                 </div>
                 {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
                 {events.map((event, index) => (
@@ -1051,6 +1054,7 @@ function BottomNavigation({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) =>
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('today');
   const [weekEditDate, setWeekEditDate] = useState<string | null>(null);
+  const [fillDate, setFillDate] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [systemJob, setSystemJob] = useState<SystemJob | null>(null);
@@ -1758,7 +1762,7 @@ export default function HomePage() {
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
       <div className={tab === 'assistant' ? 'assistant-scroll' : undefined} ref={scrollRef}>
         <div className="app-content">
-          {systemJob?.active && tab !== 'status' && !(tab === 'today' && systemJob.action === 'room_now') && <output className="system-job system-global"><strong>{systemJob.action === 'room_now' ? 'Finding a room…' : 'PC operation in progress'}</strong><p>{systemJob.text}</p><button type="button" onClick={() => setTab(systemJob.action === 'room_now' ? 'today' : 'status')}>View operation / Stop</button></output>}
+          {systemJob?.active && tab !== 'status' && !(tab === 'today' && systemJob.action === 'room_now') && !(tab === 'schedule' && fillDate && systemJob.action === 'fill_range') && <output className="system-job system-global"><strong>{systemJob.action === 'room_now' ? 'Finding a room…' : 'PC operation in progress'}</strong><p>{systemJob.text}</p><button type="button" onClick={() => { if (systemJob.action === 'fill_range') { setFillDate(systemJob.range?.date || systemJob.result?.range?.date || fillDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date())); setWeekEditDate(null); setTab('schedule'); } else setTab(systemJob.action === 'room_now' ? 'today' : 'status'); }}>View operation / Stop</button></output>}
           {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
             {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
             <div><strong>{cancelling ? 'Cancelling booking' : 'Cancellation update'}</strong>
@@ -1792,7 +1796,7 @@ export default function HomePage() {
 
           {tab === 'today' && booker && selectedBooking && <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} />}
           {booker && <div hidden={tab !== 'today' || Boolean(selectedBooking)}><TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview}
-            roomNow={<RoomNow csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onDetails={setSelectedBooking} />} /></div>}
+            roomNow={<><button type="button" className="fill-shortcut" onClick={() => { setFillDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())); setWeekEditDate(null); setTab('schedule'); }}>Fill a time range today</button><RoomNow csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onDetails={setSelectedBooking} /></>} /></div>}
           {tab === 'assistant' && (
             <div className="assistant-view">
               {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
@@ -1814,7 +1818,8 @@ export default function HomePage() {
           )}
           {booker && <div hidden={tab !== 'schedule'}>
             {weekEditDate ? <PhoneCalendar key={weekEditDate} singleDay={weekEditDate} onClose={() => setWeekEditDate(null)} booker={booker} csrf={csrf} active={tab === 'schedule'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /> :
-              <ScheduleView booker={booker} onEditDay={setWeekEditDate} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} />}
+              <div hidden={Boolean(fillDate)}><ScheduleView booker={booker} onEditDay={setWeekEditDate} onFillDay={setFillDate} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} /></div>}
+            <div hidden={!fillDate || Boolean(weekEditDate)}><FillRange selectedDate={fillDate} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onClose={() => setFillDate(null)} onDetails={event => { setSelectedBooking(event); setTab('today'); }} /></div>
           </div>}
           {booker && <div hidden={tab !== 'rooms'}><RoomAvailability active={tab === 'rooms'} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview} job={systemJob} onJob={applySystemJob} /></div>}
           {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}

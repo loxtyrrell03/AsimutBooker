@@ -32,6 +32,7 @@ class FillRequestTests(unittest.TestCase):
     def test_partial_save_uncertainty_retains_owner_and_review_does_not_replay(self):
         self.operations.runner=MagicMock(return_value={'state':'uncertain','message':'Last Save needs checking.'})
         self.operations.submit(self.payload);self.operations.thread.join(3)
+        self.assertEqual(self.operations.job['range'],self.payload['args'])
         with self.assertRaises(SystemConflict):self.operations.submit({**self.payload,'request_id':str(uuid4())})
         self.operations.runner.return_value={'state':'partial','message':'Verified one booking.'}
         self.operations.review_room_now({'request_id':self.payload['request_id']},action='fill_range')

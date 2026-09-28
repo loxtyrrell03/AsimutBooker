@@ -186,8 +186,15 @@ class QuietFocusGUI:
             other_busy=lambda:self.is_running or self.login_operation_in_progress)
         self.room_now_panel.pack(fill='x',pady=(0,18),before=self.today_panel.hero.master)
         self.week_panel = WeekPanel(self.week_tab, on_calendar=lambda:self.show_calendar_dialog(initial_view='week'),
-            on_refresh=self.refresh_booking_plan, on_details=self._show_quiet_booking,on_edit_day=self._edit_week_day)
+            on_refresh=self.refresh_booking_plan, on_details=self._show_quiet_booking,on_edit_day=self._edit_week_day,
+            on_fill_day=self._open_fill_range)
         self.week_panel.pack(fill=tk.BOTH, expand=True)
+        from fill_range_gui import FillRangePanel
+        self.fill_range_panel=FillRangePanel(self.week_panel.body,on_details=self._show_quiet_booking,
+            on_refresh=self._refresh_quiet_views,on_close=lambda:self.fill_range_panel.pack_forget(),
+            other_busy=lambda:self.is_running or self.login_operation_in_progress or self.room_now_panel.controller.active)
+        ttk.Button(self.today_panel.body,text='Fill a time range today',style='QuietLink.TButton',
+            command=lambda:self._open_fill_range(datetime.now().date().isoformat())).pack(anchor='w',pady=(0,12),before=self.room_now_panel)
         from room_grid_gui import RoomAvailabilityPanel
         self.room_availability = RoomAvailabilityPanel(self.rooms_tab,
             other_busy=lambda: self.is_running or self.login_operation_in_progress)
@@ -199,6 +206,12 @@ class QuietFocusGUI:
         self._select_quiet_page('today')
         self.today_panel.canvas.yview_moveto(0)
         self.room_now_panel.start_button.focus_set()
+
+    def _open_fill_range(self, date_key):
+        self._select_quiet_page('week')
+        self.fill_range_panel.pack(fill='x',pady=(0,18),before=self.week_panel.rows)
+        self.fill_range_panel.open_date(date_key)
+        self.week_panel.canvas.yview_moveto(0)
 
     def _show_advanced_tools(self):
         old=self._detail_pages.get('tools')

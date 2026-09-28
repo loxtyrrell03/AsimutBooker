@@ -25,6 +25,23 @@
   request ownership, phone operations, preference Save guards and Tempo checks.
   The skill booking reference documents the isolated CLI. Phone/PC controls and
   activation are verified separately below; no deployment is implied here.
+- The phone and PC controls now use that dated My Week action plus a Today
+  shortcut. Navigation retains the fill form, Cancel creates no booking, and
+  Stop preserves verified results. Partial results show exact gaps and Retry;
+  lost delivery retains its UUID and must be checked before another submission.
+  Phone scroll spacing keeps actions reachable above the bottom navigation.
+- UI verification: TypeScript/lint, 17 phone Node tests, 13 focused native
+  checks, native 760/1040px renders, and intercepted Chromium/WebKit
+  320/390/844px flow checks pass. These exercise exact dates, Cancel, progress,
+  Stop, partial results, retry, help and lost-delivery recovery without booking
+  or preference writes. Existing room-now browser flows also pass. Private
+  evidence: `artifacts/fill-range-20260928/`. Activation follows separately.
+- Active phone jobs persist the requested range, so reopening a running future
+  fill restores its date and times. Reload/navigation regression checks pass.
+  The broader suite ran 1,712 checks with six existing planner-mock failures;
+  all six reproduce against pre-fill `book_week.py` from `72dd432^`. Focused
+  feature checks pass. Offline suites must isolate Tempo snapshot/runtime paths
+  with temporary files when the owner has an active coordination plan.
 
 ## 2026-09-28 optional Tempo task and practice coordination
 
