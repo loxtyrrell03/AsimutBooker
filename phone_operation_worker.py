@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from app_settings import atomic_write_json
+from app_settings import atomic_write_json, SettingsError
 from operation_control import owned_operation, check_operation_stop, observe_room_grid
 from phone_system import ROOT, RUN_ACTIONS, SystemConflict, run_local_action, timestamp, validate_action
 from runtime_guard import SingleInstanceAlreadyRunning
@@ -17,9 +17,28 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
     directory = Path(directory)
     stop = directory / 'stop'
     rows, scanned = [], []
+    progress_warning = False
 
     def progress(text):
-        atomic_write_json(directory / 'progress.json', {'text': text, 'observed_at': timestamp()})
+        nonlocal progress_warning
+        try:
+            atomic_write_json(directory / 'progress.json', {'text': text, 'observed_at': timestamp()})
+        except (SettingsError, OSError) as exc:
+            # Windows readers can briefly prevent replacement of this display
+            # file. A missed progress update must never abort the booking run.
+            # Keep one bounded private diagnostic; authoritative writes below
+            # (results, settings and mutation receipts) remain strict.
+            if not progress_warning:
+                cause = exc.__cause__ or exc
+                warning = dict(message='A live progress update could not be saved.',
+                               observed_at=timestamp(), file='progress.json',
+                               error_type=type(cause).__name__, errno=getattr(cause, 'errno', None),
+                               winerror=getattr(cause, 'winerror', None))
+                try:
+                    atomic_write_json(directory / 'progress-warning.json', warning)
+                except (SettingsError, OSError):
+                    pass
+            progress_warning = True
 
     def availability(target_date, rooms):
         key = target_date.isoformat()
@@ -69,7 +88,6 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                 if action == 'room_now':
                     from room_now import cli_flags, RoomNowRequest, local_now
                     from datetime import datetime
-                    from app_settings import SettingsError
                     submitted = json.loads((directory / 'submitted.json').read_text(encoding='utf-8'))
                     try:
                         RoomNowRequest(args['mode'], args['minutes'], datetime.fromisoformat(submitted['requested_at'])).check_current(local_now())
@@ -78,7 +96,6 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                     flags = cli_flags(args, submitted['requested_at'], directory / 'room-now.json')
                 if action == 'fill_range':
                     from fill_range import cli_flags, FillRequest, local_now
-                    from app_settings import SettingsError
                     submitted = json.loads((directory / 'submitted.json').read_text(encoding='utf-8'))
                     try:
                         FillRequest.create(args, submitted['requested_at']).check_current(local_now())
@@ -110,6 +127,8 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                         'run_visible': 'Booker run completed. Refresh the agenda to see the result.',
                         'login': 'Login check completed.', 'scan': 'Availability scan completed.',
                         'agenda': 'Agenda refreshed.', 'plan': 'Practice plan refreshed.'}[action]}
+                    if progress_warning:
+                        result['progress_warning'] = 'Some live progress updates were unavailable; the operation result was still checked.'
                     if action == 'scan':
                         result['scan'] = {'observed_at': timestamp(), 'rows': rows[:12000],
                                           'scanned_dates': scanned,

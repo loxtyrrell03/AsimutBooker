@@ -1,3 +1,18 @@
+## 2026-09-28 progress updates cannot abort booking operations
+
+- The shared phone/Tempo operation helper treats only `progress.json` updates
+  as best effort. A live Tempo run stopped with Windows error 5 because a reader
+  briefly prevented atomic replacement of this display file. The helper now
+  retains one bounded private `progress-warning.json` with the error type/code
+  and adds a generic warning to a successful result, without exposing paths.
+- Settings, final results, mutation receipts, Stop checks and booking validation
+  remain strict. Do not broaden this handling to authoritative state or retry
+  a booking because a progress display failed. The existing scheduled worker,
+  saved preferences, services and reservation rules are unchanged.
+- All 77 focused phone, fill, room, grid and request-ownership checks pass.
+  Regressions simulate the exact Windows replacement failure, preserve uncertain
+  pending receipts and Stop, and prove final result write failures still escape.
+
 ## 2026-09-28 saved booking prefixes keep extending as the free horizon opens
 
 - Optional `room_extensions` binds a protected `event_id`, `date`, `room`,
