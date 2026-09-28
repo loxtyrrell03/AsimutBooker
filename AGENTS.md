@@ -44,11 +44,17 @@
   continue to apply. Alternatives do not consume quota or add practice demand.
 - Optional `practice_targets` is a unique scoped list of `{date, minutes}` with
   integer minutes in 0..1440. For those dates the run-local target is the larger
-  of the saved goal and that accepted total; it does not add new alternative
+  of the saved goal and that accepted total, less optional `completed_minutes`
+  credit, floored at zero. Credit is an integer from zero through that target
+  and counts completed work outside confirmed reservation time. It does not add new alternative
   reservations to old selected suggestions again. Higher named-task demand can
   still exceed a daily default. Tempo preserves accepted targets during routine
   maintenance and recomputes them only with a fresh joint plan. Saved disabled
   planning/dates and automatic Off remain authoritative.
+- The completion-credit regression uses a four-hour goal, 150 booked minutes,
+  60 completed minutes and 30 planned minutes: both subsequent runs retain a
+  three-hour physical room target, and filling the last 30 minutes completes it.
+  All 46 coordination checks pass; saved preferences remain unchanged.
 - Older documents without these fields keep their previous canonical form and
   behavior. Expired, missing or corrupt accepted constraints still pause the
   affected dates with an explanation; timely renewal is Tempo's responsibility.

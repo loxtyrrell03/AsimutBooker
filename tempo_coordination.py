@@ -160,7 +160,13 @@ def validate_snapshot(raw):
             day, minutes = _date(item.get("date")), item.get("minutes")
             if day not in dates or day in seen or type(minutes) is not int or not 0 <= minutes <= 1440:
                 raise CoordinationError("Tempo practice target is outside its scope or bounds")
-            normalized.append(dict(date=day, minutes=minutes))
+            entry = dict(date=day, minutes=minutes)
+            if "completed_minutes" in item:
+                completed = item["completed_minutes"]
+                if type(completed) is not int or not 0 <= completed <= minutes:
+                    raise CoordinationError("Tempo completed practice credit is outside its target")
+                entry["completed_minutes"] = completed
+            normalized.append(entry)
             seen.add(day)
         result["practice_targets"] = sorted(normalized, key=lambda item: item["date"])
     if "room_upgrades" in raw:
@@ -387,13 +393,15 @@ class Snapshot:
         if not self.enabled or self.problem or not plan.enabled:
             return plan
         overrides = dict(plan.date_overrides or {})
-        targets = {item["date"]: item["minutes"] for item in self.document.get("practice_targets", ())}
+        targets = {item["date"]: item for item in self.document.get("practice_targets", ())}
         for day in self.document["dates"]:
             if day in targets:
                 # A booking made in alternative spare time fulfils the same
                 # target. Do not add it to an older selected suggestion again
                 # when the next recurring pass starts before Tempo replans.
-                overrides[day] = max(plan.target_for(date.fromisoformat(day)) or 0, targets[day] / 60)
+                target = targets[day]
+                overrides[day] = max(0, max(plan.target_for(date.fromisoformat(day)) or 0, target['minutes'] / 60)
+                                     - target.get('completed_minutes', 0) / 60)
                 continue
             intervals = [(_minutes(w["start"]), _minutes(w["end"], end=True))
                          for w in self.document["windows"] if w["date"] == day]

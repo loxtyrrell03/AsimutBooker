@@ -282,6 +282,30 @@ class TempoCoordinationTests(unittest.TestCase):
             with self.subTest(targets=targets), self.assertRaises(tempo.CoordinationError):
                 tempo.validate_snapshot(document(practice_targets=targets))
 
+    def test_completed_practice_credit_reduces_room_target_once_across_successive_passes(self):
+        self.publish(document(practice_targets=[dict(date=str(DAY), minutes=240, completed_minutes=60)]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        saved = booker.PracticePlan(enabled=True, default_hours=4)
+        for booked, expected_remaining in ((2.5, .5), (3, 0), (3, 0)):
+            reservations = {str(DAY): [(9, 9 + booked, "Practice A")]}
+            overlaid = snapshot.practice_plan_overlay(saved, reservations)
+            self.assertEqual(overlaid.target_for(DAY), 3)
+            self.assertEqual(booker.remaining_target_hours(overlaid, DAY, booked), expected_remaining)
+        self.assertEqual(saved.target_for(DAY), 4)
+        self.assertIsNone(saved.date_overrides)
+
+    def test_completed_practice_credit_keeps_named_demand_and_validates_bounds(self):
+        valid = dict(date=str(DAY), minutes=300, completed_minutes=60)
+        self.publish(document(practice_targets=[valid]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        saved = booker.PracticePlan(enabled=True, default_hours=4)
+        self.assertEqual(snapshot.practice_plan_overlay(saved, {}).target_for(DAY), 4)
+        for credit in (True, -1, 301, 60.5, "60", None, float('inf')):
+            with self.subTest(credit=credit), self.assertRaises(tempo.CoordinationError):
+                tempo.validate_snapshot(document(practice_targets=[valid | dict(completed_minutes=credit)]))
+        self.publish(document(revision=2, practice_targets=[dict(date=str(DAY), minutes=240, completed_minutes=240)]))
+        self.assertEqual(tempo.read_snapshot(now=NOW).practice_plan_overlay(saved, {}).target_for(DAY), 0)
+
     def room_upgrade_document(self, **changes):
         value = document(busy=[], windows=[], room_upgrades=[
             dict(event_id=42, date=str(DAY), start="13:00", end="15:00",
