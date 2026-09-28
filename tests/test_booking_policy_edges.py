@@ -20,6 +20,7 @@ from book_week import (
 )
 from practice_plan import PracticePlan, remaining_target_hours
 from runtime_guard import booking_times_match, hhmm_values_match, parse_confirmed_event_id
+from tempo_coordination import Snapshot
 
 
 class SameRoomGapBoundaryTests(unittest.TestCase):
@@ -177,6 +178,7 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
 
     def test_non_strict_time_preference_reaches_the_smart_ranker(self):
         tracker = mock.Mock()
+        tracker.tempo_coordination = Snapshot(None, Path('unused-coordination.json'))
         tracker.get_remaining_quota_hours.return_value = 10.0
         tracker.get_remaining_peak_minutes.return_value = 120
         tracker.conflict_ranges = {}
@@ -220,6 +222,7 @@ class DailyPlanningCapacityHoldTests(unittest.TestCase):
         today = date(2026, 8, 30)
         target_date = date(2026, 9, 4)
         tracker = mock.Mock()
+        tracker.tempo_coordination = Snapshot(None, Path('unused-coordination.json'))
         tracker.get_remaining_quota_hours.return_value = 1.5
         tracker.get_remaining_peak_minutes.return_value = 90
         tracker.get_hours_for_day.return_value = 0.5

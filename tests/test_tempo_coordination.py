@@ -74,6 +74,214 @@ class TempoCoordinationTests(unittest.TestCase):
                 booker.BookingTracker(), now=NOW.replace(tzinfo=None))
         self.assertIn("no accepted practice window", publish.call_args.args[0][0].reason)
 
+    def test_opportunity_time_keeps_an_unobserved_date_bookable_without_a_selected_session(self):
+        self.publish(document(windows=[], opportunity_windows=[
+            dict(date=str(DAY), start="09:00", end="18:00", rooms=[])]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        self.assertEqual(snapshot.planning_blocker(DAY), "")
+        self.assertTrue(snapshot.permits(DAY, 13, 15, "Practice B"))
+        self.assertFalse(snapshot.permits(DAY, 10.5, 11.5, "Practice B"))
+        self.assertFalse(snapshot.permits(DAY, 18, 19, "Practice B"))
+        with tempo.coordination_run(now=NOW):
+            tracker = booker.BookingTracker()
+            self.assertTrue(tracker.can_book("Practice B", DAY, 13, 60)[0])
+            self.assertFalse(tracker.can_book("Practice B", DAY, 11, 30)[0])
+            self.assertEqual(tracker.get_total_booking_hours(), 0)
+            with booking_save_boundary(day=DAY, start="13:00", end="14:00", room="Practice B"):
+                pass
+
+    def test_opportunities_do_not_replace_selected_task_room_or_merge_adjacent_tasks(self):
+        self.publish(document(busy=[], windows=[
+            dict(date=str(DAY), start="10:00", end="11:00", rooms=["Practice A"]),
+            dict(date=str(DAY), start="11:00", end="12:00", rooms=["Practice A"])],
+            opportunity_windows=[dict(date=str(DAY), start="09:00", end="15:00", rooms=[])]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        self.assertTrue(snapshot.permits(DAY, 9, 10, "Practice B"))
+        self.assertTrue(snapshot.permits(DAY, 12, 14, "Practice B"))
+        self.assertTrue(snapshot.permits(DAY, 10, 11, "Practice A"))
+        for start, end, room in ((10, 11, "Practice B"), (10, 12, "Practice A"),
+                                 (9, 11, "Practice A"), (11, 13, "Practice A")):
+            self.assertFalse(snapshot.permits(DAY, start, end, room))
+        self.assertEqual(snapshot.allowed_end(DAY, 9, 12, "Practice A"), 10)
+        self.assertEqual(snapshot.allowed_end(DAY, 10, 12, "Practice A"), 11)
+
+    def test_opportunity_room_scope_upgrade_gaps_and_whole_extension_stay_safe(self):
+        self.publish(document(windows=[], opportunity_windows=[
+            dict(date=str(DAY), start="09:00", end="15:00", rooms=["Practice B"])]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        raw = [{"room": room, "slots": [{"startHour": 8, "endHour": 18}]}
+               for room in ("Practice A", "Practice B")]
+        values = snapshot.constrain_availability(raw, DAY)
+        self.assertEqual(values[0]["slots"], [])
+        self.assertEqual(values[1]["slots"], [{"startHour": 9, "endHour": 11},
+                                              {"startHour": 11.5, "endHour": 15}])
+        self.assertEqual(snapshot.allowed_end(DAY, 9, 16, "Practice B"), 11)
+        self.assertEqual(snapshot.allowed_end(DAY, 11.5, 16, "Practice B"), 15)
+        self.assertEqual(snapshot.allowed_end(DAY, 8.5, 10, "Practice B"), 8.5)
+        with tempo.coordination_run(now=NOW):
+            for start, end, room in (("08:30", "10:00", "Practice B"),
+                    ("10:30", "11:45", "Practice B"), ("14:30", "15:30", "Practice B"),
+                    ("13:00", "14:00", "Practice A")):
+                with self.subTest(start=start, end=end, room=room), self.assertRaises(BookingPreferencesChanged), \
+                        booking_save_boundary(day=DAY, start=start, end=end, room=room):
+                    self.fail("Alternatives cannot bypass complete-interval or room checks")
+
+    def test_same_day_opportunity_advances_with_free_horizon_without_bypassing_quota(self):
+        today = NOW.date()
+        self.publish(document(dates=[str(today)], busy=[], windows=[], protected_event_ids=[],
+            opportunity_windows=[dict(date=str(today), start="12:00", end="16:00", rooms=[])]))
+        with tempo.coordination_run(now=NOW), mock.patch.multiple(booker,
+                FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True):
+            tracker = booker.BookingTracker()
+            tracker.live_quota_minutes = 0
+            tracker.quota_observed_hours = 0
+            clock = NOW.replace(tzinfo=None)
+            self.assertFalse(tracker.can_book("Practice A", today, 12.5, 30,
+                                             now=clock - timedelta(seconds=1))[0])
+            self.assertTrue(tracker.can_book("Practice A", today, 12.5, 30, now=clock)[0])
+            self.assertFalse(tracker.can_book("Practice A", today, 12.5, 45, now=clock)[0])
+            self.assertTrue(tracker.can_book("Practice A", today, 12.5, 45,
+                                            now=clock + timedelta(minutes=15))[0])
+            self.assertFalse(tracker.can_book("Practice A", today, 15.5, 60,
+                                             now=clock + timedelta(hours=4))[0])
+
+    def test_fresh_room_gaps_can_produce_a_ready_plan_even_without_selected_windows(self):
+        today = NOW.date()
+        self.publish(document(dates=[str(today)], busy=[
+            dict(date=str(today), start="11:00", end="12:00")], windows=[],
+            opportunity_windows=[dict(date=str(today), start="09:00", end="18:00", rooms=[])]))
+        with tempo.coordination_run(now=NOW), mock.patch.multiple(booker,
+                FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True,
+                PRIORITY_ROOMS=["Practice A"], ALLOW_FRAGMENTED_SESSIONS=True), \
+                mock.patch.object(booker, "room_horizon_minutes", return_value=7200):
+            tracker = booker.BookingTracker()
+            tracker.live_quota_minutes = 0
+            tracker.quota_observed_hours = 0
+            planning = booker.DailyPlanningPreferences()
+            gaps = [{"room": "Practice A", "slots": [{"startHour": 9, "endHour": 12}]}]
+            opportunities = booker.build_day_booking_opportunities(gaps, today, tracker,
+                {"enabled": False}, planning, now=NOW.replace(tzinfo=None),
+                remaining_daily_hours=2, free_horizon_only=True, include_free_horizon_intent=True)
+            plan = booker.build_display_day_plan(today, opportunities, tracker, planning,
+                now=NOW.replace(tzinfo=None), target_minutes=120, free_horizon_only=True)
+        self.assertIsNotNone(plan.primary)
+        self.assertEqual((plan.primary.start_time, plan.primary.end_time), ("09:00", "11:00"))
+        self.assertEqual(plan.primary.state, "ready")
+        self.assertTrue(all(item.end_minutes <= 11 * 60 for item in opportunities))
+
+    def test_opportunities_never_add_hours_to_the_saved_practice_goal(self):
+        self.publish(document(windows=[], busy=[], opportunity_windows=[
+            dict(date=str(DAY), start="00:00", end="24:00", rooms=[])]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        plan = booker.PracticePlan(enabled=True, default_hours=3)
+        self.assertEqual(snapshot.practice_plan_overlay(plan, {}).target_for(DAY), 3)
+        self.assertEqual(snapshot.practice_plan_overlay(plan, {str(DAY): [(9, 10, "Practice A")]}).target_for(DAY), 3)
+        self.assertIsNone(plan.date_overrides)
+        disabled = booker.PracticePlan(enabled=False, default_hours=3)
+        self.assertIs(snapshot.practice_plan_overlay(disabled, {}), disabled)
+
+    def test_opportunity_validation_is_bounded_and_old_documents_unchanged(self):
+        self.assertNotIn("opportunity_windows", tempo.validate_snapshot(document()))
+        valid = dict(date=str(DAY), start="09:00", end="12:00", rooms=[])
+        for alternative in (None, "all day", [valid] * 501,
+                [{**valid, "date": "2026-09-30"}], [{**valid, "start": "12:00"}],
+                [{**valid, "rooms": "Practice A"}], [{**valid, "rooms": [None]}]):
+            with self.subTest(alternative=alternative), self.assertRaises(tempo.CoordinationError):
+                tempo.validate_snapshot(document(opportunity_windows=alternative))
+
+    def test_opportunity_revision_and_preferences_change_still_prevent_prepared_save(self):
+        value = document(windows=[], opportunity_windows=[
+            dict(date=str(DAY), start="13:00", end="15:00", rooms=[])])
+        atomic_write_json(self.settings, {"practice_plan": {"default_hours": 3}})
+        self.publish(value)
+        with booking_preference_run(self.settings, {"practice_plan": {"default_hours": 3}}):
+            atomic_write_json(self.settings, {"practice_plan": {"default_hours": 2}})
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                    day=DAY, start="13:00", end="14:00", room="Practice B"):
+                self.fail("A changed goal must invalidate an already prepared form")
+        with tempo.coordination_run(now=NOW):
+            self.publish({**value, "revision": 2, "opportunity_windows": []})
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                    day=DAY, start="13:00", end="14:00", room="Practice B"):
+                self.fail("A changed alternative must invalidate an already prepared form")
+
+    def test_opportunities_do_not_bypass_stale_scope_or_protected_reservations(self):
+        self.publish(document(windows=[], opportunity_windows=[
+            dict(date=str(DAY), start="09:00", end="18:00", rooms=[])]))
+        with tempo.coordination_run(now=NOW):
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                    day=DAY, start="13:00", end="14:00", room="Practice A", event_ids=[42]):
+                self.fail("Protected reservations stay fixed")
+            self.path.write_text("{broken", encoding="utf-8")
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                    day=DAY, start="13:00", end="14:00", room="Practice A"):
+                self.fail("Corrupt snapshots cannot fall back to spare time")
+        snapshot = tempo.read_snapshot(now=NOW)
+        self.assertTrue(snapshot.problem)
+        self.assertEqual(snapshot.blocked_ranges(DAY), [(0, 24)])
+        # Repair only this synthetic publication before exercising real expiry.
+        self.publish(document(windows=[], opportunity_windows=[
+            dict(date=str(DAY), start="09:00", end="18:00", rooms=[])]))
+        expired = tempo.read_snapshot(now=NOW + timedelta(days=2))
+        self.assertIn("expired", expired.planning_blocker(DAY))
+        self.assertFalse(expired.permits(DAY, 13, 14, "Practice A"))
+
+    def test_released_opportunities_restore_the_same_standalone_behavior(self):
+        self.publish(document(opportunity_windows=[
+            dict(date=str(DAY), start="13:00", end="15:00", rooms=[])]))
+        self.publish(document(revision=2, enabled=False, dates=[], busy=[], windows=[],
+                              opportunity_windows=[], protected_event_ids=[]))
+        with tempo.coordination_run(now=NOW):
+            snapshot = tempo.current_snapshot()
+            self.assertFalse(snapshot.enabled)
+            self.assertTrue(snapshot.permits(DAY, 8, 10, "Practice B"))
+            self.assertEqual(snapshot.blocked_ranges(DAY), [])
+            with booking_save_boundary(day=DAY, start="08:00", end="10:00", room="Practice B"):
+                pass
+
+    def test_alternative_booking_does_not_double_the_target_on_the_next_run(self):
+        self.publish(document(busy=[], windows=[
+            dict(date=str(DAY), start="16:00", end="18:00", rooms=["Practice A"])],
+            opportunity_windows=[dict(date=str(DAY), start="09:00", end="16:00", rooms=[])],
+            practice_targets=[dict(date=str(DAY), minutes=120)]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        saved = booker.PracticePlan(enabled=True, default_hours=2)
+        before = snapshot.practice_plan_overlay(saved, {})
+        after = snapshot.practice_plan_overlay(saved, {str(DAY): [(10, 12, "Practice B")]})
+        self.assertEqual((before.target_for(DAY), after.target_for(DAY)), (2, 2))
+        self.assertIsNone(saved.date_overrides)
+        # More demand from a named task can exceed the saved default without
+        # subsequent confirmed prefixes continually increasing the total.
+        self.publish({**snapshot.document, "revision": 2,
+                      "practice_targets": [dict(date=str(DAY), minutes=240)]})
+        snapshot = tempo.read_snapshot(now=NOW)
+        for reservations in ({}, {str(DAY): [(10, 12, "Practice B")]},
+                             {str(DAY): [(10, 12, "Practice B"), (16, 18, "Practice A")]}):
+            self.assertEqual(snapshot.practice_plan_overlay(saved, reservations).target_for(DAY), 4)
+
+    def test_explicit_targets_keep_goal_off_higher_saved_goal_and_legacy_days(self):
+        self.publish(document(practice_targets=[dict(date=str(DAY), minutes=0)]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        saved = booker.PracticePlan(enabled=True, default_hours=6)
+        self.assertEqual(snapshot.practice_plan_overlay(saved, {}).target_for(DAY), 6)
+        disabled = booker.PracticePlan(enabled=False, default_hours=6)
+        self.assertIs(snapshot.practice_plan_overlay(disabled, {}), disabled)
+        # Missing targets retain the exact older contract for older publishers.
+        self.publish(document(revision=2, practice_targets=[]))
+        low_goal = booker.PracticePlan(enabled=True, default_hours=2)
+        self.assertEqual(tempo.read_snapshot(now=NOW).practice_plan_overlay(low_goal, {}).target_for(DAY), 3)
+
+    def test_explicit_targets_validate_scope_unique_dates_integer_minutes_and_bound(self):
+        self.assertNotIn("practice_targets", tempo.validate_snapshot(document()))
+        valid = dict(date=str(DAY), minutes=120)
+        for targets in (None, {str(DAY): 120}, [valid, valid], [valid] * 36,
+                [{**valid, "date": "2026-09-30"}], [{**valid, "minutes": True}],
+                [{**valid, "minutes": -1}], [{**valid, "minutes": 1441}],
+                [{**valid, "minutes": 120.5}], [{**valid, "minutes": float('inf')}],
+                [{**valid, "minutes": "120"}], [None]):
+            with self.subTest(targets=targets), self.assertRaises(tempo.CoordinationError):
+                tempo.validate_snapshot(document(practice_targets=targets))
+
     def test_noop_retry_and_compare_and_swap(self):
         self.assertEqual(self.publish(expected_revision=0)["revision"], 1)
         self.assertTrue(self.publish(expected_revision=0)["unchanged"])

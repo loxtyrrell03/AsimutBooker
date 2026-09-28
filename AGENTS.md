@@ -1,3 +1,39 @@
+## 2026-09-28 Tempo planning preserves rolling booking opportunities
+
+- The owner explicitly requested joint planning On again, with Tempo as the
+  practice control centre, while retaining Booker's existing automatic worker
+  and rolling free-horizon booking. This supersedes the earlier same-day request
+  for independent scheduling below. Enable through Tempo's revisioned operation;
+  never bypass the accepted sidecar or change the existing Windows task.
+- The optional version-1 `opportunity_windows` field uses the selected-window
+  shape (`date`, `start`, `end`, `rooms`). It authorizes spare time in the accepted
+  Tempo schedule independently of whether Tempo has observed a fresh room grid
+  or selected a practice session for that date. Empty rooms means any otherwise
+  eligible room under Booker's unchanged live policy and saved preferences.
+  Tempo must remove task, appointment, reservation and manually locked time.
+- Booker also cuts opportunities around every selected session, regardless of
+  room, so broader alternatives cannot bypass a named task's room choice or
+  combine adjacent task sessions. Busy intervals, manual protections, quota,
+  exact free-horizon endpoints, protected reservations and final Save checks
+  continue to apply. Alternatives do not consume quota or add practice demand.
+- Optional `practice_targets` is a unique scoped list of `{date, minutes}` with
+  integer minutes in 0..1440. For those dates the run-local target is the larger
+  of the saved goal and that accepted total; it does not add new alternative
+  reservations to old selected suggestions again. Higher named-task demand can
+  still exceed a daily default. Tempo preserves accepted targets during routine
+  maintenance and recomputes them only with a fresh joint plan. Saved disabled
+  planning/dates and automatic Off remain authoritative.
+- Older documents without these fields keep their previous canonical form and
+  behavior. Expired, missing or corrupt accepted constraints still pause the
+  affected dates with an explanation; timely renewal is Tempo's responsibility.
+  Explicit release restores standalone behavior. No second executor was added.
+- All 325 focused regressions, including 40 coordination checks, pass and verify ready
+  same-day plans without selected windows, advancing free-window edges, complete
+  extensions, room/task protection, no duplicate target demand, preference/CAS
+  changes, stale state and release. The two legacy mock tracker fixtures now
+  explicitly supply a disabled coordination snapshot. Tests isolate live files;
+  this source milestone changed no preferences, reservations, tasks or services.
+
 ## 2026-09-28 phone My Week uses one chronological list
 
 - Phone My Week interleaves selected planned sessions, reservations and college
@@ -49,13 +85,14 @@
   create-only; a room-gap refusal is not authority to bypass site rules or to
   claim an unavailable extension was booked.
 
-## 2026-09-28 owner restores independent Booker scheduling
+## 2026-09-28 owner restores independent Booker scheduling (later superseded)
 
-- The owner requires Booker to operate as before Tempo integration. Joint
+- At this earlier milestone the owner required independent scheduling. Joint
   practice coordination is explicitly Off, released through Tempo's existing
   revision-checked settings operation. Do not re-enable Tempo's control of
   booking windows as part of a repair, refresh, deployment or ordinary replan;
-  a new explicit owner request is required. Read-only schedule sharing remains.
+  a new explicit owner request is required. The subsequent request above now
+  authorizes joint planning again. Read-only schedule sharing remains.
 - The disabled coordination document and accepted sidecar are retained. Never
   delete or rewrite them to bypass active constraints. No Booker preferences,
   reservations, manual protections, Windows tasks or service routes were changed
@@ -179,8 +216,9 @@
   date scope (at most 35 dates), at most 24-hour validity, ordinary-task busy
   intervals, selected practice windows with exact room choices, and protected
   confirmed event IDs. Empty room choices mean any otherwise eligible room.
-  An accepted interval must fit a single practice window, including the whole
-  edited reservation when extending. Other booking policies still apply.
+  An accepted interval must fit a single selected or opportunity window,
+  including the whole edited reservation when extending. Other booking policies
+  still apply.
 - Publish with the expected previous revision. Exact retries are idempotent;
   replacement uses the same interprocess lock as the final Save boundary.
   First activation (and re-enabling) additionally acquires the existing runtime

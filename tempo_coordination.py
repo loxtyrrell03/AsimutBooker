@@ -118,7 +118,11 @@ def validate_snapshot(raw):
         raise CoordinationError("An enabled Tempo plan needs an explicit date scope")
     result = dict(version=1, instance_id=instance, revision=revision, enabled=raw["enabled"],
                   generated_at=generated.isoformat(), valid_until=until.isoformat(), dates=sorted(dates))
-    for kind, limit in (("busy", 2000), ("windows", 500)):
+    for kind, limit in (("busy", 2000), ("windows", 500), ("opportunity_windows", 500)):
+        # Keep the canonical form of previously accepted documents unchanged.
+        # Missing alternatives retain the original selected-window-only policy.
+        if kind == "opportunity_windows" and kind not in raw:
+            continue
         values = raw.get(kind, [])
         if not isinstance(values, list) or len(values) > limit:
             raise CoordinationError(f"Tempo {kind} are invalid")
@@ -131,7 +135,7 @@ def validate_snapshot(raw):
             if day not in dates or start >= end:
                 raise CoordinationError(f"Tempo {kind} entry lies outside its date scope")
             entry = dict(date=day, start=item["start"], end=item["end"])
-            if kind == "windows":
+            if kind in ("windows", "opportunity_windows"):
                 rooms = item.get("rooms", [])
                 if not isinstance(rooms, list) or len(rooms) > 100:
                     raise CoordinationError("Tempo room choices are invalid")
@@ -145,6 +149,20 @@ def validate_snapshot(raw):
     if not isinstance(ids, list) or len(ids) > 2000 or any(type(i) is not int or i <= 0 for i in ids):
         raise CoordinationError("Tempo protected reservations are invalid")
     result["protected_event_ids"] = sorted(set(ids))
+    if "practice_targets" in raw:
+        targets = raw["practice_targets"]
+        if not isinstance(targets, list) or len(targets) > 35:
+            raise CoordinationError("Tempo practice targets are invalid")
+        normalized, seen = [], set()
+        for item in targets:
+            if not isinstance(item, dict):
+                raise CoordinationError("Tempo practice target is invalid")
+            day, minutes = _date(item.get("date")), item.get("minutes")
+            if day not in dates or day in seen or type(minutes) is not int or not 0 <= minutes <= 1440:
+                raise CoordinationError("Tempo practice target is outside its scope or bounds")
+            normalized.append(dict(date=day, minutes=minutes))
+            seen.add(day)
+        result["practice_targets"] = sorted(normalized, key=lambda item: item["date"])
     return result
 
 
@@ -182,12 +200,35 @@ class Snapshot:
     def protected_ids(self):
         return set(self.document["protected_event_ids"]) if self.enabled else set()
 
+    def _allowed_ranges(self, day, room=None):
+        """Selected sessions plus explicit spare schedule time, in minutes.
+
+        Spare time is booking flexibility, not additional practice demand. Cut
+        it around every selected session so even an overlapping alternative
+        cannot bypass a named task's room or combine adjacent task sessions.
+        Booker still validates actual room availability and all booking rules.
+        """
+        key = _date(day)
+        selected = [w for w in self.document["windows"] if w["date"] == key]
+        result = [(_minutes(w["start"]), _minutes(w["end"], end=True))
+                  for w in selected if room is None or not w["rooms"] or room in w["rooms"]]
+        boundaries = [(_minutes(w["start"]), _minutes(w["end"], end=True)) for w in selected]
+        for window in self.document.get("opportunity_windows", ()):
+            if window["date"] != key or (room is not None and window["rooms"] and room not in window["rooms"]):
+                continue
+            segments = [(_minutes(window["start"]), _minutes(window["end"], end=True))]
+            for left, right in boundaries:
+                segments = [(a, b) for start, end in segments
+                            for a, b in ((start, min(end, left)), (max(start, right), end)) if a < b]
+            result.extend(segments)
+        return result
+
     def planning_blocker(self, day):
         if not self.scoped(day):
             return ""
         if self.problem:
             return self.problem
-        if not any(window["date"] == _date(day) for window in self.document["windows"]):
+        if not self._allowed_ranges(day):
             return "Tempo has no accepted practice window for this date; replan in Tempo to resume automatic booking"
         return ""
 
@@ -198,9 +239,7 @@ class Snapshot:
             return []
         if self.problem:
             return [(0.0, 24.0)]
-        windows = sorted((_minutes(w["start"]), _minutes(w["end"], end=True))
-            for w in self.document["windows"] if w["date"] == key
-            and (room is None or not w["rooms"] or room in w["rooms"]))
+        windows = sorted(self._allowed_ranges(key, room))
         blocked, edge = [], 0
         for start, end in windows:
             if edge < start:
@@ -227,10 +266,8 @@ class Snapshot:
             return True
         # An interval cannot span two adjacent sessions with different room/task
         # ownership merely because their union contains no free gap.
-        return any(w["date"] == _date(day) and _minutes(w["start"]) / 60 <= start
-                   and end <= _minutes(w["end"], end=True) / 60
-                   and (room is None or not w["rooms"] or room in w["rooms"])
-                   for w in self.document["windows"])
+        return any(left / 60 <= start < end <= right / 60
+                   for left, right in self._allowed_ranges(day, room))
 
     def allowed_end(self, day, start, desired_end, room):
         """Cap a contiguous extension against its whole accepted session."""
@@ -239,11 +276,10 @@ class Snapshot:
         if self.problem:
             return start
         ends = [start]
-        for window in self.document["windows"]:
-            if (window["date"] != _date(day) or _minutes(window["start"]) / 60 > start
-                    or (window["rooms"] and room not in window["rooms"])):
+        for left, right in self._allowed_ranges(day, room):
+            if left / 60 > start:
                 continue
-            end = min(desired_end, _minutes(window["end"], end=True) / 60)
+            end = min(desired_end, right / 60)
             for busy in self.document["busy"]:
                 if busy["date"] == _date(day):
                     a, b = _minutes(busy["start"]) / 60, _minutes(busy["end"], end=True) / 60
@@ -262,10 +298,8 @@ class Snapshot:
             for slot in room.get("slots", ()):
                 # Preserve each task window as a separate gap; merging adjacent
                 # windows could propose one reservation spanning two tasks.
-                segments = [(max(slot["startHour"], _minutes(w["start"]) / 60),
-                             min(slot["endHour"], _minutes(w["end"], end=True) / 60))
-                    for w in self.document["windows"] if w["date"] == _date(day)
-                    and (not w["rooms"] or room.get("room") in w["rooms"])]
+                segments = [(max(slot["startHour"], left / 60), min(slot["endHour"], right / 60))
+                    for left, right in self._allowed_ranges(day, room.get("room"))]
                 segments = [(a, b) for a, b in segments if a < b]
                 for a, b in self.blocked_ranges(day, room.get("room")):
                     clipped = []
@@ -293,7 +327,14 @@ class Snapshot:
         if not self.enabled or self.problem or not plan.enabled:
             return plan
         overrides = dict(plan.date_overrides or {})
+        targets = {item["date"]: item["minutes"] for item in self.document.get("practice_targets", ())}
         for day in self.document["dates"]:
+            if day in targets:
+                # A booking made in alternative spare time fulfils the same
+                # target. Do not add it to an older selected suggestion again
+                # when the next recurring pass starts before Tempo replans.
+                overrides[day] = max(plan.target_for(date.fromisoformat(day)) or 0, targets[day] / 60)
+                continue
             intervals = [(_minutes(w["start"]), _minutes(w["end"], end=True))
                          for w in self.document["windows"] if w["date"] == day]
             intervals.extend((round(a * 60), round(b * 60))
