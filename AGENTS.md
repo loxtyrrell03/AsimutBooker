@@ -42,6 +42,14 @@
   all six reproduce against pre-fill `book_week.py` from `72dd432^`. Focused
   feature checks pass. Offline suites must isolate Tempo snapshot/runtime paths
   with temporary files when the owner has an active coordination plan.
+- Activated source `57b3ab2` and phone build `20260928-fill-range` at the
+  unchanged private origin. Reloaded only the idle phone task under assistant,
+  runtime and preference-dispatch ownership; protected owner data, sessions,
+  task definitions and Serve routes were preserved. Exact HTTPS assets,
+  authenticated session/preferences, connected Chromium/WebKit 320/390px
+  My Week/Today -> Fill -> Cancel checks and the independent deployment
+  verifier pass. Existing phone pages need reloading and PC windows reopening;
+  physical-phone verification is not claimed. No test reservation was created.
 
 ## 2026-09-28 optional Tempo task and practice coordination
 
