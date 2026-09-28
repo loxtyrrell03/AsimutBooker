@@ -5,10 +5,12 @@ import sys
 import types
 import unittest
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 import book_week as b
+from tempo_coordination import Snapshot
 
 
 class StopAfterPriority(Exception):
@@ -26,6 +28,9 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.dict(sys.modules, progressive_runtime=self.module))
         self.args = b.build_argument_parser().parse_args(["--headless"])
         self.tracker = mock.Mock(agenda_events=[], agenda_active_event_ids=[], bookings=[], peak_hours_by_day={})
+        # This fixture exercises standalone runner wiring, not a Mock-generated
+        # coordination overlay that replaces the real PracticePlan.
+        self.tracker.tempo_coordination = Snapshot(None, Path('unused-coordination.json'))
         self.tracker.is_quota_full.return_value = False
         self.tracker.get_total_booking_hours.return_value = 28.0
         self.progressive.side_effect = lambda *args: (args[6], args[5])
@@ -204,6 +209,24 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         advance.assert_called_once()
         self.assertTrue(advance.call_args.kwargs['read_only'])
 
+    def test_successful_final_upgrade_republishes_plan_from_updated_agenda(self):
+        for quota_full in (True, False):
+            with self.subTest(quota_full=quota_full):
+                advance = self.prepare_full_quota_run()
+                self.tracker.is_quota_full.return_value = quota_full
+                updated = mock.Mock(agenda_events=[{'eventId':42,'isReservation':True,'room':'Better'}])
+                def upgrade(*args):
+                    if args[4].only_date is None:
+                        # A verified upgrade invalidates the published forecast.
+                        return args[6]+1, updated
+                    return args[6], args[5]
+                self.mocks['process_room_upgrades'].side_effect = upgrade
+                self.assertEqual(self.new_rule_run(), 0)
+                self.assertEqual(advance.call_count, 2)
+                self.assertTrue(advance.call_args.kwargs['read_only'])
+                self.assertIs(advance.call_args.args[6], updated)
+                self.assertEqual(advance.call_args.args[7], 1)
+
     def test_full_quota_fast_pass_keeps_daily_scope_without_weekly_scan(self):
         advance = self.prepare_full_quota_run()
         self.args.scheduled = True
@@ -214,6 +237,29 @@ class ProgressiveRunnerHookTests(unittest.TestCase):
         self.assertEqual(self.mocks['process_room_upgrades'].call_count, 1)
         self.assertEqual(self.mocks['process_room_upgrades'].call_args.args[4].only_date,
                          str(date.today()))
+
+    def test_post_allocation_booking_or_transfer_also_republishes_plan(self):
+        for changed_pass in ('free', 'progressive'):
+            with self.subTest(changed_pass=changed_pass):
+                advance = self.prepare_full_quota_run()
+                self.tracker.is_quota_full.return_value = False
+                updated = mock.Mock(agenda_events=[])
+                def free_pass(*args, **kwargs):
+                    if changed_pass == 'free' and kwargs.get('after_horizon'):
+                        return args[6] + 1, updated
+                    return args[6], args[5]
+                def progressive_pass(*args):
+                    if changed_pass == 'progressive':
+                        return args[6] + 1, updated
+                    return args[6], args[5]
+                self.progressive.side_effect = progressive_pass
+                self.mocks['process_room_upgrades'].side_effect = lambda *a: (a[6], a[5])
+                with mock.patch('short_notice_bookings.run_short_notice_pass', side_effect=free_pass):
+                    self.assertEqual(self.new_rule_run(), 0)
+                self.assertEqual(advance.call_count, 2)
+                self.assertTrue(advance.call_args.kwargs['read_only'])
+                self.assertIs(advance.call_args.args[6], updated)
+                self.assertEqual(advance.call_args.args[7], 1)
 
     def test_recovered_quota_refusal_rebuilds_agenda_and_retains_action_budget(self):
         updated = mock.Mock(agenda_events=[{'eventId': 123, 'isReservation': True}])

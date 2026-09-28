@@ -11058,6 +11058,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         if advance_allocation_enabled(settings, practice_plan, args) and not tracker.is_quota_full():
             total_booked, tracker, _ = run_advance_allocation(sys.modules[__name__], page,
                 policy, settings, practice_plan, args, tracker, total_booked, booking_details)
+            actions_at_publication = total_booked
             total_booked, tracker = run_short_notice_pass(sys.modules[__name__], page,
                 settings, practice_plan, args, tracker, total_booked, booking_details, after_horizon=True)
             if defer_progressive:
@@ -11068,6 +11069,11 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                     raise BookingVerificationError('Progressive transfer needs reconciliation before other upgrades')
             total_booked, tracker = process_room_upgrades(sys.modules[__name__], page,
                 settings, practice_plan, args, tracker, total_booked, booking_details)
+            if total_booked > actions_at_publication:
+                # Verified bookings and room changes invalidate the forecast. Use the
+                # updated agenda to leave both My Week clients with a new plan.
+                run_advance_allocation(sys.modules[__name__], page, policy, settings,
+                    practice_plan, args, tracker, total_booked, booking_details, read_only=True)
             save_history(total_booked, events_detected, booking_details, notify=bool(booking_details))
             persist_storage_state(context)
             context.close()
@@ -11093,8 +11099,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 run_advance_allocation(sys.modules[__name__], page, policy, settings,
                     practice_plan, args, tracker, total_booked, booking_details, read_only=True)
 
+            before_upgrades = total_booked
             total_booked, tracker = process_room_upgrades(
                 sys.modules[__name__], page, settings, practice_plan, args, tracker, total_booked, booking_details)
+            if total_booked > before_upgrades and advance_allocation_enabled(settings, practice_plan, args):
+                run_advance_allocation(sys.modules[__name__], page, policy, settings,
+                    practice_plan, args, tracker, total_booked, booking_details, read_only=True)
             save_history(
                 total_booked,
                 events_detected,

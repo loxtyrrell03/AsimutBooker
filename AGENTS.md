@@ -10,7 +10,7 @@
   reservations, manual protections, Windows tasks or service routes were changed
   by this release. The enabled recurring worker again uses Booker's own target,
   timing, grand-piano ranking, horizon, extension and upgrade policies.
-- All 237 focused planner/quota/horizon/extension/upgrade/manual-protection/
+- All 254 focused planner/quota/horizon/extension/upgrade/manual-protection/
   scheduler checks pass. A new regression compares released mode with standalone
   plan fingerprints, conflicts, targets, availability, extension limits and Save
   boundaries, including expired/missing/corrupt live Tempo documents after a
@@ -18,6 +18,17 @@
 - Private evidence: `artifacts/booker-standalone-20260928/`. The source fixes and
   explicit Fill/Refresh/Save controls remain installed; this is a scoped release
   of external scheduling authority, not a rollback of unrelated user work.
+- Live verification completed an ordinary worker run, including a verified
+  room upgrade, with no pending receipt. A read-only refresh published eight
+  current dates, and the connected private phone view shows future sessions.
+  This is PC-browser verification, not physical-phone proof.
+- Ordinary weekly runs republish the display plan from the updated tracker when
+  the final upgrade sweep changes a reservation. The non-full-quota branch also
+  catches later free-horizon bookings and progressive transfers. This prevents
+  a successful mutation from leaving the forecast cleared at normal completion.
+  Pre-upgrade publication remains so a definite quota refusal cannot starve the
+  refresh; fast/scoped runs keep their existing limits. Runner regressions cover
+  both quota branches, later mutation paths and unchanged/no-extra-scan paths.
 
 ## 2026-09-28 missed practice and exact-create confirmation repair
 
