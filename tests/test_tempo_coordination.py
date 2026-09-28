@@ -151,6 +151,40 @@ class TempoCoordinationTests(unittest.TestCase):
         self.assertTrue(snapshot.permits(DAY, 9, 10, "Anywhere"))
         self.assertEqual(self.settings.read_bytes(), before)
 
+    def test_released_integration_preserves_standalone_planning_and_save_paths(self):
+        baseline = booking_plan_fingerprint({}, config_path=self.settings)
+        self.publish()
+        self.publish(document(revision=2, enabled=False, dates=[], busy=[], windows=[], protected_event_ids=[]))
+        plan = booker.PracticePlan(enabled=True, default_hours=4)
+        gaps = [{'room':'Practice B','slots':[{'startHour':8,'endHour':20}]}]
+        for state in ('released', 'expired', 'missing', 'corrupt'):
+            with self.subTest(state=state):
+                if state == 'missing':
+                    self.path.unlink()
+                elif state == 'corrupt':
+                    self.path.write_text('{invalid')
+                now = NOW + timedelta(days=2) if state == 'expired' else NOW
+                with mock.patch.object(tempo, '_now', side_effect=lambda value=None: value or now), tempo.coordination_run(now=now):
+                    snapshot = tempo.current_snapshot()
+                    self.assertFalse(snapshot.enabled)
+                    self.assertEqual(snapshot.blocked_ranges(DAY), [])
+                    self.assertEqual(snapshot.protected_ids(), set())
+                    self.assertEqual(snapshot.planning_blocker(DAY), '')
+                    self.assertIs(snapshot.constrain_availability(gaps, DAY), gaps)
+                    self.assertIs(snapshot.practice_plan_overlay(plan, {}), plan)
+                    self.assertEqual(snapshot.allowed_end(DAY, 13, 15, 'Practice B'), 15)
+                    self.assertEqual(booking_plan_fingerprint({}, config_path=self.settings), baseline)
+                    tracker = booker.BookingTracker()
+                    self.assertFalse(tracker.overlaps_conflict(DAY, 8, 20))
+                    self.assertEqual(tracker.get_hours_for_day(DAY), 0)
+                    # Create/edit/upgrade boundaries no longer inherit old
+                    # room restrictions, busy tasks or protected event IDs.
+                    with booking_save_boundary(day=DAY, start='13:00', end='14:00', room='Practice B', event_ids=(42,)):
+                        pass
+                    # Normal agenda conflicts still remain authoritative.
+                    tracker.add_existing_event(DAY, 13, 14, is_reservation=True, room='Practice B')
+                    self.assertTrue(tracker.overlaps_conflict(DAY, 13, 14))
+
     def test_full_interval_and_exact_room_required(self):
         self.publish()
         snapshot = tempo.read_snapshot(now=NOW)

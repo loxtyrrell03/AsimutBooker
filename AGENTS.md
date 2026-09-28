@@ -1,9 +1,31 @@
+## 2026-09-28 owner restores independent Booker scheduling
+
+- The owner requires Booker to operate as before Tempo integration. Joint
+  practice coordination is explicitly Off, released through Tempo's existing
+  revision-checked settings operation. Do not re-enable Tempo's control of
+  booking windows as part of a repair, refresh, deployment or ordinary replan;
+  a new explicit owner request is required. Read-only schedule sharing remains.
+- The disabled coordination document and accepted sidecar are retained. Never
+  delete or rewrite them to bypass active constraints. No Booker preferences,
+  reservations, manual protections, Windows tasks or service routes were changed
+  by this release. The enabled recurring worker again uses Booker's own target,
+  timing, grand-piano ranking, horizon, extension and upgrade policies.
+- All 237 focused planner/quota/horizon/extension/upgrade/manual-protection/
+  scheduler checks pass. A new regression compares released mode with standalone
+  plan fingerprints, conflicts, targets, availability, extension limits and Save
+  boundaries, including expired/missing/corrupt live Tempo documents after a
+  verified release. Offline fixtures isolate both coordination and runtime paths.
+- Private evidence: `artifacts/booker-standalone-20260928/`. The source fixes and
+  explicit Fill/Refresh/Save controls remain installed; this is a scoped release
+  of external scheduling authority, not a rollback of unrelated user work.
+
 ## 2026-09-28 missed practice and exact-create confirmation repair
 
 - Tempo's daily-goal planner reused confirmed room time after already counting
   it toward the target, consuming its missing minutes without publishing new
   windows. The correction is in Tempo commit `ded1913` (247 synthetic checks).
-  Named tasks still reuse booked rooms. Do not disable coordination to repair it.
+  Named tasks still reuse booked rooms. The later owner-requested release above
+  supersedes that deployment's enabled coordination state.
 - Missing/expired Tempo practice windows now have an explicit explanation in
   My Week plans and the scheduled free-horizon log; they must not masquerade as
   room unavailability. Accepted dates and busy-task constraints remain enforced.
