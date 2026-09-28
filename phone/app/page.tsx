@@ -861,6 +861,12 @@ function ScheduleView({
             const day = booker.plan.days.find((item) => item.date === date);
             const sessions = day ? selectedPlanSessions(day) : [];
             const plannedMinutes = day ? selectedPlanMinutes(day) : 0;
+            const entries = [
+              ...events.map((event, index) => ({ kind: 'agenda' as const, item: event, index })),
+              ...sessions.map((candidate, index) => ({ kind: 'planned' as const, item: candidate, index })),
+            ].sort((a, b) => a.item.start_time.localeCompare(b.item.start_time)
+              || a.item.end_time.localeCompare(b.item.end_time)
+              || a.kind.localeCompare(b.kind));
             return (
               <section className={`day-section${booker.agenda.closed_dates?.includes(date) ? ' rooms-closed closed-day-surface' : ''}`} key={date}>
                 {booker.agenda.closed_dates?.includes(date) && <ClosedDayCross />}
@@ -868,58 +874,41 @@ function ScheduleView({
                   {date >= today && <div className="week-day-actions"><button type="button" className="quiet-link" aria-label={`Fill time range: ${dateLabel(date, true)}`} onClick={() => onFillDay(date)}>Fill time range</button><button type="button" className="quiet-link" aria-label={`Edit day: ${dateLabel(date, true)}`} onClick={() => onEditDay(date)}>Edit day</button></div>}
                 </div>
                 {booker.agenda.closed_dates?.includes(date) && <p className="closure-label">Practice rooms closed</p>}
-                {events.map((event, index) => (
-                  <article className="agenda-card" key={`${event.start_time}-${event.room}-${index}`}>
+                {day && (
+                  <div className="plan-date">
+                    <span>
+                      {Math.round(day.existing_minutes / 60 * 10) / 10}h booked ·{' '}
+                      {Math.round(day.target_minutes / 60 * 10) / 10}h {booker.plan.stale ? 'previous target' : 'target'}
+                      {plannedMinutes > 0
+                        ? ` · ${Math.round(plannedMinutes / 60 * 10) / 10}h across ${sessions.length} planned ${sessions.length === 1 ? 'session' : 'sessions'}`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+                {entries.map((entry) => (
+                  <article className={`agenda-card${entry.kind === 'planned' ? ' potential-card' : ''}`} key={`${entry.kind}-${entry.item.start_time}-${entry.item.room}-${entry.index}`}>
                     <div className="event-time">
-                      <strong>{event.start_time}</strong>
-                      <span>{event.end_time}</span>
+                      <strong>{entry.item.start_time}</strong>
+                      <span>{entry.item.end_time}</span>
                     </div>
                     <div className="event-copy">
-                      <Badge variant={event.is_reservation ? 'default' : 'outline'}>
-                        {event.is_reservation ? 'Reservation' : 'College event'}
+                      <Badge variant={entry.kind === 'agenda' && entry.item.is_reservation ? 'default' : 'outline'}>
+                        {entry.kind === 'planned'
+                          ? `${booker.plan.stale ? 'Previous plan · ' : ''}Not booked yet`
+                          : entry.item.is_reservation ? 'Reservation' : 'College event'}
                       </Badge>
-                      <h4>{event.room}</h4>
-                      {!event.is_reservation && <p>{event.title}</p>}
-                      {event.is_reservation && (
-                        <button disabled={cancelling || !event.event_id} onClick={() => onCancelBooking(event)} type="button">
+                      <h4>{entry.item.room}</h4>
+                      {entry.kind === 'planned' ? (
+                        <small>{entry.item.reason || day?.reason}</small>
+                      ) : entry.item.is_reservation ? (
+                        <button disabled={cancelling || !entry.item.event_id} onClick={() => onCancelBooking(entry.item)} type="button">
                           Cancel booking
                         </button>
-                      )}
+                      ) : <p>{entry.item.title}</p>}
                     </div>
                   </article>
                 ))}
-                {day && (
-                  <article className="plan-day">
-                    <div className="plan-date">
-                      <span>
-                        {Math.round(day.existing_minutes / 60 * 10) / 10}h booked ·{' '}
-                        {Math.round(day.target_minutes / 60 * 10) / 10}h {booker.plan.stale ? 'previous target' : 'target'}
-                        {plannedMinutes > 0
-                          ? ` · ${Math.round(plannedMinutes / 60 * 10) / 10}h across ${sessions.length} planned ${sessions.length === 1 ? 'session' : 'sessions'}`
-                          : ''}
-                      </span>
-                    </div>
-                    {sessions.length ? (
-                      <div className="potential-list">
-                        {sessions.map((candidate, index) => (
-                          <div className="potential-card" key={`${candidate.room}-${candidate.start_time}-${candidate.end_time}`}>
-                            <div><Clock3 /></div>
-                            <div>
-                              <Badge variant="outline">
-                                {booker.plan.stale ? 'Previous plan · ' : sessions.length > 1 ? `Session ${index + 1} · ` : ''}Not booked yet
-                              </Badge>
-                              <h4>{candidate.start_time}–{candidate.end_time}</h4>
-                              <p>{candidate.room}</p>
-                              <small>{candidate.reason || day.reason}</small>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="day-reason">{day.reason}</p>
-                    )}
-                  </article>
-                )}
+                {day && !sessions.length && <p className="day-reason">{day.reason}</p>}
               </section>
             );
           })}

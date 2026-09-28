@@ -64,6 +64,7 @@ def check(dist):
                 expect(page.locator('.cancellation-progress .spin-slow')).to_be_visible()
                 page.reload()
                 expect(page.get_by_text("Waiting for the current schedule check to finish…")).to_be_visible()
+                page.wait_for_function("typeof window.testStream?.listeners?.update === 'function'")
                 state["cursor"] += 1
                 state["cancellation"]["text"] = "Opening your booking…"
                 page.evaluate("event => window.testStream.listeners.update({data: JSON.stringify(event)})", {"kind": "cancellation.progress", "seq": state["cursor"], "stream_generation": "cancel-test", "cancellation": state["cancellation"]})

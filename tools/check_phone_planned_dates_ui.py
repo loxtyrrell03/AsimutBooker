@@ -20,6 +20,9 @@ def check(dist):
         paths = ContextPaths(**{key: Path(temporary) / key for key in inspect.signature(ContextPaths).parameters})
         booker = build_phone_snapshot(paths=paths)
         booker['agenda'].update(available=True, stale=False, closed_dates=['2026-09-09'], events=[{
+            'date': '2026-09-10', 'start_time': '17:00', 'end_time': '18:00',
+            'room': 'Later booked room', 'title': 'Reservation', 'is_reservation': True,
+        }, {
             'date': '2026-09-10', 'start_time': '12:00', 'end_time': '13:00',
             'room': 'Test practice room', 'title': 'Reservation', 'is_reservation': True,
         }])
@@ -28,7 +31,7 @@ def check(dist):
         booker['plan'].update(available=True, stale=True, days=[
             {'date': day, 'existing_minutes': 60 if day == '2026-09-10' else 0,
              'target_minutes': 180, 'reason': 'Example plan', 'primary': candidate,
-             'additional': [dict(candidate, start_time='18:00', end_time='19:00')]}
+             'additional': [dict(candidate, start_time='11:00', end_time='12:00')]}
             for day in ('2026-09-10', '2026-09-11')])
         state = {'busy': False, 'messages': [], 'event_cursor': 0, 'stream_generation': 'closures-test',
                  'booker': booker, 'unresolved_reserved_count': 0}
@@ -66,11 +69,11 @@ def check(dist):
             expect(closed.locator('h3')).to_have_css('text-decoration-line', 'line-through')
             expect(closed.locator('h3')).to_have_css('color', 'rgb(185, 28, 28)')
             expect(closed.locator('.closure-label')).to_have_text('Practice rooms closed')
-            expect(page.locator('.day-section:not(.rooms-closed) .agenda-card')).to_have_count(1)
+            expect(page.locator('.day-section:not(.rooms-closed) .agenda-card')).to_have_count(6)
             sections = page.locator('.day-section')
             expect(sections).to_have_count(3)
             booked_day = sections.nth(1)
-            expect(booked_day.locator('.agenda-card')).to_have_count(1)
+            expect(booked_day.locator('.agenda-card')).to_have_count(4)
             expect(booked_day.locator('.potential-card')).to_have_count(2)
             expect(sections.nth(2).locator('.potential-card')).to_have_count(2)
             expect(page.locator('.plan-section')).to_have_count(0)
@@ -78,7 +81,13 @@ def check(dist):
             for width in (320, 390, 844):
                 page.set_viewport_size({'width': width, 'height': 844})
                 booked_day.scroll_into_view_if_needed()
-                assert booked_day.locator('.agenda-card').bounding_box()['y'] < booked_day.locator('.potential-card').first.bounding_box()['y']
+                cards = booked_day.locator(':scope > .agenda-card')
+                expect(cards.locator('.event-time strong')).to_have_text(['11:00', '12:00', '16:00', '17:00'])
+                expect(cards.nth(0)).to_have_class('agenda-card potential-card')
+                expect(cards.nth(2)).to_have_class('agenda-card potential-card')
+                expect(booked_day.locator('.potential-card button')).to_have_count(0)
+                assert booked_day.locator('.plan-date').bounding_box()['y'] < cards.first.bounding_box()['y']
+                assert len({round(card.locator('.event-time').bounding_box()['x']) for card in cards.all()}) == 1
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 if width == 390:
                     page.screenshot(path=str(dist.parent / f'planned-date-{engine}.png'))

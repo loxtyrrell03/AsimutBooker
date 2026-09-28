@@ -1,3 +1,21 @@
+## 2026-09-28 phone My Week uses one chronological list
+
+- Phone My Week interleaves selected planned sessions, reservations and college
+  events by start/end time within each date. All use the same time/room columns;
+  planned entries retain a dashed card and Not booked yet (or Previous plan)
+  label, with no cancellation action. Daily totals sit above the shared list.
+  Desktop WeekPanel already interleaves these entries and is unchanged.
+- TypeScript/lint, the existing Chromium/WebKit planned-date checks at
+  320/390/844px and cancellation flows pass. The cancellation fixture now waits
+  for its mocked stream listener after reload before emitting an update.
+- Build `20260928-week-inline` is active at the unchanged private origin.
+  Static assets were published under all three ownership locks without a
+  restart. Owner state, phone process, tasks and Serve routes were preserved.
+  Exact HTTPS assets and connected Chromium/WebKit 320/390px views verify the
+  real 15:00 plan between the 14:30 and 18:30 reservations. No reservation or
+  preference writes; this is PC-browser proof. Reload phone pages for the fix.
+  Private evidence: `artifacts/week-inline-20260928/`.
+
 ## 2026-09-28 owner restores independent Booker scheduling
 
 - The owner requires Booker to operate as before Tempo integration. Joint
