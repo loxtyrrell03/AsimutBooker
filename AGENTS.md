@@ -36,7 +36,18 @@
   Regression checks include result retention across scans/reloads, legacy result
   recovery without replay and clear short-gap explanations. Run native Tk checks
   separately from threaded server tests to avoid Tk teardown on a worker thread.
-  Private evidence: `artifacts/fill-no-result-20260928/`; activation follows.
+  Private evidence: `artifacts/fill-no-result-20260928/`.
+- Activated source `aaeea35` and phone build `20260928-fill-results` under the
+  three existing ownership locks, reloading only the idle phone task. Protected
+  owner data, task definitions and Serve routes were unchanged. Exact HTTPS
+  assets/session, connected Chromium/WebKit 320/390px result/reload checks and
+  the independent deployment verifier pass; no physical-phone proof is claimed.
+- The normal scheduler subsequently filled a newly available half-hour. The
+  explicit phone retry correctly counted it as existing coverage and reported
+  the remaining hour. A separately scoped extension check found no continuous
+  free room interval and stopped before Save. No receipt is pending. Fill stays
+  create-only; a room-gap refusal is not authority to bypass site rules or to
+  claim an unavailable extension was booked.
 
 ## 2026-09-28 owner restores independent Booker scheduling
 
