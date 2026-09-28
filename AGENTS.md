@@ -1,3 +1,26 @@
+## 2026-09-28 saved booking prefixes keep extending as the free horizon opens
+
+- Optional `room_extensions` binds a protected `event_id`, `date`, `room`,
+  `start`, original `end`, and accepted `target_end`. The existing saved
+  extendable booking must still match, including its own target. Later passes
+  may grow the end monotonically from that prefix only as far as both targets
+  allow. This permission never changes room/start, creates or cancels a booking.
+- The ordinary extension path and capacity holds receive a temporary view of
+  only that same-room interval. Named selected work, hard busy time, actual
+  agenda conflicts, manual blackouts and pins remain protected. Replace only
+  the tracker's exact initial Tempo conflict prefix; never remove a matching
+  interval by value because a real appointment may have the same bounds.
+- The final Save checks the exact permission again under the existing revision
+  guard; live room policy, quota, both free-horizon endpoints and receipt recovery
+  are unchanged. Expired, revised or missing accepted permission stops the edit.
+  The durable protected ID remains present, and upgrade permission grants no
+  extension authority.
+- All 456 focused regressions pass, including 52 coordination checks. Synthetic
+  regression checks cover two successive free-horizon steps at an
+  exhausted advance quota, saved/accepted target caps, task conflicts, identity,
+  expiry and revision rejection. No live booking, setting, service or task was
+  changed to test this source milestone.
+
 ## 2026-09-28 fixed practice times retain automatic room improvements
 
 - Tempo can publish optional `room_upgrades` permissions without removing an ID

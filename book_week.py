@@ -4353,7 +4353,7 @@ def edit_reservation_end_time(page, booking, new_end_time, *, save_not_before=No
                     safe_goto(page, ASIMUT_AGENDA_URL)
                     return False
                 with booking_save_boundary(day=date_str, start=start_time, end=new_end_time,
-                        room=room, event_ids=[event_id]):
+                        room=room, event_ids=[event_id], room_extension_original=booking):
                     assert_automatic_change_allowed([parse_confirmed_event_id(event_url)], path=settings_file)
                     try:
                         receipt = record_pending_extension(
@@ -4527,10 +4527,8 @@ def try_extend_booking(
     target_parts = target_end.split(':')
     target_end_hour = int(target_parts[0]) + int(target_parts[1]) / 60
     coordination = tracker.tempo_coordination if tracker is not None else tempo_coordination_snapshot()
-    if booking.get("eventId") in coordination.protected_ids():
-        return False, None, "This confirmed reservation is protected by Tempo"
     if coordination.scoped(date_str):
-        target_end_hour = coordination.allowed_end(date_str, start_hour, target_end_hour, room)
+        target_end_hour = coordination.extension_end(booking, target_end_hour)
         if target_end_hour <= current_end_hour:
             return False, None, coordination.problem or "Tempo's practice window leaves no time to extend"
 
@@ -4760,7 +4758,7 @@ def try_extend_booking(
                             return False, None, f"Same-room gap limits extension to <15min"
 
         # Rule: extending must not cross any class or reservation conflict.
-        for conflict_start, conflict_end in tracker.conflict_ranges.get(date_str, []):
+        for conflict_start, conflict_end in coordination.extension_conflicts(booking, tracker.conflict_ranges.get(date_str, [])):
             is_own_booking = (
                 abs(conflict_start - start_hour) < 0.01
                 and conflict_end <= current_end_hour + 0.01
@@ -9967,8 +9965,6 @@ def calculate_extension_capacity_holds(
     )
     for booking in ordered:
         date_key = booking["date"]
-        if booking.get("eventId") in tracker.tempo_coordination.protected_ids():
-            continue
         if (
             booking["room"] not in PRIORITY_ROOMS
             or date_key not in live_dates
@@ -9981,8 +9977,7 @@ def calculate_extension_capacity_holds(
         start_time = clock_minutes(booking["startTime"])
         current_end = clock_minutes(booking["endTime"])
         target_end = clock_minutes(booking["target_end"])
-        target_end = int(round(tracker.tempo_coordination.allowed_end(
-            date_key, start_time / 60, target_end / 60, booking["room"]) * 60))
+        target_end = int(round(tracker.tempo_coordination.extension_end(booking, target_end / 60) * 60))
         start_hour = start_time / 60
         current_end_hour = current_end / 60
         if _soft_time_window(time_prefs) is not None:
@@ -10007,9 +10002,8 @@ def calculate_extension_capacity_holds(
 
         # An extension is contiguous. The first non-own conflict is therefore
         # a hard end, even when it appeared after the horizon create.
-        for conflict_start, conflict_end in tracker.conflict_ranges.get(
-            date_key, ()
-        ):
+        for conflict_start, conflict_end in tracker.tempo_coordination.extension_conflicts(
+            booking, tracker.conflict_ranges.get(date_key, ())):
             conflict_start_minutes = int(round(conflict_start * 60))
             conflict_end_minutes = int(round(conflict_end * 60))
             is_own_booking = (

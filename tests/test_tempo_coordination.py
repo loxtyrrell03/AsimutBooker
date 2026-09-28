@@ -394,6 +394,127 @@ class TempoCoordinationTests(unittest.TestCase):
             with self.subTest(permissions=permissions), self.assertRaises(tempo.CoordinationError):
                 tempo.validate_snapshot(document(room_upgrades=permissions))
 
+    def room_extension_document(self, **changes):
+        value = document(busy=[], windows=[], room_extensions=[
+            dict(event_id=42, date=str(DAY), start="13:00", end="13:30",
+                 room="Practice A", target_end="15:00")])
+        value.update(changes)
+        return value
+
+    def room_extension_original(self, **changes):
+        return dict(eventId=42, date=str(DAY), startTime="13:00", endTime="13:30",
+                    room="Practice A", target_end="15:00") | changes
+
+    def test_exact_prefix_permission_allows_successive_steps_but_not_general_booking(self):
+        self.publish(self.room_extension_document())
+        snapshot = tempo.read_snapshot(now=NOW)
+        original = self.room_extension_original()
+        self.assertFalse(snapshot.permits(DAY, 13, 15, "Practice A"))
+        self.assertEqual(snapshot.protected_ids(), {42})
+        self.assertEqual(snapshot.extension_end(original, 16), 15)
+        with tempo.coordination_run(now=NOW):
+            for old, new in (("13:30", "13:45"), ("13:45", "14:00"), ("14:00", "15:00")):
+                current = original | dict(endTime=old)
+                with booking_save_boundary(day=DAY, start="13:00", end=new, room="Practice A",
+                        event_ids=[42], room_extension_original=current):
+                    pass
+            for args in (dict(event_ids=[42]), dict(day=DAY, start="13:00", end="14:00", room="Practice A"),
+                         dict(day=DAY, start="13:00", end="14:00", room="Practice A", event_ids=[42])):
+                with self.subTest(args=args), self.assertRaises(BookingPreferencesChanged), booking_save_boundary(**args):
+                    self.fail("Extension authority cannot authorize create/cancel or an unspecified edit")
+
+    def test_prefix_permission_never_changes_start_room_date_or_saved_target(self):
+        self.publish(self.room_extension_document())
+        original = self.room_extension_original()
+        with tempo.coordination_run(now=NOW):
+            for change in (dict(start="12:45"), dict(end="15:15"), dict(end="13:30"),
+                           dict(room="Practice B"), dict(day=DAY + timedelta(days=1)), dict(event_ids=[43])):
+                args = dict(day=DAY, start="13:00", end="14:00", room="Practice A", event_ids=[42]) | change
+                with self.subTest(change=change), self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                        **args, room_extension_original=original):
+                    self.fail("Only growth of the exact original's end is authorized")
+            for change in (dict(endTime="13:15"), dict(startTime="12:45"), dict(room="Practice B"),
+                           dict(target_end="13:45")):
+                with self.subTest(change=change), self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                        day=DAY, start="13:00", end="14:00", room="Practice A", event_ids=[42],
+                        room_extension_original=original | change):
+                    self.fail("A changed original or shorter saved target must remain authoritative")
+
+    def test_prefix_view_replaces_only_installed_tempo_conflicts_and_keeps_actual_events(self):
+        self.publish(self.room_extension_document(busy=[dict(date=str(DAY), start="14:30", end="15:30")]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        original = self.room_extension_original()
+        base = snapshot.blocked_ranges(DAY)
+        actual = [(13, 13.5), (14, 14.25), (0, 24)]
+        adjusted = snapshot.extension_conflicts(original, [*base, *actual])
+        self.assertEqual(adjusted[-len(actual):], actual)
+        self.assertEqual(snapshot.extension_end(original, 16), 14.5)
+        self.assertFalse(snapshot.allows_room_extension(original, original | dict(endTime="15:00")))
+        self.assertEqual(snapshot.extension_conflicts(original, actual), actual)
+
+    def test_prefix_extension_survives_full_quota_as_each_free_horizon_step_opens(self):
+        today = NOW.date()
+        value = self.room_extension_document(dates=[str(today)])
+        value['room_extensions'][0]['date'] = str(today)
+        self.publish(value)
+        booking = self.room_extension_original(date=str(today), created_at=NOW.isoformat(),
+                    event_url='https://rwcmd.asimut.net/arrangement?eventId=42')
+        with tempo.coordination_run(now=NOW), mock.patch.multiple(booker,
+                FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True,
+                PRIORITY_ROOMS=['Practice A'], BOOKING_WINDOW_DATES=(today,)), \
+                mock.patch.object(booker, 'room_horizon_minutes', return_value=7200), \
+                mock.patch.object(booker, 'refresh_quota_balances'), \
+                mock.patch.object(booker, 'update_extendable_booking_end_time'), \
+                mock.patch.object(booker, 'edit_reservation_end_time', return_value=True) as edit:
+            for old, hour, minute, expected in (("13:30", 9, 0, "14:00"), ("14:00", 9, 15, "14:15")):
+                current = booking | dict(endTime=old)
+                tracker = booker.BookingTracker()
+                tracker.add_existing_event(today, 13, tempo._minutes(old) / 60, is_reservation=True, room='Practice A')
+                tracker.live_quota_minutes = 0
+                tracker.quota_observed_hours = tracker.get_total_booking_hours()
+                holds, _, held = booker.calculate_extension_capacity_holds([current], tracker,
+                    booker.PracticePlan(enabled=True, default_hours=3), set(), time_prefs={'enabled': False},
+                    now=NOW.replace(tzinfo=None, hour=hour, minute=minute))
+                self.assertEqual(holds[str(today)], 15 * 60 - tempo._minutes(old))
+                self.assertEqual(held[0]['target_end'], '15:00')
+                success, end, reason = booker.try_extend_booking(object(), current, tracker,
+                    remaining_daily_hours=2, time_prefs={'enabled': False},
+                    now=NOW.replace(tzinfo=None, hour=hour, minute=minute))
+                self.assertTrue(success, reason)
+                self.assertEqual(end, expected)
+            self.assertEqual(edit.call_count, 2)
+
+    def test_prefix_permission_validation_expiry_and_changed_revision_fail_closed(self):
+        original = self.room_extension_original()
+        valid = self.room_extension_document()['room_extensions'][0]
+        self.assertNotIn('room_extensions', tempo.validate_snapshot(document()))
+        for changes in (dict(event_id=True), dict(event_id=43), dict(date='2026-09-30'),
+                        dict(start='13:30'), dict(target_end='13:30'), dict(target_end='24:00'), dict(room='')):
+            with self.subTest(changes=changes), self.assertRaises(tempo.CoordinationError):
+                tempo.validate_snapshot(document(room_extensions=[valid | changes]))
+        for entries in (None, {}, [None], [valid, valid], [valid] * 2001):
+            with self.subTest(entries=entries), self.assertRaises(tempo.CoordinationError):
+                tempo.validate_snapshot(document(room_extensions=entries))
+        self.publish(self.room_extension_document())
+        with tempo.coordination_run(now=NOW):
+            self.publish(self.room_extension_document(revision=2, room_extensions=[]))
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(day=DAY,
+                    start='13:00', end='14:00', room='Practice A', event_ids=[42], room_extension_original=original):
+                self.fail('A prepared extension cannot outlive its accepted authority')
+        self.publish(self.room_extension_document(revision=3))
+        expired = tempo.read_snapshot(now=NOW + timedelta(days=2))
+        self.assertEqual(expired.extension_end(original, 15), 13.5)
+        self.assertFalse(expired.allows_room_extension(original, original | dict(endTime='14:00')))
+
+    def test_prefix_extension_cannot_cross_a_selected_named_session(self):
+        self.publish(self.room_extension_document(windows=[
+            dict(date=str(DAY), start='14:00', end='15:00', rooms=['Practice B'], task_id='lesson')]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        original = self.room_extension_original()
+        self.assertEqual(snapshot.extension_end(original, 15), 14)
+        self.assertTrue(snapshot.allows_room_extension(original, original | dict(endTime='14:00')))
+        self.assertFalse(snapshot.allows_room_extension(original, original | dict(endTime='14:15')))
+
     def test_noop_retry_and_compare_and_swap(self):
         self.assertEqual(self.publish(expected_revision=0)["revision"], 1)
         self.assertTrue(self.publish(expected_revision=0)["unchanged"])

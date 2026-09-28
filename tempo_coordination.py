@@ -189,6 +189,23 @@ def validate_snapshot(raw):
                                    rooms=sorted(set(_text(room, "room", 100) for room in rooms))))
             seen.add(event_id)
         result["room_upgrades"] = sorted(normalized, key=lambda item: item["event_id"])
+    if "room_extensions" in raw:
+        extensions = raw["room_extensions"]
+        if not isinstance(extensions, list) or len(extensions) > 2000:
+            raise CoordinationError("Tempo room extension permissions are invalid")
+        normalized, seen = [], set()
+        for item in extensions:
+            if not isinstance(item, dict):
+                raise CoordinationError("Tempo room extension permission is invalid")
+            event_id, day = item.get("event_id"), _date(item.get("date"))
+            start, end, target = (_minutes(item.get(key)) for key in ("start", "end", "target_end"))
+            if (type(event_id) is not int or event_id not in result["protected_event_ids"]
+                    or event_id in seen or day not in dates or not start < end < target):
+                raise CoordinationError("Tempo room extension permission is outside its identity or bounds")
+            normalized.append(dict(event_id=event_id, date=day, start=item["start"], end=item["end"],
+                                   target_end=item["target_end"], room=_text(item.get("room"), "room", 100)))
+            seen.add(event_id)
+        result["room_extensions"] = sorted(normalized, key=lambda item: item["event_id"])
     return result
 
 
@@ -265,6 +282,69 @@ class Snapshot:
             return False
         return not any(busy["date"] == day and start < _minutes(busy["end"], end=True)
                        and end > _minutes(busy["start"]) for busy in self.document["busy"])
+
+    def _room_extension_rule(self, booking):
+        if not self.enabled or self.problem:
+            return None
+        for rule in self.document.get("room_extensions", ()):
+            if (booking.get("eventId") == rule["event_id"] and booking.get("date") == rule["date"]
+                    and booking.get("room") == rule["room"] and booking.get("startTime") == rule["start"]):
+                current, saved = _minutes(booking.get("endTime")), _minutes(booking.get("target_end"))
+                if _minutes(rule["end"]) <= current < min(saved, _minutes(rule["target_end"])):
+                    return rule
+        return None
+
+    def room_extension_view(self, booking):
+        """Open only the saved same-room tail for extension planning, never create."""
+        rule = self._room_extension_rule(booking)
+        if rule is None:
+            return self
+        target = min(_minutes(rule['target_end']), _minutes(booking['target_end']))
+        current = _minutes(booking['endTime'])
+        for selected in self.document['windows']:
+            if (selected['date'] == rule['date'] and current < _minutes(selected['end'], end=True)
+                    and target > _minutes(selected['start'])):
+                target = min(target, max(current, _minutes(selected['start'])))
+        if target <= current:
+            return self
+        window = dict(date=rule['date'], start=rule['start'], end=f'{target//60:02}:{target%60:02}', rooms=[rule['room']])
+        return replace(self, document={**self.document,
+            'protected_event_ids': [i for i in self.document['protected_event_ids'] if i != rule['event_id']],
+            'windows': [*self.document['windows'], window]})
+
+    def extension_end(self, booking, desired_end):
+        view = self.room_extension_view(booking)
+        if booking.get('eventId') in view.protected_ids():
+            return _minutes(booking['endTime']) / 60
+        return view.allowed_end(booking['date'], _minutes(booking['startTime']) / 60,
+                                desired_end, booking['room'])
+
+    def extension_conflicts(self, booking, conflicts):
+        view = self.room_extension_view(booking)
+        if view is self:
+            return conflicts
+        installed = self.blocked_ranges(booking['date'])
+        # A tracker starts with this exact prefix, followed by actual agenda,
+        # manual-blackout and current-run conflicts. Replace only that prefix;
+        # never subtract by interval value, which could erase a real event too.
+        if list(conflicts[:len(installed)]) != installed:
+            return conflicts
+        return view.blocked_ranges(booking['date']) + list(conflicts[len(installed):])
+
+    def allows_room_extension(self, original, replacement):
+        day = replacement.get('date')
+        protected = original.get('eventId') in self.protected_ids()
+        if not self.scoped(day) and not protected:
+            return True
+        start, end = _minutes(replacement.get('startTime')), _minutes(replacement.get('endTime'))
+        if not protected:
+            return self.permits(day, start / 60, end / 60, replacement.get('room'))
+        rule = self._room_extension_rule(original)
+        if (rule is None or replacement.get('eventId') != rule['event_id'] or day != rule['date']
+                or replacement.get('startTime') != rule['start'] or replacement.get('room') != rule['room']
+                or not _minutes(original['endTime']) < end <= min(_minutes(rule['target_end']), _minutes(original['target_end']))):
+            return False
+        return end / 60 <= self.extension_end(original, end / 60)
 
     def _allowed_ranges(self, day, room=None):
         """Selected sessions plus explicit spare schedule time, in minutes.
@@ -529,7 +609,7 @@ def current_snapshot():
 
 @contextmanager
 def save_boundary(*, day=None, start=None, end=None, room=None, event_ids=(), automatic=True,
-                  room_upgrade_original=None):
+                  room_upgrade_original=None, room_extension_original=None):
     expected = _ACTIVE.get()
     path = expected.path if expected is not None else SNAPSHOT_PATH
     if expected is None and not Path(path).exists() and not _accepted_path(Path(path)).exists():
@@ -544,12 +624,17 @@ def save_boundary(*, day=None, start=None, end=None, room=None, event_ids=(), au
             and len(event_ids) == 1 and event_ids[0] == room_upgrade_original.get("eventId")
             and current.allows_room_upgrade(room_upgrade_original,
                 dict(eventId=event_ids[0], date=_date(day), startTime=start, endTime=end, room=room)))
-        if automatic and set(event_ids) & current.protected_ids() and not upgrade_ok:
+        extension_ok = bool(automatic and room_extension_original is not None and day is not None
+            and len(event_ids) == 1 and event_ids[0] == room_extension_original.get("eventId")
+            and current.allows_room_extension(room_extension_original,
+                dict(eventId=event_ids[0], date=_date(day), startTime=start, endTime=end, room=room)))
+        special_edit_ok = upgrade_ok or extension_ok
+        if automatic and set(event_ids) & current.protected_ids() and not special_edit_ok:
             raise CoordinationError("This confirmed reservation is protected by Tempo")
         if day is not None and current.scoped(day):
             if start is None or end is None or room is None:
                 raise CoordinationError("The complete booking interval is required by Tempo")
             start_hour, end_hour = _minutes(start) / 60, _minutes(end, end=True) / 60
-            if start_hour >= end_hour or (not upgrade_ok and not current.permits(day, start_hour, end_hour, room)):
+            if start_hour >= end_hour or (not special_edit_ok and not current.permits(day, start_hour, end_hour, room)):
                 raise CoordinationError(current.problem or "This booking no longer fits Tempo's accepted practice time")
         yield
