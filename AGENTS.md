@@ -18,6 +18,10 @@
   verified and pinned; no uncertain Save was replayed. Private evidence is in
   `artifacts/corus-missed-20260928/`. Scheduled/explicit workers load this source
   on their next run; no new scheduler, preference change or route is needed.
+- Advance-quota publication also preserves the explicit Tempo blocker instead
+  of overwriting it with a quota-wait message. All 105 combined focused checks
+  pass with temporary Tempo snapshot/runtime paths; live coordination must be
+  isolated for offline tests whose synthetic dates overlap the accepted scope.
 
 ## 2026-09-28 explicit time-range fill engine and design
 

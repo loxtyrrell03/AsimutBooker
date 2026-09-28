@@ -163,7 +163,8 @@ def publish(engine, days, allocations, context, policy, settings, tracker, *, no
             status, reason = 'complete', 'The daily practice target is already met'
         else:
             status = 'waiting'
-            reason = ('Waiting for released advance quota or an eligible last-minute session'
+            reason = tracker.tempo_coordination.planning_blocker(day.target_date) or (
+                      'Waiting for released advance quota or an eligible last-minute session'
                       if tracker.get_remaining_quota_hours() < engine.MINIMUM_BLOCK_MINUTES/60
                       else 'No additional block fits your advance-quota settings and availability')
         row = engine.DayPlan(date=day.target_date.isoformat(),

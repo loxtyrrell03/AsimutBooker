@@ -65,6 +65,14 @@ class TempoCoordinationTests(unittest.TestCase):
                 booker.DailyPlanningPreferences(), now=NOW.replace(tzinfo=None),
                 target_minutes=240, free_horizon_only=True)
         self.assertIn("no accepted practice window", plan.reason)
+        import advance_runtime
+        from advance_planner import AdvanceDay, AdvanceAllocation
+        day = AdvanceDay(DAY, 240, 0, 0, (), 60, 0, 0, (), 360)
+        allocation = AdvanceAllocation(DAY, ())
+        with tempo.coordination_run(self.path, now=NOW), mock.patch.object(booker, 'publish_booking_plan') as publish:
+            advance_runtime.publish(booker, [day], [allocation], {}, mock.Mock(), {},
+                booker.BookingTracker(), now=NOW.replace(tzinfo=None))
+        self.assertIn("no accepted practice window", publish.call_args.args[0][0].reason)
 
     def test_noop_retry_and_compare_and_swap(self):
         self.assertEqual(self.publish(expected_revision=0)["revision"], 1)
