@@ -3,7 +3,7 @@ import copy
 import json
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 
 import book_week as b
 import mutation_receipts as receipts
+import tempo_coordination as tempo
 from room_upgrades import Reservation, RoomUpgrade, RoomConsolidation
 from upgrade_validation import (upgrade_request_matches, upgrade_response_success,
                                 upgrade_save_acknowledgement_consistent, RoomPermissionRefusal)
@@ -164,6 +165,8 @@ class UpgradeEditorTests(unittest.TestCase):
         self.context.route("**/*", self.site)
         self.page = self.context.new_page()
         patches = [
+            mock.patch.object(tempo, "SNAPSHOT_PATH", self.path.with_name("coordination.json")),
+            mock.patch.object(tempo, "RUNTIME_LOCK_PATH", self.path.with_name("runtime.lock")),
             mock.patch.object(b, "settings_file", self.path.with_name("settings.json")),
             mock.patch.object(b, "ACTIVE_ROOM_POLICY", SimpleNamespace(all_room_location_ids={"Best": 1})),
             mock.patch.object(b, "LIVE_CATALOG_ROOM_NAMES", ("Fallback", "Best")),
@@ -470,6 +473,57 @@ class UpgradeEditorTests(unittest.TestCase):
         self.assertEqual(self.persisted, self.original)
         self.assertFalse(self.save_calls)
         self.assertFalse(self.path.exists())
+
+
+class TempoRoomUpgradeEditorTests(unittest.TestCase):
+    setUpClass = classmethod(UpgradeEditorTests.setUpClass.__func__)
+    tearDownClass = classmethod(UpgradeEditorTests.tearDownClass.__func__)
+    site = UpgradeEditorTests.site
+    run_edit = UpgradeEditorTests.run_edit
+
+    def setUp(self):
+        UpgradeEditorTests.setUp(self)
+        self.now = datetime(2026, 9, 21, 8, tzinfo=timezone.utc)
+        self.new = Reservation(42, self.original.day, 'Best', 720, 840)
+        self.upgrade = RoomUpgrade(self.original, self.new)
+        patch = mock.patch.object(tempo, '_now', side_effect=lambda value=None: value or self.now)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.document = dict(version=1, instance_id='synthetic-tempo', revision=1, enabled=True,
+            generated_at=self.now.isoformat(), valid_until=(self.now + timedelta(hours=24)).isoformat(),
+            dates=[str(self.original.day)], busy=[], windows=[], protected_event_ids=[42],
+            room_upgrades=[dict(event_id=42, date=str(self.original.day), start='12:00', end='14:00',
+                                from_room='Fallback', rooms=['Best'])])
+        tempo.publish_snapshot(self.document, expected_revision=0, now=self.now)
+
+    def test_exact_protected_room_upgrade_reaches_save_once_and_has_verified_receipt(self):
+        with tempo.coordination_run(now=self.now):
+            self.assertTrue(self.run_edit())
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertFalse(self.other_mutations)
+        receipt, = receipts.load_journal(self.path)['receipts'].values()
+        self.assertEqual(receipt['status'], 'verified')
+        self.assertEqual((receipt['start'], receipt['end']), ('12:00', '14:00'))
+
+    def test_same_permission_never_bypasses_a_manual_pin_at_final_save(self):
+        from app_settings import save_settings
+        save_settings({'manual_booking_overrides': {'42': {k: self.original.as_booking()[k]
+            for k in ('date', 'room', 'startTime', 'endTime')}}}, b.settings_file)
+        with tempo.coordination_run(now=self.now), self.assertRaises(b.BookingPreferencesChanged):
+            self.run_edit()
+        self.assertFalse(self.save_calls)
+        self.assertEqual(self.persisted, self.original)
+        self.assertFalse(self.path.exists())
+
+    def test_authorized_upgrade_lost_reply_stays_pending_without_replay(self):
+        self.mode = 'lost_response'
+        with tempo.coordination_run(now=self.now), self.assertRaises(b.BookingVerificationError):
+            self.run_edit()
+        self.assertEqual(self.persisted, self.new)
+        self.assertEqual(len(self.save_calls), 1)
+        self.assertEqual(len(receipts.list_pending(self.path)), 1)
+        self.assertFalse(self.other_mutations)
 
 
 class SameRoomAutofollowEditorTests(unittest.TestCase):

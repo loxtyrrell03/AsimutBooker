@@ -1,3 +1,29 @@
+## 2026-09-28 fixed practice times retain automatic room improvements
+
+- Tempo can publish optional `room_upgrades` permissions without removing an ID
+  from `protected_event_ids`. Each entry binds one exact original `event_id`,
+  `date`, `start`, `end`, `from_room`, and a nonempty `rooms` destination list.
+  Tempo intersects room choices with linked task requirements and omits manually
+  locked work. Booker's manual reservation pins remain independently enforced.
+- Only the ordinary single-reservation upgrade planner receives a temporary view
+  opening that reservation's full interval to those rooms. Candidates and final
+  Save both require the same event, day, start and end; the original room must
+  still match. Saved ranking, fresh live policy, quota, freeze period, exact form
+  and receipt validation continue to apply. Higher room quality does not imply
+  that ASIMUT will approve the edit.
+- Creates, cancellations, extensions, time shifts, consolidations and partial
+  progressive transfers do not inherit this permission. The durable protected
+  ID remains in the original snapshot, and stale or changed authority stops Save.
+  After a verified change, Tempo must recognize the same ID and exact interval
+  in the permitted new room before updating a linked task's room or granting a
+  further improvement. Missing or changed identity is not a verified upgrade.
+- All 448 focused regressions pass. Synthetic runner and intercepted Chromium
+  tests prove the authorized Save,
+  manual-pin rejection at the final boundary and lost-reply receipt handling.
+  Existing upgrade, recovery and scheduling regressions remain in the check set.
+  Fixtures explicitly isolate coordination paths; no live upgrade was made for
+  testing and no service, preference or scheduled task was changed.
+
 ## 2026-09-28 Tempo planning preserves rolling booking opportunities
 
 - The owner explicitly requested joint planning On again, with Tempo as the

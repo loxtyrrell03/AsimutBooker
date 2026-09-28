@@ -3,11 +3,14 @@ import copy
 import io
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
 import book_week as b
 import room_upgrade_runtime as runtime
+import tempo_coordination as tempo
 from practice_plan import PracticePlan
 from room_upgrades import Reservation, RoomUpgrade
 
@@ -16,6 +19,9 @@ class UpgradeRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
+        folder = self.stack.enter_context(TemporaryDirectory())
+        self.stack.enter_context(mock.patch.object(tempo, 'SNAPSHOT_PATH', Path(folder) / 'coordination.json'))
+        self.stack.enter_context(mock.patch.object(tempo, 'RUNTIME_LOCK_PATH', Path(folder) / 'runtime.lock'))
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         self.now = datetime(2026, 9, 17, 16, tzinfo=timezone.utc)
         self.day = date(2026, 9, 19)
@@ -118,6 +124,48 @@ class UpgradeRuntimeTests(unittest.TestCase):
         self.assertEqual(self.scan.call_count, 3)  # initial, final revalidation, after Save
         self.navigate.assert_called()
         self.assertIn("UPGRADED:", self.details[0])
+
+    def tempo_room_permission(self, *, rooms=None, busy=None):
+        doc = dict(version=1, instance_id='synthetic-tempo', revision=1, enabled=True,
+                   generated_at=self.now.isoformat(), valid_until=(self.now + timedelta(hours=24)).isoformat(),
+                   dates=[str(self.day)], busy=busy or [], windows=[], protected_event_ids=[42],
+                   room_upgrades=[dict(event_id=42, date=str(self.day), start='12:00', end='14:00',
+                                       from_room='Fallback', rooms=rooms or ['Best'])])
+        snapshot = tempo.Snapshot(tempo.validate_snapshot(doc), Path('unused-coordination.json'))
+        self.stack.enter_context(mock.patch.object(b, 'tempo_coordination_snapshot', return_value=snapshot))
+        self.gaps = [{'room': 'Best', 'slots': [{'startHour': 12, 'endHour': 16}]}]
+        return snapshot
+
+    def test_tempo_protected_time_can_upgrade_room_at_the_exact_same_time(self):
+        snapshot = self.tempo_room_permission()
+        tracker = self.prepare_runner()
+        count, updated = self.run_runner(tracker)
+        self.assertEqual(count, 1)
+        self.assertEqual(len(self.edits), 1)
+        choice = self.edits[0]
+        self.assertEqual((choice.replacement.start, choice.replacement.end, choice.replacement.room), (720, 840, 'Best'))
+        self.assertEqual(updated.agenda_events[0]['eventId'], 42)
+        self.assertEqual(snapshot.protected_ids(), {42})
+
+    def test_tempo_room_permission_never_overrides_a_manual_pin(self):
+        self.tempo_room_permission()
+        self.settings['manual_booking_overrides'] = {'42': dict(date=str(self.day), room='Fallback', startTime='12:00', endTime='14:00')}
+        tracker = self.prepare_runner()
+        self.assertEqual(self.run_runner(tracker)[0], 0)
+        self.assertEqual(self.edits, [])
+
+    def test_tempo_room_permission_does_not_shift_time_to_find_a_better_room(self):
+        self.tempo_room_permission()
+        self.gaps = [{'room': 'Best', 'slots': [{'startHour': 14, 'endHour': 16}]}]
+        tracker = self.prepare_runner()
+        self.assertEqual(self.run_runner(tracker)[0], 0)
+        self.assertEqual(self.edits, [])
+
+    def test_tempo_room_permission_keeps_named_room_choices_and_new_task_conflicts(self):
+        self.tempo_room_permission(rooms=['Spare'])
+        tracker = self.prepare_runner()
+        self.assertEqual(self.run_runner(tracker)[0], 0)
+        self.assertEqual(self.edits, [])
 
     def test_scheduled_upgrade_scan_yields_before_competitive_preparation(self):
         self.now=self.now.replace(hour=11,minute=26)

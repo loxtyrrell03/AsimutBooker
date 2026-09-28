@@ -282,6 +282,94 @@ class TempoCoordinationTests(unittest.TestCase):
             with self.subTest(targets=targets), self.assertRaises(tempo.CoordinationError):
                 tempo.validate_snapshot(document(practice_targets=targets))
 
+    def room_upgrade_document(self, **changes):
+        value = document(busy=[], windows=[], room_upgrades=[
+            dict(event_id=42, date=str(DAY), start="13:00", end="15:00",
+                 from_room="Practice A", rooms=["Practice B"])])
+        value.update(changes)
+        return value
+
+    def room_upgrade_original(self, **changes):
+        return dict(eventId=42, date=str(DAY), startTime="13:00", endTime="15:00", room="Practice A") | changes
+
+    def test_exact_room_upgrade_permission_does_not_open_general_booking_or_extension(self):
+        self.publish(self.room_upgrade_document())
+        snapshot = tempo.read_snapshot(now=NOW)
+        original = self.room_upgrade_original()
+        replacement = original | dict(room="Practice B")
+        self.assertTrue(snapshot.allows_room_upgrade(original, replacement))
+        self.assertEqual(snapshot.protected_ids(), {42})
+        self.assertFalse(snapshot.permits(DAY, 13, 15, "Practice B"))
+        self.assertEqual(snapshot.allowed_end(DAY, 13, 16, "Practice A"), 13)
+        view = snapshot.room_upgrade_view(original)
+        self.assertTrue(view.permits(DAY, 13, 15, "Practice B"))
+        self.assertFalse(view.permits(DAY, 13, 15, "Practice C"))
+        self.assertEqual(view.protected_ids(), set())
+        self.assertEqual(snapshot.protected_ids(), {42})
+        with tempo.coordination_run(now=NOW):
+            with booking_save_boundary(day=DAY, start="13:00", end="15:00", room="Practice B",
+                    event_ids=[42], room_upgrade_original=original):
+                pass
+            for args in (dict(day=DAY, start="13:00", end="15:00", room="Practice B"),
+                         dict(event_ids=[42]),
+                         dict(day=DAY, start="13:00", end="15:00", room="Practice B", event_ids=[42])):
+                with self.subTest(args=args), self.assertRaises(BookingPreferencesChanged), booking_save_boundary(**args):
+                    self.fail("Upgrade permission cannot authorize create, cancel or an unspecified edit")
+
+    def test_room_upgrade_rejects_shift_extension_foreign_identity_room_and_day(self):
+        self.publish(self.room_upgrade_document())
+        original = self.room_upgrade_original()
+        snapshot = tempo.read_snapshot(now=NOW)
+        replacements = [dict(startTime="13:15", endTime="15:15"), dict(endTime="16:00"),
+                        dict(eventId=43), dict(room="Practice C"), dict(room="Practice A"),
+                        dict(date=str(DAY + timedelta(days=1)))]
+        with tempo.coordination_run(now=NOW):
+            for change in replacements:
+                replacement = original | dict(room="Practice B") | change
+                self.assertFalse(snapshot.allows_room_upgrade(original, replacement))
+                with self.subTest(change=change), self.assertRaises(BookingPreferencesChanged), booking_save_boundary(
+                        day=replacement['date'], start=replacement['startTime'], end=replacement['endTime'],
+                        room=replacement['room'], event_ids=[replacement['eventId']], room_upgrade_original=original):
+                    self.fail("Only the exact accepted fixed-time room improvement is allowed")
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(day=DAY,
+                    start="13:00", end="15:00", room="Practice B", event_ids=[42, 43], room_upgrade_original=original):
+                self.fail("One-room permission cannot authorize consolidation")
+        for change in (dict(room="Other"), dict(startTime="12:00"), dict(eventId=43)):
+            wrong_original = original | change
+            self.assertIs(snapshot.room_upgrade_view(wrong_original), snapshot)
+            self.assertFalse(snapshot.allows_room_upgrade(wrong_original, original | dict(room="Practice B")))
+
+    def test_room_upgrade_permission_obeys_busy_expiry_and_revision(self):
+        original = self.room_upgrade_original()
+        self.publish(self.room_upgrade_document(busy=[dict(date=str(DAY), start="14:00", end="15:00")]))
+        snapshot = tempo.read_snapshot(now=NOW)
+        self.assertFalse(snapshot.allows_room_upgrade(original, original | dict(room="Practice B")))
+        self.publish(self.room_upgrade_document(revision=2))
+        with tempo.coordination_run(now=NOW):
+            self.publish(self.room_upgrade_document(revision=3, room_upgrades=[]))
+            with self.assertRaises(BookingPreferencesChanged), booking_save_boundary(day=DAY,
+                    start="13:00", end="15:00", room="Practice B", event_ids=[42], room_upgrade_original=original):
+                self.fail("Changed room authority must stop a prepared edit")
+        self.publish(self.room_upgrade_document(revision=4))
+        stale = tempo.read_snapshot(now=NOW + timedelta(days=2))
+        self.assertFalse(stale.allows_room_upgrade(original, original | dict(room="Practice B")))
+        self.assertIs(stale.room_upgrade_view(original), stale)
+
+    def test_room_upgrade_permission_is_explicit_bounded_and_old_publishers_stay_protected(self):
+        self.assertNotIn("room_upgrades", tempo.validate_snapshot(document()))
+        self.publish(document())
+        snapshot = tempo.read_snapshot(now=NOW)
+        original = self.room_upgrade_original()
+        self.assertFalse(snapshot.allows_room_upgrade(original, original | dict(room="Practice B")))
+        valid = self.room_upgrade_document()['room_upgrades'][0]
+        for permissions in (None, {}, [None], [valid, valid], [valid] * 2001,
+                [valid | dict(event_id=True)], [valid | dict(event_id=43)],
+                [valid | dict(date=str(DAY + timedelta(days=1)))], [valid | dict(start="15:00")],
+                [valid | dict(end="24:00")], [valid | dict(from_room="")], [valid | dict(rooms=[])],
+                [valid | dict(rooms="Practice B")], [valid | dict(rooms=[None])]):
+            with self.subTest(permissions=permissions), self.assertRaises(tempo.CoordinationError):
+                tempo.validate_snapshot(document(room_upgrades=permissions))
+
     def test_noop_retry_and_compare_and_swap(self):
         self.assertEqual(self.publish(expected_revision=0)["revision"], 1)
         self.assertTrue(self.publish(expected_revision=0)["unchanged"])

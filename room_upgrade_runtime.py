@@ -195,14 +195,24 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
         engine.wait_for_practice_room_grid(scan_page, day)
         return engine.get_available_slots(scan_page)
 
-    def planner_arguments(day, fresh, gaps, extensions, at):
+    def planner_arguments(day, fresh, gaps, extensions, at, *, upgrade_event=None):
         events, ignored_ids = planning_events(engine, fresh, ignored_events)
+        coordination = fresh.tempo_coordination
+        if upgrade_event is not None:
+            upgrade_view = coordination.room_upgrade_view(upgrade_event)
+            if upgrade_view is not coordination:
+                # Keep genuinely ignored events ignored. Only the exact Tempo
+                # protection becomes a restricted room-only upgrade permission.
+                ignored = resolve_ignored_event_keys(ignored_events, events).ignored_v2_keys
+                if event_identity_v2(upgrade_event) not in ignored:
+                    ignored_ids.discard(upgrade_event['eventId'])
+                coordination = upgrade_view
         from manual_booking_overrides import manual_booking_ids
         ignored_ids = set(ignored_ids) | manual_booking_ids(settings)
         prefs = resolve_time_preferences(engine.load_time_preferences(settings), day)
         blocked = [(a * 60, b * 60) for a, b in engine.blackout_conflict_ranges(blackouts).get(day.isoformat(), ())]
-        blocked.extend((a * 60, b * 60) for a, b in fresh.tempo_coordination.blocked_ranges(day))
-        return dict(events=events, available_data=fresh.tempo_coordination.constrain_availability(gaps, day),
+        blocked.extend((a * 60, b * 60) for a, b in coordination.blocked_ranges(day))
+        return dict(events=events, available_data=coordination.constrain_availability(gaps, day),
             policy=policy, now=at, time_preferences=prefs, planning=planning,
             peak_start=int(engine.PEAK_START * 60), peak_end=int(engine.PEAK_END * 60),
             peak_limit=int(engine.MAX_PEAK_HOURS * 60),
@@ -219,8 +229,10 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             return ()
         if getattr(args, "upgrade_event_id", None) is not None and event["eventId"] != args.upgrade_event_id:
             return ()
-        found = find_room_upgrades(Reservation.from_event(event), **planner_arguments(day, fresh, gaps, extensions, at))
+        found = find_room_upgrades(Reservation.from_event(event),
+                                  **planner_arguments(day, fresh, gaps, extensions, at, upgrade_event=event))
         return tuple(candidate for candidate in found
+                     if fresh.tempo_coordination.allows_room_upgrade(candidate.original.as_booking(), candidate.replacement.as_booking())
                      if (candidate.replacement.room, day.isoformat()) not in refused_rooms
                      if (not getattr(args, "only_room", None) or candidate.replacement.room == args.only_room)
                      and (getattr(args, "max_action_minutes", None) is None or candidate.original.duration <= args.max_action_minutes))
@@ -289,6 +301,17 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
                 allowed_ids = {e["eventId"] for e in originals if e["date"] == day.isoformat()}
                 prospects = find_upgrade_opportunities(eligible_event_ids=allowed_ids,
                     **planner_arguments(day, tracker, scanned[day], extensions, at))
+                fixed_room_prospects = []
+                for event in originals:
+                    if (event['date'] != day.isoformat() or
+                            tracker.tempo_coordination.room_upgrade_view(event) is tracker.tempo_coordination):
+                        continue
+                    choices = find_upgrade_opportunities(eligible_event_ids={event['eventId']},
+                        **planner_arguments(day, tracker, scanned[day], extensions, at, upgrade_event=event))
+                    fixed_room_prospects.extend(p for p in choices if len(p.change.originals) == 1
+                        and tracker.tempo_coordination.allows_room_upgrade(
+                            p.change.original.as_booking(), p.change.replacement.as_booking()))
+                prospects = (*prospects, *fixed_room_prospects)
                 # Persist routing hints for next run's early boundary work.
                 # Scoped previews must not replace autonomous planning state.
                 if not dry_run and not any(getattr(args, k, None) for k in

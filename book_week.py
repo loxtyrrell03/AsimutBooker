@@ -3833,7 +3833,8 @@ def edit_reservation_room_time(page, upgrade, *, revalidate, dry_run=False,
         ) as pending_save:
             with booking_save_boundary(day=replacement.day, start=time_text(replacement.start),
                     end=time_text(replacement.end), room=replacement.room,
-                    event_ids=[r.event_id for r in upgrade.originals], automatic=not time_edit):
+                    event_ids=[r.event_id for r in upgrade.originals], automatic=not time_edit,
+                    room_upgrade_original=(original.as_booking() if isinstance(upgrade, RoomUpgrade) and not time_edit else None)):
                 if not time_edit:
                     assert_automatic_change_allowed([r.event_id for r in upgrade.originals], path=settings_file)
                 if not pending_allows_step() or not form_matches(replacement) or not save.is_enabled():
