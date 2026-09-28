@@ -1,3 +1,31 @@
+## 2026-09-28 explicit time-range fill engine and design
+
+- `fill_range.py` adds an isolated create-only operation shared by phone/PC
+  workers. It counts the clipped union of existing reservations, plans across
+  room gaps, and rechecks each exact candidate before the ordinary receipt/Save
+  boundary. Confirmed new reservations are pinned at completion; interrupted
+  results reconcile and pin under assistant/runtime ownership without replay.
+- The explicit date/range temporarily overrides targets, preferred times,
+  booking-off dates, session preferences, allocation holds and cancelled-time
+  protections in that range. Saved preferences stay unchanged. Room/instrument
+  requirements, actual agenda/Tempo task conflicts, fresh site rules, quotas,
+  access, identity and receipt checks remain authoritative. Tempo practice-window
+  constraints can be replaced only within this manual range; expiry/revision and
+  actual busy-task checks still apply at Save.
+- This action creates new sessions; it does not edit or extend existing ones,
+  install a watcher or retry an uncertain Save. Requests expire after 15 minutes,
+  wait up to 180 seconds for the normal worker and make at most 32 definite
+  attempts. The durable result retains coverage, exact new IDs and remaining
+  gaps. Phone UUIDs and desktop ownership prevent duplicate submissions.
+- The owner selected implementation of the best design without another approval.
+  Option A in `docs/design/2026-09-28-fill-range/` places Fill time range beside
+  each My Week date, with a Today shortcut. Three editable alternatives, shared
+  state boards and narrow layouts are retained with invented example data.
+- Initial verification: 117 focused Python checks pass, including fill/room-now,
+  request ownership, phone operations, preference Save guards and Tempo checks.
+  The skill booking reference documents the isolated CLI. Phone/PC controls and
+  activation are verified separately below; no deployment is implied here.
+
 ## 2026-09-28 optional Tempo task and practice coordination
 
 - Tempo may publish `Documents/Apps/Tempo/data/coordination.json` through

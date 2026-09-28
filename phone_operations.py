@@ -81,7 +81,7 @@ class PhoneOperations:
         with self.service._request_lock:
             if not self.active or self.job['request_id'] != request_id:
                 raise SystemConflict('This operation is no longer running. Reload its status.')
-            if self.job['action'] not in {'run', 'run_visible', 'scan', 'agenda', 'plan', 'login', 'room_now'}:
+            if self.job['action'] not in {'run', 'run_visible', 'scan', 'agenda', 'plan', 'login', 'room_now', 'fill_range'}:
                 raise SystemConflict('This short settings operation must finish before another action.')
             directory = self.directory / request_id
             directory.mkdir(parents=True, exist_ok=True)
@@ -89,16 +89,18 @@ class PhoneOperations:
             self._update(state='stopping', text='Stop requested. Waiting for the current step and any booking verification to finish…')
             return {'accepted': True, 'job': self.snapshot()}
 
-    def review_room_now(self, payload):
+    def review_room_now(self, payload, *, action='room_now'):
+        if action not in {'room_now', 'fill_range'}:
+            raise ValueError('Choose a supported booking action.')
         if set(payload) != {'request_id'}:
             raise ValueError('Choose the room request to check.')
         request_id = str(UUID(payload['request_id']))
         with self.service._request_lock:
             if (not self.job or self.job.get('request_id') != request_id
-                    or self.job.get('action') != 'room_now' or self.active or self.service.is_busy):
+                    or self.job.get('action') != action or self.active or self.service.is_busy):
                 raise SystemConflict('Wait for the current request, then check its status.')
             self._update(active=True, state='checking', text='Checking the booking in your latest agenda…')
-            self.thread = threading.Thread(target=self._run, args=(request_id, 'room_now_review', {}), daemon=True)
+            self.thread = threading.Thread(target=self._run, args=(request_id, action + '_review', {}), daemon=True)
             try:
                 self.thread.start()
             except Exception:
@@ -129,9 +131,9 @@ class PhoneOperations:
             else:
                 directory = self.directory / request_id
                 directory.mkdir(parents=True, exist_ok=True)
-                if action == 'room_now':
+                if action in {'room_now', 'fill_range'}:
                     atomic_write_json(directory / 'submitted.json', {'requested_at': self.job['started_at']})
-                if (directory / 'stop').exists() and action != 'room_now_review':
+                if (directory / 'stop').exists() and action not in {'room_now_review', 'fill_range_review'}:
                     result = {'state': 'stopped', 'message': 'Stopped before starting.'}
                 else:
                     self._update(state='running', text='Starting the PC operation…')

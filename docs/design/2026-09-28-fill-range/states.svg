@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="990" viewBox="0 0 1160 990" role="img" aria-label="Fill time range states">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="28" y="42" font-size="28" font-weight="650" fill="#1d2430" text-anchor="start">Shared flow and states</text>
+<text x="28" y="78" font-size="15" font-weight="400" fill="#667080" text-anchor="start">Invented examples • Date + times → Fill → live progress → confirmed coverage and remaining gaps</text>
+<rect x="28" y="112" width="538" height="260" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="147" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Ready / settings</text>
+<text x="48" y="182" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Tue 29 Sep · 11:00–13:00</text>
+<text x="48" y="204" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">30 min already booked · 90 min to fill</text>
+<text x="48" y="226" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">This request overrides targets, preferred times,</text>
+<text x="48" y="248" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">booking-off dates, breaks and session preferences.</text>
+<text x="48" y="270" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Normal settings resume after this request.</text>
+<rect x="48" y="304" width="280" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="188.0" y="331.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="262">Fill this range</text>
+<rect x="594" y="112" width="538" height="260" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="614" y="147" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Help / confirmation</text>
+<text x="614" y="182" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">The Fill button starts booking immediately.</text>
+<text x="614" y="204" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Existing reservations stay in place.</text>
+<text x="614" y="226" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Room requirements, live access, site limits</text>
+<text x="614" y="248" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">and actual agenda clashes remain visible.</text>
+<text x="614" y="270" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Help opens on hover, focus or tap.</text>
+<rect x="614" y="304" width="280" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="754.0" y="331.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="262">Close help</text>
+<rect x="28" y="394" width="538" height="260" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="429" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Checking / progress</text>
+<text x="48" y="464" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Refreshing bookings and checking rooms…</text>
+<text x="48" y="486" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Tue 29 Sep · 11:00–13:00</text>
+<text x="48" y="508" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">30 min already covered · 90 min remaining</text>
+<text x="48" y="530" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Each new booking is verified before continuing.</text>
+<text x="48" y="552" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Progress remains visible after navigation.</text>
+<rect x="48" y="586" width="280" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="188.0" y="613.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="262">Stop</text>
+<rect x="594" y="394" width="538" height="260" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="614" y="429" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Complete / booking details</text>
+<text x="614" y="464" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">120 of 120 min covered</text>
+<text x="614" y="486" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">11:00–11:30 · Corus · Added</text>
+<text x="614" y="508" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">11:30–12:00 · B0.29 · Existing</text>
+<text x="614" y="530" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">12:00–13:00 · B1.09 · Added</text>
+<text x="614" y="552" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Each row opens its exact booking details.</text>
+<rect x="614" y="586" width="280" height="44" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="754.0" y="613.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="262">View bookings</text>
+<rect x="28" y="676" width="538" height="260" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="48" y="711" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Partial / unavailable / stopped</text>
+<text x="48" y="746" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">90 of 120 min covered · 30 min unfilled</text>
+<text x="48" y="768" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">12:30–13:00: no eligible room available</text>
+<text x="48" y="790" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Or: stopped; verified bookings remain.</text>
+<text x="48" y="812" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Quota and too-short gaps have explicit reasons.</text>
+<text x="48" y="834" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Retry refreshes the agenda and fills only gaps.</text>
+<rect x="48" y="868" width="280" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="188.0" y="895.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="262">Try remaining gaps</text>
+<rect x="594" y="676" width="538" height="260" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="614" y="711" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">Error / uncertain / disconnected</text>
+<text x="614" y="746" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">The last booking result needs checking.</text>
+<text x="614" y="768" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">No further bookings will be attempted.</text>
+<text x="614" y="790" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Check the original request after reconnecting.</text>
+<text x="614" y="812" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">A lost response never triggers another Save.</text>
+<text x="614" y="834" font-size="14" font-weight="400" fill="#667080" text-anchor="start" data-max-width="498">Invalid dates/times show beside their field.</text>
+<rect x="614" y="868" width="280" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="754.0" y="895.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="262">Check booking status</text>
+</svg>

@@ -16,10 +16,12 @@ ROOT = Path(__file__).resolve().parent
 
 
 class DesktopRoomNow:
+    action = 'room_now'
+    validate = staticmethod(validate_choices)
     def __init__(self, root=ROOT, runner=None):
         self.root = Path(root)
-        self.path = self.root / 'data/desktop_room_now.json'
-        self.lock = SingleInstanceLock(self.root / 'data/desktop-room-now.lock')
+        self.path = self.root / ('data/desktop_' + self.action + '.json')
+        self.lock = SingleInstanceLock(self.root / ('data/desktop-' + self.action.replace('_', '-') + '.lock'))
         self.thread = None
         self.runner = runner or self._subprocess
 
@@ -38,13 +40,13 @@ class DesktopRoomNow:
             return None
         job = json.loads(self.path.read_text(encoding='utf-8'))
         UUID(job['request_id'])
-        if job.get('state') not in {'running', 'checking', 'completed', 'blocked', 'empty', 'stopped', 'failed', 'rejected', 'uncertain'}:
+        if job.get('state') not in {'running', 'checking', 'completed', 'partial', 'blocked', 'empty', 'stopped', 'failed', 'rejected', 'uncertain'}:
             raise ValueError('The previous room request needs review.')
         return job
 
     def start(self, choices=None, *, review=False):
         if not review:
-            validate_choices(choices)
+            self.validate(choices)
         if self.lock.acquired or not self.lock.acquire():
             raise ValueError('A room search is already running.')
         try:
@@ -57,7 +59,7 @@ class DesktopRoomNow:
                 if previous and previous['state'] in {'running', 'checking', 'uncertain'}:
                     raise ValueError('Check the previous booking status before trying again.')
                 job = {'request_id': str(uuid4()), 'state': 'running', 'choices': choices,
-                       'started_at': timestamp(), 'text': 'Finding a room for the earliest start…'}
+                       'started_at': timestamp(), 'text': 'Checking your practice and available rooms…'}
             atomic_write_json(self.path, job)
             self.thread = threading.Thread(target=self._run, args=(job, review), daemon=False)
             try:
@@ -97,7 +99,7 @@ class DesktopRoomNow:
             cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             text=True, encoding='utf-8', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         process.stdin.write(json.dumps({'surface': 'desktop', 'request_id': job['request_id'],
-            'action': 'room_now_review' if review else 'room_now', 'args': {} if review else job['choices']}))
+            'action': self.action + '_review' if review else self.action, 'args': {} if review else job['choices']}))
         process.stdin.close()
         started = time.monotonic()
         while process.poll() is None:
@@ -108,7 +110,7 @@ class DesktopRoomNow:
                     atomic_write_json(self.path, {**job, 'text': value['text']})
                 except (OSError, ValueError, KeyError):
                     pass
-            if time.monotonic() - started > 300 and not review:
+            if time.monotonic() - started > (900 if self.action == 'fill_range' else 300) and not review:
                 (directory / 'stop').touch()
             time.sleep(.5)
         if process.returncode:

@@ -12,7 +12,7 @@ from runtime_guard import SingleInstanceAlreadyRunning
 
 
 def execute(action, args, directory, *, root=ROOT, booker_main=None):
-    if action != 'room_now_review':
+    if action not in {'room_now_review', 'fill_range_review'}:
         validate_action(action, args)
     directory = Path(directory)
     stop = directory / 'stop'
@@ -43,10 +43,16 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
 
     progress('Starting the PC operation…')
     try:
-        if action == 'room_now_review':
+        if action in {'room_now_review', 'fill_range_review'}:
             from room_now import review_result
             if booker_main is None:
                 from book_week import main as booker_main
+            if action == 'fill_range_review':
+                # Reconcile and pin verified results under one assistant/runtime owner.
+                output = directory / 'fill-range.json'
+                if booker_main(['--headless', '--fill-review-output', str(output)]) != 0:
+                    return {'state': 'uncertain', 'message': 'The fill result could not be checked. Try Check booking status again.'}
+                return json.loads(output.read_text(encoding='utf-8'))
             if booker_main(['--headless', '--agenda-only']) != 0:
                 return {'state': 'uncertain', 'message': 'The booking could not be checked. Try Check booking status again.'}
             return review_result(directory, root)
@@ -70,10 +76,30 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                     except SettingsError as exc:
                         return {'state': 'blocked', 'message': str(exc)}
                     flags = cli_flags(args, submitted['requested_at'], directory / 'room-now.json')
+                if action == 'fill_range':
+                    from fill_range import cli_flags, FillRequest, local_now
+                    from app_settings import SettingsError
+                    submitted = json.loads((directory / 'submitted.json').read_text(encoding='utf-8'))
+                    try:
+                        FillRequest.create(args, submitted['requested_at']).check_current(local_now())
+                    except SettingsError as exc:
+                        return {'state': 'blocked', 'message': str(exc)}
+                    flags = cli_flags(args, submitted['requested_at'], directory / 'fill-range.json')
                 code = booker_main(flags)
                 from mutation_receipts import list_pending
                 if list_pending(root / 'data/mutation_receipts.json'):
+                    if action == 'fill_range' and (directory / 'fill-range.json').exists():
+                        result = json.loads((directory / 'fill-range.json').read_text(encoding='utf-8'))
+                        return {**result, 'state': 'uncertain', 'message': 'The last booking needs checking before another fill.'}
                     return {'state': 'uncertain', 'message': 'A booking outcome needs reconciliation. Refresh the agenda and review System health.'}
+                if action == 'fill_range' and (directory / 'fill-range.json').exists():
+                    result = json.loads((directory / 'fill-range.json').read_text(encoding='utf-8'))
+                    if result['state'] == 'running':
+                        result.update(state='partial', message='The fill stopped. Review the remaining gaps before trying again.')
+                    return result
+                if action == 'fill_range':
+                    return {'state': 'rejected' if code == 6 else 'blocked',
+                            'message': 'The fill did not start. Wait for other work to finish and check System health.'}
                 if action == 'room_now' and (directory / 'room-now.json').exists():
                     return json.loads((directory / 'room-now.json').read_text(encoding='utf-8'))
                 if action == 'room_now' and code == 0:

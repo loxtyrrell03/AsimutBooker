@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="820" viewBox="0 0 1060 820" role="img" aria-label="Narrow layouts">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<style>text{font-family:Segoe UI,Arial,sans-serif}</style>
+<text x="24" y="40" font-size="25" font-weight="650" fill="#1d2430" text-anchor="start">Phone 320 px · Phone 390 px · Short PC window</text>
+<rect x="20" y="74" width="300" height="718" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="36" y="118" font-size="23" font-weight="650" fill="#1d2430" text-anchor="start">Fill time range</text>
+<circle cx="292" cy="111" r="10" fill="#eaf3ff"/>
+<text x="292" y="115" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<text x="36" y="150" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Book the gaps around existing practice.</text>
+<text x="36" y="174" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Date</text>
+<rect x="36" y="186" width="268" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="50" y="214" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">Tuesday 29 September</text>
+<text x="36" y="256" font-size="13" font-weight="400" fill="#667080" text-anchor="start">From</text>
+<rect x="36" y="268" width="268" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="50" y="296" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">11:00</text>
+<text x="36" y="338" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Until</text>
+<rect x="36" y="350" width="268" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="50" y="378" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">13:00</text>
+<text x="36" y="412" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="268">Temporarily overrides your practice settings.</text>
+<text x="36" y="434" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="268">Keeps existing bookings. ASIMUT limits apply.</text>
+<rect x="36" y="462" width="268" height="48" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="170.0" y="491.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="250">Fill this range</text>
+<rect x="36" y="520" width="268" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="170.0" y="547.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="250">Cancel</text>
+<text x="36" y="620" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">90 / 120 min covered</text>
+<text x="36" y="655" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="268">12:30–13:00 remains unfilled.</text>
+<text x="36" y="677" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="268">Review / retry stays beside the result.</text>
+<rect x="36" y="712" width="268" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="170.0" y="739.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="250">Try remaining gaps</text>
+<rect x="340" y="74" width="350" height="718" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="356" y="118" font-size="23" font-weight="650" fill="#1d2430" text-anchor="start">Fill time range</text>
+<circle cx="662" cy="111" r="10" fill="#eaf3ff"/>
+<text x="662" y="115" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<text x="356" y="150" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Book the gaps around existing practice.</text>
+<text x="356" y="174" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Date</text>
+<rect x="356" y="186" width="318" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="370" y="214" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">Tuesday 29 September</text>
+<text x="356" y="256" font-size="13" font-weight="400" fill="#667080" text-anchor="start">From</text>
+<rect x="356" y="268" width="318" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="370" y="296" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">11:00</text>
+<text x="356" y="338" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Until</text>
+<rect x="356" y="350" width="318" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="370" y="378" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">13:00</text>
+<text x="356" y="412" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="318">Temporarily overrides your practice settings.</text>
+<text x="356" y="434" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="318">Keeps existing bookings. ASIMUT limits apply.</text>
+<rect x="356" y="462" width="318" height="48" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="515.0" y="491.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="300">Fill this range</text>
+<rect x="356" y="520" width="318" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="515.0" y="547.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="300">Cancel</text>
+<text x="356" y="620" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">90 / 120 min covered</text>
+<text x="356" y="655" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="318">12:30–13:00 remains unfilled.</text>
+<text x="356" y="677" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="318">Review / retry stays beside the result.</text>
+<rect x="356" y="712" width="318" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="515.0" y="739.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="300">Try remaining gaps</text>
+<rect x="710" y="74" width="330" height="718" rx="16" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="726" y="118" font-size="23" font-weight="650" fill="#1d2430" text-anchor="start">Fill time range</text>
+<circle cx="1012" cy="111" r="10" fill="#eaf3ff"/>
+<text x="1012" y="115" font-size="13" font-weight="650" fill="#0868d9" text-anchor="middle">?</text>
+<text x="726" y="150" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Book the gaps around existing practice.</text>
+<text x="726" y="174" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Date</text>
+<rect x="726" y="186" width="298" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="740" y="214" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">Tuesday 29 September</text>
+<text x="726" y="256" font-size="13" font-weight="400" fill="#667080" text-anchor="start">From</text>
+<rect x="726" y="268" width="298" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="740" y="296" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">11:00</text>
+<text x="726" y="338" font-size="13" font-weight="400" fill="#667080" text-anchor="start">Until</text>
+<rect x="726" y="350" width="298" height="44" rx="10" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="740" y="378" font-size="16" font-weight="400" fill="#1d2430" text-anchor="start">13:00</text>
+<text x="726" y="412" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="298">Temporarily overrides your practice settings.</text>
+<text x="726" y="434" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="298">Keeps existing bookings. ASIMUT limits apply.</text>
+<rect x="726" y="462" width="298" height="48" rx="11" fill="#0868d9" stroke="#0868d9"/>
+<text x="875.0" y="491.0" font-size="15" font-weight="650" fill="#ffffff" text-anchor="middle" data-max-width="280">Fill this range</text>
+<rect x="726" y="520" width="298" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="875.0" y="547.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="280">Cancel</text>
+<text x="726" y="620" font-size="20" font-weight="650" fill="#1d2430" text-anchor="start">90 / 120 min covered</text>
+<text x="726" y="655" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="298">12:30–13:00 remains unfilled.</text>
+<text x="726" y="677" font-size="12" font-weight="400" fill="#667080" text-anchor="start" data-max-width="298">Review / retry stays beside the result.</text>
+<rect x="726" y="712" width="298" height="44" rx="11" fill="#ffffff" stroke="#e1e6ee"/>
+<text x="875.0" y="739.0" font-size="15" font-weight="650" fill="#0868d9" text-anchor="middle" data-max-width="280">Try remaining gaps</text>
+</svg>

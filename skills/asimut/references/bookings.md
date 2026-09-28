@@ -7,6 +7,25 @@ room access, instrument requirements and manual protections.
 
 ## Book practice
 
+For an explicit request to fill a clock range, use the shared `fill_range`
+operation. It counts the union of existing reservations and tries only uncovered
+intervals on that date. Phone/PC My Week have **Fill time range**, and Today has
+a shortcut. The canonical CLI is `book_week.py --headless --fill-date YYYY-MM-DD
+--fill-start HH:MM --fill-end HH:MM --fill-requested-at OFFSET_DATETIME
+--fill-output PATH`. Generate the request timestamp in Europe/London immediately
+before dispatch and retain a unique ignored output path. This isolated mode owns
+the assistant/runtime locks; never combine it with ordinary automatic booking.
+
+Fill temporarily overrides scheduling targets, preferred time, disabled dates,
+breaks/session shape, preferred minimum length, advance allocation and cancelled
+time protections within the requested interval. Eligible rooms, actual agenda
+and external task conflicts, live site rules, quotas and exact Save proof remain
+required. It creates additional sessions; it does not edit/cancel existing ones
+or install a future watcher. Results contain confirmed coverage, exact new IDs,
+remaining gaps and blockers. Partial coverage or exhausted quota is not success.
+Uncertainty stops further writes. Use the application's Check booking status
+action for owned reconciliation; never replay an uncertain request.
+
 For a daily-total request, save dated targets through `set_future_practice_plan`
 or `update_booker_preferences`. This means total practice, including existing
 bookings, split into legal sessions. Saving preferences queues a normal check.

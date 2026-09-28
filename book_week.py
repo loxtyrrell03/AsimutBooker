@@ -10650,6 +10650,10 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
     """Run one authenticated booking pass with already-validated inputs."""
     today = datetime.now().date()
     room_preferences = room_preferences or load_room_preferences(settings)
+    if getattr(args, 'fill_date', None):
+        from dataclasses import replace
+        room_preferences = replace(room_preferences, minimum_block_minutes=MIN_BOOKING_MINUTES,
+                                   allow_fragmented_sessions=True)
     from booking_time_edits import time_edit_requested
     if time_edit_requested(args):
         # This exact user edit overrides autonomous room ranking/filter defaults
@@ -10723,6 +10727,17 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
         practice_plan = tracker.tempo_coordination.practice_plan_overlay(
             practice_plan, tracker.reservation_ranges)
         run_report.preferences(settings, practice_plan)
+
+        if getattr(args, 'fill_review_output', None):
+            from fill_range import review_result
+            from app_settings import atomic_write_json
+            output = Path(args.fill_review_output)
+            result = review_result(output.parent, APP_DIR)
+            atomic_write_json(output, result)
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return 0
 
         if getattr(args, "agenda_only", False):
             persist_storage_state(context)
@@ -10844,6 +10859,18 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
             return 0
 
         refresh_quota_balances(page, tracker, live_dates)
+
+        if getattr(args, 'fill_date', None):
+            from fill_range import run as run_fill, request_from_args
+            from tempo_coordination import manual_practice_window
+            request = request_from_args(args)
+            with manual_practice_window(request.day, request.start/60, request.end/60):
+                result = run_fill(sys.modules[__name__], page, args, settings, tracker,
+                                  today=today, live_dates=live_dates)
+            persist_storage_state(context)
+            context.close()
+            browser.close()
+            return result
 
         if getattr(args, 'room_now_mode', None):
             from room_now import run as run_room_now
@@ -12468,6 +12495,9 @@ def build_argument_parser():
     parser.add_argument('--room-now-minutes', type=int)
     parser.add_argument('--room-now-requested-at')
     parser.add_argument('--room-now-output')
+    for field in ('date', 'start', 'end', 'requested-at', 'output'):
+        parser.add_argument('--fill-' + field)
+    parser.add_argument('--fill-review-output')
     parser.add_argument(
         "--target-time",
         metavar="HH:MM",
@@ -12627,6 +12657,8 @@ def _cancellation_requested(args):
 
 
 def _validate_cli_args(parser, args):
+    from fill_range import validate_cli as validate_fill_cli
+    validate_fill_cli(parser, args)
     from room_now import validate_cli
     validate_cli(parser, args)
     from booking_time_edits import time_edit_requested, edit_from_args
@@ -12975,13 +13007,13 @@ def main(argv=None):
     report_token = run_report.start(sys.modules[__name__], settings, practice_plan)
     assistant_lock = None
     try:
-        if getattr(args, 'room_now_mode', None):
+        if getattr(args, 'room_now_mode', None) or getattr(args, 'fill_date', None) or getattr(args, 'fill_review_output', None):
             from app_settings import InterProcessFileLock
             assistant_lock = InterProcessFileLock(APP_DIR / 'data/assistant-mutation.lock', timeout=0)
             assistant_lock.acquire()
         acquired = runtime_lock.acquire()
         wait_seconds = (
-            180 if args.scheduled
+            180 if args.scheduled or getattr(args, 'fill_date', None) or getattr(args, 'fill_review_output', None)
             else int(getattr(args, "wait_for_runtime_seconds", 0) or 0)
         )
         if not acquired and wait_seconds:

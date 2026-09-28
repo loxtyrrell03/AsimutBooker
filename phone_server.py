@@ -1226,13 +1226,15 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         if payload is None:
             return
-        if path in {"/api/v1/system/jobs", "/api/v1/system/stop", "/api/v1/system/room-now-review", "/api/v1/system/room-now-delivery"}:
+        if path in {"/api/v1/system/jobs", "/api/v1/system/stop", "/api/v1/system/room-now-review", "/api/v1/system/room-now-delivery", "/api/v1/system/fill-range-review", "/api/v1/system/fill-range-delivery"}:
             try:
                 operations = self.app.assistant.operations
-                if path.endswith('/room-now-delivery'):
+                if path.endswith(('/room-now-delivery', '/fill-range-delivery')):
                     result = operations.check_room_now_delivery(payload)
                 elif path.endswith('/room-now-review'):
                     result = operations.review_room_now(payload)
+                elif path.endswith('/fill-range-review'):
+                    result = operations.review_room_now(payload, action='fill_range')
                 else:
                     result = operations.stop(payload) if path.endswith("/stop") else operations.submit(payload)
                 self._json(HTTPStatus.ACCEPTED, result)

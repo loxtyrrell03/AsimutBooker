@@ -21,6 +21,23 @@ from runtime_guard import SingleInstanceLock
 SNAPSHOT_PATH = Path.home() / "Documents" / "Apps" / "Tempo" / "data" / "coordination.json"
 RUNTIME_LOCK_PATH = Path(__file__).resolve().parent / "data" / "booker-runtime.lock"
 _ACTIVE = ContextVar("tempo_coordination", default=None)
+_MANUAL_WINDOW = ContextVar("tempo_manual_practice_window", default=None)
+
+
+@contextmanager
+def manual_practice_window(day, start, end):
+    """One explicit fill may replace planning windows, but never busy tasks.
+
+    The accepted document, expiry and revision checks remain unchanged.
+    """
+    key = _date(day)
+    if not 0 <= start < end < 24:
+        raise CoordinationError('Invalid explicit practice interval')
+    token = _MANUAL_WINDOW.set((key, start, end))
+    try:
+        yield
+    finally:
+        _MANUAL_WINDOW.reset(token)
 
 
 class CoordinationError(SettingsError):
@@ -182,6 +199,11 @@ class Snapshot:
             edge = max(edge, end)
         if edge < 1440:
             blocked.append((edge / 60, 24.0))
+        manual = _MANUAL_WINDOW.get()
+        if manual and manual[0] == key:
+            left, right = manual[1:]
+            blocked = [(a, b) for start, end in blocked
+                       for a, b in ((start, min(end, left)), (max(start, right), end)) if a < b]
         blocked.extend((_minutes(b["start"]) / 60, _minutes(b["end"], end=True) / 60)
                        for b in self.document["busy"] if b["date"] == key)
         return blocked
@@ -191,6 +213,9 @@ class Snapshot:
             return True
         if self.problem or any(start < b and end > a for a, b in self.blocked_ranges(day, room)):
             return False
+        manual = _MANUAL_WINDOW.get()
+        if manual and manual[0] == _date(day) and manual[1] <= start < end <= manual[2]:
+            return True
         # An interval cannot span two adjacent sessions with different room/task
         # ownership merely because their union contains no free gap.
         return any(w["date"] == _date(day) and _minutes(w["start"]) / 60 <= start
