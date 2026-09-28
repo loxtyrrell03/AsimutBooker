@@ -9,6 +9,7 @@ from uuid import uuid4
 from app_settings import atomic_write_json
 from desktop_fill_range import DesktopFillRange
 from phone_operation_worker import execute
+from phone_operations import PhoneOperations
 from phone_server import PhoneAssistantService, RequestLedger
 from phone_system import timestamp, SystemConflict
 from tests.test_phone_server import FakeRuntime
@@ -57,6 +58,33 @@ class FillRequestTests(unittest.TestCase):
             atomic_write_json(directory/'fill-range.json',{'state':'partial','message':'One gap left','bookings':[{'event_id':100}]});return 0
         result=execute('fill_range',self.payload['args'],directory,root=self.root,booker_main=fill)
         self.assertEqual(result['bookings'][0]['event_id'],100)
+
+    def test_completed_fill_survives_other_jobs_and_service_restart(self):
+        self.operations.runner=MagicMock(return_value={'state':'empty','message':'No new bookings.',
+            'range':self.payload['args'],'covered_minutes':30,'requested_minutes':120,
+            'remaining':[{'start':'12:30','end':'13:00','minutes':30}]})
+        self.operations.submit(self.payload);self.operations.thread.join(3)
+        completed=self.operations.snapshot()
+        self.operations.runner.return_value={'state':'completed','message':'Scan finished.'}
+        self.operations.submit({'request_id':str(uuid4()),'action':'scan','args':{'dates':['2030-10-14']}})
+        self.operations.thread.join(3)
+        self.assertEqual(self.operations.snapshot()['action'],'scan')
+        self.assertEqual(self.operations.fill_snapshot(),completed)
+        restarted=PhoneOperations(self.service,state_dir=self.operations.directory)
+        self.assertEqual(restarted.fill_snapshot(),completed)
+        self.assertFalse(restarted.active)
+
+    def test_previous_version_fill_result_is_recovered_without_replay(self):
+        directory=self.operations.directory/self.payload['request_id']
+        result={'state':'empty','message':'No new bookings.','range':self.payload['args'],'covered_minutes':30}
+        atomic_write_json(directory/'result.json',result)
+        atomic_write_json(directory/'fill-range.json',result)
+        self.operations.runner=MagicMock()
+        recovered=self.operations.fill_snapshot()
+        self.assertEqual(recovered['request_id'],self.payload['request_id'])
+        self.assertEqual(recovered['result'],result)
+        self.assertFalse(recovered['active'])
+        self.operations.runner.assert_not_called()
 
     def test_desktop_restart_keeps_uncertainty_and_rejects_duplicate(self):
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)

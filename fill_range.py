@@ -217,6 +217,26 @@ def result_document(request, events, bookings, state, message, **extra):
             'remaining': [{'start': clock(a), 'end': clock(b), 'minutes': b-a} for a,b in gaps], **extra}
 
 
+def unavailable_reasons(engine, rooms, request, events):
+    """Explain observed short gaps separately from quota and access refusals."""
+    short = set()
+    for row in rooms:
+        if row.get('room') not in engine.PRIORITY_ROOMS:
+            continue
+        for slot in row.get('slots', ()):
+            for a, b in uncovered(request, events):
+                start = max(a, round(slot['startHour'] * 60))
+                end = min(b, round(slot['endHour'] * 60))
+                if 0 < end-start < engine.MIN_BOOKING_MINUTES:
+                    short.add((start, end, row['room']))
+    reasons = [f'No eligible room has an available slot of at least {engine.MIN_BOOKING_MINUTES} minutes in the unfilled time.']
+    if short:
+        reasons.append('Shorter available gaps: ' + '; '.join(
+            f'{room} {clock(start)}–{clock(end)} ({end-start} min)'
+            for start, end, room in sorted(short)[:12]) + '.')
+    return reasons
+
+
 def pin_bookings(bookings, path):
     from app_settings import update_settings
     from manual_booking_overrides import pin_in_settings
@@ -257,11 +277,18 @@ def run(engine, page, args, settings, tracker, *, today, live_dates):
             engine.open_practice_room_overview(page, today)
             if request.day != today:
                 engine.navigate_to_day(page, (request.day-today).days, 0, base_date=today)
-            options, reasons = candidates(engine, engine.get_available_slots(page), tracker, request, local_now())
+            rooms = engine.get_available_slots(page)
+            options, reasons = candidates(engine, rooms, tracker, request, local_now())
+            available_options = bool(options)
             options = [c for c in options if (c['room'], c['start_hour'], c['minutes']) not in refused]
             if not options:
-                return finish('partial' if bookings else 'empty', 'Some of this range could not be booked. Review the remaining gaps.',
-                              reasons=reasons or ['No available eligible room, or the gap is shorter than the site minimum.'],
+                missing = sum(b-a for a,b in uncovered(request, events))
+                message = ('Additional practice was booked.' if bookings else 'No new bookings were made.')
+                if not reasons:
+                    reasons = (['The available candidates did not pass the final booking checks. No additional booking was confirmed.']
+                               if available_options else unavailable_reasons(engine, rooms, request, events))
+                return finish('partial' if bookings else 'empty', f'{message} {missing} minutes remain unfilled.',
+                              reasons=reasons,
                               advance_minutes=tracker.live_quota_minutes,
                               peak_minutes=tracker.live_peak_minutes.get(str(request.day)))
             candidate = choose_candidate(engine, options, tracker, request, local_now())

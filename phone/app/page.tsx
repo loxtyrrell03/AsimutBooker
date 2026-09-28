@@ -164,6 +164,7 @@ type CancellationProgress = {
 };
 
 type Bootstrap = {
+  fill_job?: SystemJob | null;
   system_job?: SystemJob | null;
   cancellation?: CancellationProgress | null;
   model: string;
@@ -1047,6 +1048,7 @@ export default function HomePage() {
   const shellRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [systemJob, setSystemJob] = useState<SystemJob | null>(null);
+  const [fillJob, setFillJob] = useState<SystemJob | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const cancellingRef = useRef(false);
   const [cancellationStatus, setCancellationStatus] = useState('');
@@ -1113,6 +1115,7 @@ export default function HomePage() {
 
   const applySystemJob = useCallback((next: SystemJob | null) => {
     setSystemJob(current => current?.updated_at && next?.updated_at && current.updated_at > next.updated_at ? current : next);
+    if (next?.action === 'fill_range') setFillJob(current => current?.updated_at && next.updated_at && current.updated_at > next.updated_at ? current : next);
   }, []);
 
   const applyBootstrap = useCallback((payload: Bootstrap) => {
@@ -1129,6 +1132,7 @@ export default function HomePage() {
     setBooker(payload.booker);
     if (payload.cancellation) applyCancellation(payload.cancellation);
     if (payload.system_job !== undefined) applySystemJob(payload.system_job);
+    if (payload.fill_job) setFillJob(current => current?.updated_at && payload.fill_job?.updated_at && current.updated_at > payload.fill_job.updated_at ? current : payload.fill_job ?? current);
     setMessages(payload.messages);
     setBusy(payload.busy);
     settlePendingDelivery(payload.active_client_message_id ?? undefined);
@@ -1808,7 +1812,7 @@ export default function HomePage() {
           {booker && <div hidden={tab !== 'schedule'}>
             {weekEditDate ? <PhoneCalendar key={weekEditDate} singleDay={weekEditDate} onClose={() => setWeekEditDate(null)} booker={booker} csrf={csrf} active={tab === 'schedule'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /> :
               <div hidden={Boolean(fillDate)}><ScheduleView booker={booker} onEditDay={setWeekEditDate} onFillDay={setFillDate} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} /></div>}
-            <div hidden={!fillDate || Boolean(weekEditDate)}><FillRange selectedDate={fillDate} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onClose={() => setFillDate(null)} onDetails={event => { setSelectedBooking(event); setTab('today'); }} /></div>
+            <div hidden={!fillDate || Boolean(weekEditDate)}><FillRange selectedDate={fillDate} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} previousJob={fillJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onClose={() => setFillDate(null)} onDetails={event => { setSelectedBooking(event); setTab('today'); }} /></div>
           </div>}
           {booker && <div hidden={tab !== 'rooms'}><RoomAvailability active={tab === 'rooms'} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview} job={systemJob} onJob={applySystemJob} /></div>}
           {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}

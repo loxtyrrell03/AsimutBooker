@@ -16,6 +16,28 @@
   preference writes; this is PC-browser proof. Reload phone pages for the fix.
   Private evidence: `artifacts/week-inline-20260928/`.
 
+## 2026-09-28 explicit fill outcomes remain visible
+
+- A completed phone Fill result survives unrelated room scans, navigation and
+  reload. `PhoneOperations` persists `latest-fill.json`; bootstrap returns the
+  separate `fill_job` while `system_job` remains the current operation owner.
+  Existing completed fill receipts are recovered read-only for display. This
+  retained result cannot authorize a replay or override busy/uncertain ownership.
+- Empty fills say that no new booking was made, give the exact missing minutes,
+  and distinguish unavailable/minimum-length gaps from quota/policy refusals.
+  Observed shorter eligible gaps include room, time and duration. A zero advance
+  balance alone is no longer presented as the reason a free-window fill failed.
+  The shared engine supplies the same explanation to native PC and phone forms.
+- A live 12:00–14:00 check found 30 existing booked minutes and no eligible
+  30-minute slot in the missing interval; the remaining free gaps were only
+  15 minutes. No booking rule, room eligibility or preference was relaxed.
+- Verification: 92 focused Python checks, three isolated native checks, 17 phone
+  Node tests, TypeScript/lint/build, and Chromium/WebKit 320/390/844px flows pass.
+  Regression checks include result retention across scans/reloads, legacy result
+  recovery without replay and clear short-gap explanations. Run native Tk checks
+  separately from threaded server tests to avoid Tk teardown on a worker thread.
+  Private evidence: `artifacts/fill-no-result-20260928/`; activation follows.
+
 ## 2026-09-28 owner restores independent Booker scheduling
 
 - The owner requires Booker to operate as before Tempo integration. Joint

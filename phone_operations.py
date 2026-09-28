@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -39,10 +40,42 @@ class PhoneOperations:
         with self.service._request_lock:
             return json.loads(json.dumps(self.job)) if self.job else None
 
+    def fill_snapshot(self):
+        """Keep the last fill outcome visible when a scan replaces the live job."""
+        with self.service._request_lock:
+            if self.job and self.job.get('action') == 'fill_range':
+                return json.loads(json.dumps(self.job))
+            path = self.directory / 'latest-fill.json'
+            if path.exists():
+                try:
+                    result = json.loads(path.read_text(encoding='utf-8'))
+                    if isinstance(result, dict) and result.get('action') == 'fill_range' and not result.get('active'):
+                        return result
+                except (OSError, ValueError):
+                    pass
+            # Recover completed outcomes written before separate fill retention.
+            for result_path in sorted(self.directory.glob('*/result.json'), key=lambda p:p.stat().st_mtime, reverse=True):
+                if not result_path.with_name('fill-range.json').exists():
+                    continue
+                try:
+                    result = json.loads(result_path.read_text(encoding='utf-8'))
+                    identity = str(UUID(result_path.parent.name))
+                except (OSError, ValueError):
+                    continue
+                if (not isinstance(result, dict) or result.get('state') not in {'completed','partial','empty','blocked','stopped'}
+                        or not isinstance(result.get('range'), dict) or not isinstance(result.get('message'), str)):
+                    continue
+                return {'request_id':identity, 'action':'fill_range', 'active':False,
+                        'state':result['state'], 'text':result['message'], 'range':result['range'], 'result':result,
+                        'updated_at':datetime.fromtimestamp(result_path.stat().st_mtime,timezone.utc).isoformat()}
+            return None
+
     def _update(self, **fields):
         with self.service._request_lock:
             self.job = {**(self.job or {}), **fields, 'updated_at': timestamp()}
             atomic_write_json(self.path, self.job)
+            if self.job.get('action') == 'fill_range' and not self.job.get('active'):
+                atomic_write_json(self.directory / 'latest-fill.json', self.job)
 
     def submit(self, payload):
         if set(payload) != {'request_id', 'action', 'args'}:

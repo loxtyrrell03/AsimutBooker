@@ -24,12 +24,12 @@ def check(dist):
             browser=getattr(p,browser_name).launch(headless=True)
             page=browser.new_page(viewport={'width':390,'height':844},has_touch=True,service_workers='block')
             page.add_init_script('window.EventSource=class {addEventListener(){}close(){}};')
-            calls,errors=[],[];job=None;lost=False
+            calls,errors=[],[];job=None;fill_job=None;lost=False
             page.on('pageerror',lambda e:errors.append(str(e)))
             def bootstrap():
                 booker=build_phone_snapshot(paths=paths)
                 booker['agenda'].update(available=True,stale=False,events=[{'date':day,'start_time':'12:00','end_time':'12:30','room':'Example','event_id':99,'is_reservation':True,'title':'Reservation'}])
-                return {'booker':booker,'busy':False,'messages':[],'system_job':job,'event_cursor':0,
+                return {'booker':booker,'busy':False,'messages':[],'system_job':job,'fill_job':fill_job,'event_cursor':0,
                         'stream_generation':'fill-fixture','unresolved_reserved_count':0,'active_client_message_id':None}
             def result():
                 return {'covered_minutes':90,'requested_minutes':120,'range':{'date':day,'start_time':'11:00','end_time':'13:00'},
@@ -100,6 +100,13 @@ def check(dist):
             panel.get_by_role('button',name='Stop',exact=True).click()
             expect(panel.get_by_text('90 of 120 min covered',exact=True)).to_be_visible()
             expect(panel.get_by_text('12:30–13:00 · 30 min',exact=True)).to_be_visible()
+            fill_job=job
+            job={'request_id':'later-scan','action':'scan','active':False,'state':'completed','text':'Rooms refreshed.'}
+            page.reload()
+            page.get_by_role('button',name='My Week',exact=True).last.click()
+            page.get_by_role('button',name=re.compile('^Fill time range:')).click()
+            expect(panel.get_by_text('90 of 120 min covered',exact=True)).to_be_visible()
+            expect(panel.get_by_text('12:30–13:00 · 30 min',exact=True)).to_be_visible()
             panel.get_by_role('button',name='Try remaining gaps',exact=True).click();assert len(calls)==2
             job={**job,'active':False,'state':'uncertain','text':'Needs checking.'}
             expect(panel.get_by_role('button',name='Check booking status',exact=True)).to_be_visible(timeout=6000)
@@ -113,6 +120,19 @@ def check(dist):
             expect(start).to_be_disabled()
             panel.get_by_role('button',name='Check booking status',exact=True).click()
             expect(start).to_be_enabled();assert len(calls)==3
+            fill_job={**fill_job,'state':'empty','text':'No new bookings were made. 90 minutes remain unfilled.',
+                'result':{**result(),'covered_minutes':30,'bookings':[],'advance_minutes':0,
+                    'remaining':[{'start':'12:30','end':'14:00','minutes':90}],
+                    'reasons':['No eligible room has an available slot of at least 30 minutes in the unfilled time.',
+                               'Shorter available gaps: Example B 12:45–13:00 (15 min).']}}
+            job={'request_id':'another-scan','action':'scan','active':False,'state':'completed','text':'Rooms refreshed.'}
+            page.reload()
+            page.get_by_role('button',name='My Week',exact=True).last.click()
+            page.get_by_role('button',name=re.compile('^Fill time range:')).click()
+            expect(panel.get_by_text('30 of 120 min covered',exact=True)).to_be_visible()
+            expect(panel.get_by_text('No new bookings were made. 90 minutes remain unfilled.',exact=True)).to_be_visible()
+            expect(panel.get_by_text('Shorter available gaps: Example B 12:45–13:00 (15 min).',exact=True)).to_be_visible()
+            expect(panel.get_by_text('ASIMUT reports no advance booking credit.',exact=True)).to_have_count(0)
             assert not errors,errors
             browser.close()
             print(f'PASS {browser_name}: exact day, opening/Cancel without writes, 320/390/844px, progress, Stop, partial, navigation, uncertain recovery and lost delivery')

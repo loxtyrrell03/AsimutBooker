@@ -641,6 +641,7 @@ class PhoneAssistantService:
             unresolved_reserved_count = max(0, unresolved_reserved_count - 1)
         return {
             "system_job": system_job,
+            "fill_job": self.operations.fill_snapshot(),
             "cancellation": cancellation,
             "model": model,
             "busy": busy,

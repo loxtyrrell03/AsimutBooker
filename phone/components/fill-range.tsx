@@ -10,8 +10,9 @@ const pendingKey = 'asimut-fill-pending';
 const draftKey = 'asimut-fill-draft';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
-export function FillRange({ selectedDate, csrf, enabled, job, onJob, onRefresh, onDetails, onClose }: {
+export function FillRange({ selectedDate, csrf, enabled, job, previousJob, onJob, onRefresh, onDetails, onClose }: {
   selectedDate: string | null; csrf: string; enabled: boolean; job: SystemJob | null;
+  previousJob?: SystemJob | null;
   onJob: (job: SystemJob | null) => void; onRefresh: () => void;
   onDetails: (event: AgendaEvent) => void; onClose: () => void;
 }) {
@@ -23,7 +24,7 @@ export function FillRange({ selectedDate, csrf, enabled, job, onJob, onRefresh, 
   const [working, setWorking] = useState(false);
   const serial = useRef(false);
   const refreshed = useRef('');
-  const own = job?.action === 'fill_range' ? job : null;
+  const own = job?.action === 'fill_range' ? job : previousJob || null;
   const result = own?.result;
   const held = Boolean(pending) || own?.state === 'uncertain';
   const locked = working || Boolean(job?.active) || held;
@@ -134,7 +135,7 @@ export function FillRange({ selectedDate, csrf, enabled, job, onJob, onRefresh, 
         {result?.range && <p>{result.range.date} · {result.range.start_time}–{result.range.end_time}</p>}<p>{own.text}</p>
         {own.active && <><progress aria-label="Fill progress" /><button type="button" className="quiet-secondary" disabled={working || ['stopping', 'checking'].includes(own.state)} onClick={() => void control(false)}>{own.state === 'stopping' ? 'Stopping…' : 'Stop'}</button></>}
         {result?.bookings?.map(b => <button className="fill-booking" type="button" key={b.event_id} onClick={() => onDetails({ event_id: b.event_id, room: b.room, date: b.date, start_time: b.start, end_time: b.end, is_reservation: true, title: 'Reservation' })}>{b.start}–{b.end} · {b.room} <span>View booking →</span></button>)}
-        {Boolean(result?.remaining?.length) && <><h4>Still unfilled</h4>{result?.remaining?.map(g => <p key={g.start}>{g.start}–{g.end} · {g.minutes} min</p>)}{result?.reasons?.map(r => <p key={r}>{r}</p>)}{result?.advance_minutes === 0 && <p>ASIMUT reports no advance booking credit.</p>}</>}
+        {Boolean(result?.remaining?.length) && <><h4>Still unfilled</h4>{result?.remaining?.map(g => <p key={g.start}>{g.start}–{g.end} · {g.minutes} min</p>)}{result?.reasons?.map(r => <p key={r}>{r}</p>)}</>}
       </>}
       {error && <p role="alert">{error}</p>}
       {!enabled && !own?.active && <p>Connect to the PC and finish any other active operation to book.</p>}

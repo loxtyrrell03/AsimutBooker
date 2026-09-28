@@ -111,6 +111,28 @@ class FillTests(unittest.TestCase):
             fake.try_book_slot.assert_not_called();fake.refresh_practice_room_overview.assert_not_called()
             self.assertEqual(json.loads(Path(args.fill_output).read_text())['covered_minutes'],120)
 
+    def test_short_gaps_explain_no_new_booking_without_blaming_quota(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake,tracker,args=self.fixture(folder)
+            args.fill_start='12:00';args.fill_end='14:00'
+            for name in ('PRIORITY_ROOMS','MIN_BOOKING_MINUTES','MAX_BOOKING_HOURS','room_horizon_minutes'):
+                setattr(fake,name,getattr(engine,name))
+            fake.get_available_slots.return_value=[
+                {'room':'Top','slots':[{'startHour':12.75,'endHour':13}]},
+                {'room':'Other','slots':[{'startHour':13,'endHour':13.25}]},
+                {'room':'Excluded','slots':[{'startHour':12.5,'endHour':14}]}]
+            run(fake,None,args,{},tracker,today=NOW.date(),live_dates=[NOW.date()])
+            result=json.loads(Path(args.fill_output).read_text(encoding='utf-8'))
+            self.assertEqual(result['covered_minutes'],30)
+            self.assertEqual(result['remaining'],[{'start':'12:30','end':'14:00','minutes':90}])
+            self.assertIn('No new bookings',result['message'])
+            reasons=' '.join(result['reasons'])
+            self.assertIn('30 minutes',reasons)
+            self.assertIn('Top 12:45–13:00 (15 min)',reasons)
+            self.assertNotIn('Excluded',reasons)
+            self.assertNotIn('quota',reasons.lower())
+            fake.try_book_slot.assert_not_called()
+
     def test_exact_identity_and_verified_agenda_required_before_next_save(self):
         with tempfile.TemporaryDirectory() as folder:
             fake,tracker,args=self.fixture(folder)
