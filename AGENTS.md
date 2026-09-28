@@ -22,6 +22,13 @@
   of overwriting it with a quota-wait message. All 105 combined focused checks
   pass with temporary Tempo snapshot/runtime paths; live coordination must be
   isolated for offline tests whose synthetic dates overlap the accepted scope.
+- Live recovery verified the exact partial booking through a new complete
+  agenda, retained its manual pin and left no pending receipt. Connected private
+  HTTPS My Week renders it as Booked. Tempo's corrected runtime accepted a fresh
+  shared plan with unchanged ordinary task times and saved booking preferences.
+  Use the room-grid observer (as in `phone_operation_worker`) when publishing
+  raw grids: bare `--check-only` validates grids but does not write that display
+  cache. Existing scheduled and explicit workers use the repaired source.
 
 ## 2026-09-28 explicit time-range fill engine and design
 
