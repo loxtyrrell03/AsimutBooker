@@ -46,7 +46,7 @@ def validate_action(action, args):
               'cleanup': {'revision'}, 'reopen': {'revision', 'window'},
               'room_now': {'mode', 'minutes'},
               'fill_range': {'date', 'start_time', 'end_time'}}.get(action, set())
-    if set(args) != fields:
+    if set(args) != fields and not (action == 'reopen' and set(args) == fields | {'selection'}):
         raise ValueError('The action has unexpected fields.')
     if action == 'room_now':
         from room_now import validate_choices
@@ -82,11 +82,10 @@ def validate_action(action, args):
         if type(args['protected']) is not bool:
             raise ValueError('Choose whether to protect this reservation.')
     if action == 'reopen':
-        from booking_blackouts import make_rebooking_blackout
-        window = args['window']
-        if not isinstance(window, dict) or set(window) != {'date', 'start_time', 'end_time'}:
-            raise ValueError('Choose one protected time window.')
-        make_rebooking_blackout(window['date'], window['start_time'], window['end_time'])
+        from booking_blackouts import validate_reopening
+        if 'selection' in args and not isinstance(args['selection'], dict):
+            raise ValueError('Choose the exact time to reopen.')
+        validate_reopening(args['window'], args.get('selection'))
     return args
 
 
@@ -361,7 +360,8 @@ def run_local_action(action, args, root=ROOT):
                 path.unlink()
             return {'message': f"Removed {len(rows)} old log files."}
         if action == 'reopen':
-            from booking_blackouts import make_rebooking_blackout, load_rebooking_blackouts, merge_rebooking_blackouts
+            from booking_blackouts import (_store, load_rebooking_blackouts,
+                                          subtract_rebooking_blackout_values, validate_reopening)
             window = args['window']
             with settings_transaction(root / 'data/settings.json') as settings:
                 values = load_rebooking_blackouts(settings)
@@ -369,11 +369,17 @@ def run_local_action(action, args, root=ROOT):
                 _require_revision(revision(rows), args['revision'])
                 if window not in rows:
                     raise SystemConflict('This protected time changed. Reload the list.')
-                selected = make_rebooking_blackout(window['date'], window['start_time'], window['end_time'])
-                # Exact whole-window reopening; no broad date or reservation mutation.
-                from booking_blackouts import _store
-                _store(settings, merge_rebooking_blackouts(w for w in values if w != selected))
+                try:
+                    _, selected = validate_reopening(window, args.get('selection'))
+                except (ValueError, SettingsError) as exc:
+                    raise SystemConflict(str(exc)) from exc
+                # The original row remains the revision-bound authority; only
+                # its explicitly selected portion is reopened under this lock.
+                _store(settings, subtract_rebooking_blackout_values(values, selected))
             from booking_plan import clear_booking_plan
             clear_booking_plan(root / 'data/booking_plan.json')
-            return {'message': 'This time is available to the automatic Booker again.'}
+            clear_booking_plan(root / 'data/upgrade_plan.json')
+            return {'message': 'This time is available to the automatic Booker again.',
+                    'window': window, 'selection': selected.to_dict(),
+                    'protected': read_view('protected', root)}
     raise ValueError('Unsupported local action.')

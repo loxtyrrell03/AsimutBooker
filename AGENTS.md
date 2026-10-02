@@ -1,3 +1,25 @@
+## 2026-10-02 partial reopening of protected time
+
+- Native `phone_system.reopen` retains `{revision, window}` whole-window clients
+  and accepts optional `selection` with the same exact date/start/end fields.
+  The displayed original window and full protection revision are rechecked
+  under runtime/settings locks; only a contained quarter-hour selection is
+  subtracted. Both outside portions, other dates, pins, goals and all unrelated
+  settings survive. There is no immediate booking or queued preference run.
+- Selected time must not have ended in Europe/London; an already started window
+  is allowed while its end remains future. Ambiguous/nonexistent DST endpoints
+  are rejected. Timing is checked again inside the writer lock. The shared pure
+  subtraction helper also serves the existing assistant writer without changing
+  its authorization or broader explicit interval behavior.
+- Both display plans are cleared after the atomic save. A failure at that point
+  can follow a persisted change: clients must recover by reading whether the
+  selected portion remains protected, never by replaying the write or requiring
+  the original whole window to disappear. Read-only recovery must not reject a
+  request merely because its previously reopened interval has since ended.
+- Verification: 17 new partial-reopening tests and a combined 93 synthetic
+  blackout, native phone, pin, final-Save and assistant reopening checks pass.
+  Validation changed no live settings, bookings or services.
+
 ## 2026-10-02 exact reservation protection controls
 
 - `reservation_pins.py` and `phone_system.read_view('pins')` expose existing

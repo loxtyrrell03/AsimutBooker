@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from app_settings import SETTINGS_FILE, SettingsError, load_settings, update_settings
 
@@ -162,6 +163,61 @@ def _store(settings: dict[str, Any], values: Sequence[RebookingBlackout]) -> Non
     settings[SETTINGS_KEY] = [item.to_dict() for item in canonical]
 
 
+def _unambiguous_london_time(day: date, clock: str) -> datetime:
+    naive = datetime.fromisoformat(f"{day.isoformat()}T{clock}")
+    london = ZoneInfo("Europe/London")
+    instants = set()
+    for fold in (0, 1):
+        instant = naive.replace(tzinfo=london, fold=fold).astimezone(timezone.utc)
+        if instant.astimezone(london).replace(tzinfo=None) == naive:
+            instants.add(instant)
+    if len(instants) != 1:
+        raise ValueError("Choose an unambiguous time that exists in Europe/London.")
+    return instants.pop()
+
+
+def validate_reopening(window, selection=None, *, now=None):
+    """Validate one displayed blackout and an optional contained London interval."""
+    def parse(value):
+        if (not isinstance(value, dict) or set(value) != {"date", "start_time", "end_time"}
+                or not isinstance(value["date"], str)):
+            raise ValueError("Choose one exact dated protected time window.")
+        return make_rebooking_blackout(value["date"], value["start_time"], value["end_time"])
+
+    original = parse(window)
+    selected = original if selection is None else parse(selection)
+    if (selected.date != original.date or selected.start_minutes < original.start_minutes
+            or selected.end_minutes > original.end_minutes):
+        raise ValueError("Choose time contained in the displayed protected window.")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("Current time must include a timezone.")
+    _unambiguous_london_time(selected.date, selected.start_time)
+    end = _unambiguous_london_time(selected.date, selected.end_time)
+    if end <= current:
+        raise ValueError("This selected time has already ended. Choose upcoming time to reopen.")
+    return original, selected
+
+
+def subtract_rebooking_blackout_values(
+    values: Iterable[RebookingBlackout], removed: RebookingBlackout,
+) -> tuple[RebookingBlackout, ...]:
+    """Subtract a validated interval without reading, writing or acquiring locks."""
+    if not isinstance(removed, RebookingBlackout):
+        raise SettingsError("The reopened interval must be a validated blackout value")
+    remaining = []
+    for item in merge_rebooking_blackouts(values):
+        if (item.date != removed.date or removed.end_minutes <= item.start_minutes
+                or removed.start_minutes >= item.end_minutes):
+            remaining.append(item)
+            continue
+        if item.start_minutes < removed.start_minutes:
+            remaining.append(RebookingBlackout(item.date, item.start_minutes, removed.start_minutes))
+        if removed.end_minutes < item.end_minutes:
+            remaining.append(RebookingBlackout(item.date, removed.end_minutes, item.end_minutes))
+    return merge_rebooking_blackouts(remaining)
+
+
 def add_rebooking_blackout(
     blackout_date: date | str,
     start_time: str,
@@ -227,32 +283,7 @@ def subtract_rebooking_blackout(
     removed = make_rebooking_blackout(blackout_date, start_time, end_time)
 
     def mutate(settings: dict[str, Any]) -> tuple[RebookingBlackout, ...]:
-        remaining: list[RebookingBlackout] = []
-        for item in load_rebooking_blackouts(settings):
-            if (
-                item.date != removed.date
-                or removed.end_minutes <= item.start_minutes
-                or removed.start_minutes >= item.end_minutes
-            ):
-                remaining.append(item)
-                continue
-            if item.start_minutes < removed.start_minutes:
-                remaining.append(
-                    RebookingBlackout(
-                        item.date,
-                        item.start_minutes,
-                        removed.start_minutes,
-                    )
-                )
-            if removed.end_minutes < item.end_minutes:
-                remaining.append(
-                    RebookingBlackout(
-                        item.date,
-                        removed.end_minutes,
-                        item.end_minutes,
-                    )
-                )
-        result = merge_rebooking_blackouts(remaining)
+        result = subtract_rebooking_blackout_values(load_rebooking_blackouts(settings), removed)
         _store(settings, result)
         return result
 
@@ -311,4 +342,6 @@ __all__ = [
     "make_rebooking_blackout",
     "merge_rebooking_blackouts",
     "subtract_rebooking_blackout",
+    "subtract_rebooking_blackout_values",
+    "validate_reopening",
 ]
