@@ -1,3 +1,24 @@
+## 2026-10-02 exact reservation protection controls
+
+- `reservation_pins.py` and `phone_system.read_view('pins')` expose existing
+  all-or-nothing manual reservation pins, including retained unmatched records.
+  `pins_save` changes one reviewed positive ID/date/room/start/end under the
+  runtime and settings locks. It requires a fresh covered agenda, a unique
+  non-cancelled reservation that has not started, and no pending receipts.
+- The independent revision binds every pin, agenda identity/scope and saved
+  extension goal. Changed live tuples display their old stored pin and require
+  explicit rebind/removal; missing, expired, ambiguous and unsupported rows stay
+  read-only. Unknown receipt evidence is not an empty pending list.
+- Pinning retires only that selected ID's goals (legacy goals match date+room).
+  Unpinning never recreates deleted goals or reopens released-time blackouts;
+  an already saved latent goal can become eligible again. Other pins, goals,
+  event choices and observation history are preserved. Both display plans are
+  invalidated after commit, with no immediate run or preference-run queued.
+- Existing full preference and per-ID final-Save guards enforce these pins.
+  Tempo's fresh worker imports the source directly; a long-lived phone process
+  needs a later controlled restart only to expose this new native phone action.
+  Verification uses temporary synthetic settings/agenda/receipt fixtures only.
+
 ## 2026-10-02 exact dated event choices and scoped editors
 
 - New event choices use `v3` identity: positive remote event ID plus reviewed

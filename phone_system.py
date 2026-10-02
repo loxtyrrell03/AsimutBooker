@@ -15,12 +15,13 @@ from event_identity import (EVENT_RESPECT_PREFIX, EventIdentityError, deduplicat
                             event_identity_payload, event_identity_v2,
                             legacy_event_identity, remote_event_id, resolve_ignored_event_keys)
 from runtime_guard import SingleInstanceLock
+from reservation_pins import project_reservation_pins
 
 ROOT = Path(__file__).resolve().parent
 RUN_ACTIONS = {'run', 'run_visible', 'login', 'scan', 'agenda', 'plan', 'room_now', 'fill_range'}
 WRITE_ACTIONS = {'schedule_install', 'schedule_remove', 'history_clear', 'events_save',
-                 'config_save', 'cleanup', 'reopen'}
-VIEWS = {'scan', 'schedule', 'history', 'events', 'config', 'logs', 'cleanup', 'protected'}
+                 'config_save', 'cleanup', 'reopen', 'pins_save'}
+VIEWS = {'scan', 'schedule', 'history', 'events', 'config', 'logs', 'cleanup', 'protected', 'pins'}
 
 
 class SystemConflict(ValueError):
@@ -41,6 +42,7 @@ def validate_action(action, args):
         raise ValueError('Choose a supported action.')
     fields = {'scan': {'dates'}, 'history_clear': {'revision'},
               'events_save': {'revision', 'changes'}, 'config_save': {'revision', 'rules'},
+              'pins_save': {'revision', 'target', 'protected'},
               'cleanup': {'revision'}, 'reopen': {'revision', 'window'},
               'room_now': {'mode', 'minutes'},
               'fill_range': {'date', 'start_time', 'end_time'}}.get(action, set())
@@ -74,6 +76,11 @@ def validate_action(action, args):
     if action == 'config_save':
         from book_week import validate_config_document
         validate_config_document({'rules': args['rules']})
+    if action == 'pins_save':
+        from reservation_pins import validate_target
+        validate_target(args['target'])
+        if type(args['protected']) is not bool:
+            raise ValueError('Choose whether to protect this reservation.')
     if action == 'reopen':
         from booking_blackouts import make_rebooking_blackout
         window = args['window']
@@ -137,6 +144,17 @@ def _event_document(root, settings=None):
                                      covered_dates=[day.isoformat() for day in result.snapshot.dates])
     identities = {row['key']: row['identity'] for row in document['events'] if row['eligible']}
     return document, identities, events
+
+
+def _pins_document(root, settings=None):
+    from mutation_receipts import list_pending
+    settings = load_settings(root / 'data/settings.json') if settings is None else settings
+    result = read_agenda_snapshot(root / 'data/agenda_snapshot.json')
+    snapshot = result.snapshot
+    return project_reservation_pins(snapshot.event_dicts() if snapshot else [], settings,
+        stale=result.stale, observed_at=snapshot.observed_at.isoformat() if snapshot else None,
+        covered_dates=[day.isoformat() for day in snapshot.dates] if snapshot else [],
+        pending_count=len(list_pending(root / 'data/mutation_receipts.json')))
 
 
 def _changed_event_choices(ignored_keys, events, changes, identities):
@@ -250,6 +268,8 @@ def read_view(view, root=ROOT):
         return {'revision': revision(source), 'runs': runs}
     if view == 'events':
         return _event_document(root)[0]
+    if view == 'pins':
+        return _pins_document(root)
     if view == 'config':
         return _config(root)
     if view == 'cleanup':
@@ -316,6 +336,20 @@ def run_local_action(action, args, root=ROOT):
             from booking_plan import clear_booking_plan
             clear_booking_plan(root / 'data/booking_plan.json')
             return {'message': 'Event conflict choices saved.'}
+        if action == 'pins_save':
+            from reservation_pins import apply_protection
+            with settings_transaction(root / 'data/settings.json') as settings:
+                doc = _pins_document(root, settings)
+                _require_revision(doc['revision'], args['revision'])
+                matches = [row for row in doc['reservations']
+                           if row['present'] and row['target'] == args['target']]
+                if len(matches) != 1 or not matches[0]['eligible']:
+                    raise SystemConflict('This reservation cannot be changed. Refresh and review its protection.')
+                apply_protection(settings, args['target'], args['protected'])
+            from booking_plan import clear_booking_plan
+            clear_booking_plan(root / 'data/booking_plan.json')
+            clear_booking_plan(root / 'data/upgrade_plan.json')
+            return dict(ok=True, pins=_pins_document(root), target=args['target'], protected=args['protected'])
         if action == 'cleanup':
             rows = _old_logs(root)
             _require_revision(revision(rows), args['revision'])
