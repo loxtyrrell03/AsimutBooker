@@ -36,6 +36,19 @@
   retain older hashed assets for open clients, and reload only the verified idle
   `AsimutBooker_Phone` task. Fresh normal workers import current source. This
   milestone preparation changed no live settings, bookings, routes or services.
+- Activation completed for source `f3ceb73` and phone build
+  `20261002-exact-events` using the existing idle phone task and all three
+  ownership locks. A previous Codex update had removed the configured helper;
+  only `phone_server_config.json.codex_executable` was repaired to the installed,
+  version-verified command under the config writer lock. Every other config
+  field, protected data hash, task XML and Serve route was preserved during the
+  repair. Normal worker updates made while waiting for ownership were retained.
+- The deployment verifier, private HTTPS session and native event projection
+  pass. Connected Chromium/WebKit event views pass at 320/390px; the browser
+  guard blocked automatic live scanning and all booking/settings submissions.
+  This is PC-browser proof, not physical-phone verification. Private activation,
+  rollback, path-repair and browser receipts are in
+  `phone/work/event-choices-build/`. No desktop instance was open to relaunch.
 
 ## 2026-10-02 display-cache renewal preserves exact booking guards
 
