@@ -11,6 +11,8 @@ from datetime import date
 
 
 EVENT_IDENTITY_V2_PREFIX = "v2:"
+EVENT_IDENTITY_V3_PREFIX = "v3:"
+EVENT_RESPECT_PREFIX = "respect:"
 _TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 _LEGACY_KEY_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}_"
@@ -25,10 +27,14 @@ class EventIdentityError(ValueError):
 
 @dataclass(frozen=True)
 class IgnoredEventResolution:
-    """Resolved v2 ignores plus legacy keys that were unsafe to apply."""
+    """Exact current choices and conservative compatibility projections."""
 
     ignored_v2_keys: frozenset[str]
     ambiguous_legacy_keys: frozenset[str]
+    ignored_event_keys: frozenset[str] = frozenset()
+    ambiguous_v2_keys: frozenset[str] = frozenset()
+    ambiguous_event_keys: frozenset[str] = frozenset()
+    respected_event_keys: frozenset[str] = frozenset()
 
 
 def _canonical_text(value: object, field: str, *, optional: bool = False) -> str:
@@ -93,6 +99,61 @@ def event_identity_v2(event: Mapping[str, object]) -> str:
     )
 
 
+def remote_event_id(event: Mapping[str, object]) -> int | None:
+    """Accept only an unambiguous positive ASIMUT identifier."""
+    if not isinstance(event, Mapping):
+        raise EventIdentityError('Event must be an object')
+    value = event.get('eventId')
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str) and re.fullmatch(r'[1-9][0-9]*', value):
+        return int(value)
+    return None
+
+
+def event_identity_v3(event: Mapping[str, object]) -> str:
+    """Bind a dated remote event to every reviewed classification/tuple field."""
+    payload = event_identity_payload(event)
+    identifier = remote_event_id(event)
+    if identifier is None:
+        raise EventIdentityError('An exact event choice needs a positive remote event ID')
+    payload['event_id'] = identifier
+    return EVENT_IDENTITY_V3_PREFIX + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def event_identity(event: Mapping[str, object]) -> str:
+    """Current read identity; ID-less historical data retains its v2 fallback.
+
+    A fallback identifies cached data only, and cannot authorize a new choice.
+    New writers must require ``event_choice_eligibility`` and write v3.
+    """
+    return event_identity_v3(event) if remote_event_id(event) is not None else event_identity_v2(event)
+
+
+def event_respect_key(event: Mapping[str, object]) -> str:
+    """Explicit exact Respect overrides any older allow for this identity only.
+
+    Keep these tokens in ignored_events so every existing full preference guard,
+    cache fingerprint and atomic settings editor includes both choice values.
+    """
+    return EVENT_RESPECT_PREFIX + event_identity_v3(event)
+
+
+def event_choice_eligibility(event: Mapping[str, object], events: Iterable[Mapping[str, object]]) -> tuple[bool, str]:
+    """Only a distinct, positively identified non-reservation may be edited."""
+    payload = event_identity_payload(event)
+    identifier = remote_event_id(event)
+    if payload['isReservation']:
+        return False, 'Room reservations keep their booking controls and cannot be ignored here.'
+    if identifier is None:
+        return False, 'This event has no verified remote ID. Refresh the agenda before choosing it.'
+    matches = {event_identity(item) for item in events
+               if remote_event_id(item) == identifier and event_identity_payload(item)['date'] == payload['date']}
+    if len(matches) != 1:
+        return False, 'This dated event has conflicting details. Refresh the agenda before choosing it.'
+    return True, ''
+
+
 def legacy_event_identity(event: Mapping[str, object]) -> str:
     """Build the historical time-only key used by older settings files."""
 
@@ -134,21 +195,9 @@ def deduplicate_events(
     unique_events: list[Mapping[str, object]] = []
     seen: set[str] = set()
     for event in events:
-        event_id = event.get("eventId")
-        if isinstance(event_id, bool):
-            event_id = None
-        if isinstance(event_id, int) and event_id > 0:
-            key = f"event-id:{event_id}"
-        elif (
-            isinstance(event_id, str)
-            and event_id
-            and event_id.isascii()
-            and event_id.isdecimal()
-            and not event_id.startswith("0")
-        ):
-            key = f"event-id:{event_id}"
-        else:
-            key = event_identity_v2(event)
+        # Keep a conflicting same-ID card visible to the ambiguity resolver;
+        # first-row-wins would silently grant permission to changed details.
+        key = event_identity(event)
         if key in seen:
             continue
         seen.add(key)
@@ -160,52 +209,91 @@ def resolve_ignored_event_keys(
     ignored_keys: Iterable[str],
     events: Iterable[Mapping[str, object]],
 ) -> IgnoredEventResolution:
-    """Resolve v2 keys and only unambiguous historical keys for one event set.
+    """Resolve exact v3 and unambiguous older choices without changing storage.
 
     A legacy ``date_start_end`` key is applied only if it maps to exactly one
-    distinct v2 identity in the current scan/cache.  If a class and reservation
-    share that time, neither is ignored.
+    distinct dated remote identity in the current scan/cache. Identical tuples
+    with different remote IDs make both legacy and v2 permission ambiguous.
+    An inconsistent same-ID/same-date card authorizes no version of its choice.
     """
 
     if isinstance(ignored_keys, (str, bytes)):
         raise EventIdentityError("Ignored event keys must be a collection")
 
-    v2_events: dict[str, Mapping[str, object]] = {}
+    current_events: dict[str, Mapping[str, object]] = {}
+    v2_matches: dict[str, set[str]] = defaultdict(set)
     legacy_matches: dict[str, set[str]] = defaultdict(set)
+    remote_matches: dict[tuple[int, str], set[str]] = defaultdict(set)
     for event in events:
+        current_key = event_identity(event)
         v2_key = event_identity_v2(event)
-        v2_events.setdefault(v2_key, event)
-        legacy_matches[legacy_event_identity(event)].add(v2_key)
+        current_events.setdefault(current_key, event)
+        v2_matches[v2_key].add(current_key)
+        legacy_matches[legacy_event_identity(event)].add(current_key)
+        identifier = remote_event_id(event)
+        if identifier is not None:
+            remote_matches[(identifier, event_identity_payload(event)['date'])].add(current_key)
 
     resolved: set[str] = set()
+    respected: set[str] = set()
     ambiguous: set[str] = set()
+    ambiguous_v2: set[str] = set()
+    ambiguous_current = {key for matches in remote_matches.values() if len(matches) > 1 for key in matches}
     for ignored_key in ignored_keys:
         if not isinstance(ignored_key, str):
             raise EventIdentityError("Ignored event keys must be text")
-        if ignored_key.startswith(EVENT_IDENTITY_V2_PREFIX):
-            if ignored_key in v2_events and is_v2_event_identity_key(ignored_key):
+        if ignored_key.startswith(EVENT_RESPECT_PREFIX + EVENT_IDENTITY_V3_PREFIX):
+            target = ignored_key[len(EVENT_RESPECT_PREFIX):]
+            if target in current_events:
+                respected.add(target)
+            continue
+        if ignored_key.startswith(EVENT_IDENTITY_V3_PREFIX):
+            if ignored_key in current_events and ignored_key not in ambiguous_current:
                 resolved.add(ignored_key)
+            continue
+        if ignored_key.startswith(EVENT_IDENTITY_V2_PREFIX):
+            matches = v2_matches.get(ignored_key, set())
+            if len(matches) == 1 and not matches & ambiguous_current:
+                resolved.update(matches)
+            elif len(matches) > 1 or matches & ambiguous_current:
+                ambiguous_v2.add(ignored_key)
             continue
         if _LEGACY_KEY_RE.fullmatch(ignored_key) is None:
             continue
         matches = legacy_matches.get(ignored_key, set())
-        if len(matches) == 1:
+        if len(matches) == 1 and not matches & ambiguous_current:
             resolved.update(matches)
-        elif len(matches) > 1:
+        elif len(matches) > 1 or matches & ambiguous_current:
             ambiguous.add(ignored_key)
 
+    # An explicit negative choice remains authoritative if an old ambiguous
+    # alias later becomes unique. Corrupt allow+respect pairs fail closed.
+    resolved.difference_update(respected)
     return IgnoredEventResolution(
-        ignored_v2_keys=frozenset(resolved),
+        # Old consumers must never broaden one exact v3 selection to both
+        # remote rows. New consumers use ignored_event_keys + event_identity.
+        ignored_v2_keys=frozenset(key for key, matches in v2_matches.items() if matches and matches <= resolved),
         ambiguous_legacy_keys=frozenset(ambiguous),
+        ignored_event_keys=frozenset(resolved),
+        ambiguous_v2_keys=frozenset(ambiguous_v2),
+        ambiguous_event_keys=frozenset(ambiguous_current),
+        respected_event_keys=frozenset(respected),
     )
 
 
 __all__ = [
     "EVENT_IDENTITY_V2_PREFIX",
+    "EVENT_IDENTITY_V3_PREFIX",
+    "EVENT_RESPECT_PREFIX",
     "EventIdentityError",
     "IgnoredEventResolution",
     "deduplicate_events",
     "event_identity_payload",
+    "event_identity",
+    "event_identity_v3",
+    "event_respect_key",
+    "event_choice_eligibility",
+    "remote_event_id",
     "event_identity_v2",
     "is_v2_event_identity_key",
     "legacy_event_identity",

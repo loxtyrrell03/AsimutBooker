@@ -1,3 +1,42 @@
+## 2026-10-02 exact dated event choices and scoped editors
+
+- New event choices use `v3` identity: positive remote event ID plus reviewed
+  date, start/end, title, room and reservation type. Every scanner and upgrade/
+  progressive input consumer uses `event_identity` and `ignored_event_keys`.
+  Separate IDs with identical tuples remain separate. Missing IDs, inconsistent
+  same-ID details and ambiguous legacy/v2 choices grant no new permission.
+- `phone_system.events_save` retains the runtime lock, fresh agenda/revision
+  check and atomic preference transaction, changing only explicitly selected
+  eligible non-reservation rows. Out-of-view choices and manual pins survive.
+  Old choices migrate only on an explicit reviewed change. Exact `respect:v3`
+  choices override older allows for that dated identity even when a previous
+  ambiguity disappears; full preference guards/cache hashes include both values.
+- Desktop event edits now use that shared document and writer instead of
+  replacing the ignored list. Dirty drafts retain their opening revision through
+  failed/background reads and concurrent saves. An uncertain save freezes its
+  original draft until explicit read/review; it cannot dispatch again. Desktop
+  and phone disable unsupported rows, label older choices, and expose explicit
+  exact binding/protection. Assistant counts distinguish stored allows/respects
+  and are not presented as counts of currently effective agenda events.
+- Saving still queues the existing preference dispatcher: Automatic On may
+  book; Off remains plan-only. Generic final site warnings, disabled Save,
+  reservation accounting/gaps and explicit time-edit conflict checks are intact.
+  An allowed planning overlap is not proof that ASIMUT will approve a booking.
+- Verification: 269 focused synthetic Python checks and 23 phone Node tests
+  pass, plus TypeScript and targeted lint. Isolated production build
+  `20261002-exact-events` passes offline-shell/origin validation (13 files,
+  2,218,741 bytes). Its output is `phone/work/event-choices-build/dist-phone`,
+  not the live `phone/dist-phone`. The broad intercepted system-tools browser
+  check stops at the unchanged Run Booker now confirmation before event tests;
+  do not report that whole browser flow as passed.
+- Source/build proof is not activation. Existing long-lived phone/desktop
+  processes must load the new resolver before cross-surface parity is claimed;
+  an older desktop writer can still replace the whole list. Preserve open
+  drafts. Promote only under existing assistant/runtime/dispatcher ownership,
+  retain older hashed assets for open clients, and reload only the verified idle
+  `AsimutBooker_Phone` task. Fresh normal workers import current source. This
+  milestone preparation changed no live settings, bookings, routes or services.
+
 ## 2026-10-02 display-cache renewal preserves exact booking guards
 
 - Display-plan fingerprints use the entire normalized Tempo document except

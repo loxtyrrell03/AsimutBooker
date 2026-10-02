@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronRight, RefreshCw } from 'lucide-react';
 import { requestJson } from '../lib/api';
 import { HelpTip } from './help-tip';
+import { editEventChoices, validEventChoices } from '../lib/event_choices.js';
 import type { RoomNowBooking } from './room-now';
 
 type Gap = { date: string; room: string; start: string; end: string; minutes: number };
@@ -17,7 +18,8 @@ type PageData = {
   task?: { task_name: string; state: string; next_run: string; healthy: boolean; problem: string } | null;
   runs?: { time: string; bookings: number | null; outcome: string }[];
   stale?: boolean;
-  events?: { key: string; date: string; start: string; end: string; title: string; room: string; ignored: boolean }[];
+  events?: { key: string; date: string; start: string; end: string; title: string; room: string; ignored: boolean; eligible?: boolean; unsupported_reason?: string; choice_basis?: string | null; unresolved_choice?: boolean }[];
+  unresolved_choice_count?: number;
   rules?: Rules;
   files?: { name: string; bytes?: number; entries?: { time: string; message: string }[] }[];
   windows?: { date: string; start_time: string; end_time: string }[];
@@ -96,6 +98,10 @@ export function SystemTools({ csrf, enabled, active, job, onJob, onSaved, onEdit
   useEffect(() => { if (view) { heading.current?.focus({ preventScroll: true }); heading.current?.scrollIntoView({ block: 'start' }); } }, [view]);
 
   async function load(next: View, force = false) {
+    if (next === 'events' && force && Object.keys(changes).length) {
+      setError('Your event draft was kept. Discard event edits before reloading the current choices.');
+      return;
+    }
     setView(next); onEditing?.(true); setError(''); setConfirmation(null);
     if (['run', 'about'].includes(next) || (pages[next] && !force)) return;
     loadRequest.current?.abort();
@@ -138,6 +144,11 @@ export function SystemTools({ csrf, enabled, active, job, onJob, onSaved, onEdit
   }
 
   function confirm(value: Confirmation) { if (!disabled) setConfirmation(value); }
+  function editEvents(keys: string[], ignored: boolean) {
+    if (disabled || current?.stale) return;
+    setConfirmation(null);
+    setChanges(previous => editEventChoices(current?.events, previous, keys, ignored));
+  }
   return <section className="system-tools" aria-label="PC tools">
     {job && <output className={`system-job ${job.state === 'uncertain' ? 'system-warning' : ''}`} aria-live="polite">
       <strong>{job.active ? 'PC operation in progress' : job.state === 'completed' ? 'PC operation complete' : 'PC operation update'}</strong>
@@ -170,9 +181,30 @@ export function SystemTools({ csrf, enabled, active, job, onJob, onSaved, onEdit
           <div className="system-results">{gaps.map((gap, index) => <article key={index}><strong>{gap.room} · {gap.date}</strong><p>{gap.start}–{gap.end} · {gap.minutes} minutes</p></article>)}</div></>}
       </div>}
       {view === 'history' && current && <div className="system-panel"><p>{current.runs?.length ?? 0} recent runs</p><div className="system-results">{current.runs?.map((run, index) => <details key={index}><summary>{when(run.time)} · {run.bookings === null ? 'Booking count unavailable' : `${run.bookings} bookings`}</summary><p>Run result: {run.outcome.replaceAll('_', ' ')}. See My Week for current reservations.</p></details>)}</div><button type="button" disabled={disabled || !current.runs?.length} onClick={() => confirm({ title: 'Clear booking history?', consequence: 'Saved run history will be deleted. Current reservations and preferences remain unchanged.', action: 'history_clear', args: { revision: current.revision } })}>Clear booking history</button></div>}
-      {view === 'events' && current && <div className="system-panel"><p className="system-warning">Ignoring an event lets the Booker schedule practice over it. Reservations still count toward your quota.</p>{current.stale && <p className="system-warning">Agenda is out of date. Refresh it before saving changes.</p>}<button type="button" disabled={disabled} onClick={() => void start('agenda')}>Refresh live agenda</button><label>Find event<input value={eventQuery} onChange={e => setEventQuery(e.target.value)} /></label><div className="system-actions"><button type="button" disabled={disabled} onClick={() => setChanges(previous => ({ ...previous, ...Object.fromEntries(visibleEvents.map(e => [e.key, false])) }))}>Respect visible events</button><button type="button" disabled={disabled} onClick={() => setChanges(previous => ({ ...previous, ...Object.fromEntries(visibleEvents.map(e => [e.key, true])) }))}>Ignore visible events</button></div>
-        {visibleEvents.map(event => <label className="system-check" key={event.key} aria-label={`Ignore ${event.title} on ${event.date} at ${event.start}`}><input type="checkbox" checked={changes[event.key] ?? event.ignored} disabled={disabled} onChange={e => setChanges(previous => ({ ...previous, [event.key]: e.target.checked }))} /><span><strong>Ignore {event.title}</strong><small>{event.date} · {event.start}–{event.end} {event.room}</small></span></label>)}{!visibleEvents.length && <p>No matching events.</p>}
-        <div className="system-actions"><button type="button" disabled={disabled || current.stale || !Object.keys(changes).length} onClick={() => confirm({ title: 'Save event conflict choices?', consequence: 'The Booker may book over events marked Ignore. Review the selected events before saving.', action: 'events_save', args: { revision: current.revision, changes } })}>Save event choices</button><button type="button" onClick={() => setChanges({})}>Discard event edits</button></div>
+      {view === 'events' && current && <div className="system-panel">
+        <p className="system-warning">Allowing practice affects only this dated event. Site warnings still block booking; existing reservations stay.</p>
+        {current.stale && <p className="system-warning">Agenda is out of date. Refresh it before saving changes.</p>}
+        {Boolean(current.unresolved_choice_count) && <p className="system-warning">Some older choices are ambiguous. Those events remain protected until you review an exact event.</p>}
+        <button type="button" disabled={disabled} onClick={() => void start('agenda')}>Refresh live agenda</button>
+        <label>Find event<input value={eventQuery} onChange={e => setEventQuery(e.target.value)} /></label>
+        <div className="system-actions">
+          <button type="button" disabled={disabled || current.stale} onClick={() => editEvents(visibleEvents.map(e => e.key), false)}>Respect visible events</button>
+          <button type="button" disabled={disabled || current.stale} onClick={() => editEvents(visibleEvents.map(e => e.key), true)}>Allow eligible events</button>
+        </div>
+        {visibleEvents.map(event => <div key={event.key}><label className="system-check" aria-label={`Allow practice during ${event.title} on ${event.date} at ${event.start}`}>
+          <input type="checkbox" checked={changes[event.key] ?? event.ignored} disabled={disabled || current.stale || event.eligible !== true} onChange={e => editEvents([event.key], e.target.checked)} />
+          <span><strong>{event.eligible === true ? 'Allow practice during ' : ''}{event.title}</strong><small>{event.date} · {event.start}–{event.end} {event.room}</small>
+            {event.eligible !== true && <small>{event.unsupported_reason || 'This event cannot be changed here. Reload after updating the app.'}</small>}
+            {event.ignored && event.choice_basis !== 'exact' && <small>Existing older choice</small>}
+          </span>
+        </label>
+          {event.eligible === true && event.ignored && ['v2', 'legacy'].includes(event.choice_basis || '') &&
+            <button type="button" disabled={disabled || current.stale} onClick={() => { setConfirmation(null); setChanges(previous => ({ ...previous, [event.key]: true })); }}>Use exact event</button>}
+          {event.eligible === true && event.unresolved_choice && event.choice_basis !== 'exact' &&
+            <button type="button" disabled={disabled || current.stale} onClick={() => { setConfirmation(null); setChanges(previous => ({ ...previous, [event.key]: false })); }}>Keep this event protected</button>}
+        </div>)}{!visibleEvents.length && <p>No matching events.</p>}
+        <p>Saving queues a check. Automatic On may book; Off checks the plan only.</p>
+        <div className="system-actions"><button type="button" disabled={disabled || current.stale || !Object.keys(changes).length || !validEventChoices(current.events, changes)} onClick={() => confirm({ title: 'Save event conflict choices?', consequence: 'Save these exact dated choices and queue the existing check. Automatic On may book; Off stays Off. Site restrictions and existing bookings remain.', action: 'events_save', args: { revision: current.revision, changes } })}>Save event choices</button><button type="button" onClick={() => { setChanges({}); setConfirmation(null); }}>Discard event edits</button></div>
       </div>}
       {view === 'protected' && current && <div className="system-panel">{!current.windows?.length && <p>No cancelled time windows are protected.</p>}{current.windows?.map(window => <article className="system-item" key={`${window.date}-${window.start_time}`}><strong>{window.date} · {window.start_time}–{window.end_time}</strong><button type="button" disabled={disabled} onClick={() => confirm({ title: 'Allow booking in this time again?', consequence: `The automatic Booker can use ${window.date}, ${window.start_time}–${window.end_time} again. This does not create a reservation immediately.`, action: 'reopen', args: { revision: current.revision, window } })}>Allow booking again</button></article>)}</div>}
       {view === 'logs' && current && <div className="system-panel"><h4>Current operation</h4>{job && (job.updated_at ?? '') > clearedAt ? <p>{job.text}</p> : <p>No new operation activity.</p>}<button type="button" onClick={() => setClearedAt(new Date().toISOString())}>Clear displayed activity</button><h4>Sanitized logs <HelpTip label="Sanitized logs">Shows recognized operation stages and errors. Credentials, browser output and private diagnostics stay on the PC.</HelpTip></h4>{!current.files?.length && <p>No supported logs available.</p>}{current.files?.map(file => <details key={file.name}><summary>{file.name}</summary><button type="button" onClick={() => download(`${file.name}.txt`, (file.entries ?? []).map(row => `${row.time} ${row.message}`).join('\n'), 'text/plain;charset=utf-8')}>Download sanitized log</button>{file.entries?.length ? file.entries.map((row, index) => <p key={index}>{row.time || 'Time unavailable'} · {row.message}</p>) : <p>No recognized stages in the latest log section.</p>}</details>)}</div>}

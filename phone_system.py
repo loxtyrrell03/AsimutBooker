@@ -11,7 +11,9 @@ from pathlib import Path
 from app_settings import (InterProcessFileLock, SettingsError, atomic_write_json,
                           load_settings, settings_transaction)
 from agenda_snapshot import read_agenda_snapshot
-from event_identity import event_identity_v2, legacy_event_identity, resolve_ignored_event_keys
+from event_identity import (EVENT_RESPECT_PREFIX, EventIdentityError, deduplicate_events, event_choice_eligibility, event_identity,
+                            event_identity_payload, event_identity_v2,
+                            legacy_event_identity, remote_event_id, resolve_ignored_event_keys)
 from runtime_guard import SingleInstanceLock
 
 ROOT = Path(__file__).resolve().parent
@@ -86,21 +88,81 @@ def _history(root):
     return load_history_document(root / 'data/booking_history.json')
 
 
+def project_event_choices(events, ignored_keys, *, stale, observed_at, covered_dates):
+    """Project one already validated agenda/settings snapshot without re-reading.
+
+    The revision covers the exact dated identities, scope and ALL saved choices.
+    An observation-only refresh does not change permission; stale evidence still
+    cannot be saved. This helper lets Tempo use its existing coherent snapshot.
+    """
+    events = deduplicate_events(events)
+    if isinstance(ignored_keys, (str, bytes)):
+        raise EventIdentityError('Ignored event keys must be a collection')
+    ignored_keys = list(ignored_keys)
+    resolution = resolve_ignored_event_keys(ignored_keys, events)
+    ambiguous = resolution.ambiguous_legacy_keys | resolution.ambiguous_v2_keys
+    rows = []
+    for event in events:
+        identity = event_identity(event)
+        payload = event_identity_payload(event)
+        eligible, unsupported = event_choice_eligibility(event, events)
+        old, v2 = legacy_event_identity(event), event_identity_v2(event)
+        ignored = identity in resolution.ignored_event_keys
+        basis = None
+        if identity in resolution.respected_event_keys or (ignored and identity.startswith('v3:') and identity in ignored_keys):
+            basis = 'exact'
+        elif ignored:
+            basis = 'v2' if v2 in ignored_keys else 'legacy'
+        rows.append(dict(key=revision(identity), identity=identity, event_id=remote_event_id(event),
+                         date=payload['date'], start=payload['start'], end=payload['end'],
+                         title=payload['title'], room=payload['room'], is_reservation=payload['isReservation'],
+                         eligible=eligible, unsupported_reason=unsupported, ignored=ignored,
+                         choice_basis=basis, unresolved_choice=bool({old, v2} & ambiguous)
+                         or identity in resolution.ambiguous_event_keys))
+    rows.sort(key=lambda row: (row['date'], row['start'], row['end'], row['identity']))
+    dates = sorted(set(covered_dates))
+    return dict(revision=revision([[row['identity'] for row in rows], sorted(set(ignored_keys)), dates]),
+                stale=stale, observed_at=observed_at, covered_dates=dates, events=rows,
+                unresolved_choice_count=len(ambiguous | (set(ignored_keys) & resolution.ambiguous_event_keys)))
+
+
 def _event_document(root, settings=None):
     settings = load_settings(root / 'data/settings.json') if settings is None else settings
     result = read_agenda_snapshot(root / 'data/agenda_snapshot.json')
     if result.snapshot is None:
         raise SystemConflict('Refresh the agenda before managing events.')
     events = result.snapshot.event_dicts()
-    ignored = settings.get('ignored_events', [])
-    resolution = resolve_ignored_event_keys(ignored, events)
-    identities = {revision(event_identity_v2(e)): event_identity_v2(e) for e in events}
-    return {'revision': revision([events, ignored]), 'stale': result.stale,
-            'events': [{'key': revision(event_identity_v2(e)), 'date': e['date'],
-                        'start': e['startTime'], 'end': e['endTime'],
-                        'title': e['title'][:200], 'room': (e.get('room') or '')[:100],
-                        'ignored': event_identity_v2(e) in resolution.ignored_v2_keys}
-                       for e in events]}, identities, events
+    document = project_event_choices(events, settings.get('ignored_events', []), stale=result.stale,
+                                     observed_at=result.snapshot.observed_at.isoformat(),
+                                     covered_dates=[day.isoformat() for day in result.snapshot.dates])
+    identities = {row['key']: row['identity'] for row in document['events'] if row['eligible']}
+    return document, identities, events
+
+
+def _changed_event_choices(ignored_keys, events, changes, identities):
+    """Only explicitly reviewed eligible rows may retire uniquely bound aliases."""
+    ignored = set(ignored_keys)
+    matches = {}
+    for event in events:
+        current = event_identity(event)
+        for alias in (legacy_event_identity(event), event_identity_v2(event)):
+            matches.setdefault(alias, set()).add(current)
+    aliases_by_identity = {}
+    for alias, targets in matches.items():
+        if len(targets) == 1:
+            aliases_by_identity.setdefault(next(iter(targets)), set()).add(alias)
+    for key, allow in changes.items():
+        identity = identities[key]
+        # Out-of-view and ambiguous historical permissions stay untouched. An
+        # explicit change can retire only aliases uniquely bound to this row.
+        ignored.difference_update(aliases_by_identity.get(identity, set()))
+        if allow:
+            ignored.discard(EVENT_RESPECT_PREFIX + identity)
+            ignored.add(identity)
+        else:
+            ignored.discard(identity)
+            ignored.add(EVENT_RESPECT_PREFIX + identity)
+    return sorted(ignored)
 
 
 def _config(root):
@@ -249,20 +311,8 @@ def run_local_action(action, args, root=ROOT):
                     raise SystemConflict('Refresh the agenda before changing events.')
                 if set(args['changes']) - set(identities):
                     raise SystemConflict('An event changed. Refresh the agenda.')
-                ignored = set(settings.get('ignored_events', []))
-                resolved = resolve_ignored_event_keys(ignored, events)
-                # Migrate only unambiguous legacy keys, preserving unrelated choices.
-                for event in events:
-                    old = legacy_event_identity(event)
-                    if old in ignored and old not in resolved.ambiguous_legacy_keys:
-                        ignored.remove(old)
-                        ignored.add(event_identity_v2(event))
-                for key, ignore in args['changes'].items():
-                    if ignore:
-                        ignored.add(identities[key])
-                    else:
-                        ignored.discard(identities[key])
-                settings['ignored_events'] = sorted(ignored)
+                settings['ignored_events'] = _changed_event_choices(
+                    settings.get('ignored_events', []), events, args['changes'], identities)
             from booking_plan import clear_booking_plan
             clear_booking_plan(root / 'data/booking_plan.json')
             return {'message': 'Event conflict choices saved.'}

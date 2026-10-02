@@ -113,7 +113,7 @@ def check(dist):
             with page.expect_download() as item: tap('Download filtered CSV')
             downloaded=Path(item.value.path()).read_text(encoding='utf-8');assert 'B0.14' in downloaded and 'B0.29' not in downloaded
             no_overflow();page.screenshot(path=str(output/f'{engine}-scan-320.png'),full_page=True)
-            back();tap('Event conflicts');page.get_by_label('Ignore Class A on 2030-10-15 at 10:00',exact=True).check()
+            back();tap('Event conflicts');page.get_by_label('Allow practice during Class A on 2030-10-15 at 10:00',exact=True).check()
             tap('Save event choices');tap('Save conflict choices');assert read_view('events',root)['events'][0]['ignored']
             back();tap('Advanced rules');page.get_by_label('Same-room gap (minutes)',exact=True).fill('90')
             tap('Today');tap('Settings');expect(page.get_by_label('Same-room gap (minutes)',exact=True)).to_have_value('90')

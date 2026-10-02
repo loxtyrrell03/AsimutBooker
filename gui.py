@@ -31,7 +31,7 @@ from agenda_snapshot import (
 from event_identity import (
     IgnoredEventResolution,
     deduplicate_events,
-    event_identity_v2,
+    event_identity,
     is_v2_event_identity_key,
     resolve_ignored_event_keys,
 )
@@ -300,8 +300,8 @@ def build_event_preference_rows(
     resolution = resolve_ignored_event_keys(ignored_keys, unique_events)
     rows = []
     for event in unique_events:
-        key = event_identity_v2(event)
-        rows.append((event, key, key not in resolution.ignored_v2_keys))
+        key = event_identity(event)
+        rows.append((event, key, key not in resolution.ignored_event_keys))
     return rows, resolution
 
 
@@ -6169,9 +6169,9 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         ttk.Label(
             header_frame,
-            text="Uncheck events to ignore them (allow booking over them)",
+            text="Checked events block practice; uncheck an eligible event to allow practice.",
             font=("Segoe UI", 10),
-            foreground="gray"
+            foreground="gray", wraplength=550,
         ).pack(side=tk.LEFT, padx=(20, 0))
 
         # Button frame
@@ -6186,20 +6186,25 @@ class AsimutBookerGUI(QuietFocusGUI):
         self.scan_btn.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
+            btn_frame, text="Reload current choices",
+            command=lambda: self._load_and_display_events(events_frame, discard=True)
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
             btn_frame,
-            text="Select All",
+            text="Respect all",
             command=lambda: self._select_all_events(True)
         ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             btn_frame,
-            text="Deselect All",
+            text="Allow eligible events",
             command=lambda: self._select_all_events(False)
         ).pack(side=tk.LEFT, padx=5)
 
         # Progress label
         self.events_progress_var = tk.StringVar(value="")
-        ttk.Label(btn_frame, textvariable=self.events_progress_var, foreground="blue").pack(side=tk.LEFT, padx=20)
+        ttk.Label(dialog, textvariable=self.events_progress_var, foreground="blue", wraplength=800).pack(fill=tk.X, padx=24)
 
         # Scrollable frame for events
         container = ttk.Frame(dialog, padding="10")
@@ -6228,6 +6233,10 @@ class AsimutBookerGUI(QuietFocusGUI):
         # Store reference to events frame and checkboxes
         self.events_frame = events_frame
         self.event_vars = {}  # {event_key: BooleanVar}
+        self.event_checkbuttons = {}
+        self.event_row_actions = []
+        self.event_draft = None
+        self.event_save_btn = None
 
         # Load existing ignored events and display them
         self._load_and_display_events(events_frame)
@@ -6236,11 +6245,17 @@ class AsimutBookerGUI(QuietFocusGUI):
         bottom_frame = ttk.Frame(dialog, padding=(24,0,24,8))
         bottom_frame.pack(fill=tk.X)
 
-        ttk.Button(
+        ttk.Label(bottom_frame, wraplength=800, text=(
+            "Saving queues a check: Automatic On may book; Off checks the plan only. "
+            "Site warnings still block booking. Existing reservations stay."
+        )).pack(fill=tk.X, pady=(0, 8))
+        self.event_save_btn = ttk.Button(
             bottom_frame,
-            text="Save",
+            text="Save event choices",
             command=lambda: self._save_events_and_close(dialog)
-        ).pack(side=tk.RIGHT, padx=5)
+        )
+        self.event_save_btn.pack(side=tk.RIGHT, padx=5)
+        self._capture_event_choices()
 
         ttk.Button(
             bottom_frame,
@@ -6255,60 +6270,65 @@ class AsimutBookerGUI(QuietFocusGUI):
 
         dialog.protocol("WM_DELETE_WINDOW", on_close)
 
-    def _load_and_display_events(self, events_frame):
-        """Load current agenda evidence and ignored-event preferences."""
-        settings = self.load_settings()
-        expected_dates = tuple(getattr(self, "booking_dates", ()))
-        agenda_result = read_agenda_snapshot(
-            AGENDA_SNAPSHOT_FILE,
-            expected_dates=expected_dates or None,
-        )
-        if agenda_result.snapshot is not None:
-            cached_events = agenda_result.snapshot.event_dicts()
-        else:
-            cached_events = settings.get("cached_events", [])
-        ignored_events = settings.get("ignored_events", [])
+    def _load_and_display_events(self, events_frame, *, discard=False):
+        """Read the canonical revisioned view, preserving drafts until reviewed."""
+        from event_choice_editor import EventChoiceDraft
+        from phone_system import read_view, ROOT
+        try:
+            document = read_view('events', ROOT)
+        except Exception:
+            self.events_progress_var.set("Event choices could not be read. Your choices were kept; try Reload current choices.")
+            return
+        previous = getattr(self, 'event_draft', None)
+        if previous and (previous.dirty or previous.uncertain):
+            if not discard:
+                self.events_progress_var.set("Agenda refreshed. Your draft was kept; reload current choices to review it.")
+                return
+            if not messagebox.askyesno("Reload event choices", (
+                    "The previous save may have succeeded. Replace this draft with current saved choices? No save will be repeated."
+                    if previous.uncertain else
+                    "Discard your unsaved event choices and show the current saved choices?")):
+                return
+        self.event_draft = EventChoiceDraft(document)
 
         # Clear existing widgets
         for widget in events_frame.winfo_children():
             widget.destroy()
         self.event_vars = {}
+        self.event_checkbuttons = {}
+        self.event_row_actions = []
 
-        if not cached_events:
+        if not document['events']:
             ttk.Label(
                 events_frame,
                 text="No current events are available. Click 'Scan My Agenda' to refresh.",
                 font=("Segoe UI", 11),
                 foreground="gray"
             ).pack(pady=20)
+            self._capture_event_choices()
             return
 
-        preference_rows, ignore_resolution = build_event_preference_rows(
-            cached_events,
-            ignored_events,
-        )
-        if ignore_resolution.ambiguous_legacy_keys:
+        if document.get('stale'):
             ttk.Label(
                 events_frame,
                 text=(
-                    "An older ignore selection matches multiple events at the same "
-                    "time. Those events were safely left enabled; review and Save."
+                    "This agenda is out of date. Scan My Agenda before saving event choices."
                 ),
                 foreground="#b26a00",
                 wraplength=680,
             ).pack(fill=tk.X, padx=5, pady=(0, 8))
-            self.log(
-                "Ambiguous older event ignore selection left enabled for review",
-                "warning",
-            )
+        if document.get('unresolved_choice_count'):
+            ttk.Label(events_frame, text=(
+                "Some older choices are ambiguous. Those events remain protected until you review an exact event."
+            ), foreground='#b26a00', wraplength=760).pack(fill=tk.X, padx=5, pady=(0, 8))
 
         # Group events by date
         events_by_date = {}
-        for event, event_key, is_enabled in preference_rows:
+        for event in document['events']:
             date = event.get("date", "Unknown")
             if date not in events_by_date:
                 events_by_date[date] = []
-            events_by_date[date].append((event, event_key, is_enabled))
+            events_by_date[date].append(event)
 
         # Display events grouped by date
         for date in sorted(events_by_date.keys()):
@@ -6323,17 +6343,18 @@ class AsimutBookerGUI(QuietFocusGUI):
             date_frame = ttk.LabelFrame(events_frame, text=date_display, padding="10")
             date_frame.pack(fill=tk.X, pady=5, padx=5)
 
-            for event, event_key, is_enabled in events_by_date[date]:
-                is_reservation = event.get("isReservation", False)
+            for event in events_by_date[date]:
+                event_key = event['key']
+                is_reservation = event['is_reservation']
                 room = event.get("room", "")
                 title = event.get("title", "Event")
 
                 # Create checkbox - default checked unless in ignored list
-                var = tk.BooleanVar(value=is_enabled)
+                var = tk.BooleanVar(value=not event['ignored'])
                 self.event_vars[event_key] = var
 
                 # Format display text
-                time_str = f"{event['startTime']} - {event['endTime']}"
+                time_str = f"{event['start']} - {event['end']}"
                 if is_reservation:
                     display_text = f"[Reservation] {time_str}"
                     if room:
@@ -6346,14 +6367,61 @@ class AsimutBookerGUI(QuietFocusGUI):
                 cb = ttk.Checkbutton(
                     date_frame,
                     text=display_text,
-                    variable=var
+                    variable=var,
+                    command=self._capture_event_choices,
+                    state=tk.NORMAL if event.get('eligible') and not document.get('stale') else tk.DISABLED,
                 )
                 cb.pack(anchor=tk.W, pady=2)
+                self.event_checkbuttons[event_key] = cb
+                if not event.get('eligible'):
+                    ttk.Label(date_frame, text=event.get('unsupported_reason') or "This event cannot be changed here.",
+                              foreground='gray', wraplength=760).pack(anchor=tk.W, padx=(24, 0))
+                if event['ignored'] and event.get('choice_basis') in {'v2', 'legacy'}:
+                    ttk.Label(date_frame, text='Existing older choice', foreground='gray').pack(anchor=tk.W, padx=(24, 0))
+                    if event.get('eligible') and not document.get('stale'):
+                        action = ttk.Button(date_frame, text='Use exact event',
+                                            command=lambda key=event_key: self._bind_exact_event_choice(key))
+                        action.pack(anchor=tk.W, padx=(24, 0))
+                        self.event_row_actions.append(action)
+                if event.get('unresolved_choice') and event.get('choice_basis') != 'exact' and event.get('eligible') and not document.get('stale'):
+                    action = ttk.Button(date_frame, text='Keep this event protected',
+                                        command=lambda key=event_key: self._bind_exact_event_choice(key, respect=True))
+                    action.pack(anchor=tk.W, padx=(24, 0))
+                    self.event_row_actions.append(action)
+        self.events_progress_var.set("Current choices loaded")
+        self._capture_event_choices()
+
+    def _capture_event_choices(self):
+        draft = getattr(self, 'event_draft', None)
+        if draft:
+            draft.select({key: bool(var.get()) for key, var in self.event_vars.items()})
+        button = getattr(self, 'event_save_btn', None)
+        if button:
+            button.config(state=tk.NORMAL if draft and not draft.document.get('stale') and not draft.uncertain else tk.DISABLED)
+        for key, checkbox in getattr(self, 'event_checkbuttons', {}).items():
+            checkbox.config(state=tk.NORMAL if draft and not draft.document.get('stale') and not draft.uncertain
+                            and draft.rows[key].get('eligible') else tk.DISABLED)
+        for action in getattr(self, 'event_row_actions', []):
+            action.config(state=tk.NORMAL if draft and not draft.document.get('stale') and not draft.uncertain else tk.DISABLED)
+
+    def _bind_exact_event_choice(self, key, *, respect=False):
+        draft = getattr(self, 'event_draft', None)
+        if draft and not draft.document.get('stale') and not draft.uncertain:
+            if respect:
+                draft.keep_protected(key)
+            else:
+                draft.bind_exact(key)
+            self.events_progress_var.set('Exact event selected. Save event choices to apply.')
+            self._capture_event_choices()
 
     def _select_all_events(self, select: bool):
         """Select or deselect all event checkboxes."""
-        for var in self.event_vars.values():
-            var.set(select)
+        draft = getattr(self, 'event_draft', None)
+        if draft and not draft.document.get('stale') and not draft.uncertain:
+            for key, var in self.event_vars.items():
+                if draft.rows[key].get('eligible'):
+                    var.set(select)
+            self._capture_event_choices()
 
     def _scan_events(self, dialog, events_frame):
         """Scan the agenda for events using Playwright."""
@@ -6455,16 +6523,24 @@ class AsimutBookerGUI(QuietFocusGUI):
         messagebox.showerror("Scan Error", f"Failed to scan events:\n{error_msg}")
 
     def _save_events_and_close(self, dialog):
-        """Save ignored events to settings and close dialog."""
-        ignored_events = ignored_v2_keys_from_selection(
-            {event_key: bool(var.get()) for event_key, var in self.event_vars.items()}
-        )
-
-        if self._update_settings(
-            lambda settings: settings.__setitem__("ignored_events", ignored_events)
-        ):
-            self.log(f"Saved {len(ignored_events)} ignored events", "info")
-            dialog.destroy()
+        """Apply only reviewed changed keys under the canonical revision/locks."""
+        from phone_system import ROOT
+        draft = getattr(self, 'event_draft', None)
+        if not draft:
+            self.events_progress_var.set("Reload current choices before saving.")
+            return
+        self._capture_event_choices()
+        try:
+            result = draft.save(ROOT)
+        except Exception as error:
+            message = ("The save could not be confirmed. Reload current choices to review it. No save will be repeated."
+                       if draft.uncertain else str(error))
+            self.events_progress_var.set(message)
+            self._capture_event_choices()
+            messagebox.showerror("Check event choices" if draft.uncertain else "Event choices not saved", message)
+            return
+        self.log(result['message'], "info")
+        dialog.destroy()
 
     # =========================================================================
     # SCAN AVAILABLE ROOMS FEATURE

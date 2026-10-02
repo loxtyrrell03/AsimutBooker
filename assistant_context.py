@@ -217,11 +217,14 @@ def _safe_extendable_bookings(settings: Mapping[str, Any]) -> list[dict[str, Any
 
 
 def _settings_context(settings_path: Path) -> dict[str, Any]:
+    from event_identity import EVENT_RESPECT_PREFIX
     settings = load_settings(settings_path)
     practice = load_practice_plan(settings)
     strategy = load_booking_strategy(settings)
     rooms = load_room_preferences(settings)
     blackouts = load_rebooking_blackouts(settings)
+    choices = settings.get('ignored_events', [])
+    choices = set(choices) if isinstance(choices, list) and all(isinstance(value, str) for value in choices) else None
     return {
         "disabled_dates": _validate_disabled_dates(settings),
         "practice_plan": {
@@ -237,9 +240,9 @@ def _settings_context(settings_path: Path) -> dict[str, Any]:
         "extendable_bookings": _safe_extendable_bookings(settings),
         "rebooking_blackouts": [item.to_dict() for item in blackouts],
         "future_practice_intentions": list(load_assistant_plans(settings)),
-        "ignored_event_count": len(settings.get("ignored_events", []))
-        if isinstance(settings.get("ignored_events", []), list)
-        else None,
+        "ignored_event_count": sum(not value.startswith(EVENT_RESPECT_PREFIX) for value in choices) if choices is not None else None,
+        "respected_event_count": sum(value.startswith(EVENT_RESPECT_PREFIX) for value in choices) if choices is not None else None,
+        "event_choice_count_scope": "Stored choices, not currently effective agenda events.",
     }
 
 

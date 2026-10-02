@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 
 from booking_strategy import load_booking_strategy
 from date_time_preferences import resolve_time_preferences
-from event_identity import event_identity_v2, resolve_ignored_event_keys
+from event_identity import event_identity, resolve_ignored_event_keys
 from operation_control import operation_stage
 from room_upgrades import (Reservation, find_room_upgrades, local_instant, time_text, clock_minutes,
                           apply_upgrade_to_events, select_upgrade_portfolio, RoomConsolidation, find_room_consolidations,
@@ -29,11 +29,11 @@ from booking_timing import scheduled_work_fits
 
 def planning_events(engine, tracker, ignored_events):
     events = copy.deepcopy(tracker.agenda_events)
-    ignored = resolve_ignored_event_keys(ignored_events, events).ignored_v2_keys
+    ignored = resolve_ignored_event_keys(ignored_events, events).ignored_event_keys
     ignored_ids = set()
     ignored_ids.update(tracker.tempo_coordination.protected_ids())
     for event in events:
-        if event_identity_v2(event) in ignored:
+        if event_identity(event) in ignored:
             event["blocksConflict"] = False
             ignored_ids.add(event["eventId"])
     return events, ignored_ids
@@ -203,8 +203,8 @@ def process_room_upgrades(engine, page, settings, practice_plan, args, tracker,
             if upgrade_view is not coordination:
                 # Keep genuinely ignored events ignored. Only the exact Tempo
                 # protection becomes a restricted room-only upgrade permission.
-                ignored = resolve_ignored_event_keys(ignored_events, events).ignored_v2_keys
-                if event_identity_v2(upgrade_event) not in ignored:
+                ignored = resolve_ignored_event_keys(ignored_events, events).ignored_event_keys
+                if event_identity(upgrade_event) not in ignored:
                     ignored_ids.discard(upgrade_event['eventId'])
                 coordination = upgrade_view
         from manual_booking_overrides import manual_booking_ids

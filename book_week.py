@@ -98,7 +98,7 @@ from booking_blackouts import (
 )
 from event_identity import (
     deduplicate_events,
-    event_identity_v2,
+    event_identity,
     resolve_ignored_event_keys,
 )
 from practice_plan import (
@@ -9526,15 +9526,15 @@ def scan_agenda(
     if ignored_events is None:
         ignored_events = load_ignored_events()
     ignore_resolution = resolve_ignored_event_keys(ignored_events, unique_events)
-    effective_ignored_events = ignore_resolution.ignored_v2_keys
+    effective_ignored_events = ignore_resolution.ignored_event_keys
     if ignored_events:
         print(
             f"  ({len(effective_ignored_events)} event(s) safely resolved as ignored "
             "- will allow booking over them)"
         )
-    if ignore_resolution.ambiguous_legacy_keys:
+    if ignore_resolution.ambiguous_event_keys:
         print(
-            "  [SAFE] Older time-only ignore selection matched multiple events; "
+            "  [SAFE] Older ignore selection matched multiple events; "
             "none of those events will be ignored until reviewed in the GUI"
         )
 
@@ -9551,7 +9551,7 @@ def scan_agenda(
         room = event.get('room')  # Room name if available (e.g., "B0.27")
 
         # Check if this event is ignored
-        event_key = event_identity_v2(event)
+        event_key = event_identity(event)
         if event_key in effective_ignored_events:
             if is_reservation:
                 # Ignoring a reservation permits overlap, but cannot erase it
