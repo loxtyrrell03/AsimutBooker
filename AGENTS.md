@@ -18,6 +18,10 @@
   Tempo's fresh worker imports the source directly; a long-lived phone process
   needs a later controlled restart only to expose this new native phone action.
   Verification uses temporary synthetic settings/agenda/receipt fixtures only.
+- Verification passed 22 focused pin tests and the earlier 131-check combined
+  lifecycle/phone/event/time-edit suite. Distinct IDs with identical tuples
+  remain independent; unrelated concurrent preferences survive a scoped pin
+  save. Tempo uses this source without restarting the existing phone service.
 
 ## 2026-10-02 exact dated event choices and scoped editors
 

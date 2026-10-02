@@ -14,7 +14,7 @@ from booking_preferences_guard import BookingPreferencesChanged, booking_prefere
 from manual_booking_overrides import assert_automatic_change_allowed
 from mutation_receipts import record_pending_create
 from phone_system import SystemConflict, read_view, run_local_action, validate_action
-from reservation_pins import project_reservation_pins, record_for
+from reservation_pins import project_reservation_pins
 from runtime_guard import SingleInstanceAlreadyRunning, SingleInstanceLock
 
 
@@ -79,6 +79,29 @@ class ReservationPinTests(unittest.TestCase):
         self.assertTrue(self.selected(response['pins'])['pin_matches'])
         self.assertEqual(response['pins']['protected_ids'], [101, 102])
         self.assertNotIn('preference_run', saved)
+
+    def test_identical_reservation_times_keep_distinct_ids_and_goals(self):
+        self.events = [self.event, self.event | dict(eventId=102)]
+        self.settings['manual_booking_overrides'] = {}
+        self.settings['extendable_bookings'] = [self.goal(event) for event in self.events]
+        self.seed()
+        self.assertTrue(all(row['eligible'] for row in self.document()['reservations']))
+        self.save()
+        saved = load_settings(self.path)
+        self.assertEqual(set(saved['manual_booking_overrides']), {'101'})
+        self.assertEqual([goal['eventId'] for goal in saved['extendable_bookings']], [102])
+
+    def test_unrelated_concurrent_setting_survives_independent_pin_revision(self):
+        document = self.document()
+        settings = load_settings(self.path)
+        settings['ignored_events'].append('concurrent-owner-choice')
+        settings['unrelated']['new'] = 'keep too'
+        atomic_write_json(self.path, settings)
+        self.assertEqual(self.document()['revision'], document['revision'])
+        self.save(document=document)
+        saved = load_settings(self.path)
+        self.assertEqual(saved['ignored_events'], settings['ignored_events'])
+        self.assertEqual(saved['unrelated'], settings['unrelated'])
 
     def test_unpin_never_restores_goals_reopens_time_or_repins_unchanged_scan(self):
         from manual_cancellations import remember_agenda
