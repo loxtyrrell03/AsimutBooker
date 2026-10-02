@@ -181,7 +181,9 @@ def booking_plan_fingerprint(
     try:
         coordination = current_snapshot()
         if coordination.enabled:
-            relevant["tempo_coordination"] = coordination.fingerprint
+            # Lease/revision-only renewal preserves display evidence, not Save
+            # authority. Actual constraints and current validity still differ.
+            relevant["tempo_coordination"] = coordination.planning_fingerprint
             relevant["tempo_coordination_problem"] = coordination.problem
     except CoordinationError as exc:
         raise BookingPlanError(str(exc)) from exc

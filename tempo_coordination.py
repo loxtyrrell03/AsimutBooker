@@ -237,6 +237,21 @@ class Snapshot:
     def fingerprint(self):
         return hashlib.sha256(json.dumps(self.document, sort_keys=True).encode()).hexdigest()
 
+    @property
+    def planning_fingerprint(self):
+        """Display-cache identity; never use this at the final Save boundary.
+
+        Renewal metadata does not change planning permissions. Retain every
+        other normalized field, including future additions, ownership and
+        scope. The cache caller still includes coordination problems and the
+        cached plan keeps its own expiry. The full fingerprint above still
+        pins the exact revision for a run.
+        """
+        document = ({key: value for key, value in self.document.items()
+                     if key not in {"revision", "generated_at", "valid_until"}}
+                    if self.document is not None else None)
+        return hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
+
     def scoped(self, day):
         return self.enabled and _date(day) in self.document["dates"]
 

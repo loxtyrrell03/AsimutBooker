@@ -1,3 +1,26 @@
+## 2026-10-02 display-cache renewal preserves exact booking guards
+
+- Display-plan fingerprints use the entire normalized Tempo document except
+  `revision`, `generated_at` and `valid_until`. Renewal with otherwise identical
+  permissions keeps observed display evidence usable. Ownership, date scope,
+  busy time, selected/opportunity windows, targets/credits, protected IDs and
+  upgrade/extension permissions still participate, including future fields.
+- This cache identity is separate from `Snapshot.fingerprint`. The final Save
+  boundary still checks the complete pinned document under its existing lock;
+  even a lease-only renewal stops an in-flight run before Save. Current
+  coordination errors and the display plan's own expiry still invalidate it.
+  Missing, corrupt, unknown-version, expired or rolled-back accepted authority
+  remains blocked. Disabled coordination retains standalone behavior.
+- Old full-document cache hashes require one normal existing worker refresh.
+  Never rewrite a cached fingerprint or clear evidence to force freshness.
+  New workers and Tempo's reader subprocesses load this source automatically;
+  long-lived Booker phone/GUI readers retain old code until ordinarily relaunched.
+- All 117 focused synthetic coordination, cache, preference-guard and display
+  consumer tests pass, with temporary coordination/runtime paths. Source proof
+  does not establish that a particular live renewal changed metadata only;
+  compare permission hashes before attributing a stale live plan to renewal.
+  No booking, preference or service changes were made for validation.
+
 ## 2026-09-28 progress updates cannot abort booking operations
 
 - The shared phone/Tempo operation helper treats only `progress.json` updates
@@ -307,9 +330,10 @@
   stay fixed for automatic edits/cancellation; explicit manual cancellation
   retains its existing exact-identity flow. Tempo must omit a newly created
   prefix from protection if it is still meant to finish a planned extension.
-- Display plan fingerprints include the accepted coordination revision so old
-  standalone plans cannot appear current after activation. Native Tempo state
-  should distinguish a planning hold from a verified ASIMUT reservation.
+- Display plan fingerprints include accepted coordination permissions so old
+  standalone plans cannot appear current after activation. Metadata-only
+  renewal is covered by the newer display-cache section above. Native Tempo
+  state distinguishes a planning hold from a verified ASIMUT reservation.
 - After the first authoritative agenda scan, an immutable run-local target
   overlay includes accepted practice task demand above a saved default. It
   counts the union of confirmed intervals and accepted windows, so prefixes
