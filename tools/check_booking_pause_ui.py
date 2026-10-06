@@ -71,6 +71,9 @@ def check(dist, output):
                         else:
                             result = read_pause(settings)
                     elif path.startswith('/api/'):
+                        if not is_tempo and path == '/api/v1/refresh':
+                            route.fulfill(status=409, content_type='application/json', body='{"message":"Example Booker is already checking rooms."}')
+                            return
                         if is_tempo:
                             result = ({'csrf': 'example-csrf', 'state': tempo_state} if path == '/api/bootstrap'
                                       else app.practice.read() if path == '/api/practice' else tempo_state)
@@ -121,7 +124,7 @@ def check(dist, output):
                 browser.close()
         app.store.db.close()
     (output / 'browser.json').write_text(json.dumps(checks, indent=2))
-    print('PASS shared phone/Tempo Pause/Unpause, active assistant, reload, lost reply, 320/390px in Chromium/WebKit')
+    print('PASS shared phone/Tempo Pause/Unpause, busy refresh, active assistant, reload, lost reply, 320/390px in Chromium/WebKit')
 
 
 if __name__ == '__main__':

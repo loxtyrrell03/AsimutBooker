@@ -22,6 +22,10 @@
   `tools/check_booking_pause_ui.py` passes shared phone/Tempo state, reload,
   active-assistant access and lost-reply/no-replay checks at 320/390px in
   Chromium/WebKit with invented data. Activation is recorded separately below.
+- The phone hold has its own authenticated availability. A busy/failed unrelated
+  refresh must not disable Pause merely because the broader UI marks itself
+  disconnected. It needs the current CSRF session and its own successful status
+  read. The browser fixture reproduces the busy-refresh HTTP 409 explicitly.
 
 ## 2026-10-02 partial reopening of protected time
 

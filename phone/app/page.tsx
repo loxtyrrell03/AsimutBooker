@@ -1759,7 +1759,7 @@ export default function HomePage() {
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
       <div className={tab === 'assistant' ? 'assistant-scroll' : undefined} ref={scrollRef}>
         <div className="app-content">
-          {!preview && <BookingPause csrf={csrf} enabled={connection === 'online'} onState={setBookingsPaused} />}
+          {!preview && <BookingPause csrf={csrf} enabled={Boolean(csrf)} onState={setBookingsPaused} />}
           {systemJob?.active && tab !== 'status' && !(tab === 'today' && systemJob.action === 'room_now') && !(tab === 'schedule' && fillDate && systemJob.action === 'fill_range') && <output className="system-job system-global"><strong>{systemJob.action === 'room_now' ? 'Finding a room…' : 'PC operation in progress'}</strong><p>{systemJob.text}</p><button type="button" onClick={() => { if (systemJob.action === 'fill_range') { setFillDate(systemJob.range?.date || systemJob.result?.range?.date || fillDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date())); setWeekEditDate(null); setTab('schedule'); } else setTab(systemJob.action === 'room_now' ? 'today' : 'status'); }}>View operation / Stop</button></output>}
           {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
             {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
