@@ -1,3 +1,28 @@
+## 2026-10-07 shared booking Pause/Unpause
+
+- `booking_pause.py` owns the persistent `booking_pause` hold in canonical
+  settings. `read_pause`/`save_pause` use a separate revision and exact request
+  ID; writes change only this hold under the existing settings lock. They never
+  alter Automatic On/Off, reservations, pins, goals or the preference-run queue.
+- Pause remains available during an active worker/assistant/Tempo provider job.
+  The same settings lock serializes it with receipt creation and final Save.
+  All create/edit paths recheck the hold; its generation also prevents a
+  Pause -> Unpause cycle from reviving a previously prepared run. A Save already
+  holding the lock can finish before Pause is acknowledged. Verified earlier
+  bookings and uncertain receipts remain intact. Read-only refresh/recovery and
+  explicit cancellation remain available; Unpause uses the existing executor.
+- Desktop has a persistent toolbar control; phone exposes authenticated,
+  CSRF-protected GET/POST `/api/v1/booking-pause`. Both follow shared state every
+  three seconds. Tempo uses this same store through its lightweight bridge.
+  Lost replies require a read before another choice; clients never replay writes.
+- Verification: 127 focused booking/hold/Save/fill/room/edit checks and 113
+  phone/system/scheduler checks pass, plus the isolated native control at
+  760/1040px, 23 phone Node checks, TypeScript and lint. Phone build
+  `20261007-booking-pause` is prepared in `artifacts/booking-pause/build`.
+  `tools/check_booking_pause_ui.py` passes shared phone/Tempo state, reload,
+  active-assistant access and lost-reply/no-replay checks at 320/390px in
+  Chromium/WebKit with invented data. Activation is recorded separately below.
+
 ## 2026-10-02 partial reopening of protected time
 
 - Native `phone_system.reopen` retains `{revision, window}` whole-window clients

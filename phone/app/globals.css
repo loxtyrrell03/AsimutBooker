@@ -42,6 +42,11 @@ button,textarea { font:inherit; } button,a,summary { -webkit-tap-highlight-color
 button:focus-visible,a:focus-visible,summary:focus-visible,textarea:focus-visible { outline:3px solid var(--ring); outline-offset:3px; }
 svg { flex-shrink:0; } p,h1,h2,h3,h4 { margin:0; } h1,h2,h3,h4 { line-height:1.2; } a { color:var(--primary); }
 .app-shell { min-height:100dvh; padding-bottom:calc(var(--nav-height) + var(--safe-bottom) + 14px); }
+.booking-pause { margin:16px auto 0; padding:0 24px; max-width:940px; }
+.booking-pause-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.booking-pause-row strong { font-size:14px; }
+.booking-pause-row .quiet-secondary { width:auto; margin-left:auto; min-height:44px; padding:8px 12px; font-size:14px; }
+.booking-pause p,.booking-pause output { display:block; font-size:13px; color:var(--quiet); margin-top:6px; }
 .top-bar { display:flex; align-items:center; gap:12px; padding:var(--safe-top) 22px 16px; border-bottom:1px solid var(--border); background:#ffffffed; }
 .brand-mark { width:36px; height:36px; display:flex; align-items:flex-end; justify-content:center; gap:3px; padding:8px; background:var(--primary); border-radius:11px; }
 .brand-mark span { width:4px; background:#fff; border-radius:2px; } .brand-mark span:nth-child(1){height:10px}.brand-mark span:nth-child(2){height:19px}.brand-mark span:nth-child(3){height:14px}

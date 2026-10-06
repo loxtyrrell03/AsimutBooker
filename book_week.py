@@ -10645,6 +10645,11 @@ def generate_read_only_booking_plan(
 
 def run_booking(args, settings, practice_plan, room_preferences=None):
     """Run one authenticated booking pass with already-validated inputs."""
+    from booking_pause import assert_booking_unpaused
+    if not (getattr(args, 'check_only', False) or getattr(args, 'plan_only', False)
+            or getattr(args, 'agenda_only', False) or getattr(args, 'fill_review_output', None)
+            or getattr(args, 'upgrade_dry_run', False) or getattr(args, 'cancel_event_id', None)):
+        assert_booking_unpaused(settings)
     today = datetime.now().date()
     room_preferences = room_preferences or load_room_preferences(settings)
     if getattr(args, 'fill_date', None):
@@ -12998,8 +13003,15 @@ def main(argv=None):
     if args.target_time:
         wait_before_runtime_target_window(args.target_time)
 
+    from booking_pause import assert_booking_unpaused, BookingPaused
     try:
         settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
+        if not (args.check_only or args.plan_only or args.agenda_only or getattr(args, 'fill_review_output', None)
+                or args.upgrade_dry_run or args.cancel_event_id):
+            assert_booking_unpaused(settings)
+    except BookingPaused:
+        print('Bookings are paused. Existing reservations and settings are kept.')
+        return 0 if args.scheduled else 3
     except SettingsError as exc:
         print(f"ERROR: {exc}")
         print("Autonomous booking stopped because the saved settings cannot be trusted.")

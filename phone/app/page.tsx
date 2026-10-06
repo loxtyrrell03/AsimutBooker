@@ -43,6 +43,7 @@ import { BookingDetails, TodayView } from '@/components/quiet-focus';
 import { RoomNow } from '@/components/room-now';
 import { FillRange } from '@/components/fill-range';
 import { RoomAvailability } from '@/components/room-availability';
+import { BookingPause } from '@/components/booking-pause';
 import { requestJson } from '@/lib/api';
 
 const PRIVATE_ORIGIN = process.env.NEXT_PUBLIC_ASIMUT_PHONE_ORIGIN || '';
@@ -920,6 +921,7 @@ function ScheduleView({
 }
 
 function StatusView({
+  bookingsPaused,
   booker,
   onRefresh,
   refreshing,
@@ -930,6 +932,7 @@ function StatusView({
   systemJob,
   onJob,
 }: {
+  bookingsPaused: boolean | null;
   active: boolean;
   systemJob: SystemJob | null;
   onJob: (job: SystemJob | null) => void;
@@ -986,7 +989,7 @@ function StatusView({
 
       </section>}
 
-      <div hidden={practiceDetail}><SystemTools onEditing={setSystemDetail} csrf={csrf} enabled={editable} active={active} job={systemJob} onJob={onJob} onSaved={onSaved} /></div>
+      <div hidden={practiceDetail}><SystemTools bookingsPaused={bookingsPaused !== false} onEditing={setSystemDetail} csrf={csrf} enabled={editable} active={active} job={systemJob} onJob={onJob} onSaved={onSaved} /></div>
 
       <details hidden={practiceDetail || systemDetail} className="health-list" aria-label="Detailed Booker health">
         <summary className="settings-details-title">System details <ChevronDown /></summary>
@@ -1057,6 +1060,7 @@ export default function HomePage() {
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [csrf, setCsrf] = useState('');
   const [booker, setBooker] = useState<BookerSnapshot | null>(null);
+  const [bookingsPaused, setBookingsPaused] = useState<boolean | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [reasoningParts, setReasoningParts] = useState<ReasoningPart[]>([]);
@@ -1755,6 +1759,7 @@ export default function HomePage() {
       {tab !== 'today' && <AppHeader tab={tab} booker={booker} connection={connection} newChatDisabled={busy || pendingDelivery !== null || Boolean(uncertainOutcome) || connection !== 'online'} onNewChat={newChat} />}
       <div className={tab === 'assistant' ? 'assistant-scroll' : undefined} ref={scrollRef}>
         <div className="app-content">
+          {!preview && <BookingPause csrf={csrf} enabled={connection === 'online'} onState={setBookingsPaused} />}
           {systemJob?.active && tab !== 'status' && !(tab === 'today' && systemJob.action === 'room_now') && !(tab === 'schedule' && fillDate && systemJob.action === 'fill_range') && <output className="system-job system-global"><strong>{systemJob.action === 'room_now' ? 'Finding a room…' : 'PC operation in progress'}</strong><p>{systemJob.text}</p><button type="button" onClick={() => { if (systemJob.action === 'fill_range') { setFillDate(systemJob.range?.date || systemJob.result?.range?.date || fillDate || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date())); setWeekEditDate(null); setTab('schedule'); } else setTab(systemJob.action === 'room_now' ? 'today' : 'status'); }}>View operation / Stop</button></output>}
           {cancellationStatus && <output className="cancellation-progress" aria-live="polite" aria-busy={cancelling}>
             {cancelling && <RefreshCw className="spin-slow" aria-hidden="true" />}
@@ -1789,7 +1794,7 @@ export default function HomePage() {
 
           {tab === 'today' && booker && selectedBooking && <BookingDetails event={selectedBooking} stale={booker.agenda.stale || !booker.agenda.events.some(event => event.date === selectedBooking.date && event.room === selectedBooking.room && event.start_time === selectedBooking.start_time && event.end_time === selectedBooking.end_time && event.is_reservation)} onClose={() => setSelectedBooking(null)} onAsk={choosePrompt} onCancel={() => void cancelBooking(selectedBooking)} cancelling={cancelling} />}
           {booker && <div hidden={tab !== 'today' || Boolean(selectedBooking)}><TodayView booker={booker} refreshing={refreshing} onRefresh={() => void refreshLiveSchedule(true)} onWeek={() => setTab('schedule')} onAsk={choosePrompt} onDetails={setSelectedBooking} preview={preview}
-            roomNow={<><button type="button" className="fill-shortcut" onClick={() => { setFillDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())); setWeekEditDate(null); setTab('schedule'); }}>Fill a time range today</button><RoomNow csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onDetails={setSelectedBooking} /></>} /></div>}
+            roomNow={<><button type="button" className="fill-shortcut" onClick={() => { setFillDate(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())); setWeekEditDate(null); setTab('schedule'); }}>Fill a time range today</button><RoomNow paused={bookingsPaused === true} csrf={csrf} enabled={bookingsPaused === false && connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onDetails={setSelectedBooking} /></>} /></div>}
           {tab === 'assistant' && (
             <div className="assistant-view">
               {booker && <ContextPeek booker={booker} onOpenSchedule={() => setTab('schedule')} />}
@@ -1812,12 +1817,12 @@ export default function HomePage() {
           {booker && <div hidden={tab !== 'schedule'}>
             {weekEditDate ? <PhoneCalendar key={weekEditDate} singleDay={weekEditDate} onClose={() => setWeekEditDate(null)} booker={booker} csrf={csrf} active={tab === 'schedule'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /> :
               <div hidden={Boolean(fillDate)}><ScheduleView booker={booker} onEditDay={setWeekEditDate} onFillDay={setFillDate} onCancelBooking={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} /></div>}
-            <div hidden={!fillDate || Boolean(weekEditDate)}><FillRange selectedDate={fillDate} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} previousJob={fillJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onClose={() => setFillDate(null)} onDetails={event => { setSelectedBooking(event); setTab('today'); }} /></div>
+            <div hidden={!fillDate || Boolean(weekEditDate)}><FillRange paused={bookingsPaused === true} selectedDate={fillDate} csrf={csrf} enabled={bookingsPaused === false && connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview && !booker.status.pending_mutations} job={systemJob} previousJob={fillJob} onJob={applySystemJob} onRefresh={refreshSnapshot} onClose={() => setFillDate(null)} onDetails={event => { setSelectedBooking(event); setTab('today'); }} /></div>
           </div>}
           {booker && <div hidden={tab !== 'rooms'}><RoomAvailability active={tab === 'rooms'} csrf={csrf} enabled={connection === 'online' && !busy && !cancelling && !uncertainOutcome && !preview} job={systemJob} onJob={applySystemJob} /></div>}
           {booker && <div hidden={tab !== 'calendar'}><PhoneCalendar booker={booker} csrf={csrf} active={tab === 'calendar'} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={() => void refreshSnapshot()} onRefresh={() => void refreshLiveSchedule(true)} refreshing={refreshing} onCancel={event => void cancelBooking(event)} cancelling={cancelling || busy || Boolean(uncertainOutcome)} /></div>}
           {booker && <div hidden={tab !== 'status'}>
-            <StatusView booker={booker} active={tab === 'status'} systemJob={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} refreshing={refreshing} csrf={csrf} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={refreshSnapshot} />
+            <StatusView bookingsPaused={bookingsPaused} booker={booker} active={tab === 'status'} systemJob={systemJob} onJob={applySystemJob} onRefresh={refreshSnapshot} refreshing={refreshing} csrf={csrf} editable={connection === 'online' && !busy && !cancelling && !systemJob?.active && !uncertainOutcome && !preview} onSaved={refreshSnapshot} />
           </div>}
           {tab !== 'assistant' && !booker && (
             <div className="loading-view"><RefreshCw className="spin-slow" /><p>Loading Booker state…</p></div>

@@ -1123,6 +1123,15 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
         path = parsed.path
+        if path == '/api/v1/booking-pause':
+            if self._authorized() is None:
+                return
+            from booking_pause import read_pause
+            try:
+                self._json(HTTPStatus.OK, read_pause())
+            except Exception:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, 'pause_unavailable', 'Booking pause could not be checked. Refresh its status.')
+            return
         if path == "/api/v1/room-grid":
             if self._authorized() is None:
                 return
@@ -1226,6 +1235,19 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
             return
         payload = self._read_json()
         if payload is None:
+            return
+        if path == '/api/v1/booking-pause':
+            # Deliberately independent of assistant/runtime ownership. The
+            # shared settings lock stops a running worker at its next Save.
+            from booking_pause import save_pause, PauseConflict
+            try:
+                self._json(HTTPStatus.OK, save_pause(payload))
+            except PauseConflict as exc:
+                self._error(HTTPStatus.CONFLICT, 'pause_changed', str(exc))
+            except ValueError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, 'invalid_pause', str(exc))
+            except Exception:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, 'pause_unconfirmed', 'Booking pause was not confirmed. Refresh its status before choosing again.')
             return
         if path in {"/api/v1/system/jobs", "/api/v1/system/stop", "/api/v1/system/room-now-review", "/api/v1/system/room-now-delivery", "/api/v1/system/fill-range-review", "/api/v1/system/fill-range-delivery"}:
             try:

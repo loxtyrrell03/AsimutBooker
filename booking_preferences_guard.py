@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from app_settings import InterProcessFileLock, SettingsError, load_settings
+from booking_pause import assert_booking_unpaused
 from operation_control import check_operation_stop
 from tempo_coordination import CoordinationError, coordination_run, save_boundary as tempo_save_boundary
 
@@ -17,7 +18,7 @@ class BookingPreferencesChanged(SettingsError):
 _CONTROL_KEYS = (
     "time_preferences", "practice_plan", "disabled_dates", "room_preferences",
     "booking_strategy", "ignored_events", "rebooking_blackouts", "date_time_preferences",
-    "booking_rules", "advance_quota", "manual_booking_overrides",
+    "booking_rules", "advance_quota", "manual_booking_overrides", "booking_pause",
 )
 _ACTIVE_RUN = ContextVar("booking_preference_snapshot", default=None)
 
@@ -67,6 +68,10 @@ def _settings_save_boundary():
             raise BookingPreferencesChanged("Preferences could not be rechecked; stopping before Save") from exc
         if changed:
             raise BookingPreferencesChanged("Preferences changed during this run; stopping before Save to replan")
+        try:
+            assert_booking_unpaused(current)
+        except SettingsError as exc:
+            raise BookingPreferencesChanged(str(exc)) from exc
         check_operation_stop()
         yield
     finally:

@@ -10,8 +10,8 @@ const pendingKey = 'asimut-fill-pending';
 const draftKey = 'asimut-fill-draft';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
-export function FillRange({ selectedDate, csrf, enabled, job, previousJob, onJob, onRefresh, onDetails, onClose }: {
-  selectedDate: string | null; csrf: string; enabled: boolean; job: SystemJob | null;
+export function FillRange({ selectedDate, csrf, enabled, job, previousJob, onJob, onRefresh, onDetails, onClose, paused = false }: {
+  paused?: boolean; selectedDate: string | null; csrf: string; enabled: boolean; job: SystemJob | null;
   previousJob?: SystemJob | null;
   onJob: (job: SystemJob | null) => void; onRefresh: () => void;
   onDetails: (event: AgendaEvent) => void; onClose: () => void;
@@ -138,7 +138,7 @@ export function FillRange({ selectedDate, csrf, enabled, job, previousJob, onJob
         {Boolean(result?.remaining?.length) && <><h4>Still unfilled</h4>{result?.remaining?.map(g => <p key={g.start}>{g.start}–{g.end} · {g.minutes} min</p>)}{result?.reasons?.map(r => <p key={r}>{r}</p>)}</>}
       </>}
       {error && <p role="alert">{error}</p>}
-      {!enabled && !own?.active && <p>Connect to the PC and finish any other active operation to book.</p>}
+      {!enabled && !own?.active && <p>{paused ? 'Bookings are paused. Select Unpause bookings to book again.' : 'Connect to the PC and finish any other active operation to book.'}</p>}
       {(held || error) && <button type="button" className="quiet-secondary" disabled={working || Boolean(own?.active)} onClick={() => void (own?.state === 'uncertain' ? control(true) : check())}>Check booking status</button>}
       {!locked && enabled && result?.range && Boolean(result.remaining?.length) && <button type="button" className="quiet-secondary" onClick={() => void submit(result.range)}>Try remaining gaps</button>}
     </div>}

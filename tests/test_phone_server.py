@@ -866,6 +866,32 @@ class HTTPBoundaryTests(unittest.TestCase):
             self.assertEqual(read_phone_preferences(path)['practice_plan']['default_hours'], 3)
             self.assertEqual(self.request('POST', '/api/v1/preferences', headers=headers, body=payload)[0], 409)
 
+    def test_booking_pause_keeps_auth_boundary_and_works_during_an_active_run(self):
+        from booking_pause import read_pause, save_pause
+        from uuid import uuid4
+        path = Path(self.temp_dir.name) / 'pause-settings.json'
+        path.write_text('{"owner": "kept"}')
+        with mock.patch('booking_pause.read_pause', side_effect=lambda: read_pause(path)), \
+                mock.patch('booking_pause.save_pause', side_effect=lambda payload: save_pause(payload, path)):
+            self.assertEqual(self.request('GET', '/api/v1/booking-pause')[0], 401)
+            cookie, csrf = self.open_session()
+            self.assistant.runtime.is_busy = True
+            headers = {'Cookie': cookie, 'Content-Type': 'application/json'}
+            choice = dict(revision=read_pause(path)['revision'], paused=True, request_id=str(uuid4()))
+            self.assertEqual(self.request('POST', '/api/v1/booking-pause', headers=headers, body=json.dumps(choice))[0], 403)
+            self.assertFalse(read_pause(path)['paused'])
+            headers['X-Asimut-CSRF'] = csrf
+            status, _, body = self.request('POST', '/api/v1/booking-pause', headers=headers, body=json.dumps(choice))
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)['paused'])
+            stale = dict(choice, paused=False, request_id=str(uuid4()))
+            self.assertEqual(self.request('POST', '/api/v1/booking-pause', headers=headers, body=json.dumps(stale))[0], 409)
+            self.assertTrue(read_pause(path)['paused'])
+            status, _, body = self.request('GET', '/api/v1/booking-pause', headers={'Cookie': cookie})
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)['paused'])
+            self.assertEqual(json.loads(path.read_text())['owner'], 'kept')
+
     def test_session_bootstrap_and_message_require_full_boundary(self):
         cookie, csrf = self.open_session()
         status, headers, body = self.request(

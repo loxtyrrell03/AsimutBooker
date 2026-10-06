@@ -12,8 +12,8 @@ const pendingKey = 'asimut-room-now-pending';
 const durations = [30, 45, 60, 75, 90, 105, 120];
 const label = (n: number) => n === 60 ? '1 hour' : n === 120 ? '2 hours' : `${n} min`;
 
-export function RoomNow({ csrf, enabled, job, onJob, onRefresh, onDetails }: {
-  csrf: string; enabled: boolean; job: SystemJob | null; onJob: (job: SystemJob | null) => void;
+export function RoomNow({ csrf, enabled, job, onJob, onRefresh, onDetails, paused = false }: {
+  paused?: boolean; csrf: string; enabled: boolean; job: SystemJob | null; onJob: (job: SystemJob | null) => void;
   onRefresh: () => void; onDetails: (event: AgendaEvent) => void;
 }) {
   const [mode, setMode] = useState<'preferred' | 'longest'>('preferred');
@@ -129,7 +129,7 @@ export function RoomNow({ csrf, enabled, job, onJob, onRefresh, onDetails }: {
         {booking && <><p>{booking.date} · {booking.duration_minutes} min booked{own.result?.requested_minutes && booking.duration_minutes < own.result.requested_minutes ? ` · requested ${own.result.requested_minutes} min` : ''}</p><button type="button" className="quiet-secondary" onClick={() => onDetails({ event_id: booking.event_id, room: booking.room, date: booking.date, start_time: booking.start, end_time: booking.end, is_reservation: true, title: 'Reservation' })}>View booking</button></>}
       </>}
       {error && <p role="alert">{error}</p>}
-      {!enabled && !own?.active && <p>Connect to the PC and finish any other active operation to book.</p>}
+      {!enabled && !own?.active && <p>{paused ? 'Bookings are paused. Select Unpause bookings to book again.' : 'Connect to the PC and finish any other active operation to book.'}</p>}
       {(held || error) && <button type="button" className="quiet-secondary" disabled={working || Boolean(own?.active)} onClick={() => void (own?.state === 'uncertain' ? control(true) : check())}>Check booking status</button>}
     </div>}
   </section>;
