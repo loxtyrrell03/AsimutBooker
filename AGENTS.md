@@ -26,6 +26,21 @@
   refresh must not disable Pause merely because the broader UI marks itself
   disconnected. It needs the current CSRF session and its own successful status
   read. The browser fixture reproduces the busy-refresh HTTP 409 explicitly.
+- Activated source `f139719`/`81f4186` and phone build
+  `20261007-booking-pause-2` through the existing idle phone task and ownership
+  locks. The expired assistant executable path alone was repaired under its
+  config lock after checking the installed CLI; all other fields were preserved.
+  The second phone promotion was static and retained the same process.
+- The existing idle Tempo listener was reloaded through its existing supervisor.
+  Its owner tasks, blocks and settings, Booker's protected files, scheduled-task
+  definitions and every Serve route were verified unchanged. Both live APIs
+  report the same unpaused revision; no live pause, booking or preference write
+  was used for testing. Connected Chromium/WebKit 390px views, exact assets and
+  `verify_phone_deployment.ps1` pass. Existing pages need reloading and desktop
+  windows reopening; this is PC-browser proof, not physical-phone proof.
+- Private activation, browser and static-promotion receipts are under
+  `artifacts/booking-pause`. Automatic approval review blocked removing the
+  14,233-byte synthetic fixture `Temp/tmps5i7kpr1`; it remains outside the repo.
 
 ## 2026-10-02 partial reopening of protected time
 
@@ -2918,6 +2933,7 @@ python -m unittest discover -s tests
 | `phone_server.py` | Loopback-only authenticated PWA/API/SSE host around the existing AssistantRuntime |
 | `phone/` | Installable React phone UI, local static build, manifest, icons, and service worker |
 | `app_settings.py` | Strict, locked, atomic settings/history storage primitives |
+| `booking_pause.py` | Shared revisioned Pause/Unpause hold and booking-write guard |
 | `event_identity.py` | Deterministic v2 ignored-event identity and legacy-key resolution |
 | `practice_plan.py` | Daily-target validation and booking-budget helpers |
 | `booking_strategy.py` | Strict GUI/runtime schema for customizable daily foresight |
