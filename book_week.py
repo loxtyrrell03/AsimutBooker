@@ -5972,8 +5972,14 @@ def refresh_practice_room_overview(page, expected_date, *, base_date=None):
             f"base date ({expected_date} before {today})"
         )
 
-    safe_reload(page)
-    today_snapshot = wait_for_practice_room_grid(page, today)
+    # Agenda scans and verified booking editors leave this page on another
+    # route. Reload only an already canonical overview; otherwise open it
+    # explicitly before proving its inventory and calendar date.
+    if _is_exact_practice_room_overview_url(page.url):
+        safe_reload(page)
+        today_snapshot = wait_for_practice_room_grid(page, today)
+    else:
+        today_snapshot = open_practice_room_overview(page, today)
     if days_ahead == 0:
         return today_snapshot
 

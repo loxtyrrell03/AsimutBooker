@@ -543,7 +543,7 @@ class OverviewRendererTests(unittest.TestCase):
         self.assertEqual(wait_grid.call_count, 2)
 
     def test_overview_refresh_reloads_today_then_restores_future_date(self):
-        page = object()
+        page = mock.Mock(url=book_week.ASIMUT_OVERVIEW_URL)
         today = datetime.now().date()
         expected_date = today + timedelta(days=7)
         today_snapshot = self.svg_snapshot()
@@ -581,7 +581,7 @@ class OverviewRendererTests(unittest.TestCase):
         )
 
     def test_overview_refresh_today_needs_no_calendar_navigation(self):
-        page = object()
+        page = mock.Mock(url=book_week.ASIMUT_OVERVIEW_URL)
         today = datetime.now().date()
         recovered = self.svg_snapshot()
         with (
@@ -603,6 +603,38 @@ class OverviewRendererTests(unittest.TestCase):
         reload_page.assert_called_once_with(page)
         wait_grid.assert_called_once_with(page, today)
         navigate.assert_not_called()
+
+    def test_overview_refresh_opens_canonical_grid_after_agenda_or_editor(self):
+        today = datetime.now().date()
+        for route in ('/agenda', '/arrangement?eventId=99', '/overview'):
+            for days_ahead in (0, 7):
+                with self.subTest(route=route, days_ahead=days_ahead):
+                    page = mock.Mock(url=book_week.ASIMUT_BASE_URL + route)
+                    expected_date = today + timedelta(days=days_ahead)
+                    today_snapshot = self.svg_snapshot()
+                    future_snapshot = copy.deepcopy(today_snapshot)
+                    with (
+                        mock.patch.object(book_week, 'ASIMUT_OVERVIEW_URL',
+                                          book_week.ASIMUT_BASE_URL + '/overview?locationIds=1,2'),
+                        mock.patch.object(book_week, 'safe_reload') as reload_page,
+                        mock.patch.object(book_week, 'open_practice_room_overview',
+                                          return_value=today_snapshot) as open_grid,
+                        mock.patch.object(book_week, 'navigate_to_day') as navigate,
+                        mock.patch.object(book_week, 'wait_for_practice_room_grid',
+                                          return_value=future_snapshot) as wait_grid,
+                    ):
+                        result = book_week.refresh_practice_room_overview(
+                            page, expected_date, base_date=today)
+                    reload_page.assert_not_called()
+                    open_grid.assert_called_once_with(page, today)
+                    if days_ahead:
+                        navigate.assert_called_once_with(page, days_ahead, 0, base_date=today)
+                        wait_grid.assert_called_once_with(page, expected_date)
+                        self.assertEqual(result, future_snapshot)
+                    else:
+                        navigate.assert_not_called()
+                        wait_grid.assert_not_called()
+                        self.assertEqual(result, today_snapshot)
 
     def test_overview_refresh_rejects_past_date_before_reload(self):
         page = object()

@@ -1,3 +1,25 @@
+## 2026-10-13 room-now overview restoration
+
+- `refresh_practice_room_overview` opens the exact fresh-catalog overview when
+  its page is on the agenda, an editor or another overview route. It reloads
+  only an already canonical overview, proves today's full grid, then restores
+  and verifies a requested future date. Exact route, inventory, authentication
+  and calendar guards remain enforced.
+- Room-now begins after the complete agenda scan, which leaves the page on
+  `/agenda`. Reloading that route previously failed grid verification before
+  Save. The shared restoration fix also covers later editor/agenda callers.
+- All 167 focused overview, room-now, request ownership, fill, quota, runtime
+  and phone-system checks pass. An authorized live room-now request traversed
+  the repaired path and was confirmed by its exact receipt and newer complete
+  agenda. Phone/desktop subprocesses and new scheduled workers import this
+  source directly; no service restart or phone-shell promotion is required.
+- Private booking evidence is under `artifacts/room-now-repair-20261013`.
+  Existing failed phone requests remain terminal and are never replayed.
+  Private HTTPS session/API readback and connected Chromium/WebKit My Week
+  views at 390px show the exact reservation and an enabled room finder with
+  no pending mutation. Verification intercepted all booking/settings requests;
+  this is PC-browser evidence, not physical-phone proof.
+
 ## 2026-10-07 shared booking Pause/Unpause
 
 - `booking_pause.py` owns the persistent `booking_pause` hold in canonical
