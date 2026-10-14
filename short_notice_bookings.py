@@ -171,7 +171,12 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                 only_room=args.only_room, free_horizon_only=True,
                 include_free_horizon_intent=True)
             opportunities = reserve_advance_credit(opportunities, planning,
-                active=preserve_advance and not tracker.is_quota_full(),
+                # A leftover balance smaller than a legal initial block cannot
+                # fund an advance reservation. Holding it must not postpone a
+                # valid free-window opening. Useful advance credit keeps the
+                # owner's existing allocation/fallback policy.
+                active=preserve_advance and tracker.get_remaining_quota_hours() * 60
+                    >= engine.MINIMUM_BLOCK_MINUTES,
                 release_lead_minutes=load_advance_quota(settings).fallback_lead_minutes)
             day_plan = engine.build_display_day_plan(day, opportunities, tracker, planning,
                 now=now, target_minutes=int((tracker.get_hours_for_day(day) + remaining) * 60),

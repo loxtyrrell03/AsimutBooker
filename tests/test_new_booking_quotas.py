@@ -255,6 +255,18 @@ class FreeHorizonExtensionIntentTests(unittest.TestCase):
         self.assertEqual(coordinates.call_args.args[2:], (12, 12.5))
         self.assertEqual(b._extension_target_end_hour(12, 12.5, caps[0]), 13)
 
+    def test_available_advance_credit_never_funds_the_free_intent_tail(self):
+        for remaining_credit in (15, 120):
+            with self.subTest(advance_minutes=remaining_credit):
+                self.tracker.existing_reservation_hours = 0
+                self.tracker.live_quota_minutes = remaining_credit
+                with patch.object(b, 'get_room_slot_coordinates', return_value=None) as coordinates, \
+                     patch.object(b, 'refresh_quota_balances'):
+                    self.assertFalse(b.try_book_slot(None, dict(room='A', start_hour=12,
+                        end_hour=14, free_horizon_intent=True), self.day, self.tracker, 0,
+                        remaining_daily_hours=4, time_prefs={'enabled':False}))
+                self.assertEqual(coordinates.call_args.args[2:], (12, 12.5))
+
     def test_pending_peak_tail_keeps_allowance_before_its_window_opens(self):
         self.tracker.add_existing_event(self.day, 12, 12.5, is_reservation=True, room='A')
         targets, peaks, held = b.calculate_extension_capacity_holds(
@@ -431,6 +443,7 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
             self.assertEqual(self.run_pass(after_horizon=True)[0],1)
         waiting.assert_called_once()
         self.assertFalse(self.attempt.call_args.kwargs['horizon'])
+        self.assertTrue(self.attempt.call_args.args[1]['free_horizon_intent'])
 
     def test_free_window_seed_retains_the_whole_peak_session_intent(self):
         self.now = self.now.replace(hour=7, minute=30)
@@ -469,6 +482,20 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
         self.now = self.now.replace(hour=11, minute=30)
         self.assertEqual(self.run_pass()[0], 0)
         self.attempt.assert_not_called()
+
+    def test_fifteen_minutes_of_advance_credit_cannot_delay_the_free_opening(self):
+        self.tracker.existing_reservation_hours = 5.75
+        self.tracker.quota_observed_hours = 5.75
+        self.tracker.live_quota_minutes = 15
+        self.now = self.now.replace(hour=9, minute=30)
+        self.grid.return_value = [{'room':'A','slots':[{'startHour':14,'endHour':16}]}]
+        self.attempt.side_effect = None
+        self.attempt.return_value = False, {}
+        self.assertEqual(self.run_pass()[0], 0)
+        self.attempt.assert_called_once()
+        slot = self.attempt.call_args.args[1]
+        self.assertEqual(slot['start_hour'], 14)
+        self.assertTrue(slot['free_horizon_intent'])
 
     def test_imminent_practice_can_use_credit_instead_of_missing_the_day(self):
         self.tracker.existing_reservation_hours = 0

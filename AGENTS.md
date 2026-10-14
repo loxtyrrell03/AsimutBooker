@@ -1,3 +1,22 @@
+## 2026-10-14 sub-minimum advance credit cannot delay free bookings
+
+- Advance allocation's fallback hold applies only when the remaining credit
+  can fund the current minimum initial block. Previously a 15-minute remainder
+  postponed free-window candidates until the two-hour fallback lead despite
+  being unable to fund a legal advance booking. Useful advance balances retain
+  the owner's existing allocation and fallback policy; site quota accounting
+  is unchanged. Actual `free_horizon_intent` Saves remain capped to the complete
+  current free window, even with advance credit available.
+- Regressions cover a 15-minute balance that cannot fund the minimum seed,
+  larger available credit, opening-time selection without an artificial wait,
+  and the actual create cap retaining an unbooked extension target. Compare
+  `FREE_HORIZON_CHECK.next_opening` with the natural seed opening when monitoring
+  a sub-minimum balance; useful held credit can still defer ordinary extras.
+- The exact residual-credit regression fails against `640f948`; all 125 focused
+  quota, readiness, preparation, advance preference, fill and Save-guard checks
+  pass with this fix. Activation is through fresh ordinary workers importing
+  canonical source; existing tasks and services are unchanged.
+
 ## 2026-10-14 scoped fill rooms and free-horizon evidence
 
 - Isolated fills accept optional `--fill-rooms ROOM...` for an explicit request's
@@ -16,11 +35,9 @@
   checks pass. An authorized upright fill was independently receipt/agenda
   verified. Its later scan found no additional minimum-length piano slot in the
   requested window. Private evidence is `artifacts/afternoon-horizon-20261014`.
-- The live ASIMUT view marks earlier same-day reservations cancelled. Exact
-  creates were previously verified, and there is no Booker cancellation receipt
-  for them. The agenda does not identify the cancelling actor or cause; do not
-  assert automatic reconfirmation expiry without further evidence. Provisional
-  bookings still require the owner's normal campus reconfirmation.
+- The owner confirms the earlier same-day cancellations were manual. Retain
+  their protections; they are not failed creates or reconfirmation expiry.
+  Provisional bookings still require the owner's normal campus reconfirmation.
 
 ## 2026-10-13 room-now overview restoration
 
