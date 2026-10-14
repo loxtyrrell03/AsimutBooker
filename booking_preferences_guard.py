@@ -15,6 +15,10 @@ class BookingPreferencesChanged(SettingsError):
     """The run must stop before Save and replan using the latest controls."""
 
 
+class PreparedCoordinationChanged(BookingPreferencesChanged):
+    """A prepared editor was discarded before Save after Tempo changed."""
+
+
 _CONTROL_KEYS = (
     "time_preferences", "practice_plan", "disabled_dates", "room_preferences",
     "booking_strategy", "ignored_events", "rebooking_blackouts", "date_time_preferences",
@@ -86,3 +90,19 @@ def booking_save_boundary(**interval):
             yield
     except CoordinationError as exc:
         raise BookingPreferencesChanged(str(exc)) from exc
+
+
+def check_prepared_booking():
+    """Notice invalidated preparation early, without authorizing any Save.
+
+    The exact interval still goes through booking_save_boundary at Save time.
+    Only an active production run has a pinned control/coordination snapshot.
+    """
+    if _ACTIVE_RUN.get() is None:
+        return
+    with _settings_save_boundary():
+        try:
+            with tempo_save_boundary():
+                pass
+        except CoordinationError as exc:
+            raise PreparedCoordinationChanged(str(exc)) from exc

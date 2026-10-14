@@ -53,6 +53,7 @@ from app_settings import (
 )
 from booking_preferences_guard import (
     BookingPreferencesChanged, booking_preference_run, booking_save_boundary,
+    PreparedCoordinationChanged, check_prepared_booking,
 )
 from tempo_coordination import current_snapshot as tempo_coordination_snapshot
 from manual_booking_overrides import (
@@ -1788,8 +1789,10 @@ def wait_until_datetime(
     monotonic_deadline = time.monotonic() + initial_wait + 5
     last_logged_second = None
     last_keepalive_second = None
+    next_guard_check = 0
     while True:
-        if time.monotonic() > monotonic_deadline:
+        monotonic_now = time.monotonic()
+        if monotonic_now > monotonic_deadline:
             raise BookingVerificationError(
                 f"{label} boundary clock did not advance safely; no Save was attempted"
             )
@@ -1797,6 +1800,9 @@ def wait_until_datetime(
         remaining = (target - now).total_seconds()
         if remaining <= 0:
             break
+        if monotonic_now >= next_guard_check:
+            check_prepared_booking()
+            next_guard_check = monotonic_now + 1
         remaining_int = max(0, int(remaining))
         if remaining <= 10 and remaining_int != last_logged_second:
             print(f"    [{label}] T-{remaining:.1f}s")
@@ -13059,14 +13065,29 @@ def main(argv=None):
             print("Another AsimutBooker run is already active; this run did not refresh data.")
             return 6
         run_report.preferences(settings, practice_plan)
-        with booking_preference_run(settings_file, settings):
-            install_booking_rules(settings)
-            result = run_booking(args, settings, practice_plan, room_preferences) or 0
-            code = result or (1 if extension_failures else 0)
-            if code == 0:
-                from preference_runs import complete_matching_run
-                complete_matching_run(settings_file, settings, args)
-            return code
+        for preparation_pass in range(2):
+            try:
+                with booking_preference_run(settings_file, settings):
+                    install_booking_rules(settings)
+                    result = run_booking(args, settings, practice_plan, room_preferences) or 0
+                    code = result or (1 if extension_failures else 0)
+                    if code == 0:
+                        from preference_runs import complete_matching_run
+                        complete_matching_run(settings_file, settings, args)
+                    return code
+            except PreparedCoordinationChanged as exc:
+                # This signal comes only from the wait before receipt/Save.
+                # Discard the old browser and replan once under the same runtime
+                # owner. Never retry an uncertain mutation or an explicit action.
+                if not args.scheduled or preparation_pass:
+                    raise
+                if list_pending_mutation_receipts():
+                    raise BookingVerificationError(
+                        'A pending booking outcome must be reconciled before replanning preparation'
+                    ) from exc
+                print("Tempo changed during preparation; discarding the editor and replanning once before the opening.")
+                settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
+                run_report.preferences(settings, practice_plan)
     except KeyboardInterrupt:
         print("Booking run cancelled.")
         return 130

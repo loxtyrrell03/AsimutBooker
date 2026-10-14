@@ -19,6 +19,7 @@ class ScheduledRuntimeQueueTests(unittest.TestCase):
             mock.patch.object(b.time, "sleep"),
             mock.patch.object(b, "booking_preference_run", return_value=contextlib.nullcontext()),
             mock.patch.object(b, "run_booking", return_value=0) as run,
+            mock.patch.object(b, "save_history"),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             result = b.main(["--scheduled"])

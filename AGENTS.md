@@ -1,3 +1,20 @@
+## 2026-10-14 replan invalidated horizon preparation before the edge
+
+- Horizon editor countdowns recheck the pinned settings and full Tempo revision
+  once per second. A changed shared plan discards the prepared editor before
+  receipt/Save instead of waiting until the opening to discover invalidation.
+- Only an ordinary scheduled worker may make one fresh authenticated planning
+  pass under its existing runtime ownership, and only with no pending mutation
+  receipts. The replacement pass reloads settings, agenda, policy and Tempo
+  authority. A second change stops; explicit operations and changed owner
+  preferences are not retried. Exact final-Save revision/permission checks remain
+  unchanged, including metadata-only renewal invalidation.
+- All 254 focused guard, coordination, pause, horizon, extension, quota,
+  preparation, preference and launcher checks pass. The countdown regression
+  fails against the previous wait implementation. The queue test fixture now
+  isolates history writes. Fresh ordinary workers import the source without
+  changing tasks/services; actual edge timing still needs receipt/agenda proof.
+
 ## 2026-10-14 sub-minimum advance credit cannot delay free bookings
 
 - Advance allocation's fallback hold applies only when the remaining credit
