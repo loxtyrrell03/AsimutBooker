@@ -135,6 +135,89 @@ class PreferenceRunTests(unittest.TestCase):
         self.assertEqual(self.request()['state'], 'completed')
         self.assertIn('without booking',self.request()['message'])
 
+    def test_paused_preferences_refresh_the_plan_without_booking(self):
+        from booking_pause import read_pause, save_pause
+        from uuid import uuid4
+        save_pause(dict(revision=read_pause(self.path)['revision'], paused=True,
+                        request_id=str(uuid4())), self.path)
+        self.save(6)
+        main = Mock(return_value=0)
+        self.drain(main)
+        main.assert_called_once_with(['--headless', '--plan-only'])
+        self.assertEqual(self.request()['state'], 'completed')
+        self.assertIn('paused', self.request()['message'])
+        self.assertTrue(read_pause(self.path)['paused'])
+
+    def test_pause_while_check_starts_is_a_hold_without_retry(self):
+        from booking_pause import read_pause, save_pause
+        from uuid import uuid4
+        self.save(6)
+        def pausing(_):
+            save_pause(dict(revision=read_pause(self.path)['revision'], paused=True,
+                            request_id=str(uuid4())), self.path)
+            return 3
+        main = Mock(side_effect=pausing)
+        self.drain(main)
+        self.drain(main)
+        main.assert_called_once()
+        self.assertEqual(self.request()['state'], 'paused')
+        self.assertNotIn('refreshed', self.request()['message'])
+
+    def test_unreadable_pause_state_never_starts_a_booking_check(self):
+        self.save(6)
+        update_settings(lambda s: s.update(booking_pause={'paused': 'false'}), self.path)
+        main = Mock(return_value=0)
+        self.drain(main)
+        main.assert_not_called()
+        self.assertEqual(self.request()['state'], 'failed')
+
+    def test_unpause_during_a_plan_refresh_does_not_promote_it_to_booking(self):
+        from booking_pause import read_pause, save_pause
+        from uuid import uuid4
+        def choose(value):
+            save_pause(dict(revision=read_pause(self.path)['revision'], paused=value,
+                            request_id=str(uuid4())), self.path)
+        choose(True)
+        self.save(6)
+        def unpausing(flags):
+            self.assertEqual(flags, ['--headless', '--plan-only'])
+            choose(False)
+            return 0
+        self.drain(unpausing)
+        self.assertEqual(self.request()['state'], 'completed')
+        self.assertIn('without booking', self.request()['message'])
+        self.assertNotIn('remain paused', self.request()['message'])
+
+    def test_paused_save_reaches_real_entry_point_in_read_only_mode(self):
+        import book_week as b
+        from booking_pause import read_pause, save_pause
+        from uuid import uuid4
+        save_pause(dict(revision=read_pause(self.path)['revision'], paused=True,
+                        request_id=str(uuid4())), self.path)
+        self.save(6)
+        with patch.multiple(b, APP_DIR=self.root, settings_file=self.path, _CONFIG_ERROR=None), \
+             patch.object(b, '_load_and_validate_runtime_settings',
+                          side_effect=lambda: (load_settings(self.path), None, None)), \
+             patch.object(b, 'install_booking_rules'), \
+             patch.object(b, 'run_booking', return_value=0) as run:
+            self.drain(b.main)
+        run.assert_called_once()
+        self.assertTrue(run.call_args.args[0].plan_only)
+        self.assertEqual(self.request()['state'], 'completed')
+        self.assertTrue(read_pause(self.path)['paused'])
+
+    def test_pending_mutation_exit_is_not_hidden_by_pause(self):
+        from booking_pause import read_pause, save_pause
+        from uuid import uuid4
+        self.save(6)
+        def uncertain(_):
+            save_pause(dict(revision=read_pause(self.path)['revision'], paused=True,
+                            request_id=str(uuid4())), self.path)
+            return 5
+        self.drain(uncertain)
+        self.assertEqual(self.request()['state'], 'failed')
+        self.assertEqual(self.request()['exit_code'], 5)
+
     def test_unreadable_automatic_status_permits_only_a_display_refresh(self):
         self.save(4)
         main=Mock(return_value=0)

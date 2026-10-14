@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from app_settings import InterProcessFileLock, SettingsError, load_settings, update_settings, settings_transaction
 from runtime_guard import SingleInstanceLock
+from booking_pause import read_pause, pause_document
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = ROOT / 'data/settings.json'
@@ -192,9 +193,20 @@ def run_pending(*, root=ROOT, booker_main=None, enabled=None, sleep=time.sleep,
                     # Planning is read-only even when automatic booking cannot
                     # be enabled or verified. Off must not leave My Week empty.
                     allowed = False
-                latest = pending(load_settings(path))
+                current_settings = load_settings(path)
+                latest = pending(current_settings)
                 if not latest or latest['id'] != request_id:
                     continue
+                try:
+                    paused = pause_document(current_settings)['paused']
+                except SettingsError:
+                    settle(path, request_id, 'failed',
+                           'Booking pause could not be checked. Refresh its status before continuing.')
+                    continue
+                # A saved preference still needs a fresh display plan while
+                # Pause is on. Do not launch a booking run that can only stop
+                # at its entry guard, and never promote a read after Unpause.
+                allowed = allowed and not paused
                 settle(path, request_id, 'running', 'Booker is checking the saved preferences.' if allowed else
                     'Refreshing the practice plan without booking.')
                 print(f'{timestamp()} Starting preference check {request_id}', flush=True)
@@ -209,10 +221,22 @@ def run_pending(*, root=ROOT, booker_main=None, enabled=None, sleep=time.sleep,
                     # Contention is not an attempt and must not lose the save.
                     settle(path, request_id, 'pending', 'Waiting for the current Booker run to finish.')
                 else:
-                    settle(path, request_id, 'completed' if code == 0 else 'failed',
-                        ('Booker checked the saved preferences.' if allowed else
-                         'Practice plan refreshed without booking.') if code == 0 else
-                        'Booker could not finish this check. Review its latest activity.', code=code)
+                    try:
+                        paused_after = read_pause(path)['paused']
+                    except SettingsError:
+                        paused_after = None
+                    if code == 0:
+                        message = ('Booker checked the saved preferences.' if allowed else
+                                   'Practice plan refreshed without booking.')
+                        if paused_after:
+                            message += ' Bookings remain paused.'
+                        settle(path, request_id, 'completed', message, code=code)
+                    elif code == 3 and paused_after:
+                        settle(path, request_id, 'paused',
+                               'This check stopped because bookings are paused. Existing reservations are kept.', code=code)
+                    else:
+                        settle(path, request_id, 'failed',
+                               'Booker could not finish this check. Review its latest activity.', code=code)
                 print(f'{timestamp()} Preference check {request_id}: exit {code}', flush=True)
             finally:
                 assistant.release()

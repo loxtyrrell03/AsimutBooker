@@ -1,3 +1,19 @@
+## 2026-10-15 preference checks respect Pause without losing the plan
+
+- The existing preference dispatcher reads the canonical Pause state after
+  ownership is available. A saved preference while paused runs the existing
+  read-only plan refresh; previously it launched a booking check which stopped
+  at the Pause guard and left the display stale with a failure message.
+- Pause arriving while a booking check starts settles that request as paused,
+  with no automatic retry. Unpause cannot promote an already selected read-only
+  pass into a booking pass. Invalid hold evidence starts no worker, and pending
+  mutation exits remain failures requiring their usual reconciliation.
+- All 53 focused preference-dispatch, Pause, preparation and final-Save checks
+  pass, including the real entry point with a synthetic paused settings file.
+  Fresh dispatchers import this source; no live hold, schedule, reservation,
+  service or route was changed to test it. This does not establish Pause as the
+  cause of the separate residual-credit defect.
+
 ## 2026-10-14 replan invalidated horizon preparation before the edge
 
 - Horizon editor countdowns recheck the pinned settings and full Tempo revision
