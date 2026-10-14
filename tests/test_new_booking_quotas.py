@@ -354,6 +354,27 @@ class ShortNoticeIntegrationTests(unittest.TestCase):
         self.assertEqual(self.attempt.call_count, 1)
         self.assertEqual(len(self.details), 1)
 
+    def test_check_evidence_distinguishes_ready_selection_from_waiting(self):
+        with patch.object(short_notice, 'log_day_check', wraps=short_notice.log_day_check) as audit:
+            self.assertEqual(self.run_pass()[0], 1)
+        args, kwargs = audit.call_args
+        evidence = short_notice.log_day_check(*args, **kwargs)
+        self.assertGreater(evidence['ready_intervals'], 0)
+        self.assertGreater(evidence['selected_ready_intervals'], 0)
+        self.assertEqual(evidence['date'], str(self.now.date()))
+
+    def test_future_only_check_is_not_a_successful_booking(self):
+        self.grid.return_value = [{'room':'A','slots':[{'startHour':20,'endHour':22}]}]
+        with patch.object(short_notice, 'log_day_check', wraps=short_notice.log_day_check) as audit:
+            self.assertEqual(self.run_pass()[0], 0)
+        self.attempt.assert_not_called()
+        args, kwargs = audit.call_args
+        evidence = short_notice.log_day_check(*args, **kwargs)
+        self.assertEqual(evidence['ready_intervals'], 0)
+        self.assertEqual(evidence['selected_ready_intervals'], 0)
+        self.assertGreater(evidence['future_intervals'], 0)
+        self.assertIsNotNone(evidence['next_opening'])
+
     def test_pending_extensions_keep_priority_over_short_notice_creates(self):
         self.holds.return_value = ({str(self.now.date()):120}, {}, ())
         self.assertEqual(self.run_pass()[0], 0)

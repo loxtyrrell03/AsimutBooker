@@ -1,3 +1,27 @@
+## 2026-10-14 scoped fill rooms and free-horizon evidence
+
+- Isolated fills accept optional `--fill-rooms ROOM...` for an explicit request's
+  temporary room choices. Saved ordering, exclusions and instrument filters
+  remain unchanged. Validate a complete fill request and unique names; filter
+  every fresh grid to that exact set because live discovery appends other rooms
+  to preference ordering. Quotas, current site access, conflicts, locks, receipts,
+  final Save guards and complete-agenda verification still apply.
+- Scheduled short-notice scans emit `FREE_HORIZON_CHECK` JSON with fresh ready,
+  selected, future and prepared interval counts, distinct ready rooms and the
+  next opening. These are planning observations, never successful-booking proof.
+  Compare them with verified receipts and a newer agenda; exit zero can mean no
+  eligible interval. Future openings and saved room gaps do not prove a missed
+  opportunity. Normal workers import this source without a service restart.
+- 108 focused synthetic fill, preference, room, quota, readiness and preparation
+  checks pass. An authorized upright fill was independently receipt/agenda
+  verified. Its later scan found no additional minimum-length piano slot in the
+  requested window. Private evidence is `artifacts/afternoon-horizon-20261014`.
+- The live ASIMUT view marks earlier same-day reservations cancelled. Exact
+  creates were previously verified, and there is no Booker cancellation receipt
+  for them. The agenda does not identify the cancelling actor or cause; do not
+  assert automatic reconfirmation expiry without further evidence. Provisional
+  bookings still require the owner's normal campus reconfirmation.
+
 ## 2026-10-13 room-now overview restoration
 
 - `refresh_practice_room_overview` opens the exact fresh-catalog overview when

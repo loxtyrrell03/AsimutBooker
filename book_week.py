@@ -10659,9 +10659,8 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
     today = datetime.now().date()
     room_preferences = room_preferences or load_room_preferences(settings)
     if getattr(args, 'fill_date', None):
-        from dataclasses import replace
-        room_preferences = replace(room_preferences, minimum_block_minutes=MIN_BOOKING_MINUTES,
-                                   allow_fragmented_sessions=True)
+        from fill_range import request_room_preferences
+        room_preferences = request_room_preferences(args, room_preferences)
     from booking_time_edits import time_edit_requested
     if time_edit_requested(args):
         # This exact user edit overrides autonomous room ranking/filter defaults
@@ -12515,6 +12514,8 @@ def build_argument_parser():
     parser.add_argument('--room-now-output')
     for field in ('date', 'start', 'end', 'requested-at', 'output'):
         parser.add_argument('--fill-' + field)
+    parser.add_argument('--fill-rooms', nargs='+',
+                        help='Explicit room choices for this fill only; saved room preferences are unchanged')
     parser.add_argument('--fill-review-output')
     parser.add_argument(
         "--target-time",

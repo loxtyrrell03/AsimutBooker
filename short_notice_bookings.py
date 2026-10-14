@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, time as local_time
 from copy import copy
 from dataclasses import replace
+import json
 
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
@@ -19,6 +20,22 @@ def candidate_reason(day_plan, opportunity):
                 and candidate.end_time == opportunity.end_text):
             return candidate.reason
     return 'Selected from the current non-overlapping daily plan'
+
+
+def log_day_check(day, opportunities, chosen, day_plan, *, now, prepared=()):
+    """Record selection evidence; completion alone never proves room creation."""
+    ready = [item for item in opportunities if item.unlock_at <= now]
+    future = [item for item in opportunities if item.unlock_at > now]
+    evidence = dict(date=str(day), checked_at=now.astimezone().isoformat(),
+        ready_intervals=len(ready), ready_rooms=len({item.room for item in ready}),
+        selected_ready_intervals=sum(item.unlock_at <= now for item in chosen),
+        future_intervals=len(future),
+        next_opening=min((item.unlock_at for item in future), default=None),
+        prepared_intervals=len(prepared), decision=day_plan.reason)
+    if evidence['next_opening'] is not None:
+        evidence['next_opening'] = evidence['next_opening'].astimezone().isoformat()
+    print('FREE_HORIZON_CHECK ' + json.dumps(evidence, sort_keys=True))
+    return evidence
 
 
 def reserve_advance_credit(opportunities, planning, *, active, release_lead_minutes=None):
@@ -167,6 +184,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                               for item in chosen if item.unlock_at <= now)
             if not chosen:
                 print(f'  [Free horizon] {day_plan.reason}')
+            prepared = []
             if boundary is not None:
                 # Use the same complete day decision at the imminent boundary.
                 # Discovery is preparation only; the editor needs a fresh exact
@@ -176,9 +194,10 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                     reserved_peak_minutes=peak_holds.get(day.isoformat(),0), free_horizon_only=True)
                 projected_order = engine._runtime_ordered_day_opportunities(
                     opportunities, projected, planning, now=boundary)
+                prepared = [item for item in projected_order if now < item.unlock_at <= boundary]
                 future_candidates.extend((item, remaining, candidate_reason(projected, item))
-                    for item in projected_order
-                    if now < item.unlock_at <= boundary)
+                    for item in prepared)
+            log_day_check(day, opportunities, chosen, day_plan, now=now, prepared=prepared)
         prepare_edge = not candidates and bool(future_candidates)
         if not candidates:
             if prepare_edge:

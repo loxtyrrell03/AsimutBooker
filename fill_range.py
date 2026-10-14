@@ -78,21 +78,35 @@ def cli_flags(choices, requested_at, output):
             '--fill-end', choices['end_time'], '--fill-requested-at', requested_at, '--fill-output', str(output)]
 
 
+def request_room_preferences(args, preferences):
+    """An explicit fill room list applies only to this isolated request."""
+    from dataclasses import replace
+    from room_preferences import RoomPreferences, validate_room_name
+    names = getattr(args, 'fill_rooms', None)
+    if names is None:
+        return replace(preferences, minimum_block_minutes=30, allow_fragmented_sessions=True)
+    if not names or len(names) > 100 or len(set(names)) != len(names):
+        raise ValueError('Choose a nonempty, unique list of fill rooms.')
+    return RoomPreferences(ordered_rooms=tuple(validate_room_name(name) for name in names))
+
+
 def validate_cli(parser, args):
     if getattr(args, 'fill_review_output', None):
         if any(v for k,v in vars(args).items() if k not in {'headless','fill_review_output'}):
             parser.error('Fill result review cannot be combined with booking actions.')
         return
     fields = {'fill_date', 'fill_start', 'fill_end', 'fill_requested_at', 'fill_output'}
-    if not any(getattr(args, k, None) is not None for k in fields):
+    if not any(getattr(args, k, None) is not None for k in fields | {'fill_rooms'}):
         return
     if not all(getattr(args, k, None) is not None for k in fields):
         parser.error('Fill requires the date, both times, request time and result path.')
     try:
         request_from_args(args).check_current(local_now())
+        from room_preferences import RoomPreferences
+        request_room_preferences(args, RoomPreferences())
     except (ValueError, TypeError, SettingsError) as exc:
         parser.error(str(exc))
-    if any(v for k, v in vars(args).items() if k not in fields | {'headless'}):
+    if any(v for k, v in vars(args).items() if k not in fields | {'headless', 'fill_rooms'}):
         parser.error('Fill is isolated from automatic booking, editing and other operation modes.')
 
 
@@ -278,6 +292,11 @@ def run(engine, page, args, settings, tracker, *, today, live_dates):
             if request.day != today:
                 engine.navigate_to_day(page, (request.day-today).days, 0, base_date=today)
             rooms = engine.get_available_slots(page)
+            requested_rooms = getattr(args, 'fill_rooms', None)
+            if requested_rooms is not None:
+                # Discovery appends new live rooms to preference ordering.
+                # An explicit selection is narrower than that ordering.
+                rooms = [row for row in rooms if row.get('room') in requested_rooms]
             options, reasons = candidates(engine, rooms, tracker, request, local_now())
             available_options = bool(options)
             options = [c for c in options if (c['room'], c['start_hour'], c['minutes']) not in refused]

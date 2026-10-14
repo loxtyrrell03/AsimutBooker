@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import book_week as engine
 from app_settings import SettingsError
-from fill_range import FillRequest, candidates, uncovered, scoped_tracker, run, cli_flags, validate_choices, choose_candidate
+from fill_range import FillRequest, candidates, uncovered, scoped_tracker, run, cli_flags, validate_choices, choose_candidate, request_room_preferences
 from room_now import LONDON
 from phone_system import validate_action
 
@@ -35,6 +35,29 @@ class FillTests(unittest.TestCase):
         self.stack.enter_context(patch('fill_range.local_now',return_value=NOW))
         self.request=FillRequest.create(CHOICES,NOW.isoformat())
         self.tracker=engine.BookingTracker()
+
+    def test_explicit_room_selection_does_not_change_saved_grand_preferences(self):
+        from room_preferences import RoomPreferences
+        saved = RoomPreferences(ordered_rooms=('Grand', 'Upright'), excluded_rooms=('Upright',),
+                                acceptable_room_type_tags=('Practice: Grand Piano',))
+        chosen = request_room_preferences(SimpleNamespace(fill_rooms=['Upright']), saved)
+        self.assertEqual(chosen.ordered_rooms, ('Upright',))
+        self.assertEqual(chosen.excluded_rooms, ())
+        self.assertEqual(saved.excluded_rooms, ('Upright',))
+        self.assertEqual(saved.acceptable_room_type_tags, ('Practice: Grand Piano',))
+
+    def test_explicit_rooms_require_complete_isolated_fill_request(self):
+        parser = engine.build_argument_parser()
+        with self.assertRaises(SystemExit):
+            engine._validate_cli_args(parser, parser.parse_args(['--headless', '--fill-rooms', 'Upright']))
+        flags = cli_flags(CHOICES, NOW.isoformat(), 'result.json') + ['--fill-rooms', 'Upright']
+        parsed = parser.parse_args(flags)
+        engine._validate_cli_args(parser, parsed)
+        self.assertEqual(parsed.fill_rooms, ['Upright'])
+        for names in ([], ['Upright', 'Upright'], [' Upright']):
+            with self.assertRaises(ValueError):
+                from room_preferences import RoomPreferences
+                request_room_preferences(SimpleNamespace(fill_rooms=names), RoomPreferences())
 
     def test_clipped_union_avoids_double_counting_or_adjacent_boundary(self):
         values=[event('10:00','11:30'),event('11:00','12:00'),event('12:00','12:30'),event('13:00','14:00')]
@@ -110,6 +133,21 @@ class FillTests(unittest.TestCase):
             run(fake,None,args,{},tracker,today=NOW.date(),live_dates=[NOW.date()])
             fake.try_book_slot.assert_not_called();fake.refresh_practice_room_overview.assert_not_called()
             self.assertEqual(json.loads(Path(args.fill_output).read_text())['covered_minutes'],120)
+
+    def test_live_discovery_cannot_add_unrequested_fill_rooms(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake, tracker, args = self.fixture(folder)
+            args.fill_rooms = ['Other']
+            for name in ('PRIORITY_ROOMS','MIN_BOOKING_MINUTES','MAX_BOOKING_HOURS','room_horizon_minutes'):
+                setattr(fake, name, getattr(engine, name))
+            fake.get_available_slots.return_value = [
+                {'room':'Top','slots':[{'startHour':11,'endHour':13}]},
+                {'room':'Other','slots':[]}]
+            run(fake, None, args, {}, tracker, today=NOW.date(), live_dates=[NOW.date()])
+            fake.try_book_slot.assert_not_called()
+            result = json.loads(Path(args.fill_output).read_text())
+            self.assertEqual(result['state'], 'empty')
+            self.assertNotIn('Top', ' '.join(result['reasons']))
 
     def test_short_gaps_explain_no_new_booking_without_blaming_quota(self):
         with tempfile.TemporaryDirectory() as folder:
