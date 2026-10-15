@@ -96,6 +96,21 @@ def _unique_utc(wall):
     return candidates.pop() if len(candidates) == 1 else None
 
 
+def free_horizon_opening(day, end_hour, *, room_horizon_minutes, horizon_minutes=300):
+    """Local clock when the endpoint fits both room and elapsed free horizons."""
+    if isinstance(day, datetime):
+        day = day.date()
+    if not isinstance(day, date):
+        day = date.fromisoformat(day)
+    endpoint = datetime.combine(day, time()) + timedelta(minutes=round(end_hour * 60))
+    end_utc = _unique_utc(endpoint)
+    room_opening = _unique_utc(endpoint - timedelta(minutes=room_horizon_minutes))
+    if end_utc is None or room_opening is None:
+        raise ValueError('Ambiguous or nonexistent London horizon endpoint')
+    opening = max(room_opening, end_utc - timedelta(minutes=horizon_minutes))
+    return opening.astimezone(SITE_TIMEZONE).replace(tzinfo=None)
+
+
 def _free_horizon_window(day, start_hour, now, horizon_minutes):
     if isinstance(day, datetime):
         day = day.date()

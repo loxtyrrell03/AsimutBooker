@@ -1,3 +1,22 @@
+## 2026-10-15 free-horizon planning follows actual clock instants
+
+- Free-window forecasts, minimum-seed preparation and each extension endpoint
+  share `free_horizon_opening`: the later of the observed calendar room opening
+  and the elapsed free-window opening. Multi-day room policy remains calendar
+  time. The old generic planner shifted free-window seeds an hour across DST.
+- Readiness, ranking, countdowns, site-clock offsets and quarter-hour discovery
+  compare actual instants. The second autumn occurrence of a clock time cannot
+  look already open during the first. HH:MM targets resolve the occurrence
+  nearest the current pass; nonexistent targets are rejected. Actual form
+  endpoints still require unambiguous times and the strict final Save checks.
+- Twelve synthetic regressions cover spring/autumn forecasts, shorter room
+  horizons, real create/extension dispatch with mocked remote writes, catch-up,
+  duration caps and countdowns. Five initial regression methods failed against
+  the previous source; all 262 focused planner, quota, preparation, extension,
+  Pause, Save and launcher checks pass. Fresh scheduled workers import this
+  source; no live booking, preference or service was changed for testing.
+  Successful live edge timing still requires a receipt and newer agenda.
+
 ## 2026-10-15 upgrades share the observed calendar-horizon edge
 
 - Whole-room upgrades, their forecasts, explicit later shifts and progressive

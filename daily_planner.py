@@ -10,6 +10,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
+from booking_timing import as_utc, seconds_between, shift_clock
 from functools import lru_cache
 from math import floor, isfinite
 from typing import Iterable, Sequence
@@ -437,7 +438,7 @@ def opportunity_rank(opportunity: BookingOpportunity, planning, *, now: datetime
         and opportunity.end_minutes <= preferred_end
         and opportunity.potential_minutes >= (opportunity.peak_target_minutes or desired)
     )
-    wait_seconds = max(0, int((opportunity.unlock_at - now).total_seconds()))
+    wait_seconds = max(0, int(seconds_between(opportunity.unlock_at, now)))
     after_peak = opportunity.start_minutes >= opportunity.peak_window_end_minutes
     unrestricted = opportunity.peak_minutes == 0
     if fully_preferred:
@@ -493,7 +494,7 @@ def opportunity_rank(opportunity: BookingOpportunity, planning, *, now: datetime
 
 def ready_preferred_minutes(opportunity, *, now):
     """Preferred intent backed by a currently eligible minimum booking."""
-    if opportunity.unlock_at > now:
+    if as_utc(opportunity.unlock_at) > as_utc(now):
         return 0
     window = opportunity.soft_preferred_window
     if window is None:
@@ -570,8 +571,8 @@ def choose_horizon_opportunity(
         item
         for item in future
         if item.target_date == best_current.target_date
-        and item.unlock_at > now
-        and item.unlock_at <= now + lookahead
+        and as_utc(item.unlock_at) > as_utc(now)
+        and as_utc(item.unlock_at) <= as_utc(shift_clock(now, seconds=lookahead.total_seconds()))
         and opportunity_rank(item, planning, now=now) < current_rank
     ]
     later.sort(key=lambda item: opportunity_rank(item, planning, now=now))
@@ -727,7 +728,7 @@ def _select_day_plan(
             required_opportunity.room,
             required_opportunity.target_date,
             required_opportunity.start_minutes,
-            required_opportunity.unlock_at,
+            as_utc(required_opportunity.unlock_at),
             required_opportunity.initial_minutes,
             required_opportunity.source_gap_start_minutes,
             required_opportunity.source_gap_end_minutes,
@@ -739,7 +740,7 @@ def _select_day_plan(
             item.room,
             item.target_date,
             item.start_minutes,
-            item.unlock_at,
+            as_utc(item.unlock_at),
             item.initial_minutes,
             item.source_gap_start_minutes,
             item.source_gap_end_minutes,

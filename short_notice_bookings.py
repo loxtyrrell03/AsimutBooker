@@ -6,7 +6,7 @@ import json
 
 from booking_quotas import refresh_quota_balances
 from operation_control import operation_stage
-from booking_timing import scheduled_work_fits
+from booking_timing import scheduled_work_fits, as_utc, seconds_between, shift_clock
 from advance_preferences import load_advance_quota
 import booking_run_report as report
 
@@ -24,13 +24,13 @@ def candidate_reason(day_plan, opportunity):
 
 def log_day_check(day, opportunities, chosen, day_plan, *, now, prepared=()):
     """Record selection evidence; completion alone never proves room creation."""
-    ready = [item for item in opportunities if item.unlock_at <= now]
-    future = [item for item in opportunities if item.unlock_at > now]
+    ready = [item for item in opportunities if as_utc(item.unlock_at) <= as_utc(now)]
+    future = [item for item in opportunities if as_utc(item.unlock_at) > as_utc(now)]
     evidence = dict(date=str(day), checked_at=now.astimezone().isoformat(),
         ready_intervals=len(ready), ready_rooms=len({item.room for item in ready}),
-        selected_ready_intervals=sum(item.unlock_at <= now for item in chosen),
+        selected_ready_intervals=sum(as_utc(item.unlock_at) <= as_utc(now) for item in chosen),
         future_intervals=len(future),
-        next_opening=min((item.unlock_at for item in future), default=None),
+        next_opening=min((item.unlock_at for item in future), key=as_utc, default=None),
         prepared_intervals=len(prepared), decision=day_plan.reason)
     if evidence['next_opening'] is not None:
         evidence['next_opening'] = evidence['next_opening'].astimezone().isoformat()
@@ -48,7 +48,7 @@ def reserve_advance_credit(opportunities, planning, *, active, remaining_credit_
     lead = planning.fallback_lead_minutes if release_lead_minutes is None else release_lead_minutes
     return [replace(item, unlock_at=max(item.unlock_at,
         datetime.combine(item.target_date, local_time())
-        + timedelta(minutes=item.start_minutes - lead)))
+        + timedelta(minutes=item.start_minutes - lead), key=as_utc))
         for item in opportunities]
 
 
@@ -112,7 +112,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
     preserve_advance = advance_allocation_enabled(settings, practice_plan, args)
     now = datetime.now()
     days = tuple(day for day in engine.booking_window_dates(now.date())
-                 if now.date() <= day <= (now + timedelta(minutes=engine.FREE_HORIZON_MINUTES)).date()
+                 if now.date() <= day <= shift_clock(now, minutes=engine.FREE_HORIZON_MINUTES).date()
                  and not engine.is_date_disabled(day, disabled)
                  and (not args.only_date or day.isoformat() == args.only_date))
     if engine.is_date_disabled(now.date(), disabled):
@@ -143,7 +143,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
         if (getattr(args,'scheduled',False) and getattr(args,'target_time',None)
                 and not getattr(args,'_free_boundary_waited',False)):
             value=engine.target_boundary_datetime(args.target_time,base_date=now.date())
-            if 0 < (value-now).total_seconds() <= 180:
+            if 0 < seconds_between(value, now) <= 180:
                 boundary=value
         for day in days:
             fragmentation_ok, fragmentation_reason = engine.fragmentation_allows_new_booking(tracker, day)
@@ -186,7 +186,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
             chosen = engine._runtime_ordered_day_opportunities(
                 opportunities, day_plan, planning, now=now)
             candidates.extend((item, remaining, candidate_reason(day_plan, item))
-                              for item in chosen if item.unlock_at <= now)
+                              for item in chosen if as_utc(item.unlock_at) <= as_utc(now))
             if not chosen:
                 print(f'  [Free horizon] {day_plan.reason}')
             prepared = []
@@ -199,7 +199,7 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
                     reserved_peak_minutes=peak_holds.get(day.isoformat(),0), free_horizon_only=True)
                 projected_order = engine._runtime_ordered_day_opportunities(
                     opportunities, projected, planning, now=boundary)
-                prepared = [item for item in projected_order if now < item.unlock_at <= boundary]
+                prepared = [item for item in projected_order if as_utc(now) < as_utc(item.unlock_at) <= as_utc(boundary)]
                 future_candidates.extend((item, remaining, candidate_reason(projected, item))
                     for item in prepared)
             log_day_check(day, opportunities, chosen, day_plan, now=now, prepared=prepared)
@@ -215,10 +215,11 @@ def run_short_notice_pass(engine, page, settings, practice_plan, args, tracker,
         item, remaining, reason = min(candidates, key=lambda pair: engine.opportunity_rank(pair[0], planning, now=now))
         day = item.target_date
         if prepare_edge:
-            natural_opening = datetime.combine(day, local_time()) + timedelta(
-                minutes=item.start_minutes+item.initial_minutes
-                - min(engine.room_horizon_minutes(item.room), engine.FREE_HORIZON_MINUTES))
-            if item.unlock_at != natural_opening:
+            natural_opening = engine.free_horizon_opening(day,
+                (item.start_minutes+item.initial_minutes) / 60,
+                room_horizon_minutes=engine.room_horizon_minutes(item.room),
+                horizon_minutes=engine.FREE_HORIZON_MINUTES)
+            if as_utc(item.unlock_at) != as_utc(natural_opening):
                 # A saved fallback lead can delay an already-open room while
                 # advance credit is reserved. It is not an ASIMUT horizon edge.
                 engine.wait_until_datetime(item.unlock_at, page, label='PRACTICE', settle_seconds=0)

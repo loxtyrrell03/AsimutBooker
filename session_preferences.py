@@ -7,6 +7,7 @@ the baseline available even on highly contested, dense calendars.
 """
 from bisect import bisect_left
 from functools import lru_cache
+from booking_timing import as_utc
 
 
 def enabled(planning):
@@ -198,8 +199,8 @@ def _refine_plan(baseline, opportunities, planning, *, now, remaining_peak_minut
             or sum(i.preferred_minutes for i in result) < sum(i.preferred_minutes for i in baseline)):
         return baseline
     # Comfort cannot replace secured time by a not-yet-bookable alternative.
-    if sum(i.potential_minutes for i in result if i.unlock_at > now) > \
-            sum(i.potential_minutes for i in baseline if i.unlock_at > now):
+    if sum(i.potential_minutes for i in result if as_utc(i.unlock_at) > as_utc(now)) > \
+            sum(i.potential_minutes for i in baseline if as_utc(i.unlock_at) > as_utc(now)):
         return baseline
     baseline_key = (*primary(baseline), *comfort_key((*existing, *[
         (i.start_minutes, i.end_minutes, i.room) for i in baseline]), planning), len(baseline))

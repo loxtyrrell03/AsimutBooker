@@ -1,5 +1,6 @@
 """Fresh weekly discovery and guarded execution of preferred-room allocations."""
 from datetime import datetime
+from booking_timing import as_utc, seconds_between
 import time
 import booking_run_report as report
 
@@ -119,7 +120,7 @@ def plan_from_grids(engine, grids, settings, practice_plan, tracker, args, *, no
                 reserved_peak_minutes=peaks.get(day.isoformat(), 0),
                 reserved_weekly_minutes=sum(targets.values()))
             opportunities = tuple(replace(item, room_priority=rooms.index(item.room)) for item in opportunities
-                if quota.wait_for_opening or item.unlock_at <= now)
+                if quota.wait_for_opening or as_utc(item.unlock_at) <= as_utc(now))
             # The shared planner scores soft preferences and rejects terrible
             # fallbacks. Only an explicitly strict window is a hard cutoff.
         quality_hold = 0
@@ -151,9 +152,9 @@ def publish(engine, days, allocations, context, policy, settings, tracker, *, no
                                sorted(allocations, key=lambda item: item.target_date)):
         peak_limit = int(engine.MAX_PEAK_HOURS*60) if day.target_date.weekday() < 5 else 0
         sessions = sorted(allocation.sessions, key=lambda item: (
-            item.unlock_at > now, engine.opportunity_rank(item, planning, now=now)))
+            as_utc(item.unlock_at) > as_utc(now), engine.opportunity_rank(item, planning, now=now)))
         candidates = tuple(engine._plan_candidate_from_opportunity(item,
-            state='ready' if item.unlock_at <= now else 'waiting',
+            state='ready' if as_utc(item.unlock_at) <= as_utc(now) else 'waiting',
             reason=f'{allocation.minutes} advance minutes allocated to this date; '
                    'each booking still needs live approval') for item in sessions)
         if candidates:
@@ -265,20 +266,20 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
         boundary = engine.target_boundary_datetime(args.target_time, base_date=now.date()) \
             if getattr(args, 'target_time', None) else now
         candidates = [(item, allocation) for allocation in allocations for item in allocation.sessions
-            if (item.unlock_at <= now or (item.unlock_at <= boundary
-                and 0 < (item.unlock_at-now).total_seconds() <= 180))
+            if (as_utc(item.unlock_at) <= as_utc(now) or (as_utc(item.unlock_at) <= as_utc(boundary)
+                and 0 < seconds_between(item.unlock_at, now) <= 180))
             and item.target_date not in declined_days
             and (item.target_date, item.room, item.start_minutes, item.end_minutes) not in attempts]
         if not candidates:
-            waiting = [item for allocation in allocations for item in allocation.sessions if item.unlock_at > now]
+            waiting = [item for allocation in allocations for item in allocation.sessions if as_utc(item.unlock_at) > as_utc(now)]
             if waiting:
-                first = min(waiting, key=lambda item:item.unlock_at)
+                first = min(waiting, key=lambda item:as_utc(item.unlock_at))
                 report.note("advance", f"Advance allocation held for {first.target_date} {first.room} {first.start_text}-{first.end_text}; opens {first.unlock_at:%a %d %b %H:%M}.")
             else:
                 report.note("advance", "No further advance block fits the current credit, allocation settings and fresh availability.")
             break
         item, allocation = min(candidates, key=lambda pair: (
-            0 if pair[0].unlock_at > now else 1, pair[0].unlock_at,
+            0 if as_utc(pair[0].unlock_at) > as_utc(now) else 1, as_utc(pair[0].unlock_at),
             engine.opportunity_rank(pair[0], engine.load_booking_strategy_preferences(settings).daily_planning,
                                     now=now)))
         key = (item.target_date, item.room, item.start_minutes, item.end_minutes)
@@ -293,7 +294,7 @@ def run(engine, page, policy, settings, practice_plan, args, tracker, total_acti
                    for group in fresh_allocations for candidate in group.sessions):
             continue
         refresh_quota_balances(page, tracker, engine.booking_window_dates(now.date()))
-        horizon = item.unlock_at > datetime.now()
+        horizon = as_utc(item.unlock_at) > as_utc(datetime.now())
         slot = (engine._opportunity_to_horizon_candidate(item, target_boundary=item.unlock_at)
                 if horizon else engine._opportunity_to_normal_slot(item))
         quota = load_advance_quota(settings)

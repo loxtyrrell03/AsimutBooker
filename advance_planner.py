@@ -7,6 +7,7 @@ checks. Daily targets, preferred-time scoring and session rules are unchanged.
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from fractions import Fraction
+from booking_timing import as_utc
 
 from daily_planner import BookingOpportunity, select_day_plan, soft_time_value, opportunity_rank
 from session_preferences import comfort_key, enabled as comfort_enabled
@@ -86,7 +87,7 @@ def allocate_advance_week(days, planning, *, now: datetime, budget_minutes: int,
                 # Equally suitable preferred-room time that is already open
                 # can be secured now, then upgraded through the existing path.
                 # Do not hold credit for an equivalent unopened alternative.
-                rank_key=lambda item: (item.unlock_at > now,
+                rank_key=lambda item: (as_utc(item.unlock_at) > as_utc(now),
                     *opportunity_rank(item, planning, now=now)))
             allocation = AdvanceAllocation(day.target_date, sessions)
             old = options.get(allocation.minutes)

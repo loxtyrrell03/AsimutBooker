@@ -32,6 +32,7 @@ from contextvars import ContextVar
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, replace
+from booking_timing import as_utc, seconds_between, shift_clock, local_boundary
 from urllib.parse import urlsplit
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -141,7 +142,7 @@ from live_room_policy import (
     format_horizon_minutes,
 )
 from room_catalog import RoomCatalogError, refresh_from_site as refresh_room_catalog
-from booking_quotas import (refresh_quota_balances, free_horizon_hours, in_free_horizon,
+from booking_quotas import (refresh_quota_balances, free_horizon_hours, in_free_horizon, free_horizon_opening,
                             QuotaPolicyError, QuotaWait, check_quota_refusal,
                             ROLLING_QUOTA_HOURS, PEAK_QUOTA_MINUTES, FREE_HORIZON_MINUTES)
 from room_preferences import (
@@ -1717,14 +1718,14 @@ def wait_until_target_time(target_time_str, page=None):
     """
     target_hour, target_minute = map(int, target_time_str.split(':'))
     now = datetime.now()
-    target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    target = local_boundary(now.date(), target_hour, target_minute, now=now)
 
     # If target time already passed, proceed immediately
-    if now >= target:
+    if as_utc(now) >= as_utc(target):
         print(f"Target time {target_time_str} already passed, proceeding immediately")
         return
 
-    wait_seconds = (target - now).total_seconds()
+    wait_seconds = seconds_between(target, now)
     print(f"\n{'='*60}")
     print(f"READY - Waiting for target time: {target_time_str}")
     print(f"{'='*60}")
@@ -1735,8 +1736,8 @@ def wait_until_target_time(target_time_str, page=None):
     last_keepalive_second = -1
 
     # Wait with periodic status updates and session keepalive
-    while datetime.now() < target:
-        remaining = (target - datetime.now()).total_seconds()
+    while True:
+        remaining = seconds_between(target, datetime.now())
         if remaining <= 0:
             break
 
@@ -1771,7 +1772,7 @@ def wait_until_datetime(
     """Wait for one exact local datetime while keeping the page responsive."""
 
     now = datetime.now()
-    if now >= target:
+    if as_utc(now) >= as_utc(target):
         # Form preparation can legitimately consume the last fraction of the
         # lead window. Preserve the same small server-clock allowance even
         # when the local boundary was reached before this helper was entered.
@@ -1779,7 +1780,7 @@ def wait_until_datetime(
             time.sleep(settle_seconds)
         return 0.0
 
-    initial_wait = (target - now).total_seconds()
+    initial_wait = seconds_between(target, now)
     if initial_wait > EXTENSION_PREP_WINDOW_SECONDS + 1:
         raise BookingVerificationError(
             f"Refusing to hold a horizon editor for {initial_wait:.1f}s; "
@@ -1797,7 +1798,7 @@ def wait_until_datetime(
                 f"{label} boundary clock did not advance safely; no Save was attempted"
             )
         now = datetime.now()
-        remaining = (target - now).total_seconds()
+        remaining = seconds_between(target, now)
         if remaining <= 0:
             break
         if monotonic_now >= next_guard_check:
@@ -1835,20 +1836,18 @@ def wait_for_horizon_discovery_window(target_boundary, page=None):
     started earlier without exiting before its intended boundary exists.
     """
 
-    discovery_at = target_boundary - timedelta(
-        seconds=EXTENSION_PREP_WINDOW_SECONDS
-    )
+    discovery_at = shift_clock(target_boundary, seconds=-EXTENSION_PREP_WINDOW_SECONDS)
     now = datetime.now()
-    if now >= discovery_at:
+    if as_utc(now) >= as_utc(discovery_at):
         return 0.0
-    initial_wait = (discovery_at - now).total_seconds()
+    initial_wait = seconds_between(discovery_at, now)
     print(
         f"\n  Horizon discovery opens at {discovery_at:%H:%M:%S}; "
         f"waiting {initial_wait:.0f}s before scanning"
     )
     last_keepalive = None
     while True:
-        remaining = (discovery_at - datetime.now()).total_seconds()
+        remaining = seconds_between(discovery_at, datetime.now())
         if remaining <= 0:
             break
         remaining_int = int(remaining)
@@ -1876,16 +1875,14 @@ def site_aligned_save_deadline(bookable_from):
     # this deadline guarantees even the slowest clock allowed by the evidence
     # has crossed the site boundary.  A tiny additional margin covers scheduler
     # and float rounding without restoring the old multi-second lateness.
-    deadline = bookable_from - timedelta(seconds=lower) + timedelta(
-        seconds=HORIZON_CLOCK_SAFETY_SECONDS
-    )
+    deadline = shift_clock(bookable_from, seconds=-lower+HORIZON_CLOCK_SAFETY_SECONDS)
     return deadline, (lower, upper)
 
 
 def estimated_site_latency_bounds(local_timestamp, site_boundary):
     """Estimate site-relative click latency from the run's clock evidence."""
 
-    local_delta = (local_timestamp - site_boundary).total_seconds()
+    local_delta = seconds_between(local_timestamp, site_boundary)
     if SITE_CLOCK_OFFSET_BOUNDS is None:
         return local_delta, local_delta
     lower, upper = SITE_CLOCK_OFFSET_BOUNDS
@@ -2752,7 +2749,7 @@ def plan_horizon_extension(
     current_duration_minutes = current_end_minutes - start_minutes
     target_duration_minutes = min(
         target_end_minutes - start_minutes,
-        MAX_BOOKING_HOURS * 60,
+        int(MAX_BOOKING_HOURS * 60),
     )
     if (
         not 0 <= start_minutes < 24 * 60
@@ -2778,12 +2775,11 @@ def plan_horizon_extension(
         minutes=start_minutes
     )
     horizon_minutes = room_horizon_minutes(room)
-    if horizon_limit_minutes is not None:
-        horizon_minutes = min(horizon_minutes, horizon_limit_minutes)
     horizon_edge = slot_datetime - timedelta(minutes=horizon_minutes)
     try:
-        elapsed_seconds = (now - horizon_edge).total_seconds()
-    except (AttributeError, TypeError):
+        elapsed_seconds = seconds_between(now, horizon_edge)
+        current_instant = as_utc(now)
+    except (AttributeError, TypeError, ValueError):
         return HorizonExtensionPlan(
             False,
             current_end_hour,
@@ -2793,15 +2789,20 @@ def plan_horizon_extension(
             "Invalid extension clock",
         )
 
-    # Integer-second floor division makes the exact boundary contract explicit:
-    # +44:59 is still 30 minutes, while +45:00 unlocks 45 minutes.
-    completed_quarters = max(0, int(elapsed_seconds // (15 * 60)))
-    unlocked_duration_minutes = min(
-        completed_quarters * 15,
-        target_duration_minutes,
-        MAX_BOOKING_HOURS * 60,
-    )
-    unlocked_end_minutes = start_minutes + unlocked_duration_minutes
+    # Test each endpoint rather than adding elapsed minutes to a wall clock.
+    # Calendar room policy and the elapsed free window can cross DST differently.
+    openings = []
+    for end_minutes in range(start_minutes + 15, start_minutes + target_duration_minutes + 1, 15):
+        try:
+            opening = (free_horizon_opening(slot_date, end_minutes / 60,
+                room_horizon_minutes=horizon_minutes, horizon_minutes=horizon_limit_minutes)
+                if horizon_limit_minutes is not None else
+                slot_datetime + timedelta(minutes=end_minutes-start_minutes-horizon_minutes))
+        except ValueError:
+            continue
+        openings.append((end_minutes, opening))
+    unlocked_end_minutes = max((end for end, opening in openings
+        if as_utc(opening) <= current_instant), default=start_minutes)
 
     if unlocked_end_minutes >= current_end_minutes + 15:
         max_end_hour = unlocked_end_minutes / 60
@@ -2824,10 +2825,12 @@ def plan_horizon_extension(
             "Already at target duration",
         )
 
-    next_duration_minutes = current_duration_minutes + 15
-    next_end_minutes = start_minutes + next_duration_minutes
-    next_unlock_at = horizon_edge + timedelta(minutes=next_duration_minutes)
-    wait_seconds = (next_unlock_at - now).total_seconds()
+    next_step = next(((end, opening) for end, opening in openings if end > current_end_minutes), None)
+    if next_step is None:
+        return HorizonExtensionPlan(False, current_end_hour, None, None, None,
+                                    "No unambiguous extension endpoint")
+    next_end_minutes, next_unlock_at = next_step
+    wait_seconds = seconds_between(next_unlock_at, now)
     if elapsed_seconds < 0:
         reason = f"Not yet in horizon window ({-elapsed_seconds / 60:.0f}min early)"
     else:
@@ -6684,10 +6687,10 @@ def _nearest_quarter_boundary(now):
 
     floor_minute = (now.minute // 15) * 15
     floor_boundary = now.replace(minute=floor_minute, second=0, microsecond=0)
-    ceil_boundary = floor_boundary + timedelta(minutes=15)
+    ceil_boundary = shift_clock(floor_boundary, minutes=15)
     return min(
         (floor_boundary, ceil_boundary),
-        key=lambda value: abs((value - now).total_seconds()),
+        key=lambda value: abs(seconds_between(value, now)),
     )
 
 
@@ -6695,25 +6698,26 @@ def target_boundary_datetime(target_time, *, base_date=None):
     """Build the exact same-day local boundary represented by ``HH:MM``."""
 
     parsed = datetime.strptime(target_time, "%H:%M")
-    boundary_date = as_date(base_date) if base_date is not None else datetime.now().date()
-    return datetime.combine(boundary_date, parsed.time())
+    now = datetime.now()
+    boundary_date = as_date(base_date) if base_date is not None else now.date()
+    return local_boundary(boundary_date, parsed.hour, parsed.minute, now=now)
 
 
 def wait_before_runtime_target_window(target_time):
     """Wait outside the runtime lock before collecting live edge evidence."""
 
     target_boundary = target_boundary_datetime(target_time)
-    ready_at = target_boundary - timedelta(seconds=EXTENSION_PREP_WINDOW_SECONDS)
+    ready_at = shift_clock(target_boundary, seconds=-EXTENSION_PREP_WINDOW_SECONDS)
     now = datetime.now()
-    if now >= ready_at:
+    if as_utc(now) >= as_utc(ready_at):
         return 0.0
-    initial_wait = (ready_at - now).total_seconds()
+    initial_wait = seconds_between(ready_at, now)
     print(
         f"Target {target_time} is not yet in the live discovery window; "
         f"waiting {initial_wait:.0f}s before authentication"
     )
     while True:
-        remaining = (ready_at - datetime.now()).total_seconds()
+        remaining = seconds_between(ready_at, datetime.now())
         if remaining <= 0:
             break
         time.sleep(min(1.0, remaining))
@@ -6943,8 +6947,7 @@ def build_day_booking_opportunities(
                     segment_peak = 1440 if FREE_HORIZON_OVERRIDES_PEAK else peak_minutes
                 planning_horizon = room_horizon_minutes(room_name)
                 if include_free_horizon_intent:
-                    planning_horizon = min(planning_horizon, FREE_HORIZON_MINUTES)
-                    if planning_horizon < MINIMUM_BLOCK_MINUTES:
+                    if min(planning_horizon, FREE_HORIZON_MINUTES) < MINIMUM_BLOCK_MINUTES:
                         continue
                 for opportunity in enumerate_gap_opportunities(
                     room=room_name,
@@ -6965,11 +6968,19 @@ def build_day_booking_opportunities(
                     peak_start_minutes=int(PEAK_START * 60),
                     peak_end_minutes=int(PEAK_END * 60),
                 ):
+                    if include_free_horizon_intent:
+                        try:
+                            opening = free_horizon_opening(target_date,
+                                (opportunity.start_minutes + opportunity.initial_minutes) / 60,
+                                room_horizon_minutes=planning_horizon, horizon_minutes=FREE_HORIZON_MINUTES)
+                        except ValueError:
+                            continue
+                        opportunity = replace(opportunity, unlock_at=opening)
                     if target_date == now.date() and opportunity.start_minutes <= today_minutes:
                         continue
-                    if opportunity.unlock_at <= now:
+                    if as_utc(opportunity.unlock_at) <= as_utc(now):
                         unlocked_minutes = MINIMUM_BLOCK_MINUTES + int(
-                            (now - opportunity.unlock_at).total_seconds() // 900
+                            seconds_between(now, opportunity.unlock_at) // 900
                         ) * 15
                         if not soft_time_allows_booking(
                             opportunity.start_hour,
@@ -6990,7 +7001,7 @@ def build_day_booking_opportunities(
                         opportunity.start_hour,
                         (opportunity.initial_minutes if include_free_horizon_intent
                          else opportunity.potential_minutes),
-                        now=max(now, opportunity.unlock_at) if include_free_horizon_intent else now,
+                        now=max(now, opportunity.unlock_at, key=as_utc) if include_free_horizon_intent else now,
                     )
                     if not can_book:
                         continue
@@ -7045,7 +7056,7 @@ def current_opportunities_after_hold(
     return [
         item
         for item in protected
-        if item.unlock_at <= now
+        if as_utc(item.unlock_at) <= as_utc(now)
         and not (
             item.start_minutes < held.end_minutes
             and item.end_minutes > held.start_minutes
@@ -7089,7 +7100,7 @@ def horizon_candidate_rank(candidate, time_prefs):
                          min(candidate["duration"], MAX_BOOKING_HOURS * 60), window)
         if window is not None else 0
     )
-    return (candidate["bookable_from"], quality, candidate["room_priority"], candidate["days_ahead"])
+    return (as_utc(candidate["bookable_from"]), quality, candidate["room_priority"], candidate["days_ahead"])
 
 
 def _opportunity_to_normal_slot(opportunity):
@@ -7138,7 +7149,7 @@ def same_time_room_backups(
     return sorted(
         (item for item in opportunities
          if item.start_minutes == round(start*60)
-         and item.end_minutes == round(end*60) and item.unlock_at <= now),
+         and item.end_minutes == round(end*60) and as_utc(item.unlock_at) <= as_utc(now)),
         key=lambda item: allowed_rooms.index(item.room) if allowed_rooms is not None else item.room_priority,
     )
 
@@ -7202,7 +7213,7 @@ def attempt_booking_with_room_fallback(
         if only_room or len(attempted) >= len(PRIORITY_ROOMS) or time.monotonic() >= deadline:
             return False, candidate
         if horizon and not is_horizon_snipe_timing_candidate(
-            (slot['bookable_from'] - datetime.now()).total_seconds()
+            seconds_between(slot['bookable_from'], datetime.now())
         ):
             return False, candidate
         print(f"  {candidate['room']} was not booked. Refreshing availability for another room at the same time.")
@@ -7224,7 +7235,7 @@ def attempt_booking_with_room_fallback(
             )
         backups = same_time_room_backups(
             available_data, slot, target_date, tracker, time_prefs, daily_planning,
-            now=max(now, slot['bookable_from']) if horizon else now,
+            now=max(now, slot['bookable_from'], key=as_utc) if horizon else now,
             excluded_rooms=attempted, remaining_daily_hours=backup_daily_remaining,
             reserved_peak_minutes=context.get('extension_peak_by_date', {}).get(date_key, 0),
             reserved_weekly_minutes=reserved_weekly, only_room=only_room,
@@ -7232,7 +7243,7 @@ def attempt_booking_with_room_fallback(
             allowed_rooms=allowed_rooms,
         )
         if horizon:
-            backups = [item for item in backups if abs((item.unlock_at-slot['bookable_from']).total_seconds()) <= 1]
+            backups = [item for item in backups if abs(seconds_between(item.unlock_at, slot['bookable_from'])) <= 1]
         if not backups or time.monotonic() >= deadline:
             print('  No eligible backup room remains for this time slot in the fresh scan.')
             run_report.note('attempt', f'{target_date}: no eligible same-time backup remains after a fresh scan.')
@@ -7431,7 +7442,7 @@ def attach_extension_progress(day_plan, planning_context, *, now):
     pending_extensions.sort(
         key=lambda candidate: (
             candidate.state != "ready",
-            candidate.unlock_at,
+            as_utc(candidate.unlock_at),
             PRIORITY_ROOMS.index(candidate.room),
             candidate.start_time,
         )
@@ -7490,7 +7501,7 @@ def build_display_day_plan(
         max(existing_minutes, int(target_minutes // 15) * 15),
     )
     remaining_minutes = max(0, target_minutes - existing_minutes - reserved_daily_minutes)
-    latest_useful_unlock = now + timedelta(
+    latest_useful_unlock = shift_clock(now,
         minutes=daily_planning.foresight_minutes
     )
     opportunities = list(opportunities)
@@ -7498,7 +7509,7 @@ def build_display_day_plan(
         opportunities = [
             item
             for item in opportunities
-            if item.unlock_at <= now or item.unlock_at <= latest_useful_unlock
+            if as_utc(item.unlock_at) <= as_utc(now) or as_utc(item.unlock_at) <= as_utc(latest_useful_unlock)
         ]
     selection_minutes = min(
         remaining_minutes,
@@ -7530,10 +7541,10 @@ def build_display_day_plan(
     # on unlocked members, so preserve that order within each group while
     # putting the best current member ahead of every future member.
     selected_plan = tuple(
-        item for item in selected_plan if item.unlock_at <= now
-    ) + tuple(item for item in selected_plan if item.unlock_at > now)
-    current = [item for item in opportunities if item.unlock_at <= now]
-    future = [item for item in opportunities if item.unlock_at > now]
+        item for item in selected_plan if as_utc(item.unlock_at) <= as_utc(now)
+    ) + tuple(item for item in selected_plan if as_utc(item.unlock_at) > as_utc(now))
+    current = [item for item in opportunities if as_utc(item.unlock_at) <= as_utc(now)]
+    future = [item for item in opportunities if as_utc(item.unlock_at) > as_utc(now)]
     decision = choose_horizon_opportunity(
         current,
         future,
@@ -7541,7 +7552,7 @@ def build_display_day_plan(
         now=now,
         free_horizon_peak_exempt=free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK,
     )
-    selected_current = [item for item in selected_plan if item.unlock_at <= now]
+    selected_current = [item for item in selected_plan if as_utc(item.unlock_at) <= as_utc(now)]
     if (
         selected_plan
         and not selected_current
@@ -7568,8 +7579,8 @@ def build_display_day_plan(
             prefer_ready_sessions=free_horizon_only and FREE_HORIZON_OVERRIDES_PEAK,
         )
         selected_plan = tuple(
-            item for item in selected_plan if item.unlock_at <= now
-        ) + tuple(item for item in selected_plan if item.unlock_at > now)
+            item for item in selected_plan if as_utc(item.unlock_at) <= as_utc(now)
+        ) + tuple(item for item in selected_plan if as_utc(item.unlock_at) > as_utc(now))
 
     primary_opportunity = None
     candidate_state = "potential"
@@ -7589,7 +7600,7 @@ def build_display_day_plan(
             reason = "The remaining daily target is below the minimum new booking length"
     elif selected_plan:
         primary_opportunity = selected_plan[0]
-        if primary_opportunity.unlock_at <= now:
+        if as_utc(primary_opportunity.unlock_at) <= as_utc(now):
             candidate_state = "ready"
             status = "planned"
             if (
@@ -7616,11 +7627,11 @@ def build_display_day_plan(
         else:
             candidate_state = "waiting"
             status = "waiting"
-            if primary_opportunity.unlock_at > latest_useful_unlock:
+            if as_utc(primary_opportunity.unlock_at) > as_utc(latest_useful_unlock):
                 # Primary is a quality ranking, not the earliest opening.
                 # Additional selected sessions can open hours before it.
                 unlock_label = _aware_local_datetime(
-                    min(item.unlock_at for item in selected_plan)
+                    min((item.unlock_at for item in selected_plan), key=as_utc)
                 ).strftime("%a %d %b at %H:%M")
                 reason = (
                     "Planned from the currently free schedule; booking starts "
@@ -7653,7 +7664,7 @@ def build_display_day_plan(
     additional = tuple(
         _plan_candidate_from_opportunity(
             item,
-            state="waiting" if item.unlock_at > now else "ready",
+            state="waiting" if as_utc(item.unlock_at) > as_utc(now) else "ready",
             reason="Selected as another non-overlapping session in this day's plan",
         )
         for item in selected_plan[1:]
@@ -7744,7 +7755,7 @@ def _legacy_current_opportunities(opportunities, *, now):
 
     by_gap = {}
     for opportunity in opportunities:
-        if opportunity.unlock_at > now:
+        if as_utc(opportunity.unlock_at) > as_utc(now):
             continue
         key = (
             opportunity.room,
@@ -8148,7 +8159,7 @@ def find_horizon_snipe_candidate(available_data, target_date, tracker, time_pref
     now = datetime.now()
     boundary = _nearest_quarter_boundary(now)
     target_date_obj = as_date(target_date)
-    if not is_horizon_snipe_timing_candidate((boundary - now).total_seconds()):
+    if not is_horizon_snipe_timing_candidate(seconds_between(boundary, now)):
         return None, None
     fragmentation_ok, _ = fragmentation_allows_new_booking(tracker, target_date_obj)
     if not fragmentation_ok:
@@ -8212,7 +8223,7 @@ def find_all_snipe_candidates_multi_day(
     now = datetime.now()
     today = now.date()
     target_boundary = target_boundary or _nearest_quarter_boundary(now)
-    seconds_until_boundary = (target_boundary - now).total_seconds()
+    seconds_until_boundary = seconds_between(target_boundary, now)
     if not is_horizon_snipe_timing_candidate(seconds_until_boundary):
         print(
             "\n  Horizon boundary is outside the bounded three-minute "
@@ -8389,9 +8400,7 @@ def find_all_snipe_candidates_multi_day(
                 )
                 if extension_key in extension_keys:
                     continue
-                seconds_from_boundary = (
-                    opportunity.unlock_at - target_boundary
-                ).total_seconds()
+                seconds_from_boundary = seconds_between(opportunity.unlock_at, target_boundary)
                 if abs(seconds_from_boundary) <= 1:
                     day_current.append(opportunity)
                 elif seconds_from_boundary > 1:
@@ -8686,9 +8695,12 @@ def try_horizon_snipe(
     end_hour = start_hour + booking_minutes / 60
 
     if free_edge:
-        exact_opening = datetime.combine(as_date(target_date), datetime.min.time()) + timedelta(
-            minutes=round(end_hour*60)-expected_horizon)
-        if FREE_HORIZON_MINUTES <= 0 or bookable_from != exact_opening:
+        try:
+            exact_opening = free_horizon_opening(target_date, end_hour,
+                room_horizon_minutes=room_horizon_minutes(room), horizon_minutes=FREE_HORIZON_MINUTES)
+        except ValueError:
+            return False
+        if FREE_HORIZON_MINUTES <= 0 or as_utc(bookable_from) != as_utc(exact_opening):
             print('  [SNIPE] Free-window candidate has an invalid complete-interval opening')
             return False
 
@@ -8698,7 +8710,7 @@ def try_horizon_snipe(
         target_date,
         start_hour,
         booking_minutes,
-        **({'now': max(datetime.now(), bookable_from)} if free_edge else {}),
+        **({'now': max(datetime.now(), bookable_from, key=as_utc)} if free_edge else {}),
     )
     if not can_book:
         print(f"  [SNIPE] Candidate is no longer valid: {reason}")
@@ -8724,7 +8736,7 @@ def try_horizon_snipe(
         now,
         bookable_from,
     )
-    seconds_to_wait = (save_deadline - now).total_seconds()
+    seconds_to_wait = seconds_between(save_deadline, now)
     if site_late_low > HORIZON_SNIPE_GRACE_SECONDS:
         print(
             f"  [SNIPE] Candidate opened at least {site_late_low:.0f}s ago and "
@@ -8838,7 +8850,7 @@ def try_horizon_snipe(
     # Update timing against the conservative local deadline derived from the
     # already-collected Asimut HTTPS clock evidence.
     now = datetime.now()
-    seconds_to_wait = (save_deadline - now).total_seconds()
+    seconds_to_wait = seconds_between(save_deadline, now)
 
     if seconds_to_wait > 0:
         print(f"  [SNIPE] Waiting {seconds_to_wait:.1f} seconds...")
@@ -9912,7 +9924,7 @@ def extension_processing_sort_key(booking, *, now=None):
         room_priority = len(PRIORITY_ROOMS)
     return (
         timing_class,
-        timing_value,
+        as_utc(timing_value),
         room_priority,
         booking["date"],
         booking["startTime"],
@@ -10634,7 +10646,7 @@ def generate_read_only_booking_plan(
         and candidate.confirmed_minutes < candidate.potential_minutes
     ]
     if selected_candidates:
-        next_candidate = min(selected_candidates, key=lambda item: item.unlock_at)
+        next_candidate = min(selected_candidates, key=lambda item: as_utc(item.unlock_at))
         summary = (
             f"Next: {next_candidate.date} {next_candidate.start_time}-"
             f"{next_candidate.end_time} in {next_candidate.room}"
@@ -11960,12 +11972,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                 current_opportunities = [
                     item
                     for item in day_opportunities
-                    if item.unlock_at <= scan_time
+                    if as_utc(item.unlock_at) <= as_utc(scan_time)
                 ]
                 future_opportunities = [
                     item
                     for item in day_opportunities
-                    if item.unlock_at > scan_time
+                    if as_utc(item.unlock_at) > as_utc(scan_time)
                 ]
                 day_decision = choose_horizon_opportunity(
                     current_opportunities,
@@ -12351,12 +12363,12 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
                         current_opportunities = [
                             item
                             for item in refreshed_opportunities
-                            if item.unlock_at <= refreshed_now
+                            if as_utc(item.unlock_at) <= as_utc(refreshed_now)
                         ]
                         future_opportunities = [
                             item
                             for item in refreshed_opportunities
-                            if item.unlock_at > refreshed_now
+                            if as_utc(item.unlock_at) > as_utc(refreshed_now)
                         ]
                         refreshed_decision = choose_horizon_opportunity(
                             current_opportunities,
@@ -12512,8 +12524,8 @@ def _scheduled_target_time(now=None):
 
     now = now or datetime.now()
     minutes_to_add = 15 - (now.minute % 15)
-    target = now.replace(second=0, microsecond=0) + timedelta(minutes=minutes_to_add)
-    seconds_until = (target - now).total_seconds()
+    target = shift_clock(now.replace(second=0, microsecond=0), minutes=minutes_to_add)
+    seconds_until = seconds_between(target, now)
     if target.date() == now.date() and 0 < seconds_until <= 180:
         return target.strftime("%H:%M")
     return None
