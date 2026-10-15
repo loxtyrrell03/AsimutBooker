@@ -520,7 +520,10 @@ class PhoneAssistantService:
 
     @property
     def runtime(self) -> Any:
-        with self._runtime_lock:
+        # Snapshot/event paths take request before runtime. Construction can
+        # emit synchronously (for example after a tool-contract change), so it
+        # must use that same order or a concurrent snapshot can deadlock both.
+        with self._request_lock, self._runtime_lock:
             if self._runtime is None:
                 runtime_options: dict[str, Any] = {}
                 if self._codex_executable:

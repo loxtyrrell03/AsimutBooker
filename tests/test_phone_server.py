@@ -280,6 +280,50 @@ class EventHubTests(unittest.TestCase):
 
 
 class PhoneAssistantServiceTests(unittest.TestCase):
+    def test_first_runtime_event_and_concurrent_snapshot_do_not_deadlock(self):
+        entered, snapshot_attempted, snapshot_locked = (threading.Event() for _ in range(3))
+        finished, results = threading.Event(), []
+
+        class StartingRuntime(FakeRuntime):
+            def __init__(self, event_handler, **kwargs):
+                super().__init__(event_handler, **kwargs)
+                entered.set()
+                snapshot_attempted.wait(1)
+                # The old snapshot takes request ownership while construction
+                # owns runtime. Its synchronous event then waits on request.
+                snapshot_locked.wait(.2)
+                event_handler({'kind': 'status', 'status': 'contract_refreshed',
+                               'title': 'Assistant rules updated', 'text': 'Synthetic startup'})
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+                'phone_server.build_phone_snapshot', return_value={'status': {'state': 'ready'}}):
+            service = PhoneAssistantService(runtime_factory=StartingRuntime, ledger=MemoryLedger(),
+                state_path=Path(directory)/'state.json', workspace=Path(directory)/'workspace')
+
+            def start():
+                results.append(service.runtime)
+                finished.set()
+
+            def snapshot():
+                snapshot_attempted.set()
+                with service._request_lock:
+                    snapshot_locked.set()
+                    results.append(service.snapshot())
+
+            starter = threading.Thread(target=start, daemon=True)
+            starter.start()
+            self.assertTrue(entered.wait(1))
+            reader = threading.Thread(target=snapshot, daemon=True)
+            reader.start()
+            starter.join(1)
+            reader.join(1)
+            self.assertTrue(finished.is_set(), 'Runtime startup deadlocked against the snapshot')
+            self.assertFalse(reader.is_alive(), 'Snapshot did not finish')
+            self.assertEqual(len(results), 2)
+            self.assertFalse(service.is_busy)
+            self.assertEqual(service.ledger.unresolved_reserved_count(), 0)
+            service.close()
+
     def test_live_plan_refresh_runs_real_runtime_work_and_returns_new_snapshot(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch(
             "phone_server.build_phone_snapshot", return_value={"status": {"state": "ready"}}

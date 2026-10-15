@@ -1,3 +1,14 @@
+## 2026-10-15 phone startup and snapshot lock order
+
+- Lazy assistant construction now takes request ownership before runtime
+  ownership, matching snapshots and lifecycle events. A synchronous constructor
+  event after a tool-contract refresh previously inverted those locks against
+  a simultaneous snapshot, leaving session/bootstrap requests stuck.
+- A two-thread regression reproduces the deadlock on the prior source and
+  completes after the repair. All 132 focused phone, assistant-runtime, system,
+  preference, Pause and fallback tests pass with synthetic runtime callbacks.
+  No assistant prompt or site Save is used by the regression.
+
 ## 2026-10-15 upright pianos as the last fallback
 
 - `room_preferences.upright_fallback` enables only metadata-proven upright
@@ -16,7 +27,7 @@
   Phone edits merge the flag; desktop room edits preserve it. Existing settings
   without the flag retain their behavior. Long-lived phone hosts must load the
   new validator before enabling the flag; fresh workers load source directly.
-- Verified with isolated synthetic planner, room eligibility, fill, room-now,
+- Verified with 293 isolated synthetic planner, room eligibility, fill, room-now,
   upgrade, preference, quota, horizon and guard tests. Live preference and booking
   evidence is separate under ignored `artifacts/upright-fallback-20261015`.
 
