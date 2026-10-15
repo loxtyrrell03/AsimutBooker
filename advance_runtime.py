@@ -195,7 +195,9 @@ def publish(engine, days, allocations, context, policy, settings, tracker, *, no
                     - day.held_target_minutes-allocation.minutes)/60,
                 reserved_peak_minutes=held_peak,
                 free_horizon_only=True, include_free_horizon_intent=True)
-            free_options = reserve_advance_credit(free_options, planning, active=not tracker.is_quota_full(),
+            free_options = reserve_advance_credit(free_options, planning, active=True,
+                remaining_credit_minutes=tracker.get_remaining_quota_hours() * 60,
+                minimum_block_minutes=engine.MINIMUM_BLOCK_MINUTES,
                 release_lead_minutes=load_advance_quota(settings).fallback_lead_minutes)
             if free_options:
                 preview = engine.build_display_day_plan(day.target_date, free_options, preview_tracker, planning,

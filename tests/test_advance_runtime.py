@@ -3,11 +3,13 @@ import io
 import unittest
 from copy import deepcopy
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import advance_runtime as runtime
 import book_week as b
 from booking_plan import _day_to_dict
+from tempo_coordination import Snapshot
 
 
 class AdvanceRuntimeTests(unittest.TestCase):
@@ -15,6 +17,8 @@ class AdvanceRuntimeTests(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        self.stack.enter_context(patch.object(b, 'tempo_coordination_snapshot',
+            return_value=Snapshot(None, Path('unused-synthetic-coordination.json'))))
         self.now = datetime(2026, 9, 20, 14)
         self.days = tuple(date(2026, 9, 21) + timedelta(days=i) for i in range(7))
         self.settings = {'booking_rules': {'preset': 'new'}}
@@ -154,6 +158,36 @@ class AdvanceRuntimeTests(unittest.TestCase):
                 self.assertIn('Booking can start', candidate.reason)
                 self.assertIn('Not booked yet', candidate.reason)
         self.assertEqual(self.tracker.get_total_booking_hours(), 0)
+        self.attempt.assert_not_called()
+
+    def test_sub_minimum_credit_forecast_uses_the_natural_free_seed_opening(self):
+        for minimum, credit in ((30, 15), (60, 45)):
+            with self.subTest(minimum=minimum, credit=credit):
+                self.tracker.live_quota_minutes = credit
+                with patch.multiple(b, MINIMUM_BLOCK_MINUTES=minimum,
+                                    FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True):
+                    before = deepcopy(self.tracker.__dict__)
+                    self.run_week(read_only=True)
+                self.assertEqual(before, self.tracker.__dict__)
+                for row in self.publications[-1]:
+                    self.assertIsNotNone(row.primary)
+                    for candidate in (row.primary, *row.additional):
+                        start = datetime.fromisoformat(f'{row.date}T{candidate.start_time}')
+                        self.assertEqual(candidate.unlock_at.replace(tzinfo=None),
+                            start + timedelta(minutes=minimum - 300))
+                        self.assertEqual(candidate.initial_minutes, minimum)
+        self.attempt.assert_not_called()
+
+    def test_useful_credit_still_applies_the_saved_forecast_fallback(self):
+        self.tracker.live_quota_minutes = 60
+        self.settings['advance_quota'] = {'reserve_minutes': 60, 'fallback_lead_minutes': 90}
+        with patch.multiple(b, FREE_HORIZON_MINUTES=300, FREE_HORIZON_OVERRIDES_PEAK=True):
+            self.run_week(read_only=True)
+        for row in self.publications[-1]:
+            self.assertIsNotNone(row.primary)
+            for candidate in (row.primary, *row.additional):
+                start = datetime.fromisoformat(f'{row.date}T{candidate.start_time}')
+                self.assertEqual(candidate.unlock_at.replace(tzinfo=None), start - timedelta(minutes=90))
         self.attempt.assert_not_called()
 
     def test_preview_extends_partial_advance_plan_without_spending_credit_or_overlapping(self):

@@ -128,6 +128,15 @@
   quota, readiness, preparation, advance preference, fill and Save-guard checks
   pass with this fix. Activation is through fresh ordinary workers importing
   canonical source; existing tasks and services are unchanged.
+- The 15 October audit found weekly forecast publication still using the old
+  positive-balance check. `reserve_advance_credit` now requires remaining credit
+  and the current minimum block, enforcing the same threshold for forecasts and
+  execution. Regressions reproduce 15/30- and 45/60-minute cases on the old
+  publisher, and retain a useful balance's saved fallback. All 113 focused
+  advance, quota, plan and preparation checks pass. Forecast fixtures now supply
+  disabled synthetic Tempo authority instead of reading the owner's sidecar.
+  Fresh workers/read-only plans load the source; a cached plan needs its normal
+  refresh. No reservation, preference, task or service change is required.
 
 ## 2026-10-14 scoped fill rooms and free-horizon evidence
 

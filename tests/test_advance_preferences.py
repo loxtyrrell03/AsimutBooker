@@ -185,10 +185,11 @@ class RuntimeChoicesTests(unittest.TestCase):
         from short_notice_bookings import reserve_advance_credit
         planning=self.fixture_planning()
         item=planner_fixture.AdvancePlannerTests().day(0,start=16,end=17).opportunities[0]
-        inherited=reserve_advance_credit([item],planning,active=True)[0]
-        custom=reserve_advance_credit([item],planning,active=True,release_lead_minutes=30)[0]
+        credit=dict(remaining_credit_minutes=60,minimum_block_minutes=30)
+        inherited=reserve_advance_credit([item],planning,active=True,**credit)[0]
+        custom=reserve_advance_credit([item],planning,active=True,release_lead_minutes=30,**credit)[0]
         self.assertEqual(custom.unlock_at-inherited.unlock_at,timedelta(minutes=90))
-        self.assertEqual(reserve_advance_credit([item],planning,active=False,release_lead_minutes=30),[item])
+        self.assertEqual(reserve_advance_credit([item],planning,active=False,release_lead_minutes=30,**credit),[item])
 
 
 if __name__ == '__main__': unittest.main()
