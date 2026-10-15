@@ -1,3 +1,21 @@
+## 2026-10-15 recurring checks cover early horizon openings
+
+- The 07:12-22:57 daily trigger missed valid morning openings. The canonical
+  schedule is now one time trigger, repeating every five minutes indefinitely
+  from a 00:02 anchor. It retains the three-minute quarter-edge preparations
+  across midnight and both London clock changes. Do not combine an indefinite
+  repetition with a daily trigger: Windows can duplicate or delay those starts.
+- Installer and GUI validation agree on the time trigger, no duration/expiry,
+  zero random delay and exact anchor. Repair preserves an existing disabled
+  task and refuses an observed running scheduled worker. Shared Pause remains
+  separate. No booking permissions, ranking, hours or quota policy change.
+- All 77 focused launcher/settings checks pass, including full-day and both DST
+  edge coverage, and a PowerShell activation fixture proving disabled repairs
+  never enable the task. The real unregistered Windows trigger has the intended
+  type and empty duration. Source verification is not live task activation;
+  update only the existing trigger under ownership, preserving all other XML.
+  Live activation and actual edge receipts must be recorded separately.
+
 ## 2026-10-15 plan summaries follow the earliest selected opening
 
 - A day's ranked primary can open later than its additional selected sessions.

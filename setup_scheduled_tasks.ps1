@@ -7,11 +7,13 @@ $TaskName = "AsimutBooker_Recurring"
 $ScriptPath = Join-Path $PSScriptRoot "run_booker.bat"
 $PythonPath = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 $WorkingDir = $PSScriptRoot
-$FirstRunTime = "07:12"
+$FirstRunTime = "00:02"
 $RepeatMinutes = 5
-# Frequent same-day checks retain every :12/:27/:42/:57 preparation run.
-# 07:12 + 189 repetitions = 22:57; the next repetition is excluded.
-$RepeatDurationIso = "PT15H46M"
+# One repeating time trigger covers every horizon, including before 07:12.
+# No duration means indefinite repetition. Do not combine that with -Daily:
+# Windows can accumulate repeated daily triggers or delay re-enabling them.
+# The :02 phase retains every :12/:27/:42/:57 preparation run across midnight.
+$RepeatDurationIso = ""
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "AsimutBooker Task Scheduler Setup" -ForegroundColor Cyan
@@ -66,14 +68,13 @@ $Action = New-ScheduledTaskAction `
     -Argument $ActionArguments `
     -WorkingDirectory $WorkingDir
 
-$Trigger = New-ScheduledTaskTrigger -Daily -At $FirstRunTime
+$Trigger = New-ScheduledTaskTrigger -Once -At $FirstRunTime
 $Repetition = New-CimInstance `
     -ClientOnly `
     -Namespace "Root/Microsoft/Windows/TaskScheduler" `
     -ClassName "MSFT_TaskRepetitionPattern" `
     -Property @{
         Interval = "PT${RepeatMinutes}M"
-        Duration = $RepeatDurationIso
         StopAtDurationEnd = $false
     }
 $Trigger.Repetition = $Repetition
@@ -111,18 +112,19 @@ function Assert-RegisteredTaskContract {
     }
 
     if (@($RegisteredTask.Triggers).Count -ne 1) {
-        throw "The task was registered without exactly one daily trigger."
+        throw "The task was registered without exactly one repeating time trigger."
     }
     $RegisteredTrigger = $RegisteredTask.Triggers[0]
     if (
-        $RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskDailyTrigger" -or
+        $RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskTimeTrigger" -or
         -not $RegisteredTrigger.Enabled -or
-        $RegisteredTrigger.DaysInterval -ne 1 -or
+        -not [string]::IsNullOrEmpty($RegisteredTrigger.EndBoundary) -or
+        ([string]$RegisteredTrigger.RandomDelay -notin @("", "PT0S")) -or
         $RegisteredTrigger.Repetition.Interval -ne "PT5M" -or
-        $RegisteredTrigger.Repetition.Duration -ne $RepeatDurationIso -or
+        [string]$RegisteredTrigger.Repetition.Duration -ne $RepeatDurationIso -or
         $RegisteredTrigger.Repetition.StopAtDurationEnd
     ) {
-        throw "The task was registered without the exact daily repetition contract."
+        throw "The task was registered without the exact continuous repetition contract."
     }
 
     try {
@@ -137,8 +139,8 @@ function Assert-RegisteredTaskContract {
         "HH:mm",
         [Globalization.CultureInfo]::InvariantCulture
     )
-    if ($RegisteredLocalTime -ne $FirstRunTime) {
-        throw "The task was registered without the exact 07:12 local start time."
+    if ($RegisteredLocalTime -ne $FirstRunTime -or $RegisteredStart.Second -ne 0 -or $RegisteredStart.Millisecond -ne 0) {
+        throw "The task was registered without the exact 00:02 local anchor time."
     }
 
     if (
@@ -273,7 +275,13 @@ if ($LASTEXITCODE -ne 0) {
 $PreviousTask = Get-ReplacementTaskExact
 $PreviousTaskDisabledXml = $null
 $PreviousTaskCanBeReenabled = $false
+$ReplacementShouldBeEnabled = $true
 if ($null -ne $PreviousTask) {
+    if ([string]$PreviousTask.State -eq "Running") {
+        throw "The existing Booker worker is running; repair after it finishes."
+    }
+    # Repairing a trigger must preserve an explicit Automatic Off choice.
+    $ReplacementShouldBeEnabled = [bool]$PreviousTask.Settings.Enabled
     $PreviousTaskXml = Export-ScheduledTask `
         -TaskName $TaskName `
         -TaskPath "\" `
@@ -306,7 +314,7 @@ try {
         -Trigger $Trigger `
         -Settings $Settings `
         -Principal $Principal `
-        -Description "AsimutBooker automatic booking every 5 minutes from 07:12 through 22:57." `
+        -Description "AsimutBooker automatic booking every 5 minutes, all day, including morning horizon preparation." `
         -Force |
         Out-Null
 
@@ -319,19 +327,21 @@ try {
         -ExpectedEnabled $false `
         -ExpectedState "Disabled"
 
-    Enable-ScheduledTask `
-        -TaskName $TaskName `
-        -TaskPath "\" `
-        -ErrorAction Stop |
-        Out-Null
-    $RegisteredTask = Get-ScheduledTask `
-        -TaskName $TaskName `
-        -TaskPath "\" `
-        -ErrorAction Stop
-    Assert-RegisteredTaskContract `
-        -RegisteredTask $RegisteredTask `
-        -ExpectedEnabled $true `
-        -ExpectedState "Ready"
+    if ($ReplacementShouldBeEnabled) {
+        Enable-ScheduledTask `
+            -TaskName $TaskName `
+            -TaskPath "\" `
+            -ErrorAction Stop |
+            Out-Null
+        $RegisteredTask = Get-ScheduledTask `
+            -TaskName $TaskName `
+            -TaskPath "\" `
+            -ErrorAction Stop
+        Assert-RegisteredTaskContract `
+            -RegisteredTask $RegisteredTask `
+            -ExpectedEnabled $true `
+            -ExpectedState "Ready"
+    }
 
     # Remove obsolete task shapes only after the replacement has passed its
     # disabled and enabled readbacks. Any removal failure enters the same
@@ -376,8 +386,8 @@ try {
         -ErrorAction Stop
     Assert-RegisteredTaskContract `
         -RegisteredTask $RegisteredTask `
-        -ExpectedEnabled $true `
-        -ExpectedState "Ready"
+        -ExpectedEnabled $ReplacementShouldBeEnabled `
+        -ExpectedState $(if ($ReplacementShouldBeEnabled) { "Ready" } else { "Disabled" })
 } catch {
     $InstallFailure = $_
     $RollbackFailures = [Collections.Generic.List[string]]::new()
@@ -444,7 +454,7 @@ try {
 }
 
 Write-Host "Created: $TaskName" -ForegroundColor Green
-Write-Host "  Repeats every 5 minutes from 07:12 through 22:57." -ForegroundColor White
+Write-Host "  Repeats every 5 minutes, all day, including morning horizon preparation." -ForegroundColor White
 Write-Host "  Runs headless, requests wake on AC or battery, catches up after a missed start, and ignores overlapping starts." -ForegroundColor White
 Write-Host "  Actual wake-from-sleep still depends on Windows, firmware, and hardware support." -ForegroundColor White
 

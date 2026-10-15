@@ -89,10 +89,10 @@ SETTINGS_FILE = APP_DIR / "data" / "settings.json"
 GUI_INSTANCE_LOCK_FILE = APP_DIR / "data" / "gui-runtime.lock"
 RECURRING_TASK_NAME = "AsimutBooker_Recurring"
 RECURRING_TASK_PATH = "\\"
-RECURRING_SCHEDULE_TEXT = "Every 5 minutes, 07:12-22:57"
-RECURRING_FIRST_RUN_LOCAL = "07:12"
+RECURRING_SCHEDULE_TEXT = "Every 5 minutes, all day"
+RECURRING_FIRST_RUN_LOCAL = "00:02:00"
 RECURRING_INTERVAL_ISO = "PT5M"
-RECURRING_DURATION_ISO = "PT15H46M"
+RECURRING_DURATION_ISO = ""
 RECURRING_EXECUTION_LIMIT_ISO = "PT14M"
 RECURRING_RESTART_INTERVAL_ISO = "PT1M"
 MANUAL_RECONFIRMATION_NOTICE = (
@@ -486,6 +486,8 @@ def parse_recurring_task_status(payload: str) -> dict[str, Any]:
         "WorkingDirectory",
         "TriggerClass",
         "StartLocalTime",
+        "EndBoundary",
+        "RandomDelay",
         "Interval",
         "Duration",
         "MultipleInstances",
@@ -510,7 +512,7 @@ def parse_recurring_task_status(payload: str) -> dict[str, Any]:
         not isinstance(value.get(field), bool) for field in bool_fields
     ):
         raise RuntimeError("Task Scheduler returned incomplete status data")
-    int_fields = ("ActionCount", "TriggerCount", "DaysInterval", "RestartCount")
+    int_fields = ("ActionCount", "TriggerCount", "RestartCount")
     if any(
         isinstance(value.get(field), bool) or not isinstance(value.get(field), int)
         for field in int_fields
@@ -544,14 +546,16 @@ def parse_recurring_task_status(payload: str) -> dict[str, Any]:
         reasons.append("wrong launcher arguments")
     if not _same_windows_path(value["WorkingDirectory"], expected_working_directory):
         reasons.append("wrong working directory")
-    if value["TriggerClass"] != "MSFT_TaskDailyTrigger":
+    if value["TriggerClass"] != "MSFT_TaskTimeTrigger":
         reasons.append("wrong trigger type")
     if not value["TriggerEnabled"]:
         reasons.append("trigger is disabled")
-    if value["DaysInterval"] != 1:
-        reasons.append("wrong daily interval")
+    if value["EndBoundary"]:
+        reasons.append("trigger has an expiry")
+    if value["RandomDelay"] not in {"", "PT0S"}:
+        reasons.append("trigger has a random delay")
     if value["StartLocalTime"] != RECURRING_FIRST_RUN_LOCAL:
-        reasons.append("wrong daily start")
+        reasons.append("wrong repetition anchor")
     if (
         value["Interval"] != RECURRING_INTERVAL_ISO
         or value["Duration"] != RECURRING_DURATION_ISO
@@ -605,7 +609,7 @@ def query_recurring_task_status(timeout: int = 30) -> dict[str, Any] | None:
         "$trigger = $triggers[0]; $action = $actions[0]; "
         "try { $start = [DateTimeOffset]::Parse([string]$trigger.StartBoundary, "
         "[Globalization.CultureInfo]::InvariantCulture); "
-        "$startLocal = $start.ToLocalTime().ToString('HH:mm', "
+        "$startLocal = $start.ToLocalTime().ToString('HH:mm:ss', "
         "[Globalization.CultureInfo]::InvariantCulture) } catch { "
         "throw 'The recurring task has an unreadable start boundary' }; "
         "$principalName = New-Object System.Security.Principal.NTAccount "
@@ -623,7 +627,8 @@ def query_recurring_task_status(timeout: int = 30) -> dict[str, Any] | None:
         "WorkingDirectory = [string]$action.WorkingDirectory; "
         "TriggerClass = [string]$trigger.CimClass.CimClassName; "
         "TriggerEnabled = [bool]$trigger.Enabled; "
-        "DaysInterval = [int]$trigger.DaysInterval; "
+        "EndBoundary = [string]$trigger.EndBoundary; "
+        "RandomDelay = [string]$trigger.RandomDelay; "
         "StartLocalTime = $startLocal; "
         "Interval = [string]$trigger.Repetition.Interval; "
         "Duration = [string]$trigger.Repetition.Duration; "
@@ -3178,7 +3183,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             main_frame,
             text=(
                 "A single non-overlapping task checks for bookings every 5 minutes "
-                "from 07:12 through 22:57. Use Install / Repair to create the correct "
+                "all day. Use Install / Repair to create the correct "
                 "schedule and replace obsolete per-time tasks."
             ),
             foreground="gray",
@@ -3418,7 +3423,8 @@ class AsimutBookerGUI(QuietFocusGUI):
             "Install or repair the automatic booking schedule?\n\n"
             "This will:\n"
             "• Replace obsolete AsimutBooker tasks with one recurring task\n"
-            "• Run every 5 minutes from 07:12 through 22:57\n"
+            "• Run every 5 minutes, all day, covering early booking openings\n"
+            "• Keep Automatic Off if the existing schedule is disabled\n"
             "• Ignore overlapping starts and catch up after missed starts\n"
             "• Enable AC/DC wake-timer requests and plugged-in lid-close operation\n\n"
             "Wake-from-sleep still depends on Windows, firmware, and hardware support.\n\n"
@@ -3481,7 +3487,7 @@ class AsimutBookerGUI(QuietFocusGUI):
             messagebox.showinfo(
                 "Schedule Ready",
                 "The automatic schedule is installed and verified.\n\n"
-                "It will run every 5 minutes from 07:12 through 22:57. "
+                "It will run every 5 minutes, all day. "
                 "AC/DC wake timers were requested; actual wake support depends on "
                 "Windows and the PC hardware.",
             )

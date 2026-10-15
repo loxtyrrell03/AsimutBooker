@@ -63,11 +63,18 @@ fragmentation choice and conflict checks. A room-specific refusal can use an
 eligible backup room; a quota refusal ends that pass and waits for a later run.
 Unknown quota responses stop writes safely rather than assuming availability.
 
-The recurring worker checks every five minutes during its 07:12-22:57
-window. Between quarter-hour preparations it focuses on today's extensions,
+The recurring worker checks every five minutes throughout the day and night,
+so morning free-horizon openings are covered before practice starts. One time
+trigger repeats indefinitely, anchored at 00:02, retaining the :12/:27/:42/:57
+preparation runs. It has no daily repetition cutoff or duplicate daily trigger.
+Automatic Off and the shared Pause remain authoritative. Between quarter-hour
+preparations it focuses on today's extensions,
 free-horizon bookings and room upgrades. At exhausted advance quota, that daily
 work runs before future upgrades can stop on a quota refusal. Unresolved
 transactions still require recovery before any unrelated booking.
+
+The single time trigger follows [Microsoft's indefinite-repetition guidance](https://jpwinsup.github.io/blog/2023/02/07/UserInterfaceAndApps/Repeat-task-indefinitely-issues/).
+An omitted repetition duration means [repeat indefinitely](https://learn.microsoft.com/en-us/windows/win32/taskschd/repetitionpattern-duration).
 
 An imminent free-window opportunity can be prepared up to three minutes ahead.
 The worker chooses from the current grid and opens and fills the exact room form

@@ -1,7 +1,8 @@
 """Static safety checks for the Windows launchers and scheduler installer."""
 
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import re
 import shutil
 import subprocess
@@ -77,34 +78,42 @@ class SchedulerInstallerTests(unittest.TestCase):
         self.assertIn('$Trigger.Repetition = $Repetition', self.text)
         self.assertIn('ClassName "MSFT_TaskRepetitionPattern"', self.text)
         self.assertIn('Interval = "PT${RepeatMinutes}M"', self.text)
-        self.assertIn('$RepeatDurationIso = "PT15H46M"', self.text)
+        self.assertIn('$RepeatDurationIso = ""', self.text)
+        self.assertIn("New-ScheduledTaskTrigger -Once -At $FirstRunTime", self.text)
+        self.assertNotIn("Duration = $RepeatDurationIso", self.text)
 
-    def test_three_minute_preparation_covers_every_late_edge_through_2300(self):
+    def test_preparation_covers_all_edges_including_morning_and_dst(self):
         first = re.search(r'\$FirstRunTime = "([0-9:]+)"', self.text).group(1)
         step = int(re.search(r'\$RepeatMinutes = ([0-9]+)', self.text).group(1))
-        duration = re.search(r'\$RepeatDurationIso = "PT([0-9]+)H([0-9]+)M"', self.text)
-        start = datetime.strptime(first, '%H:%M')
-        stop = start + timedelta(hours=int(duration.group(1)), minutes=int(duration.group(2)))
-        launches = []
-        value = start
-        while value < stop:
-            launches.append(value)
-            value += timedelta(minutes=step)
-        self.assertEqual(len(launches), 190)
-        self.assertEqual(launches[-1].strftime('%H:%M'), '22:57')
-        preparations = [value for value in launches if value.minute % 15 == 12]
-        self.assertEqual(len(preparations),64)
-        self.assertTrue(all((b-a).total_seconds()==300 for a,b in zip(launches,launches[1:])))
-        edges = {(value + timedelta(minutes=3)).strftime('%H:%M') for value in preparations}
-        self.assertTrue({'22:00', '22:15', '22:30', '22:45', '23:00'}.issubset(edges))
-        self.assertNotIn('23:15', edges)
+        london = ZoneInfo('Europe/London')
+        # Ordinary day, spring-forward and fall-back each include every real
+        # quarter-hour edge. Repetition follows elapsed time across midnight.
+        for date_text, hours in [('2026-10-15', 24), ('2026-03-29', 23), ('2026-10-25', 25)]:
+            start = datetime.fromisoformat(date_text).replace(tzinfo=london)
+            end = start + timedelta(days=1)
+            phase = datetime.strptime(first, '%H:%M').minute
+            utc_start = start.astimezone(timezone.utc)
+            utc_end = end.astimezone(timezone.utc)
+            launches = set()
+            at = utc_start - timedelta(minutes=60-phase)
+            while at < utc_end:
+                launches.add(at)
+                at += timedelta(minutes=step)
+            edge = utc_start
+            count = 0
+            while edge < utc_end:
+                with self.subTest(day=date_text, edge=edge.astimezone(london).isoformat()):
+                    self.assertIn(edge-timedelta(minutes=3), launches)
+                count += 1
+                edge += timedelta(minutes=15)
+            self.assertEqual(count, hours*4)
 
     def test_installer_and_gui_validate_and_display_same_daily_duration(self):
-        duration = re.search(r'\$RepeatDurationIso = "([^"]+)"', self.text).group(1)
+        duration = re.search(r'\$RepeatDurationIso = "([^"]*)"', self.text).group(1)
         first = re.search(r'\$FirstRunTime = "([^"]+)"', self.text).group(1)
         self.assertEqual(gui.RECURRING_DURATION_ISO, duration)
-        self.assertEqual(gui.RECURRING_FIRST_RUN_LOCAL, first)
-        self.assertIn('07:12-22:57', gui.RECURRING_SCHEDULE_TEXT)
+        self.assertEqual(gui.RECURRING_FIRST_RUN_LOCAL, first + ":00")
+        self.assertIn('all day', gui.RECURRING_SCHEDULE_TEXT)
 
     def test_action_uses_headless_scheduled_launcher_mode(self):
         self.assertIn("--scheduled", self.text)
@@ -155,9 +164,9 @@ class SchedulerInstallerTests(unittest.TestCase):
             "$RegisteredAction.Arguments -cne $ActionArguments",
             "$RegisteredAction.WorkingDirectory -ine $WorkingDir",
             "@($RegisteredTask.Triggers).Count -ne 1",
-            '$RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskDailyTrigger"',
+            '$RegisteredTrigger.CimClass.CimClassName -ne "MSFT_TaskTimeTrigger"',
             "$RegisteredTrigger.Enabled",
-            "$RegisteredTrigger.DaysInterval -ne 1",
+            "-not [string]::IsNullOrEmpty($RegisteredTrigger.EndBoundary)",
             '$RegisteredTrigger.Repetition.Interval -ne "PT5M"',
             "$RegisteredTrigger.Repetition.Duration -ne $RepeatDurationIso",
             "$RegisteredTrigger.Repetition.StopAtDurationEnd",
@@ -212,6 +221,32 @@ class SchedulerInstallerTests(unittest.TestCase):
         self.assertLess(disabled_state, enable)
         self.assertLess(enable, enabled_readback)
         self.assertLess(enabled_readback, ready_state)
+
+    def test_repair_preserves_disabled_task_without_enabling_it(self):
+        powershell = shutil.which('powershell.exe') or shutil.which('powershell')
+        if powershell is None:
+            self.skipTest('PowerShell is required')
+        start = self.text.index('    if ($ReplacementShouldBeEnabled) {')
+        end = self.text.index('    # Remove obsolete task shapes', start)
+        activation = self.text[start:end]
+        script = '''
+$ErrorActionPreference = 'Stop'
+$TaskName = 'SyntheticBooker'
+$script:EnableCalls = 0
+function Enable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:EnableCalls++ }
+function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return 'SyntheticTask' }
+function Assert-RegisteredTaskContract { param($RegisteredTask, $ExpectedEnabled, $ExpectedState)
+    if (-not $ExpectedEnabled -or $ExpectedState -ne 'Ready') { throw 'wrong verification' }
+}
+'''
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                source = script + '\n$ReplacementShouldBeEnabled = $' + str(enabled).lower() + '\n' + activation
+                source += '\nWrite-Output $script:EnableCalls'
+                result = subprocess.run([powershell, '-NoProfile', '-Command', source],
+                    capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout.strip(), '1' if enabled else '0')
+        self.assertIn('$ReplacementShouldBeEnabled = [bool]$PreviousTask.Settings.Enabled', self.text)
 
     def test_failure_path_removes_unverified_task_and_restores_safely(self):
         registration = self.text.index("Register-ScheduledTask `")
