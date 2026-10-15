@@ -50,6 +50,21 @@ def check_operation_stop():
         raise OperationStopped('Stop requested; no further booking action will start')
 
 
+def wait_for_operation(page, milliseconds):
+    """Pump browser events in bounded steps while an owned read can be stopped."""
+    check_operation_stop()
+    control = _CONTROL.get()
+    if control is None or control[0] is None:
+        page.wait_for_timeout(milliseconds)
+        return
+    remaining = milliseconds
+    while remaining > 0:
+        step = min(250, remaining)
+        page.wait_for_timeout(step)
+        check_operation_stop()
+        remaining -= step
+
+
 @contextmanager
 def operation_verification():
     """Finish read-only proof after Save even when Stop was requested."""

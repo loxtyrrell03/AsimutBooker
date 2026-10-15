@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import book_week as b
+from operation_control import OperationStopped, check_operation_stop, owned_operation
 import mutation_receipts as journal
 from agenda_snapshot import apply_verified_reservation, publish_agenda_snapshot, read_agenda_snapshot
 from room_upgrades import (Reservation, RoomConsolidation, classify_consolidation_outcome,
@@ -43,6 +44,7 @@ class ConsolidationRecoveryTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(b, 'load_ignored_events', return_value=[]))
         self.stack.enter_context(mock.patch.object(b, 'require_live_room_policy', return_value=SimpleNamespace(booking_dates=lambda today: (self.day,))))
         def scan(page, tracker, *args, **kwargs):
+            check_operation_stop()
             tracker.agenda_events = copy.deepcopy(self.events)
             tracker.agenda_active_event_ids = [e['eventId'] for e in self.events]
         self.stack.enter_context(mock.patch.object(b, 'scan_agenda', side_effect=scan))
@@ -80,6 +82,16 @@ class ConsolidationRecoveryTests(unittest.TestCase):
         self.assertEqual(len(self.events), 1)
         self.assertEqual(Reservation.from_event(self.events[0]), self.new)
         self.assertFalse(journal.list_pending(self.path))
+
+    def test_stop_finishes_existing_state_proof_but_cannot_retire_another_donor(self):
+        self.secure()
+        stop = Path(self.temp) / 'stop'
+        stop.touch()
+        with owned_operation(stop, mock.Mock(), mock.Mock()), self.assertRaises(OperationStopped):
+            b.finish_consolidation(self.page, self.receipt)
+        self.proof.assert_called()
+        self.cancel.assert_not_called()
+        self.assertTrue(journal.list_pending(self.path))
 
     def test_crash_after_one_retirement_resumes_without_repeating_it(self):
         self.secure()

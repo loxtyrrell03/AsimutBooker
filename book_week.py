@@ -16,7 +16,10 @@ from date_time_preferences import with_date_overrides, resolve_time_preferences
 from preferred_time_bounds import boundary_fields, custom_bounds, runtime_window_label
 from booking_rules import load_booking_rules
 from session_preferences import tracker_sessions
-from operation_control import OperationStopped, check_operation_stop, operation_stage, report_available_gaps
+from operation_control import (
+    OperationStopped, check_operation_stop, operation_stage, report_available_gaps,
+    operation_verification, wait_for_operation,
+)
 
 import booking_run_report as run_report
 
@@ -3369,6 +3372,7 @@ def remove_extendable_booking_by_event_id(event_id):
     update_settings(mutate, settings_file)
 
 
+@operation_verification()
 def verify_consolidation_state(page, receipt, *, agenda_events=None):
     """Fresh complete-agenda and persisted-page proof of all transaction members."""
     tracker = None
@@ -3579,14 +3583,15 @@ def cancel_reservation_exact(
         for proof_attempt in range(2):
             try:
                 proof_tracker = BookingTracker()
-                events_detected, post_reservations = scan_agenda(
-                    page,
-                    proof_tracker,
-                    today,
-                    ignored_events=ignored_events,
-                    window_dates=live_dates,
-                    snapshot_path=AGENDA_SNAPSHOT_FILE,
-                )
+                with operation_verification():
+                    events_detected, post_reservations = scan_agenda(
+                        page,
+                        proof_tracker,
+                        today,
+                        ignored_events=ignored_events,
+                        window_dates=live_dates,
+                        snapshot_path=AGENDA_SNAPSHOT_FILE,
+                    )
                 break
             except Exception:
                 if proof_attempt >= 1:
@@ -9220,7 +9225,7 @@ def scan_agenda(
     # Navigate directly to the agenda page
     print("  [DEBUG] Navigating to agenda page...")
     safe_goto(page, ASIMUT_AGENDA_URL)
-    page.wait_for_timeout(3000)
+    wait_for_operation(page, 3000)
     print(f"  [DEBUG] Agenda page loaded, URL: {page.url[:50]}...")
 
     target_date = window_dates[-1]
@@ -9236,6 +9241,7 @@ def scan_agenda(
     target_reached = False
 
     while scroll_count < max_scrolls:
+        check_operation_stop()
         # Check if target date is visible on page
         page_text = page.evaluate("() => document.body.innerText")
         if target_date_str in page_text:
@@ -9252,7 +9258,7 @@ def scan_agenda(
 
         # Scroll down - use scrollTo for more reliable scrolling
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1000)  # Wait longer for lazy loading
+        wait_for_operation(page, 1000)  # Wait longer for lazy loading
 
         # Check if we've reached the bottom (no new content)
         new_height = page.evaluate("() => document.body.scrollHeight")
@@ -9262,7 +9268,7 @@ def scan_agenda(
                 print(f"  [DEBUG] Reached end of agenda page after {scroll_count} scrolls (height: {new_height})")
                 break
             # Try scrolling again - content might still be loading
-            page.wait_for_timeout(500)
+            wait_for_operation(page, 500)
         else:
             stalled_count = 0  # Reset if we got new content
         last_height = new_height
@@ -9278,20 +9284,21 @@ def scan_agenda(
 
     # Scroll back to top to ensure we capture everything
     page.evaluate("window.scrollTo(0, 0)")
-    page.wait_for_timeout(1000)
+    wait_for_operation(page, 1000)
 
     # Now scroll through the entire page once more to ensure all content is in DOM
     # Use a minimum of 10 scrolls to ensure we cover at least a week
     min_scrolls = max(scroll_count + 5, 10)
     print(f"  Final pass to capture all events ({min_scrolls} scrolls)...")
     for i in range(min_scrolls):
+        check_operation_stop()
         page.evaluate("window.scrollBy(0, window.innerHeight)")
-        page.wait_for_timeout(400)
+        wait_for_operation(page, 400)
         if i % 5 == 4:
             # Extra wait every 5 scrolls for lazy loading
-            page.wait_for_timeout(300)
+            wait_for_operation(page, 300)
 
-    page.wait_for_timeout(1000)
+    wait_for_operation(page, 1000)
 
     # Capture the day/card topology and semantic event fields in one atomic DOM
     # evaluation.  A newly cancelled Angular card can change between tasks; two
@@ -9536,6 +9543,7 @@ def scan_agenda(
     # Remove only exact logical duplicates. Events sharing a time remain
     # distinct when title, room, or reservation type differs.
     unique_events = deduplicate_events(events_data)
+    check_operation_stop()
     tracker.agenda_events = [dict(event) for event in unique_events]
     if snapshot_path is not None:
         # Persist safety evidence separately from the display snapshot. A failed
@@ -11163,7 +11171,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
             if not args.headless:
                 print("\nKeeping browser open for 10 seconds...")
-                page.wait_for_timeout(10000)
+                wait_for_operation(page, 10000)
 
             persist_storage_state(context)
             context.close()
@@ -12530,7 +12538,7 @@ def run_booking(args, settings, practice_plan, room_preferences=None):
 
         if not args.headless:
             print("\nKeeping browser open for 30 seconds to verify...")
-            page.wait_for_timeout(30000)
+            wait_for_operation(page, 30000)
 
         context.close()
         browser.close()

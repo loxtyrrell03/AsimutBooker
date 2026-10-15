@@ -1,3 +1,22 @@
+## 2026-10-15 Stop interrupts agenda reads but preserves submitted-action proof
+
+- Owned agenda reads check Stop between scroll/capture steps and before
+  publishing observation history. Their browser delays pump events in at most
+  250 ms steps; the visible browser's final idle delay is interruptible too.
+  An active browser navigation/evaluation still returns through its normal
+  bounded timeout. Ordinary scheduled reads retain their existing wait lengths.
+- After a cancellation click, its read-only complete-agenda absence proof runs
+  under the existing verification shield. Pure consolidation state proof does
+  the same, but Stop is restored before any further donor cancellation. No
+  Save, cancellation, restoration or uncertain action is retried by this change.
+  Room-now/fill verification retains its existing shielding and receipt rules.
+- Five new tests cover three scan phases, real Chromium interruption, submitted
+  cancellation proof and consolidation read/write separation. The previous
+  source has five failing cases; all 239 focused agenda, cancellation, transfer,
+  receipt, Pause and Stop checks pass. A CLI fixture now uses isolated Tempo
+  authority. Fresh workers import this source without changing live settings,
+  bookings, scheduled tasks or services; no live Stop was used for validation.
+
 ## 2026-10-15 Pause retires timed and queued booking work
 
 - Owned phone/desktop/Tempo runs carry a proven Pause stop reason from the

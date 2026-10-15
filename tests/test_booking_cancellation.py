@@ -3,10 +3,13 @@ from contextlib import ExitStack
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import book_week
 from app_settings import SettingsError
 from mutation_receipts import MutationReceiptError
+from operation_control import OperationStopped, check_operation_stop, owned_operation
 from playwright.sync_api import sync_playwright
 
 
@@ -159,6 +162,7 @@ class BookingCancellationContractTests(unittest.TestCase):
         queued_scan_side_effects = list(scan_side_effects or ())
 
         def complete_scan(*args, **kwargs):
+            check_operation_stop()
             timeline.append("complete_agenda")
             self.assertEqual(kwargs["snapshot_path"], book_week.AGENDA_SNAPSHOT_FILE)
             if queued_scan_side_effects:
@@ -318,6 +322,19 @@ class BookingCancellationContractTests(unittest.TestCase):
                 book_week.classify_cancellation_agenda_outcome(
                     reservations, receipt
                 )
+
+    def test_stop_after_cancel_click_finishes_read_only_absence_proof(self):
+        with TemporaryDirectory() as temporary:
+            stop = Path(temporary) / 'stop'
+            with owned_operation(stop, mock.Mock(), mock.Mock()):
+                result, _, cancel, scan, verify, _ = self.call_cancel(
+                    confirmation=False, cancel_side_effect=lambda **kwargs: stop.touch())
+                self.assertTrue(result)
+                cancel.click.assert_called_once()
+                scan.assert_called_once()
+                verify.assert_called_once()
+                with self.assertRaises(OperationStopped):
+                    check_operation_stop()
 
     def test_receipt_precedes_every_destructive_click_and_complete_agenda_proves_result(self):
         result, timeline, _cancel, scan, verify, resolve = self.call_cancel()
@@ -812,6 +829,8 @@ class BookingCancellationCliTests(unittest.TestCase):
         }
 
         with (
+            TemporaryDirectory() as temporary,
+            mock.patch('tempo_coordination.SNAPSHOT_PATH', Path(temporary) / 'coordination.json'),
             mock.patch.object(book_week, "sync_playwright", return_value=manager),
             mock.patch.object(book_week, "authenticated_runtime_context_options", return_value={}),
             mock.patch.object(book_week, "restore_page_authentication"),
