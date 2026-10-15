@@ -98,7 +98,7 @@ class OperationStopTests(unittest.TestCase):
                 mock.patch.object(book_week, 'settings_file', str(settings_path)), \
                 mock.patch('tempo_coordination.SNAPSHOT_PATH', self.root / 'coordination.json'), \
                 mock.patch('preference_runs.kick'), \
-                mock.patch.object(book_week, 'save_history'), \
+                mock.patch.object(book_week, 'save_history') as history, \
                 mock.patch.object(book_week, 'run_report'), \
                 mock.patch.object(book_week, 'SingleInstanceLock', return_value=runtime), \
                 mock.patch.object(book_week, '_load_and_validate_runtime_settings',
@@ -111,6 +111,7 @@ class OperationStopTests(unittest.TestCase):
         self.assertEqual(result, 3)
         run.assert_not_called()
         runtime.release.assert_called_once()
+        history.assert_not_called()
 
     def test_target_and_discovery_waits_observe_stop_before_the_next_poll(self):
         import book_week

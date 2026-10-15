@@ -13146,7 +13146,9 @@ def main(argv=None):
         return 4
     except SettingsError as exc:
         print(f"Booking stopped: {exc}")
-        if not isinstance(exc, BookingPreferencesChanged):
+        # A deliberate Stop is settled by its owning operation, which checks
+        # pending receipts. It is not a settings failure or a success receipt.
+        if not isinstance(exc, (BookingPreferencesChanged, OperationStopped)):
             save_history(len(completed_details), 0, [f"Settings could not be validated: {exc}", *completed_details], outcome="failed")
         return 3
     except BookingVerificationError as exc:

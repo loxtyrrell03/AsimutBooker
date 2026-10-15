@@ -9,6 +9,12 @@
   an advancing synthetic clock. All 79 focused operation, Pause, preparation, Save,
   clock and explicit-action checks pass. Fresh workers import this source;
   verification did not toggle a live hold or create/cancel a booking.
+- A deliberate `OperationStopped` also no longer writes a false settings-failure
+  history entry or sends its needs-attention notification. The owner operation
+  still checks the receipt journal before reporting stopped; uncertain outcomes
+  remain uncertain. The real entry-point regression reproduces the old false
+  failure without changing live history; all 96 focused operation, Pause,
+  reporting, preparation and guard checks pass. Earlier history entries remain.
 
 ## 2026-10-15 free-horizon planning follows actual clock instants
 
