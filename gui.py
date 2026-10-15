@@ -4433,6 +4433,7 @@ class AsimutBookerGUI(QuietFocusGUI):
                             "required_feature_terms": list(required_features),
                             "minimum_block_minutes": int(minimum_text),
                             "allow_fragmented_sessions": fragmented_var.get(),
+                            "upright_fallback": opening_preferences.upright_fallback,
                         }
                     }
                 )

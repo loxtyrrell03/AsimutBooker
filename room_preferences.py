@@ -56,6 +56,7 @@ _PREFERENCE_FIELDS = {
     "required_feature_terms",
     "minimum_block_minutes",
     "allow_fragmented_sessions",
+    "upright_fallback",
 }
 
 
@@ -74,6 +75,7 @@ class RoomPreferences:
     required_feature_terms: tuple[str, ...] = ()
     minimum_block_minutes: int = MIN_BLOCK_MINUTES
     allow_fragmented_sessions: bool = True
+    upright_fallback: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Return the exact JSON object persisted under ``room_preferences``."""
@@ -213,6 +215,9 @@ def _parse_room_preferences(
         raise RoomPreferencesError(
             "room_preferences.allow_fragmented_sessions must be true or false"
         )
+    upright_fallback = raw.get("upright_fallback", False)
+    if not isinstance(upright_fallback, bool):
+        raise RoomPreferencesError("room_preferences.upright_fallback must be true or false")
 
     return RoomPreferences(
         ordered_rooms=ordered_rooms,
@@ -231,6 +236,7 @@ def _parse_room_preferences(
         ),
         minimum_block_minutes=minimum_block_minutes,
         allow_fragmented_sessions=allow_fragmented_sessions,
+        upright_fallback=upright_fallback,
     )
 
 
@@ -271,6 +277,7 @@ def room_preferences_to_dict(preferences: RoomPreferences) -> dict[str, Any]:
         "required_feature_terms": list(preferences.required_feature_terms),
         "minimum_block_minutes": preferences.minimum_block_minutes,
         "allow_fragmented_sessions": preferences.allow_fragmented_sessions,
+        **({"upright_fallback": True} if preferences.upright_fallback else {}),
     }
 
 
@@ -420,13 +427,14 @@ def room_matches_preferences(
     accepted_instruments = {
         value.casefold() for value in preferences.acceptable_instrument_tags
     }
-    if accepted_instruments and accepted_instruments.isdisjoint(instruments):
-        return False
-
     accepted_room_types = {
         value.casefold() for value in preferences.acceptable_room_type_tags
     }
-    if accepted_room_types and accepted_room_types.isdisjoint(room_types):
+    primary_matches = (
+        (not accepted_instruments or not accepted_instruments.isdisjoint(instruments))
+        and (not accepted_room_types or not accepted_room_types.isdisjoint(room_types))
+    )
+    if not primary_matches and not (preferences.upright_fallback and is_upright_piano(metadata, room=room)):
         return False
 
     for required in preferences.required_feature_terms:
@@ -442,6 +450,26 @@ def room_matches_preferences(
     return True
 
 
+def is_upright_piano(metadata: Mapping[str, Any], *, room: str = "room") -> bool:
+    """Require explicit piano evidence, never a name or missing inventory."""
+    instruments = set(_metadata_values(metadata, "instrument_tags", room))
+    room_types = set(_metadata_values(metadata, "room_type_tags", room))
+    return bool(
+        instruments.intersection({"piano: upright", "upright piano"})
+        or "practice: upright piano" in room_types
+    ) and not (
+        room_types.intersection({"practice: grand piano", "practice: grand piano x 2", "practice: no piano"})
+        or instruments.intersection({"grand piano", "grand pianos", "piano: grand"})
+    )
+
+
+def room_fallback_tier(preferences: RoomPreferences, metadata: Mapping[str, Any], *, room: str) -> int:
+    """Ordinary eligible rooms first; proven B uprights, then other uprights."""
+    if preferences.upright_fallback and is_upright_piano(metadata, room=room):
+        return 1 if room.startswith("B") else 2
+    return 0
+
+
 def filter_effective_rooms(
     preferences: RoomPreferences,
     live_room_metadata: Mapping[str, Mapping[str, Any]],
@@ -455,7 +483,9 @@ def filter_effective_rooms(
         metadata = live_room_metadata[room]
         if room_matches_preferences(preferences, metadata, room=room):
             eligible.append(room)
-    return tuple(eligible)
+    # Stable within each group: retain every existing primary room preference.
+    return tuple(sorted(eligible, key=lambda room: room_fallback_tier(
+        preferences, live_room_metadata[room], room=room)))
 
 
 def _compact_terms(values: Sequence[str]) -> str:
@@ -490,6 +520,8 @@ def summarize_room_preferences(
         room_text += "s"
 
     parts = [room_text]
+    if preferences.upright_fallback:
+        parts.append("Uprights last; B rooms first")
     if preferences.excluded_rooms:
         parts.append(f"{len(preferences.excluded_rooms)} excluded")
 

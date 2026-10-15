@@ -8,7 +8,7 @@ current authenticated browser session.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -17,6 +17,7 @@ from room_preferences import (
     RoomPreferences,
     RoomPreferencesError,
     filter_effective_rooms,
+    room_fallback_tier,
 )
 
 
@@ -120,6 +121,7 @@ class LiveRoomPolicy:
     all_room_location_ids: Mapping[str, int]
     overview_url: str
     site_clock_offset_bounds: tuple[float, float] | None = None
+    fallback_room_tiers: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
 
     def horizon_minutes_for(self, room: str) -> int:
         """Return one proven room horizon; unknown/excluded rooms fail closed."""
@@ -307,7 +309,24 @@ def build_live_room_policy(catalog: Any, preferences: RoomPreferences) -> LiveRo
         all_room_location_ids=MappingProxyType(location_ids),
         overview_url=overview_url,
         site_clock_offset_bounds=clock_bounds,
+        fallback_room_tiers=MappingProxyType({
+            room: room_fallback_tier(preferences, selected_metadata[room], room=room)
+            for room in room_order
+        }) if preferences.upright_fallback else MappingProxyType({}),
     )
+
+
+def preferred_room_candidates(policy, candidates, *, room_name):
+    """Select the best available room group after all eligibility checks.
+
+    Lower groups cannot add coverage or beat a better group on time/length.
+    Callers must supply the complete candidate scope (day or explicit window).
+    """
+    candidates = list(candidates)
+    if not candidates or not isinstance(policy, LiveRoomPolicy) or not policy.fallback_room_tiers:
+        return candidates
+    best = min(policy.fallback_room_tiers[room_name(item)] for item in candidates)
+    return [item for item in candidates if policy.fallback_room_tiers[room_name(item)] == best]
 
 
 def format_horizon_minutes(minutes: int) -> str:

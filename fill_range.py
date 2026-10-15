@@ -174,6 +174,9 @@ def candidates(engine, rooms, tracker, request, now):
                                                 'minutes': duration, 'rank': rank})
                             else:
                                 reasons.add(reason)
+    from live_room_policy import preferred_room_candidates
+    options = preferred_room_candidates(getattr(engine, 'ACTIVE_ROOM_POLICY', None), options,
+                                        room_name=lambda item: item['room'])
     return sorted(options, key=lambda c: (c['start_hour'], -c['minutes'], c['rank'])), sorted(reasons)
 
 

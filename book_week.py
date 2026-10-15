@@ -2927,7 +2927,9 @@ def _soft_time_window(time_prefs):
 
 def uses_time_aware_planner(daily_planning, time_prefs):
     """Keep soft time selection active even when horizon foresight is disabled."""
-    return daily_planning.enabled or _soft_time_window(time_prefs) is not None or bool(time_prefs and time_prefs.get("date_overrides"))
+    return (daily_planning.enabled or _soft_time_window(time_prefs) is not None
+            or bool(time_prefs and time_prefs.get("date_overrides"))
+            or bool(ACTIVE_ROOM_POLICY and ACTIVE_ROOM_POLICY.fallback_room_tiers))
 
 
 def soft_time_allows_booking(start_hour, duration_minutes, time_prefs):
@@ -7026,7 +7028,8 @@ def build_day_booking_opportunities(
                         continue
                     seen.add(key)
                     opportunities.append(opportunity)
-    return opportunities
+    from live_room_policy import preferred_room_candidates
+    return preferred_room_candidates(ACTIVE_ROOM_POLICY, opportunities, room_name=lambda item: item.room)
 
 
 def current_opportunities_after_hold(
@@ -7152,6 +7155,12 @@ def same_time_room_backups(
     exact_gaps = []
     for row in available_data:
         if row['room'] in excluded_rooms or (allowed_rooms is not None and row['room'] not in allowed_rooms):
+            continue
+        # A same-time retry has not checked the rest of the day. It cannot
+        # descend into a fallback group; that needs a complete fresh replan.
+        if (ACTIVE_ROOM_POLICY and ACTIVE_ROOM_POLICY.fallback_room_tiers
+                and ACTIVE_ROOM_POLICY.fallback_room_tiers.get(row['room'], 3)
+                    > ACTIVE_ROOM_POLICY.fallback_room_tiers[failed_slot['room']]):
             continue
         if any(gap['startHour'] <= start and gap['endHour'] >= end for gap in row['slots']):
             exact_gaps.append({'room':row['room'], 'slots':[{'startHour':start, 'endHour':end}]})

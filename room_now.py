@@ -109,6 +109,9 @@ def candidates(engine, rooms, tracker, request, time_prefs, daily_hours, *, now,
                         seen.add(key)
                         rows.append({'room': name, 'start_hour': begin / 60,
                                      'end_hour': end / 60, 'minutes': length, 'rank': rank})
+    from live_room_policy import preferred_room_candidates
+    rows = preferred_room_candidates(getattr(engine, 'ACTIVE_ROOM_POLICY', None), rows,
+                                     room_name=lambda item: item['room'])
     return sorted(rows, key=lambda c: (c['start_hour'], -c['minutes'], c['rank']))
 
 

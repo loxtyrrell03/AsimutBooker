@@ -344,6 +344,9 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
         if room not in policy.room_order:
             continue
         room_rank = policy.room_order.index(room)
+        if getattr(policy, 'fallback_room_tiers', None) and policy.fallback_room_tiers[room] > min(
+                policy.fallback_room_tiers[r.room] for r in originals):
+            continue
         if ((room_rank > old_rank and not _allow_room_downgrade)
                 or (room_rank == old_rank and len(originals) == 1)):
             continue
@@ -425,7 +428,9 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
                         abs(start - original.start), start, room)
                 results[(room, start, end)] = (RoomUpgrade(original, replacement, rank) if len(originals) == 1
                                                else RoomConsolidation(originals, replacement, rank))
-    return tuple(sorted(results.values(), key=lambda item: item.rank))
+    from live_room_policy import preferred_room_candidates
+    results = preferred_room_candidates(policy, results.values(), room_name=lambda item: item.replacement.room)
+    return tuple(sorted(results, key=lambda item: item.rank))
 
 
 def find_room_consolidations(*, events, policy, eligible_event_ids=None, **kwargs):

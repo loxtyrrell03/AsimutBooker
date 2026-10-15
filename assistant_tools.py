@@ -658,6 +658,10 @@ def dynamic_tool_specs() -> list[dict[str, Any]]:
                     ),
                     "room_preferences": _object_schema(
                         {
+                            "upright_fallback": {
+                                "type": "boolean",
+                                "description": "Use proven upright pianos only when no primary room opportunity is available; B-room uprights precede other uprights.",
+                            },
                             "ordered_rooms": {
                                 "type": "array",
                                 "items": {"type": "string"},

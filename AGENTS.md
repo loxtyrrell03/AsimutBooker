@@ -1,3 +1,25 @@
+## 2026-10-15 upright pianos as the last fallback
+
+- `room_preferences.upright_fallback` enables only metadata-proven upright
+  pianos in addition to the primary filters. Explicit exclusions and required
+  features still apply. The fresh policy retains the grand-room order, then
+  B-room uprights, then other uprights; unknown/no-piano rooms stay excluded.
+- Candidate selection keeps only the best feasible group before optimizing
+  timing or coverage. Automatic planning compares the complete day's eligible
+  opportunities, including future free-window openings; Fill compares only its
+  requested window. Room-now uses the same rule. A shorter/later grand wins
+  over an upright, and a B upright wins over an upright elsewhere. Replanning
+  after a confirmed booking may use a fallback for the remaining uncovered time.
+- Same-time retries cannot descend to a worse group without a full replan.
+  Upgrades cannot downgrade into a worse group, including consolidation paths.
+  Existing locks, final Save guards, quotas and receipt/agenda proof remain.
+  Phone edits merge the flag; desktop room edits preserve it. Existing settings
+  without the flag retain their behavior. Long-lived phone hosts must load the
+  new validator before enabling the flag; fresh workers load source directly.
+- Verified with isolated synthetic planner, room eligibility, fill, room-now,
+  upgrade, preference, quota, horizon and guard tests. Live preference and booking
+  evidence is separate under ignored `artifacts/upright-fallback-20261015`.
+
 ## 2026-10-15 desktop Pause survives closing its window
 
 - A requested Pause/Unpause save runs in a non-daemon thread, preserving the
@@ -1063,10 +1085,11 @@
   phone or future booking success is claimed. Private audit, execution replay
   and render proof: `artifacts/corus-correction-20260927/`.
 
-## 2026-09-24 grand-piano-only room eligibility (updated 27 September)
+## 2026-09-24 grand-piano-only room eligibility (historical)
 
-- The owner requires grand pianos only. Preserve the saved room-type filter and
-  exclusions when editing preferences. Merely removing rooms from the ranked
+- The 15 October upright-fallback instruction supersedes the grand-only rule.
+  Preserve the primary grand room-type filter and unrelated exclusions. Merely
+  removing rooms from the ranked
   list is insufficient: live discovery appends new rooms automatically.
 - ASIMUT identifies ordinary grand rooms by `Practice: Grand Piano` and
   `Practice: Grand Piano x 2`. Weston uses room type `B0.08`; its inventory
