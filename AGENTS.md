@@ -1,3 +1,18 @@
+## 2026-10-15 plan summaries follow the earliest selected opening
+
+- A day's ranked primary can open later than its additional selected sessions.
+  Future-plan opening copy and the read-only plan's overall Next summary now
+  consider every selected incomplete session, including extension targets.
+  Unselected backups do not control the summary. Room ranking, runtime choices,
+  Tempo authority and final Save checks are unchanged.
+- Three regressions reproduce the old evening-before-morning summary; all 107
+  focused plan, readiness, quota-edge, extension-capacity and read-only checks
+  pass. The runtime-wait fixture now uses temporary settings/Tempo paths and
+  isolated history instead of touching the developer's live state.
+- Fresh workers/read-only plan refreshes import the fix. Existing display plans
+  need an ordinary refresh; never rewrite their cached evidence to force it.
+  Early scheduled-task coverage and real edge receipts remain under audit.
+
 ## 2026-10-15 preference checks respect Pause without losing the plan
 
 - The existing preference dispatcher reads the canonical Pause state after

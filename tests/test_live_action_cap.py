@@ -1,7 +1,9 @@
 import contextlib
 import io
+import tempfile
 import unittest
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -324,14 +326,21 @@ class LiveActionCliBoundaryTests(unittest.TestCase):
     def test_read_only_refresh_waits_for_the_active_booker_then_runs(self):
         runtime_lock = mock.Mock()
         runtime_lock.acquire.side_effect = [False, True]
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        settings_path = Path(temporary.name) / "settings.json"
+        settings_path.write_text("{}", encoding="utf-8")
         with (
+            mock.patch.object(book_week, "settings_file", str(settings_path)),
+            mock.patch("tempo_coordination.SNAPSHOT_PATH", Path(temporary.name) / "coordination.json"),
+            mock.patch.object(book_week, "save_history"),
             mock.patch.object(book_week, "SingleInstanceLock", return_value=runtime_lock),
             mock.patch.object(
                 book_week,
                 "_load_and_validate_runtime_settings",
                 return_value=({}, book_week.PracticePlan(), mock.Mock()),
             ),
-            mock.patch.object(book_week.time, "monotonic", side_effect=[0.0, 0.0, 0.0]),
+            mock.patch.object(book_week.time, "monotonic", return_value=0.0),
             mock.patch.object(book_week.time, "sleep") as sleep,
             mock.patch.object(book_week, "run_booking", return_value=0) as run,
             contextlib.redirect_stdout(io.StringIO()),

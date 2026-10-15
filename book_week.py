@@ -7617,8 +7617,10 @@ def build_display_day_plan(
             candidate_state = "waiting"
             status = "waiting"
             if primary_opportunity.unlock_at > latest_useful_unlock:
+                # Primary is a quality ranking, not the earliest opening.
+                # Additional selected sessions can open hours before it.
                 unlock_label = _aware_local_datetime(
-                    primary_opportunity.unlock_at
+                    min(item.unlock_at for item in selected_plan)
                 ).strftime("%a %d %b at %H:%M")
                 reason = (
                     "Planned from the currently free schedule; booking starts "
@@ -10624,9 +10626,15 @@ def generate_read_only_booking_plan(
         )
         day_plans.append(day_plan)
 
-    primaries = [day.primary for day in day_plans if day.primary is not None]
-    if primaries:
-        next_candidate = min(primaries, key=lambda item: item.unlock_at)
+    selected_candidates = [
+        candidate
+        for day in day_plans
+        for candidate in (day.primary, *day.additional)
+        if candidate is not None
+        and candidate.confirmed_minutes < candidate.potential_minutes
+    ]
+    if selected_candidates:
+        next_candidate = min(selected_candidates, key=lambda item: item.unlock_at)
         summary = (
             f"Next: {next_candidate.date} {next_candidate.start_time}-"
             f"{next_candidate.end_time} in {next_candidate.room}"
