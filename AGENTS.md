@@ -15,6 +15,19 @@
   type and empty duration. Source verification is not live task activation;
   update only the existing trigger under ownership, preserving all other XML.
   Live activation and actual edge receipts must be recorded separately.
+- Activated `e69af97` by updating only `AsimutBooker_Recurring`'s trigger under
+  assistant/runtime/dispatcher ownership. The previous task was idle. Its other
+  XML, enabled state, owner settings/receipts and other tasks were unchanged.
+  The private phone API reports the new schedule healthy with Pause clear.
+  The first normal overnight run completed at 01:17 with no ready candidate or
+  new booking. This proves execution, not a successful horizon-edge Save.
+- The earlier plan-summary fix (`3e402bd`) is visible after a read-only refresh:
+  connected Chromium/WebKit at 390px show the first selected opening correctly,
+  with the dated protection retained and no writes/errors. Evidence and rollback
+  XML are in ignored `artifacts/plan-opening-audit`; the comparison checkpoint is
+  `artifacts/free-horizon-monitor/2026-10-15-scheduler-repair.json`. The old private
+  monitor probe assumes a daily trigger and a fixed log date; do not reuse those
+  assumptions. Physical wake and real morning edge latency remain unverified.
 
 ## 2026-10-15 plan summaries follow the earliest selected opening
 
