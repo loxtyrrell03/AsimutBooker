@@ -1,14 +1,14 @@
 import contextlib
 import io
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, Mock
 
 import book_week as b
 from booking_quotas import (parse_quota_balance, refresh_quota_balances,
     free_horizon_hours, in_free_horizon, check_quota_refusal, QuotaWait, QuotaPolicyError)
 from booking_strategy import DailyPlanningPreferences
-from room_catalog import SITE_TIMEZONE
+from room_catalog import SITE_TIMEZONE, _EuropeLondonFallback
 from types import SimpleNamespace
 import short_notice_bookings as short_notice
 
@@ -18,6 +18,43 @@ def quota(rolling=21600, peak=3600, **extra):
         'booking_quota': rolling, 'booking_quota_p': peak,
         'booking_quota_w': None, 'booking_quota_d': None,
         'booking_quota_t': None, 'booking_quota_t_dates': None, **extra}}}
+
+
+class FreeHorizonClockChangeTests(unittest.TestCase):
+    def test_autumn_end_cannot_exceed_five_elapsed_hours(self):
+        now = datetime(2026, 10, 25, 0, tzinfo=SITE_TIMEZONE)
+        self.assertEqual(free_horizon_hours(now.date(), .5, now=now), 3.5)
+        self.assertTrue(in_free_horizon(now.date(), .5, 4, now=now))
+        self.assertFalse(in_free_horizon(now.date(), .5, 4.25, now=now))
+
+    def test_spring_end_can_use_the_complete_elapsed_window(self):
+        now = datetime(2026, 3, 29, 0, tzinfo=SITE_TIMEZONE)
+        self.assertEqual(free_horizon_hours(now.date(), .5, now=now), 5.5)
+        self.assertTrue(in_free_horizon(now.date(), .5, 6, now=now))
+        self.assertFalse(in_free_horizon(now.date(), .5, 6.25, now=now))
+
+    def test_both_endpoints_must_be_unique_with_or_without_tzdata(self):
+        for zone in (SITE_TIMEZONE, _EuropeLondonFallback()):
+            for day in (date(2026, 3, 29), date(2026, 10, 25)):
+                now = datetime.combine(day, datetime.min.time(), tzinfo=zone)
+                with self.subTest(zone=zone, day=day), patch('booking_quotas.SITE_TIMEZONE', zone):
+                    self.assertEqual(free_horizon_hours(day, 1.5, now=now), 0)
+                    self.assertFalse(in_free_horizon(day, .5, 1.5, now=now))
+                    self.assertFalse(in_free_horizon(day, 1.5, 2.5, now=now))
+
+    def test_capacity_stops_before_an_ambiguous_cutoff(self):
+        now = datetime(2026, 10, 24, 21, 45, tzinfo=SITE_TIMEZONE)
+        # Five elapsed hours ends in the repeated 01:45 hour.  The last
+        # unambiguous quarter-hour endpoint before it is 00:45.
+        self.assertEqual(free_horizon_hours(date(2026, 10, 25), .5, now=now), .25)
+
+    def test_both_folds_of_now_retain_their_actual_instant(self):
+        for fold, expected_end in ((0, 5.5), (1, 6.5)):
+            now = datetime(2026, 10, 25, 1, 30, fold=fold, tzinfo=SITE_TIMEZONE)
+            with self.subTest(fold=fold):
+                for current in (now, now.astimezone(timezone.utc)):
+                    self.assertTrue(in_free_horizon(now.date(), 3, expected_end, now=current))
+                    self.assertFalse(in_free_horizon(now.date(), 3, expected_end + .25, now=current))
 
 
 class NewQuotaTests(unittest.TestCase):
@@ -266,6 +303,17 @@ class FreeHorizonExtensionIntentTests(unittest.TestCase):
                         end_hour=14, free_horizon_intent=True), self.day, self.tracker, 0,
                         remaining_daily_hours=4, time_prefs={'enabled':False}))
                 self.assertEqual(coordinates.call_args.args[2:], (12, 12.5))
+
+    def test_autumn_create_caps_the_actual_form_at_the_elapsed_cutoff(self):
+        self.now = datetime(2026, 10, 24, 22, 30)
+        day = date(2026, 10, 25)
+        # The five-hour window ends at 02:30 GMT, after the repeated hour.
+        # A 00:45-02:45 form would be fifteen minutes outside that window.
+        with patch.object(b, 'get_room_slot_coordinates', return_value=None) as coordinates:
+            self.assertFalse(b.try_book_slot(None, dict(room='A', start_hour=.75,
+                end_hour=2.75, free_horizon_intent=True), day, self.tracker, 1,
+                remaining_daily_hours=4, time_prefs={'enabled':False}))
+        self.assertEqual(coordinates.call_args.args[2:], (.75, 2.5))
 
     def test_pending_peak_tail_keeps_allowance_before_its_window_opens(self):
         self.tracker.add_existing_event(self.day, 12, 12.5, is_reservation=True, room='A')

@@ -86,32 +86,63 @@ def refresh_quota_balances(page, tracker, days):
     observe(tracker)
 
 
-def free_horizon_hours(day, start_hour, *, now, horizon_minutes=300):
-    """Maximum whole-quarter duration whose BOTH endpoints fit the free window.
+def _unique_utc(wall):
+    """Resolve one London wall time, rejecting repeated and skipped clocks."""
+    candidates = set()
+    for fold in (0, 1):
+        instant = wall.replace(tzinfo=SITE_TIMEZONE, fold=fold).astimezone(timezone.utc)
+        if instant.astimezone(SITE_TIMEZONE).replace(tzinfo=None) == wall:
+            candidates.add(instant)
+    return candidates.pop() if len(candidates) == 1 else None
 
-    Use elapsed time over clock changes and the conservative current minute,
-    matching the site's minute-resolution horizon. An ambiguous wall clock is
-    never a candidate for a new booking.
-    """
+
+def _free_horizon_window(day, start_hour, now, horizon_minutes):
     if isinstance(day, datetime):
         day = day.date()
     if not isinstance(day, date):
         day = date.fromisoformat(day)
     now = now.replace(tzinfo=SITE_TIMEZONE) if now.tzinfo is None else now.astimezone(SITE_TIMEZONE)
-    start = datetime.combine(day, time(), tzinfo=SITE_TIMEZONE) + timedelta(minutes=round(start_hour * 60))
-    if start.replace(fold=0).utcoffset() != start.replace(fold=1).utcoffset():
-        return 0.0
-    utc_start = start.astimezone(timezone.utc)
+    start = datetime.combine(day, time()) + timedelta(minutes=round(start_hour * 60))
+    utc_start = _unique_utc(start)
     utc_now = now.astimezone(timezone.utc)
-    if utc_start <= utc_now:
-        return 0.0
+    if utc_start is None or utc_start <= utc_now:
+        return None
     cutoff = utc_now.replace(second=0, microsecond=0) + timedelta(minutes=horizon_minutes)
-    return max(0, int((cutoff - utc_start).total_seconds() // 900)) / 4
+    return start, utc_start, cutoff
+
+
+def free_horizon_hours(day, start_hour, *, now, horizon_minutes=300):
+    """Maximum quarter-hour clock span callers can add to their local start.
+
+    The horizon itself is elapsed time from the conservative current minute.
+    Convert its endpoint back to London before calculating a form duration;
+    elapsed hours and clock hours differ across DST. Both endpoints must be
+    unique, including with the Windows timezone fallback.
+    """
+    window = _free_horizon_window(day, start_hour, now, horizon_minutes)
+    if window is None:
+        return 0.0
+    start, _, cutoff = window
+    last_wall = cutoff.astimezone(SITE_TIMEZONE).replace(tzinfo=None)
+    quarters = max(0, int((last_wall - start).total_seconds() // 900))
+    while quarters:
+        end = _unique_utc(start + timedelta(minutes=quarters * 15))
+        if end is not None and end <= cutoff:
+            return quarters / 4
+        quarters -= 1
+    return 0.0
 
 
 def in_free_horizon(day, start, end, *, now, horizon_minutes=300):
-    return end > start and end - start <= free_horizon_hours(
-        day, start, now=now, horizon_minutes=horizon_minutes) + 1e-9
+    if end <= start:
+        return False
+    window = _free_horizon_window(day, start, now, horizon_minutes)
+    if window is None:
+        return False
+    start_wall, utc_start, cutoff = window
+    end_wall = start_wall + timedelta(minutes=round(end * 60) - round(start * 60))
+    utc_end = _unique_utc(end_wall)
+    return utc_end is not None and utc_start < utc_end <= cutoff
 
 
 def peak_quota_exempt(day, start, end, *, now, free_horizon_overrides_peak=False,

@@ -1,3 +1,20 @@
+## 2026-10-15 free-window endpoint checks across clock changes
+
+- Free-horizon capacity returns the clock-time span used by local booking forms,
+  derived from a cutoff five elapsed hours away. Comparing elapsed capacity to
+  a wall-time duration previously allowed an overlong autumn prefix and denied
+  valid spring time. `in_free_horizon` now checks both actual endpoint instants.
+- Repeated/nonexistent start and end times fail closed, including on Windows
+  without tzdata. A cutoff within the repeated hour retains only the last
+  unambiguous quarter-hour endpoint. Multi-day room horizons remain calendar
+  policy; this repair changes only the bounded free-quota window.
+- Four new regressions failed on the previous source; six new checks cover
+  both changes, both folds of the current clock, timezone fallback and the
+  actual create-form cap. All 189 focused quota, extension, fill, time-edit,
+  upgrade and catalog checks pass. Fresh workers load the source; no live
+  booking, setting, task or service was changed for verification. This edge
+  case is not evidence of the cause of the 14 October booking delay.
+
 ## 2026-10-15 cooperative Stop across startup and ownership waits
 
 - The shared phone/desktop/Tempo operation worker settles an explicit
