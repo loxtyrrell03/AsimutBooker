@@ -2883,22 +2883,13 @@ class AsimutBookerGUI(QuietFocusGUI):
 
             self.running_process.wait()
             exit_code = self.running_process.returncode
+            from desktop_operation_worker import read_result
+            outcome = read_result(self._desktop_run_id, exit_code, root=APP_DIR)
             if operation_name == 'Plan refresh':
-                post(lambda code=exit_code:self._quiet_plan_refresh_finished(code))
-
-            if self._desktop_stop_path and self._desktop_stop_path.exists():
-                post(lambda: self.log('Stopped. Any bookings already verified remain in the agenda.', 'info'))
-            elif exit_code == 0:
-                post(
-                    lambda: self.log(f"{operation_name} finished successfully.", "success"),
-                )
-            else:
-                post(
-                    lambda: self.log(
-                        f"{operation_name} finished with exit code {exit_code}",
-                        "warning",
-                    ),
-                )
+                refresh_code = exit_code if outcome['state'] == 'completed' else exit_code or 1
+                post(lambda code=refresh_code:self._quiet_plan_refresh_finished(code))
+            tag = {'completed': 'success', 'stopped': 'info'}.get(outcome['state'], 'warning')
+            post(lambda text=outcome['message'], level=tag: self.log(text, level))
 
         except Exception as e:
             if operation_name == 'Plan refresh':

@@ -139,7 +139,7 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                     return result
                 if code == 6:
                     return {'state': 'rejected', 'message': 'Another Booker process is running. No second run was started.'}
-                if stop.exists():
+                if code == 3 and outcome.get('stop_reason') == 'operation_stop':
                     return {'state': 'stopped', 'message': 'Stopped. Any bookings already verified remain in the agenda.'}
                 return {'state': 'failed', 'message': 'The PC operation did not complete. Check System health and the latest agenda before starting another run.'}
             result = run_local_action(action, args, root)

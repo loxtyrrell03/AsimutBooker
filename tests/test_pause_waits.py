@@ -229,6 +229,32 @@ class PauseWaitTests(unittest.TestCase):
         self.assertEqual(result['state'], 'failed')
         self.assertNotIn('reason', result)
 
+    def test_desktop_real_entry_point_retains_pause_and_stop_reasons(self):
+        from desktop_operation_worker import execute as desktop_execute, read_result
+        from operation_control import check_operation_stop
+        for reason in ('pause_before', 'pause_during', 'pause_pulse', 'stop'):
+            with self.subTest(reason=reason):
+                self.pause(False)
+                key = str(uuid4())
+                stop = self.root / 'data/desktop_operations' / key / 'stop'
+                if reason == 'pause_before':
+                    self.pause()
+                def worker(*args):
+                    if reason == 'stop':
+                        stop.touch()
+                        check_operation_stop()
+                    else:
+                        self.pause()
+                        if reason == 'pause_pulse':
+                            self.pause(False)
+                        with b.booking_save_boundary():
+                            self.fail('Pause must prevent the Save')
+                with patch.object(b, 'run_booking', side_effect=worker):
+                    code = desktop_execute(key, ['--headless'], root=self.root, booker_main=b.main)
+                result = read_result(key, code, root=self.root)
+                self.assertEqual(result['state'], 'stopped')
+                self.assertEqual(result['reason'], 'operation_stop' if reason == 'stop' else 'booking_pause')
+
 
 if __name__ == '__main__':
     unittest.main()

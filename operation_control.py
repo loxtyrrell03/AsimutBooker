@@ -47,6 +47,7 @@ def report_pause_stop():
 def check_operation_stop():
     control = _CONTROL.get()
     if control is not None and control[0] is not None and control[0].exists():
+        control[3]['stop_reason'] = 'operation_stop'
         raise OperationStopped('Stop requested; no further booking action will start')
 
 

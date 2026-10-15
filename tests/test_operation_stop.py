@@ -63,6 +63,27 @@ class OperationStopTests(unittest.TestCase):
         self.assertEqual(execute('run', {}, self.directory, root=self.root,
                                  booker_main=booker)['state'], 'uncertain')
 
+    def test_stop_marker_does_not_reclassify_an_unrelated_returned_failure(self):
+        for code in (1, 3):
+            with self.subTest(code=code):
+                self.stop.unlink(missing_ok=True)
+                def booker(flags):
+                    self.stop.touch()
+                    return code
+                result = execute('run', {}, self.directory, root=self.root, booker_main=booker)
+                self.assertEqual(result['state'], 'failed')
+
+    def test_caught_stop_keeps_its_proven_reason_after_marker_is_gone(self):
+        def booker(flags):
+            self.stop.touch()
+            try:
+                check_operation_stop()
+            except OperationStopped:
+                self.stop.unlink()
+                return 3
+        result = execute('run', {}, self.directory, root=self.root, booker_main=booker)
+        self.assertEqual(result['state'], 'stopped')
+
     def test_stop_during_tempo_lock_wait_prevents_receipt_and_save(self):
         @contextmanager
         def tempo_boundary(**interval):

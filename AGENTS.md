@@ -1,3 +1,26 @@
+## 2026-10-15 Stop messages require a checked worker outcome
+
+- Desktop workers persist a terminal result bound to their exact request UUID
+  and process exit code. After process exit the GUI validates that result and
+  rereads the strict pending journal before reporting completion. Missing,
+  malformed, mismatched or unreadable evidence remains uncertain; a Stop marker
+  alone cannot hide a failed or unverified Save. Publication failure is not
+  retried. Existing CLI exit codes and booking/ownership rules are unchanged.
+- The cooperative Stop boundary carries its observed reason through caught
+  exceptions. Phone/Tempo and desktop results distinguish this from an
+  unrelated failure followed by a late Stop marker. Desktop also preserves the
+  proven Pause explanation, including Pause-to-Unpause, as a normal stopped
+  check. An exit-zero check still does not claim a new reservation.
+- Five desktop cases and three phone Stop cases fail against the prior source;
+  all 166 focused desktop/worker/Pause/receipt/booking checks and 48 Tempo bridge
+  checks pass. Tests use temporary results/journals and simulated subprocesses;
+  the real entry point is covered without a site Save. Broader desktop UI checks
+  retain a pre-existing 1040x740 settings overflow, reproduced on the prior GUI.
+- Fresh owned subprocesses import the fix; desktop GUI code loads when opened.
+  No existing desktop instance was observed, and no app, task or live hold was
+  restarted or changed. Private comparison evidence is under ignored
+  `artifacts/free-horizon-monitor`; live horizon-edge proof remains outstanding.
+
 ## 2026-10-15 Stop interrupts agenda reads but preserves submitted-action proof
 
 - Progressive transfers also finish read-only agenda/persisted-page proof of
