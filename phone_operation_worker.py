@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from app_settings import atomic_write_json, SettingsError
-from operation_control import owned_operation, check_operation_stop, observe_room_grid
+from operation_control import OperationStopped, owned_operation, check_operation_stop, observe_room_grid
 from phone_system import ROOT, RUN_ACTIONS, SystemConflict, run_local_action, timestamp, validate_action
 from runtime_guard import SingleInstanceAlreadyRunning
 
@@ -141,6 +141,17 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                 return {'state': 'failed', 'message': 'The PC operation did not complete. Check System health and the latest agenda before starting another run.'}
             result = run_local_action(action, args, root)
             return {'state': 'completed', **result}
+    except OperationStopped:
+        # A cooperative boundary proves no next action started. Earlier writes
+        # still need their journal checked; an unknown journal is not empty.
+        from mutation_receipts import list_pending
+        try:
+            pending = list_pending(root / 'data/mutation_receipts.json')
+        except Exception:
+            pending = True
+        if pending:
+            return {'state': 'uncertain', 'message': 'Stop requested. A booking outcome still needs checking before another run.'}
+        return {'state': 'stopped', 'message': 'Stopped. Any bookings already verified remain in the agenda.'}
     except SingleInstanceAlreadyRunning:
         return {'state': 'rejected', 'message': 'Another Booker process is running. Wait for it to finish.'}
     except SystemConflict as exc:

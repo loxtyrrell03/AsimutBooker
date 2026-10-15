@@ -159,11 +159,21 @@ class PhoneOperations:
     def _run(self, request_id, action, args):
         acquired = False
         try:
-            acquired = self.service._live_refresh_lock.acquire(timeout=16 * 60)
+            directory = self.directory / request_id
+            stoppable = action not in {'room_now_review', 'fill_range_review'}
+            deadline = time.monotonic() + 16 * 60
+            while time.monotonic() < deadline:
+                if stoppable and (directory / 'stop').exists():
+                    break
+                acquired = self.service._live_refresh_lock.acquire(timeout=.25)
+                if acquired:
+                    break
             if not acquired:
-                result = {'state': 'rejected', 'message': 'The previous check did not finish. This operation was not started.'}
+                if stoppable and (directory / 'stop').exists():
+                    result = {'state': 'stopped', 'message': 'Stopped before starting.'}
+                else:
+                    result = {'state': 'rejected', 'message': 'The previous check did not finish. This operation was not started.'}
             else:
-                directory = self.directory / request_id
                 directory.mkdir(parents=True, exist_ok=True)
                 if action in {'room_now', 'fill_range'}:
                     atomic_write_json(directory / 'submitted.json', {'requested_at': self.job['started_at']})

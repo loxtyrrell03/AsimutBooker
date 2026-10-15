@@ -87,6 +87,7 @@ def booking_save_boundary(**interval):
     """Serialize settings and Tempo's accepted plan with the exact Save intent."""
     try:
         with _settings_save_boundary(), tempo_save_boundary(**interval):
+            check_operation_stop()
             yield
     except CoordinationError as exc:
         raise BookingPreferencesChanged(str(exc)) from exc

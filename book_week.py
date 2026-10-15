@@ -16,7 +16,7 @@ from date_time_preferences import with_date_overrides, resolve_time_preferences
 from preferred_time_bounds import boundary_fields, custom_bounds, runtime_window_label
 from booking_rules import load_booking_rules
 from session_preferences import tracker_sessions
-from operation_control import OperationStopped, operation_stage, report_available_gaps
+from operation_control import OperationStopped, check_operation_stop, operation_stage, report_available_gaps
 
 import booking_run_report as run_report
 
@@ -13063,7 +13063,9 @@ def main(argv=None):
             )
             deadline = time.monotonic() + wait_seconds
             while not acquired and time.monotonic() < deadline:
+                check_operation_stop()
                 time.sleep(0.25)
+                check_operation_stop()
                 acquired = runtime_lock.acquire()
             if acquired:
                 # Preferences may have changed while another operation owned
@@ -13072,6 +13074,7 @@ def main(argv=None):
         if not acquired:
             print("Another AsimutBooker run is already active; this run did not refresh data.")
             return 6
+        check_operation_stop()
         run_report.preferences(settings, practice_plan)
         for preparation_pass in range(2):
             try:

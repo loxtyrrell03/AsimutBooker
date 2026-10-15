@@ -1,3 +1,21 @@
+## 2026-10-15 cooperative Stop across startup and ownership waits
+
+- The shared phone/desktop/Tempo operation worker settles an explicit
+  `OperationStopped` as stopped only after a readable journal proves no pending
+  mutation. Pending/corrupt receipt evidence and unrelated exceptions remain
+  uncertain; Stop never replays or discards a write.
+- Queued phone/desktop operations check Stop during the existing ownership wait
+  and settle without waiting for or releasing the unrelated owner's lock.
+  Runtime waits also check before acquiring ownership and starting the browser.
+- The final Save boundary rechecks Stop after acquiring Tempo authority. A Save
+  already entered still finishes its read-only verification before the next
+  action stops; shared Pause and Automatic are unchanged.
+- Five regressions failed against the prior source. All 110 focused operation,
+  queue, Pause, guard, preparation and runtime checks pass with temporary data.
+  Fresh workers import the fix. Long-lived phone/desktop owners need their
+  normal controlled reload before the shorter queue wait is active; no live
+  booking, Stop/Pause toggle, service or scheduled task was changed for tests.
+
 ## 2026-10-15 recurring checks cover early horizon openings
 
 - The 07:12-22:57 daily trigger missed valid morning openings. The canonical

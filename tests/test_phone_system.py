@@ -170,8 +170,13 @@ class OwnedJobTests(unittest.TestCase):
         self.service._live_refresh_lock.acquire()
         payload = self.submit()
         self.service.operations.stop({'request_id': payload['request_id']})
-        self.service._live_refresh_lock.release()
-        self.service.operations.thread.join(2)
+        try:
+            self.service.operations.thread.join(2)
+            self.assertFalse(self.service.operations.thread.is_alive(), 'Stop must settle while the unrelated owner retains its lock')
+            self.assertTrue(self.service._live_refresh_lock.locked())
+        finally:
+            self.service._live_refresh_lock.release()
+            self.service.operations.thread.join(2)
         self.assertEqual(self.calls, [])
         self.assertEqual(self.service.operations.snapshot()['state'], 'stopped')
 
