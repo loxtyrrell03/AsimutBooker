@@ -28,11 +28,16 @@ if (
     $Config.host -cne "127.0.0.1" -or
     $Config.port -ne $BackendPort -or
     [string]::IsNullOrWhiteSpace([string]$Config.allowed_login) -or
-    [string]::IsNullOrWhiteSpace([string]$Config.codex_executable) -or
-    -not (Test-Path -LiteralPath ([string]$Config.codex_executable) -PathType Leaf) -or
-    [IO.Path]::GetFileName([string]$Config.codex_executable) -ine "codex.exe"
+    [string]::IsNullOrWhiteSpace([string]$Config.codex_executable)
 ) {
     throw "The phone server configuration is not the exact private contract."
+}
+# Use the server's exact validation and narrow desktop-update recovery. The
+# saved release hash can disappear after an update; custom paths stay strict.
+$ConfigCheck = 'import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from phone_server import load_phone_server_config; print(load_phone_server_config(Path(sys.argv[2])).codex_executable)'
+$ResolvedCodexPath = & $PythonPath -c $ConfigCheck $WorkingDir $ConfigPath
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath ([string]$ResolvedCodexPath) -PathType Leaf)) {
+    throw "The phone server Codex executable could not be resolved."
 }
 $Origin = [Uri][string]$Config.public_origin
 if ($Origin.Scheme -cne "https" -or $Origin.Port -ne $HttpsPort -or -not $Origin.Host.EndsWith(".ts.net")) {

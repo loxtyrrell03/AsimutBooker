@@ -40,7 +40,7 @@ from uuid import UUID
 
 from app_settings import InterProcessFileLock, SettingsError, atomic_write_json
 from assistant_runtime import AssistantRuntime, AssistantRuntimeError, load_assistant_state
-from codex_chat import configured_model_label
+from codex_chat import configured_model_label, refresh_desktop_codex_executable
 from phone_api import build_phone_snapshot
 from phone_cancellation import CancellationNotStarted, cancel_phone_reservation, validate_target
 from phone_preferences import (
@@ -156,8 +156,10 @@ def load_phone_server_config(path: Path = CONFIG_FILE) -> PhoneServerConfig:
     if (
         not codex_path.is_absolute()
         or codex_path.name.casefold() != "codex.exe"
-        or not codex_path.is_file()
     ):
+        raise PhoneServerError("Phone server Codex executable is unavailable")
+    codex_path = Path(refresh_desktop_codex_executable(codex_path))
+    if not codex_path.is_file():
         raise PhoneServerError("Phone server Codex executable is unavailable")
     return PhoneServerConfig(
         allowed_login=login.strip().casefold(),

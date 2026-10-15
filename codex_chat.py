@@ -117,24 +117,59 @@ class ToolDispatcher(Protocol):
 EventHandler = Callable[[dict[str, Any]], Any]
 
 
-def resolve_codex_executable() -> str:
-    """Find Codex even when Explorer did not inherit the desktop app's PATH."""
-    executable = shutil.which("codex")
-    if executable:
-        return executable
+def _desktop_codex_root() -> Path | None:
     if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        # Desktop releases use hash directories, not sortable version numbers.
-        # Resolve on each controller creation instead of pinning an update hash.
         root = Path(os.environ["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin"
-        candidates = []
+        if root.is_absolute():
+            return root
+    return None
+
+
+def _newest_desktop_codex(root: Path) -> str | None:
+    # Desktop releases use hash directories, not sortable version numbers.
+    candidates = []
+    try:
         for candidate in root.glob("*/codex.exe"):
             try:
                 if candidate.is_file():
                     candidates.append((candidate.stat().st_mtime_ns, str(candidate)))
             except OSError:
                 continue  # An update may remove an old release during discovery.
-        if candidates:
-            return max(candidates)[1]
+    except OSError:
+        return None
+    return max(candidates)[1] if candidates else None
+
+
+def refresh_desktop_codex_executable(executable: str | os.PathLike[str]) -> str:
+    """Replace only a missing release pin from the installed desktop package.
+
+    Valid pins, custom locations and explicit process commands retain their
+    identity. This is discovery before launch, never a failed-request replay.
+    """
+    original = str(executable)
+    root = _desktop_codex_root()
+    if root is None:
+        return original
+    path = Path(executable)
+    try:
+        if (not path.is_absolute() or path.name.casefold() != "codex.exe"
+                or path.exists() or path.parent.parent.resolve() != root.resolve()):
+            return original
+        return _newest_desktop_codex(root) or original
+    except OSError:
+        return original
+
+
+def resolve_codex_executable() -> str:
+    """Find Codex even when Explorer did not inherit the desktop app's PATH."""
+    executable = shutil.which("codex")
+    if executable:
+        return executable
+    root = _desktop_codex_root()
+    if root is not None:
+        executable = _newest_desktop_codex(root)
+        if executable:
+            return executable
     raise CodexConfigurationError(
         "Codex CLI was not found on PATH or in the Codex desktop installation. "
         "Install Codex or add its executable folder to PATH, then reopen Asimut Booker."
@@ -212,6 +247,7 @@ class CodexChatController:
             developer_instructions
         )
         self._process_command = command
+        self._custom_process_command = process_command is not None
         self._process_environment = dict(process_environment or {})
         self._request_timeout = float(request_timeout)
         self._startup_timeout = float(startup_timeout)
@@ -277,8 +313,11 @@ class CodexChatController:
             environment.update(self._process_environment)
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             try:
+                command = self._process_command
+                if not self._custom_process_command:
+                    command = (refresh_desktop_codex_executable(command[0]), *command[1:])
                 self._process = await asyncio.create_subprocess_exec(
-                    *self._process_command,
+                    *command,
                     cwd=str(self._cwd),
                     env=environment,
                     stdin=asyncio.subprocess.PIPE,

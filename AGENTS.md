@@ -4456,3 +4456,17 @@ When modifying this codebase:
 - All 809 offline tests passed. A bounded extension-only recovery reached the
   existing two-hour target and verified the persisted event before removing its
   completed extension intent. No new reservation was created by that recovery.
+## 2026-10-15 recover expired desktop helper paths
+
+- Phone configuration and each new assistant process launch recover a missing
+  `LOCALAPPDATA/OpenAI/Codex/bin/<release>/codex.exe` from the newest installed
+  sibling release. Existing executable pins, custom locations and explicit
+  process commands are preserved; missing custom paths still fail validation.
+  Discovery never uses PATH to replace an explicit pin, writes configuration,
+  retries a failed process launch or replays an assistant/booking request.
+- The deployment verifier uses the same configuration resolver. Two regressions
+  reproduced startup failure after an app update, including removal between
+  controller creation and launch. All 61 discovery, protocol and phone-server
+  checks pass with isolated fixtures. Current helper version/config validation
+  passes without changing the live config. Controlled phone activation and
+  connected verification are recorded separately; no Tempo restart is needed.
