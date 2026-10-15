@@ -1717,6 +1717,7 @@ def wait_until_target_time(target_time_str, page=None):
     Keeps browser session alive with periodic small interactions.
     """
     check_operation_stop()
+    check_prepared_booking()
     target_hour, target_minute = map(int, target_time_str.split(':'))
     now = datetime.now()
     target = local_boundary(now.date(), target_hour, target_minute, now=now)
@@ -1739,6 +1740,7 @@ def wait_until_target_time(target_time_str, page=None):
     # Wait with periodic status updates and session keepalive
     while True:
         check_operation_stop()
+        check_prepared_booking()
         remaining = seconds_between(target, datetime.now())
         if remaining <= 0:
             break
@@ -1839,6 +1841,7 @@ def wait_for_horizon_discovery_window(target_boundary, page=None):
     """
 
     check_operation_stop()
+    check_prepared_booking()
     discovery_at = shift_clock(target_boundary, seconds=-EXTENSION_PREP_WINDOW_SECONDS)
     now = datetime.now()
     if as_utc(now) >= as_utc(discovery_at):
@@ -1851,6 +1854,7 @@ def wait_for_horizon_discovery_window(target_boundary, page=None):
     last_keepalive = None
     while True:
         check_operation_stop()
+        check_prepared_booking()
         remaining = seconds_between(discovery_at, datetime.now())
         if remaining <= 0:
             break
@@ -6707,10 +6711,12 @@ def target_boundary_datetime(target_time, *, base_date=None):
     return local_boundary(boundary_date, parsed.hour, parsed.minute, now=now)
 
 
-def wait_before_runtime_target_window(target_time):
+def wait_before_runtime_target_window(target_time, *, pause_check=None):
     """Wait outside the runtime lock before collecting live edge evidence."""
 
     check_operation_stop()
+    if pause_check is not None:
+        pause_check()
     target_boundary = target_boundary_datetime(target_time)
     ready_at = shift_clock(target_boundary, seconds=-EXTENSION_PREP_WINDOW_SECONDS)
     now = datetime.now()
@@ -6723,6 +6729,8 @@ def wait_before_runtime_target_window(target_time):
     )
     while True:
         check_operation_stop()
+        if pause_check is not None:
+            pause_check()
         remaining = seconds_between(ready_at, datetime.now())
         if remaining <= 0:
             break
@@ -10681,12 +10689,16 @@ def generate_read_only_booking_plan(
     return snapshot
 
 
+def _booking_pause_applies(args):
+    return not any(getattr(args, key, None) for key in (
+        'check_only', 'plan_only', 'agenda_only', 'fill_review_output',
+        'upgrade_dry_run', 'cancel_event_id'))
+
+
 def run_booking(args, settings, practice_plan, room_preferences=None):
     """Run one authenticated booking pass with already-validated inputs."""
     from booking_pause import assert_booking_unpaused
-    if not (getattr(args, 'check_only', False) or getattr(args, 'plan_only', False)
-            or getattr(args, 'agenda_only', False) or getattr(args, 'fill_review_output', None)
-            or getattr(args, 'upgrade_dry_run', False) or getattr(args, 'cancel_event_id', None)):
+    if _booking_pause_applies(args):
         assert_booking_unpaused(settings)
     today = datetime.now().date()
     room_preferences = room_preferences or load_room_preferences(settings)
@@ -13039,18 +13051,29 @@ def main(argv=None):
             "exiting without ordinary booking."
         )
         return 0
-    if args.target_time:
-        wait_before_runtime_target_window(args.target_time)
-
-    from booking_pause import assert_booking_unpaused, BookingPaused
+    from booking_pause import (
+        assert_booking_unpaused, assert_pause_unchanged, pause_document, BookingPaused,
+    )
+    pause_check = None
     try:
         settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
-        if not (args.check_only or args.plan_only or args.agenda_only or getattr(args, 'fill_review_output', None)
-                or args.upgrade_dry_run or args.cancel_event_id):
+        if _booking_pause_applies(args):
             assert_booking_unpaused(settings)
-    except BookingPaused:
-        print('Bookings are paused. Existing reservations and settings are kept.')
+            expected_pause = pause_document(settings)['revision']
+            pause_check = lambda: assert_pause_unchanged(expected_pause, settings_file)
+        if args.target_time:
+            wait_before_runtime_target_window(args.target_time, pause_check=pause_check)
+            # Planning has not started. Reload preferences after the wait, while
+            # the separate pause generation prevents reviving an interrupted run.
+            settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
+            if pause_check is not None:
+                pause_check()
+    except BookingPaused as exc:
+        print(str(exc))
         return 0 if args.scheduled else 3
+    except OperationStopped as exc:
+        print(f"Booking stopped: {exc}")
+        return 3
     except SettingsError as exc:
         print(f"ERROR: {exc}")
         print("Autonomous booking stopped because the saved settings cannot be trusted.")
@@ -13065,6 +13088,8 @@ def main(argv=None):
     report_token = run_report.start(sys.modules[__name__], settings, practice_plan)
     assistant_lock = None
     try:
+        if pause_check is not None:
+            pause_check()
         if getattr(args, 'room_now_mode', None) or getattr(args, 'fill_date', None) or getattr(args, 'fill_review_output', None):
             from app_settings import InterProcessFileLock
             assistant_lock = InterProcessFileLock(APP_DIR / 'data/assistant-mutation.lock', timeout=0)
@@ -13082,8 +13107,12 @@ def main(argv=None):
             deadline = time.monotonic() + wait_seconds
             while not acquired and time.monotonic() < deadline:
                 check_operation_stop()
+                if pause_check is not None:
+                    pause_check()
                 time.sleep(0.25)
                 check_operation_stop()
+                if pause_check is not None:
+                    pause_check()
                 acquired = runtime_lock.acquire()
             if acquired:
                 # Preferences may have changed while another operation owned
@@ -13096,6 +13125,8 @@ def main(argv=None):
         run_report.preferences(settings, practice_plan)
         for preparation_pass in range(2):
             try:
+                if pause_check is not None:
+                    pause_check()
                 with booking_preference_run(settings_file, settings):
                     install_booking_rules(settings)
                     result = run_booking(args, settings, practice_plan, room_preferences) or 0
@@ -13144,6 +13175,9 @@ def main(argv=None):
         save_history(len(completed_details), 0,
                      [f'Booking paused: {exc}', *completed_details], outcome='failed')
         return 4
+    except BookingPaused as exc:
+        print(str(exc))
+        return 0 if args.scheduled else 3
     except SettingsError as exc:
         print(f"Booking stopped: {exc}")
         # A deliberate Stop is settled by its owning operation, which checks

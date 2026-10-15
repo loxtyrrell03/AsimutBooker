@@ -40,6 +40,15 @@ def read_pause(path=SETTINGS_FILE):
     return pause_document(load_settings(path, missing_ok=False))
 
 
+def assert_pause_unchanged(expected_revision, path=SETTINGS_FILE):
+    """Retire waiting mutation work after Pause, even if already unpaused."""
+    current = read_pause(path)
+    if current['paused']:
+        raise BookingPaused('Bookings are paused. Existing reservations and settings are kept.')
+    if current['revision'] != expected_revision:
+        raise BookingPaused('Booking Pause changed while waiting; this run is stopped. A new run will use the current choice.')
+
+
 def validate_pause(args):
     if (not isinstance(args, dict) or set(args) != {'revision', 'paused', 'request_id'}
             or type(args['paused']) is not bool or not isinstance(args['revision'], str)

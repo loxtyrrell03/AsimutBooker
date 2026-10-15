@@ -1,3 +1,21 @@
+## 2026-10-15 Pause retires timed and queued booking work
+
+- Mutation runs retain their initial Pause revision through pre-authentication
+  waits, runtime ownership waits and the one allowed Tempo replan. A Pause or
+  Pause-to-Unpause cycle stops that run at the next poll; it cannot acquire fresh
+  permission simply by reloading settings. Other preferences are still loaded
+  fresh before planning. Read-only checks and explicit cancellation remain
+  available while paused, including read-only ownership waits.
+- Target and discovery countdowns also check their pinned preferences and full
+  Tempo authority before proceeding. Final Save and pending-receipt recovery
+  stay strict. Expected Pause and early Stop do not become false settings-failure
+  notifications; a scheduled held run is not proof of a booking.
+- Eleven new tests cover these waits, Pause-to-Unpause, fresh replanning and
+  read-only behavior. All 194 focused Pause, Stop, preference, quota, preparation,
+  horizon and launcher checks pass. The quota-report fixture now isolates its
+  settings and report/dispatcher side effects. Fresh workers import the source;
+  no live hold, booking, service or task was changed to test it.
+
 ## 2026-10-15 Stop interrupts target and discovery waits
 
 - The pre-authentication target wait, horizon-discovery wait and normal target

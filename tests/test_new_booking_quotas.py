@@ -2,6 +2,8 @@ import contextlib
 import io
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch, Mock
 
 import book_week as b
@@ -184,6 +186,13 @@ class QuotaStopReportingTests(unittest.TestCase):
         for pending, expected_status, expected_code in (([], 'completed', 0),
                 ([{'kind': 'transfer'}], 'reconciliation_required', 5)):
             with self.subTest(pending=bool(pending)), contextlib.ExitStack() as stack:
+                folder = Path(stack.enter_context(TemporaryDirectory()))
+                settings_path = folder / 'settings.json'
+                settings_path.write_text('{}', encoding='utf-8')
+                stack.enter_context(patch.object(b, 'settings_file', settings_path))
+                stack.enter_context(patch.object(b, 'run_report'))
+                stack.enter_context(patch.object(b, 'install_booking_rules'))
+                stack.enter_context(patch('preference_runs.kick'))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 stack.enter_context(patch.object(b, '_load_and_validate_runtime_settings',
                                                 return_value=({}, None, None)))
