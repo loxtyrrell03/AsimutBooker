@@ -8,6 +8,13 @@
   completes after the repair. All 132 focused phone, assistant-runtime, system,
   preference, Pause and fallback tests pass with synthetic runtime callbacks.
   No assistant prompt or site Save is used by the regression.
+- Activated `465e090` in the existing phone task after the scheduled worker
+  released ownership. The stuck host had no reserved request, active operation,
+  child worker or pending mutation. Reload preserved current owner settings,
+  receipts, chat/request state, task XML and all Serve routes. Private HTTPS
+  bootstrap/preferences, first runtime refresh, connected Chromium at 390px and
+  `verify_phone_deployment.ps1` pass. Existing failed operations remain terminal.
+  This is PC-browser evidence; physical phone use is not claimed.
 
 ## 2026-10-15 upright pianos as the last fallback
 
@@ -30,6 +37,12 @@
 - Verified with 293 isolated synthetic planner, room eligibility, fill, room-now,
   upgrade, preference, quota, horizon and guard tests. Live preference and booking
   evidence is separate under ignored `artifacts/upright-fallback-20261015`.
+- The owner preference is enabled in canonical settings with all seven proven
+  uprights available behind the 17 primary rooms. Unrelated controls and
+  unverified exclusions were preserved. An authorized bounded fill exercised
+  grand-first selection and then B-room fallback; every new event has a verified
+  receipt and newer complete agenda proof, with no pending mutation. Exact
+  personal booking details remain only in the private receipt folder.
 
 ## 2026-10-15 desktop Pause survives closing its window
 
