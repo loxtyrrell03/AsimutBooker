@@ -137,6 +137,12 @@
   disabled synthetic Tempo authority instead of reading the owner's sidecar.
   Fresh workers/read-only plans load the source; a cached plan needs its normal
   refresh. No reservation, preference, task or service change is required.
+- The first normal scheduled worker after `50b14c5` completed and published a
+  fresh full-window agenda and forecast. It selected no ready interval and made
+  no booking; this verifies normal execution, not live edge timing. The dated
+  acceptance checkpoint is under `artifacts/free-horizon-monitor`. The existing
+  observer now uses the newest checkpoint and current reservation state while
+  retaining its cadence and conversation; it remains read-only.
 
 ## 2026-10-14 scoped fill rooms and free-horizon evidence
 
