@@ -25,6 +25,7 @@ from progressive_transactions import (TransferEdit, record, reservation, transac
 from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation, local_instant,
                           time_text, clock_minutes, room_horizon_opening)
 from upgrade_validation import RoomPermissionRefusal
+from operation_control import operation_verification
 
 
 def allowed_scope(args):
@@ -244,7 +245,10 @@ def recover_transfer(ctx, receipt):
     retained = {r['event_id']: reservation(r) for r in t['remaining']}
     prefix = reservation(t['replacement'])
     seed_before = reservation(t['seed_before']) if t['seed_before'] else None
-    actual = ctx.scan(prefix.day)
+    # An already submitted transaction still needs its read-only outcome proof.
+    # Stop remains active for every possible restoration or later transfer step.
+    with operation_verification():
+        actual = ctx.scan(prefix.day)
     if any(r.get('parent_id') == receipt['id'] for r in e.list_pending_mutation_receipts() if r != receipt):
         raise e.BookingVerificationError('Transfer child remains uncertain; no restoration or repeat Save is allowed')
     seed = actual.get(seed_before.event_id) if seed_before else _created_record(e, receipt, 'seed', actual)
@@ -262,8 +266,9 @@ def recover_transfer(ctx, receipt):
     if secured:
         if any(actual.get(r.event_id) != retained.get(r.event_id) for r in old):
             raise e.BookingVerificationError('Secured prefix has an unexpected fallback state; retaining transaction')
-        for r in (*retained.values(), seed):
-            ctx.prove(r)
+        with operation_verification():
+            for r in (*retained.values(), seed):
+                ctx.prove(r)
         def completed(data):
             data['plans'] = [p for p in data['plans'] if p['id'] != t['plan_id']]
             if retained:

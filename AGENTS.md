@@ -1,5 +1,13 @@
 ## 2026-10-15 Stop interrupts agenda reads but preserves submitted-action proof
 
+- Progressive transfers also finish read-only agenda/persisted-page proof of
+  an already secured prefix after Stop, then finalize its exact parent receipt
+  and continuation. Restoration writes remain outside the shield and retain
+  their Stop/Save guards. A pending child still prevents finalization even when
+  a matching reservation is visible. Two old-source failures and three new
+  transaction regressions cover this boundary; all 180 focused transfer,
+  consolidation, receipt, agenda, Pause and Stop checks pass. Tests use isolated
+  durable journals and simulated writes, never live rooms.
 - Owned agenda reads check Stop between scroll/capture steps and before
   publishing observation history. Their browser delays pump events in at most
   250 ms steps; the visible browser's final idle delay is interruptible too.

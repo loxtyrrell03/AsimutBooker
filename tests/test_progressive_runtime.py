@@ -27,6 +27,7 @@ from progressive_transactions import record, transaction_payload, TransferEdit, 
 from room_upgrades import Reservation
 from runtime_guard import parse_confirmed_event_id
 from upgrade_validation import RoomPermissionRefusal
+from operation_control import OperationStopped, check_operation_stop, owned_operation
 
 
 NOW = datetime(2030, 1, 1, 12, 30, tzinfo=timezone.utc)
@@ -79,6 +80,7 @@ class SimContext:
         self.scan(DAY)
 
     def scan(self, day, **_kwargs):
+        check_operation_stop()
         self.day = day
         self.tracker = SimpleNamespace(agenda_active_event_ids=list(self.actual),
             agenda_events=[{**r.as_booking(), 'isReservation': True} for r in self.actual.values()])
@@ -92,6 +94,7 @@ class SimContext:
         return {'seed': seed, 'events': self.tracker.agenda_events}
 
     def write_edit(self, receipt, old, new, *, restoring=False):
+        check_operation_stop()
         self.prove(old)
         self.edits.append((old, new, restoring))
         if self.fail_edit == old.event_id:
@@ -109,6 +112,7 @@ class SimContext:
         return True
 
     def write_cancel(self, receipt, r):
+        check_operation_stop()
         self.prove(r)
         self.cancels.append(r)
         journal.mark_transfer_step(receipt, f'source:{r.event_id}')
@@ -119,6 +123,7 @@ class SimContext:
         return PreparedSeed(page, desired)
 
     def create(self, engine, prepared, parent, *, role='seed'):
+        check_operation_stop()
         mode = self.seed_mode if role == 'seed' else self.restore_mode
         desired = prepared.desired
         self.creates.append((desired, role))
@@ -240,6 +245,50 @@ class ProgressiveRuntimeTests(unittest.TestCase):
         data = state.load_state()
         self.assertFalse(data['plans'])
         self.assertEqual(datetime.fromisoformat(data['denials'][state.denial_key('Best', DAY)]), NOW+timedelta(minutes=30))
+
+    def stop_after_seed(self):
+        stop = Path(self.tmp) / 'stop'
+        create = self.ctx.create
+        def submitted(*args, **kwargs):
+            try:
+                return create(*args, **kwargs)
+            finally:
+                stop.touch()
+        self.stack.enter_context(mock.patch.object(self.ctx, 'create', side_effect=submitted))
+        return stop
+
+    def test_stop_after_secured_seed_finishes_proof_without_more_mutations(self):
+        stop = self.stop_after_seed()
+        with owned_operation(stop, mock.Mock(), mock.Mock()):
+            self.assertTrue(self.execute())
+            with self.assertRaises(OperationStopped):
+                check_operation_stop()
+        self.assertFalse(journal.list_pending())
+        self.assertEqual(len(self.ctx.creates), 1)
+        self.assertEqual(len(self.ctx.edits), 1)
+        self.assertEqual(self.total(), 120)
+
+    def test_stop_cannot_authorize_fallback_restoration_after_denied_seed(self):
+        self.ctx.seed_mode = 'denied'
+        stop = self.stop_after_seed()
+        with owned_operation(stop, mock.Mock(), mock.Mock()), self.assertRaises(OperationStopped):
+            self.execute()
+        self.assertEqual(len(self.ctx.edits), 1)
+        self.assertEqual(self.ctx.actual, {42: self.remaining})
+        self.assertEqual(len(journal.list_pending()), 1)
+
+    def test_stop_does_not_resolve_an_uncertain_seed_from_its_visible_tuple(self):
+        self.ctx.seed_mode = 'lost'
+        stop = self.stop_after_seed()
+        with owned_operation(stop, mock.Mock(), mock.Mock()):
+            with self.assertRaisesRegex(VerificationError, 'Lost create response'):
+                self.execute()
+            before = copy.deepcopy(journal.list_pending())
+            with self.assertRaisesRegex(VerificationError, 'child remains uncertain'):
+                runtime.recover_transfer(self.ctx, self.pending_parent())
+        self.assertEqual(journal.list_pending(), before)
+        self.assertEqual(len(self.ctx.creates), 1)
+        self.assertEqual(len(self.ctx.edits), 1)
 
     def test_quota_refusal_after_trim_restores_before_ending_pass(self):
         from booking_quotas import QuotaWait
