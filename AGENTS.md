@@ -21,6 +21,19 @@
   checks pass at 320/390/844px with synthetic Pause state, plus TypeScript, lint
   and build verification. Phone build `20261015-peak-cutoff` is prepared under
   ignored `artifacts/friday-plan-audit-20261015/build`; activation is separate.
+- Activated `c6b8986` and that phone build in the existing idle phone task under
+  assistant/runtime/dispatcher ownership. Only the saved New preset's cutoff
+  changed from 960 to 900 minutes. Other owner settings, receipts, phone chat
+  and request ledger, task definitions, Serve routes and Tempo were preserved.
+  Exact HTTPS assets/preferences and `verify_phone_deployment.ps1` pass.
+- A normal full-window read-only refresh published the new plan and preserved
+  owner controls and receipt hashes; only reservation-observation timestamps
+  changed. The fresh grid selected 135 preferred-window minutes plus 45 evening
+  minutes, with the first seed opening at 09:00. Connected Chromium/WebKit at
+  390px display the current plan, 15:00 quota cutoff and unchanged 16:00 practice
+  preference. No booking was created, edited or cancelled for this audit.
+  These are PC-browser and forecast results, not physical-phone or future-Save
+  proof. Private activation, refresh and browser receipts are in the same folder.
 
 ## 2026-10-15 free-window forecasts retain short preferred sessions
 
