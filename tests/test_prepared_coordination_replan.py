@@ -60,6 +60,8 @@ class PreparedCoordinationReplanTests(unittest.TestCase):
             local.enter_context(mock.patch.object(booker, 'install_booking_rules'))
             local.enter_context(mock.patch.object(booker, 'list_pending_mutation_receipts', return_value=pending))
             local.enter_context(mock.patch('preference_runs.complete_matching_run'))
+            local.enter_context(mock.patch('preference_runs.kick'))
+            local.enter_context(mock.patch.object(booker, 'run_report'))
             local.enter_context(mock.patch.object(booker, 'save_history'))
             local.enter_context(mock.patch.object(booker, 'send_notification'))
             run = local.enter_context(mock.patch.object(booker, 'run_booking', side_effect=worker))
@@ -154,6 +156,40 @@ class PreparedCoordinationReplanTests(unittest.TestCase):
         self.assertEqual(result, 3)
         self.assertEqual(run.call_count, 1)
         self.sleep.assert_not_called()
+
+    def test_preference_change_after_tempo_invalidation_cannot_enter_replan(self):
+        calls = []
+        def worker(*_args):
+            calls.append(True)
+            if len(calls) == 1:
+                try:
+                    self.change_while_prepared()
+                except guards.PreparedCoordinationChanged:
+                    update_settings(lambda settings: settings.update(disabled_dates=[str(DAY)]), self.settings)
+                    raise
+            return 0
+        result, run, _ = self.run_worker(worker)
+        self.assertEqual(result, 3)
+        run.assert_called_once()
+
+    def test_runtime_progress_between_tempo_passes_is_reloaded_and_retained(self):
+        seen = []
+        progress = [{'date': str(DAY), 'room': 'Practice A', 'startTime': '09:00',
+                     'endTime': '09:30', 'target_end': '10:00', 'eventId': 123}]
+        def worker(args, settings, *_rest):
+            seen.append(settings)
+            if len(seen) == 1:
+                try:
+                    self.change_while_prepared()
+                except guards.PreparedCoordinationChanged:
+                    update_settings(lambda s: s.update(extendable_bookings=progress), self.settings)
+                    raise
+            self.assertEqual(settings['extendable_bookings'], progress)
+            return 0
+        result, run, _ = self.run_worker(worker)
+        self.assertEqual(result, 0)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(load_settings(self.settings)['extendable_bookings'], progress)
 
     def test_preparation_check_without_a_run_does_not_read_live_state(self):
         with mock.patch.object(guards, 'tempo_save_boundary') as boundary:

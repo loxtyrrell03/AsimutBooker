@@ -54,7 +54,7 @@ from app_settings import (
 )
 from booking_preferences_guard import (
     BookingPreferencesChanged, booking_preference_run, booking_save_boundary,
-    PreparedCoordinationChanged, check_prepared_booking,
+    PreparedCoordinationChanged, check_prepared_booking, assert_booking_preferences_unchanged,
 )
 from tempo_coordination import current_snapshot as tempo_coordination_snapshot
 from manual_booking_overrides import (
@@ -13145,8 +13145,12 @@ def main(argv=None):
                     raise BookingVerificationError(
                         'A pending booking outcome must be reconciled before replanning preparation'
                     ) from exc
+                fresh_settings, fresh_plan, fresh_rooms = _load_and_validate_runtime_settings()
+                if pause_check is not None:
+                    pause_check()
+                assert_booking_preferences_unchanged(settings, fresh_settings)
                 print("Tempo changed during preparation; discarding the editor and replanning once before the opening.")
-                settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
+                settings, practice_plan, room_preferences = fresh_settings, fresh_plan, fresh_rooms
                 run_report.preferences(settings, practice_plan)
     except KeyboardInterrupt:
         print("Booking run cancelled.")

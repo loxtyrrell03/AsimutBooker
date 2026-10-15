@@ -186,6 +186,11 @@
 
 ## 2026-10-14 replan invalidated horizon preparation before the edge
 
+- The 15 October follow-up closes the interval between Tempo invalidation and
+  the replacement settings load. A changed owner-control snapshot stops the
+  original worker instead of entering its second pass. Runtime-owned extension
+  progress still reloads and survives. The race fails against the previous
+  source; all 196 combined Pause, Stop, replan, horizon and quota checks pass.
 - Horizon editor countdowns recheck the pinned settings and full Tempo revision
   once per second. A changed shared plan discards the prepared editor before
   receipt/Save instead of waiting until the opening to discover invalidation.

@@ -34,6 +34,14 @@ def _controls(settings):
                       sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def assert_booking_preferences_unchanged(expected, current):
+    """A Tempo-only replan must not adopt changed owner instructions."""
+    if _controls(current) != _controls(expected):
+        raise BookingPreferencesChanged(
+            "Preferences changed during this run; stopping before replanning"
+        )
+
+
 @contextmanager
 def booking_preference_run(path, settings):
     path = Path(path)
