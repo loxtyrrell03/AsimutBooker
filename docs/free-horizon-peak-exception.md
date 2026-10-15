@@ -37,8 +37,14 @@ time preferences, room order, breaks and receipt/recovery requirements remain.
 With the exception enabled, eligible free-window practice within the effective
 preferred times is not withheld to conserve peak credit for a future opening.
 The daily portfolio keeps useful time first, then favours preferred sessions
-whose minimum booking is already eligible, before session count and ordinary
-room/time ranking. This also prevents trimming a useful morning block merely
+whose minimum booking is already eligible. With time-first priority, it then
+keeps the most preferred-window minutes before comparing session count and
+ordinary room/time ranking. Several short afternoon gaps can therefore beat
+fewer long evening sessions without reducing the daily target. Room-first
+priority and ordinary advance planning retain their existing comparisons.
+Bounded search keeps complete feasible improvements found before its limit,
+and comfort refinement cannot discard preferred minutes. This also prevents
+trimming a useful morning block merely
 to reserve more of the daily target for an evening room. Future extension intent
 remains unconfirmed and every actual saved interval must fit its window.
 Date-specific time preferences apply here; ordinary advance planning and waiting

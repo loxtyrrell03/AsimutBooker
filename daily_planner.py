@@ -632,6 +632,9 @@ def select_day_plan(
     if prefer_ready_sessions and sum(ready_preferred_minutes(i, now=now) for i in refined) < sum(
             ready_preferred_minutes(i, now=now) for i in baseline):
         return baseline
+    if (prefer_ready_sessions and planning.priority_mode == 'time_first'
+            and sum(i.preferred_minutes for i in refined) < sum(i.preferred_minutes for i in baseline)):
+        return baseline
     if quality_score is not None:
         def quality(plan):
             rows = [quality_score(item) for item in plan]
@@ -661,8 +664,10 @@ def _select_day_plan(
     advances monotonically through the 96-slot day and retains only the target,
     peak allowance, and same-room cooldowns that can affect a continuation.
     With no soft-time tradeoff, coverage and session count retain their exact
-    optima by default. Free-window readiness can prefer currently eligible
-    preferred minutes before session count, without reducing useful coverage.
+    optima by default. Free-window readiness prefers currently eligible minutes,
+    then the saved time-first window, before session count. Short preferred
+    sessions can therefore survive a full-day forecast without reducing useful
+    coverage. Room-first and ordinary advance priorities remain unchanged.
     With penalized intervals, weighted useful time takes precedence over
     filling the target. That search is bounded and retains a feasible greedy
     fallback; quotas, overlap and same-room gaps are always hard constraints. When
@@ -693,6 +698,7 @@ def _select_day_plan(
     )
     if rank_key is None:
         rank_key = lambda value: opportunity_rank(value, planning, now=now)
+    prefer_time = prefer_ready_sessions and planning.priority_mode == 'time_first'
     ranked = sorted(
         opportunities,
         key=lambda item: (
@@ -711,6 +717,7 @@ def _select_day_plan(
         return (
             *((tuple(-v for v in quality_score(item)),) if quality_score is not None else ()),
             *((-ready_preferred_minutes(item, now=now),) if prefer_ready_sessions else ()),
+            *((-item.preferred_minutes,) if prefer_time else ()),
             rank_key(item),
             -item.potential_minutes,
             item.room,
@@ -811,7 +818,7 @@ def _select_day_plan(
         item.start_minutes, item.potential_minutes, item.soft_preferred_window
     ), 8) for item in variants)
     soft_tradeoff = any(value < duration for value, duration in zip(values, durations))
-    if soft_tradeoff:
+    if soft_tradeoff and not prefer_time:
         # A tiny score gain must not split a good session into extra room visits.
         # This modest per-session cost still leaves every admitted 15-weighted-
         # minute fallback with positive utility when it is the only option.
@@ -821,6 +828,7 @@ def _select_day_plan(
         (item.start_minutes, item.end_minutes, item.room) for item in variants
     )
     ready_values = tuple(ready_preferred_minutes(item, now=now) for item in variants)
+    preferred_values = tuple(item.preferred_minutes for item in variants)
 
     @lru_cache(maxsize=None)
     def portfolio_key(plan: tuple[int, ...]) -> tuple:
@@ -833,6 +841,7 @@ def _select_day_plan(
         return (
             -sum(values[index] for index in plan),
             *((-sum(ready_values[index] for index in plan),) if prefer_ready_sessions else ()),
+            *((-sum(preferred_values[index] for index in plan),) if prefer_time else ()),
             len(plan),
             tuple(sorted(qualities[index] for index in plan)),
             tuple(sorted(chronological_keys[index] for index in plan)),
@@ -946,6 +955,18 @@ def _select_day_plan(
                     for indexes in variants_at_start]
         states = 0
         transitions = 0
+        prefix = []
+
+        def retain_complete_plan(tail):
+            # A bounded search can discover a better complete portfolio deep
+            # below the root and hit its limit before returning it. Retain that
+            # feasible witness instead of throwing all progress away in favour
+            # of the initial greedy seed. The prefix is observational only;
+            # cached continuation results still depend solely on their state.
+            nonlocal best_indexes
+            candidate = (*prefix, *tail)
+            if portfolio_key(candidate) < portfolio_key(best_indexes):
+                best_indexes = candidate
 
         class _SoftSearchLimit(Exception):
             pass
@@ -957,6 +978,8 @@ def _select_day_plan(
             if states > 50_000:
                 raise _SoftSearchLimit
             if position >= len(starts) or capacity < minimum_duration:
+                if not required_left:
+                    retain_complete_plan(())
                 return None if required_left else ()
             best = None if required_left else ()
             blocked = {room for room, _until in cooldowns}
@@ -968,12 +991,17 @@ def _select_day_plan(
                         or variant_rooms[index] in blocked):
                     continue
                 next_position, next_cooldowns = continuation_state(cooldowns, index)
-                rest = useful_plan(
-                    next_position, capacity - durations[index], peak_left - peak_minutes[index],
-                    next_cooldowns, required_left and index not in required_variant_indexes,
-                )
+                prefix.append(index)
+                try:
+                    rest = useful_plan(
+                        next_position, capacity - durations[index], peak_left - peak_minutes[index],
+                        next_cooldowns, required_left and index not in required_variant_indexes,
+                    )
+                finally:
+                    prefix.pop()
                 if rest is not None:
                     candidate = (index, *rest)
+                    retain_complete_plan(candidate)
                     if best is None or portfolio_key(candidate) < portfolio_key(best):
                         best = candidate
             next_position = position + 1

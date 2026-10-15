@@ -1,3 +1,23 @@
+## 2026-10-15 free-window forecasts retain short preferred sessions
+
+- With time-first planning, free-window portfolios compare useful coverage,
+  currently eligible practice and preferred-window minutes before session count.
+  Short preferred sessions no longer lose to fewer long evening sessions. Room
+  groups, hard time limits, ordinary advance and room-first priorities remain.
+- Comfort refinement cannot discard preferred minutes. An unselected soft-time
+  fallback cannot introduce a fragmentation penalty into this comparison.
+  Bounded search retains complete feasible improvements found before its work
+  limit instead of reverting to the initial greedy plan.
+- Nine isolated regressions cover short sessions, display/execution agreement,
+  bounded search, comfort, strict dates and unchanged quota/room-first behavior.
+  The old source fails the core comparisons; all 153 focused planner, quota,
+  horizon, advance, plan, preference and fallback checks pass. A fresh private
+  grid replay increases selected preferred-window time from zero to 105 minutes
+  while retaining the same daily target. This is a forecast, not a new booking.
+- Fresh workers import the change. Cached plans require an ordinary read-only
+  refresh; never rewrite their evidence. Private diagnostics are under ignored
+  `artifacts/friday-plan-audit-20261015`.
+
 ## 2026-10-15 phone startup and snapshot lock order
 
 - Lazy assistant construction now takes request ownership before runtime
