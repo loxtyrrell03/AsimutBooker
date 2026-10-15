@@ -4470,3 +4470,8 @@ When modifying this codebase:
   checks pass with isolated fixtures. Current helper version/config validation
   passes without changing the live config. Controlled phone activation and
   connected verification are recorded separately; no Tempo restart is needed.
+- Activated `9d32996` in the existing idle phone service after validating the
+  installed helper, ownership and pending outcomes. Private HTTPS, the deployment
+  verifier and connected Chromium/WebKit at 390px pass; shared Pause matches
+  Tempo. Config, settings, receipts, task definitions and routes are unchanged.
+  Tempo kept its process. Evidence is in ignored `artifacts/helper-discovery`.
