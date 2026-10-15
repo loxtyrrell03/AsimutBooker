@@ -23,7 +23,7 @@ from progressive_state import (load_state, update_state, fingerprint, protected_
 from progressive_transactions import (TransferEdit, record, reservation, transaction_payload,
                                      validate_transfer, transfer_summary)
 from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation, local_instant,
-                          time_text, clock_minutes)
+                          time_text, clock_minutes, room_horizon_opening)
 from upgrade_validation import RoomPermissionRefusal
 
 
@@ -271,8 +271,7 @@ def recover_transfer(ctx, receipt):
                 next_end = min(target.end, seed.end + 15)
                 if target.end - next_end < t['minimum_minutes']:
                     next_end = target.end
-                edge = local_instant(seed.day, next_end) - timedelta(
-                    minutes=ctx.policy.horizon_minutes_for(seed.room), seconds=ctx.policy.site_clock_offset_bounds[0])
+                edge = room_horizon_opening(seed.day, next_end, policy=ctx.policy, room=seed.room)
                 data['plans'].append(dict(id=t['plan_id'], fingerprint=fingerprint(ctx.settings),
                     originals=[record(r) for r in retained.values()], seed=record(seed), target=record(replace(target,event_id=seed.event_id)),
                     next_at=edge.isoformat(), observed_at=datetime.now(timezone.utc).isoformat()))
@@ -510,8 +509,10 @@ def process_progressive_upgrades(engine, page, settings, practice_plan, args, tr
             continue
         earliest_end = (min(seed.end + 15, target.end) if seed else
                         target.start + ctx.policy.minimum_block_minutes)
-        current_edge = local_instant(target.day, earliest_end) - timedelta(
-            minutes=ctx.policy.horizon_minutes_for(target.room), seconds=ctx.policy.site_clock_offset_bounds[0])
+        try:
+            current_edge = room_horizon_opening(target.day, earliest_end, policy=ctx.policy, room=target.room)
+        except ValueError:
+            continue
         if current_edge > now + timedelta(seconds=180):
             continue
         candidates.append(saved)

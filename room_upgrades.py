@@ -38,6 +38,10 @@ def time_text(minutes):
 def local_instant(day, minutes):
     """Reject skipped/repeated wall times instead of guessing a DST offset."""
     wall = datetime.combine(day, time(minutes // 60, minutes % 60))
+    return _unique_local_instant(wall)
+
+
+def _unique_local_instant(wall):
     candidates = set()
     for fold in (0, 1):
         instant = wall.replace(tzinfo=LONDON, fold=fold).astimezone(timezone.utc)
@@ -46,6 +50,20 @@ def local_instant(day, minutes):
     if len(candidates) != 1:
         raise ValueError("Ambiguous or nonexistent London booking time")
     return candidates.pop()
+
+
+def room_horizon_opening(day, end_minutes, *, policy, room):
+    """Conservative UTC opening of one endpoint under a live calendar horizon.
+
+    Room catalog horizons count London wall minutes. Only the proven clock
+    offset is elapsed time; subtracting both in UTC shifts DST-crossing edges.
+    """
+    bounds = policy.site_clock_offset_bounds
+    if bounds is None:
+        raise ValueError("The site's current booking clock is unavailable")
+    endpoint = local_instant(day, end_minutes).astimezone(LONDON).replace(tzinfo=None)
+    opening = endpoint - timedelta(minutes=policy.horizon_minutes_for(room))
+    return _unique_local_instant(opening) - timedelta(seconds=bounds[0])
 
 
 @dataclass(frozen=True)
@@ -329,13 +347,10 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
         if ((room_rank > old_rank and not _allow_room_downgrade)
                 or (room_rank == old_rank and len(originals) == 1)):
             continue
-        horizon = timedelta(minutes=policy.horizon_minutes_for(room))
         # Earliest plausible site time prevents a fast local clock opening a room early.
         clock_bounds = policy.site_clock_offset_bounds
         if clock_bounds is None:
             continue
-        bookable_until = min(now_utc + timedelta(seconds=clock_bounds[0]) + horizon,
-                             policy.booking_horizon.astimezone(timezone.utc))
         room_gaps = list(room_data.get("slots", ()))
         # The anchor's own interval is released by the same atomic edit. Other
         # reservations remain occupied until the longer anchor is verified.
@@ -365,7 +380,8 @@ def find_room_upgrades(original, *, events, available_data, policy, now,
                     end_at = local_instant(original.day, end)
                     if end_at > policy.booking_horizon.astimezone(timezone.utc):
                         continue
-                    if not _ignore_room_horizon and end_at > bookable_until:
+                    if (not _ignore_room_horizon and room_horizon_opening(
+                            original.day, end, policy=policy, room=room) > now_utc):
                         continue
                 except ValueError:
                     continue
@@ -463,8 +479,11 @@ def find_upgrade_opportunities(*, events, policy, now, eligible_event_ids=None, 
     output = []
     for change in changes:
         new = change.replacement
-        opens_at = max(now.astimezone(timezone.utc), local_instant(new.day, new.end)
-                       - timedelta(minutes=policy.horizon_minutes_for(new.room), seconds=policy.site_clock_offset_bounds[0]))
+        try:
+            opens_at = max(now.astimezone(timezone.utc), room_horizon_opening(
+                new.day, new.end, policy=policy, room=new.room))
+        except ValueError:
+            continue
         deadline = min(*(local_instant(r.day, r.start) for r in change.originals), local_instant(new.day, new.start))
         deadline -= timedelta(minutes=kwargs.get("freeze_minutes", DEFAULT_FREEZE_MINUTES))
         if opens_at < deadline:

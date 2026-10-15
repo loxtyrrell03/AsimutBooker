@@ -12,7 +12,8 @@ from math import ceil, floor, isfinite
 
 from daily_planner import interval_overlap_minutes, soft_time_value
 from room_upgrades import (Reservation, RoomConsolidation, RoomUpgrade,
-                           clock_minutes, find_room_upgrades, local_instant)
+                           clock_minutes, find_room_upgrades, local_instant,
+                           room_horizon_opening)
 
 
 MAX_REMAINDER_SEARCH_NODES = 50000
@@ -268,11 +269,13 @@ def plan_progressive_transfer(opportunity, *, events, available_data, policy, no
     if first_end > target.end:
         return None
     now_utc = now.astimezone(timezone.utc)
-    room_horizon = timedelta(minutes=policy.horizon_minutes_for(target.room),
-                             seconds=policy.site_clock_offset_bounds[0])
+    try:
+        full_opening = room_horizon_opening(target.day, target.end, policy=policy, room=target.room)
+    except ValueError:
+        return None
     # Whole-session first moves retain the existing atomic room-upgrade path.
     # Only an already-started transfer may need a final all-remaining step here.
-    if (seed is None and local_instant(target.day, target.end) - room_horizon <= now_utc
+    if (seed is None and full_opening <= now_utc
             and any(start <= target.start and finish >= target.end
                     for start, finish in live_intervals.get(target.room, ()))):
         return None
@@ -282,7 +285,10 @@ def plan_progressive_transfer(opportunity, *, events, available_data, policy, no
     for end in range(first_end, target.end + 1, 15):
         if seed is None and end == target.end:
             continue
-        opening = local_instant(target.day, end) - room_horizon
+        try:
+            opening = room_horizon_opening(target.day, end, policy=policy, room=target.room)
+        except ValueError:
+            continue
         if opening < cutoff:
             edges.append((end, opening))
     # Catch up immediately when a run starts late; otherwise prepare the first
@@ -374,9 +380,8 @@ def _find_remainders(originals, group, replacement, *, events, available_data,
                         # An unchanged reservation remains valid even if the
                         # site's current policy shortened since it was booked.
                         if record != original:
-                            limit = now + timedelta(minutes=policy.horizon_minutes_for(record.room),
-                                                    seconds=policy.site_clock_offset_bounds[0])
-                            if local_instant(day, b) > min(limit, policy.booking_horizon.astimezone(timezone.utc)):
+                            if (local_instant(day, b) > policy.booking_horizon.astimezone(timezone.utc)
+                                    or room_horizon_opening(day, b, policy=policy, room=record.room) > now):
                                 continue
                     except ValueError:
                         continue

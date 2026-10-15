@@ -1,3 +1,22 @@
+## 2026-10-15 upgrades share the observed calendar-horizon edge
+
+- Whole-room upgrades, their forecasts, explicit later shifts and progressive
+  transfers now share `room_horizon_opening`. It subtracts the proven room
+  horizon in London calendar time, then applies the conservative site-clock
+  offset in elapsed seconds. Previous UTC subtraction opened spring-crossing
+  upgrades an hour early and delayed autumn upgrades by an hour.
+- Partial discovery, retained fallback edits, saved first/next edges and the
+  live continuation dispatcher use the same calculation. Global cutoffs,
+  exact identities, retained coverage, receipts and final site checks remain
+  enforced. Ambiguous/nonexistent endpoints or opening clocks fail closed.
+- All four initial cross-clock regressions failed before the repair. Six new
+  checks cover whole/partial planning, forecasts, explicit edits, arbitrary
+  horizons, persistence and the real dispatcher with synthetic remote writes.
+  All 276 focused upgrade, transfer, capacity, quota and edit checks pass.
+  Fresh ordinary workers load this source without a service/task change; no
+  live booking was used as a test. Actual future edge timing remains a separate
+  receipt/agenda gate, and this is not the cause of the 14 October delay.
+
 ## 2026-10-15 free-window endpoint checks across clock changes
 
 - Free-horizon capacity returns the clock-time span used by local booking forms,

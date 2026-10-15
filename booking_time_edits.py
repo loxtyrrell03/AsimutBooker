@@ -6,12 +6,13 @@ upgrades, whose equal-duration and better-room guarantees must stay intact.
 
 from booking_quotas import peak_quota_exempt
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from math import isfinite
 from booking_quotas import PEAK_QUOTA_MINUTES as MAX_PEAK_MINUTES
 
 from daily_planner import interval_overlap_minutes
-from room_upgrades import Reservation, clock_minutes, local_instant, time_text, LONDON
+from room_upgrades import (Reservation, clock_minutes, local_instant, time_text,
+                           LONDON, room_horizon_opening)
 
 
 @dataclass(frozen=True)
@@ -118,9 +119,9 @@ def validate_time_edit(edit, *, events, policy, now, gaps=(), blackouts=(),
     bounds = policy.site_clock_offset_bounds
     if bounds is None:
         raise ValueError("The site's current booking clock is unavailable")
-    until = min(now.astimezone(timezone.utc) + timedelta(seconds=bounds[0],
-                    minutes=policy.horizon_minutes_for(b.room)), policy.booking_horizon)
-    if local_instant(b.day, b.end) > until:
+    if (local_instant(b.day, b.end) > policy.booking_horizon
+            or room_horizon_opening(b.day, b.end, policy=policy, room=b.room)
+            > now.astimezone(timezone.utc)):
         raise ValueError("The whole shifted booking is not yet inside this room's booking horizon")
     rows = [row for row in gaps if row.get("room") == b.room]
     if len(rows) != 1:

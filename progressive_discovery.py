@@ -5,7 +5,7 @@ is an aspiration; a planner-proved prefix and retained fallback are the actual
 next step. Nothing here authorizes a mutation or claims the target tail is free.
 """
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import timezone
 from heapq import nsmallest
 from itertools import combinations
 from math import ceil, floor
@@ -13,7 +13,7 @@ from math import ceil, floor
 from daily_planner import interval_overlap_minutes, soft_time_value
 from progressive_planner import TransferPlan, _room_intervals, plan_progressive_transfer
 from room_upgrades import (Reservation, RoomUpgrade, RoomConsolidation,
-                          clock_minutes, local_instant)
+                          clock_minutes, local_instant, room_horizon_opening)
 
 
 MAX_PARTIAL_SOURCE_GROUPS = 128
@@ -107,8 +107,6 @@ def find_partial_upgrade_opportunities(*, events, available_data, policy, now,
                     continue
                 starts = {start for a, b in gaps for start in range(int(ceil(a / 15)) * 15,
                           int(floor((b - minimum) / 15)) * 15 + 1, 15)}
-                horizon = timedelta(minutes=policy.horizon_minutes_for(room),
-                                    seconds=policy.site_clock_offset_bounds[0])
                 for start in sorted(starts):
                     end = start + duration
                     if end >= 1440 or any(a <= start and b >= end for a, b in gaps):
@@ -121,7 +119,7 @@ def find_partial_upgrade_opportunities(*, events, available_data, policy, now,
                     try:
                         if instant(end) > policy.booking_horizon:
                             continue
-                        edge = instant(start + minimum) - horizon
+                        edge = room_horizon_opening(day, start + minimum, policy=policy, room=room)
                     except ValueError:
                         continue
                     target = Reservation(anchor.event_id, day, room, start, end)

@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from app_settings import InterProcessFileLock, atomic_write_json, SettingsError
 from progressive_transactions import record, reservation
-from room_upgrades import local_instant
+from room_upgrades import room_horizon_opening
 
 STATE_FILE = Path(__file__).resolve().parent / 'data/progressive_upgrades.json'
 
@@ -136,9 +136,10 @@ def remember_opportunities(prospects, *, settings, policy, now, checked_dates):
             if any(r.event_id in protected for r in c.originals):
                 continue
             target = c.replacement
-            horizon = timedelta(minutes=policy.horizon_minutes_for(target.room),
-                                seconds=policy.site_clock_offset_bounds[0])
-            full_at = local_instant(target.day, target.end) - horizon
+            try:
+                full_at = room_horizon_opening(target.day, target.end, policy=policy, room=target.room)
+            except ValueError:
+                continue
             if target.duration <= policy.minimum_block_minutes:
                 continue
             if isinstance(prospect, PartialUpgradeOpportunity):
@@ -149,7 +150,11 @@ def remember_opportunities(prospects, *, settings, policy, now, checked_dates):
             else:
                 if full_at <= now:
                     continue
-                first = local_instant(target.day, target.start + policy.minimum_block_minutes) - horizon
+                try:
+                    first = room_horizon_opening(target.day, target.start + policy.minimum_block_minutes,
+                                                policy=policy, room=target.room)
+                except ValueError:
+                    continue
             key = (c.originals, target.room, target.start, target.end)
             if key in seen:
                 continue
