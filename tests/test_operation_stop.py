@@ -1,5 +1,6 @@
 """Cooperative Stop races, using isolated journals and no remote actions."""
 from contextlib import contextmanager, redirect_stdout
+from datetime import datetime, timedelta
 import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -110,6 +111,33 @@ class OperationStopTests(unittest.TestCase):
         self.assertEqual(result, 3)
         run.assert_not_called()
         runtime.release.assert_called_once()
+
+    def test_target_and_discovery_waits_observe_stop_before_the_next_poll(self):
+        import book_week
+        for name in ('wait_until_target_time', 'wait_before_runtime_target_window',
+                     'wait_for_horizon_discovery_window'):
+            for stopped_at_entry in (False, True):
+                with self.subTest(wait=name, stopped_at_entry=stopped_at_entry):
+                    self.stop.unlink(missing_ok=True)
+                    current = datetime(2030, 10, 15, 10, 0)
+                    target = current + timedelta(minutes=4)
+                    argument = target if name == 'wait_for_horizon_discovery_window' else '10:04'
+                    if stopped_at_entry:
+                        self.stop.touch()
+
+                    def tick(seconds):
+                        nonlocal current
+                        self.stop.touch()
+                        current += timedelta(minutes=1)
+
+                    with owned_operation(self.stop, mock.Mock(), mock.Mock()), \
+                            mock.patch.object(book_week, 'datetime', wraps=datetime) as clock, \
+                            mock.patch.object(book_week.time, 'sleep', side_effect=tick) as sleep, \
+                            redirect_stdout(io.StringIO()):
+                        clock.now.side_effect = lambda: current
+                        with self.assertRaises(OperationStopped):
+                            getattr(book_week, name)(argument)
+                    self.assertEqual(sleep.call_count, 0 if stopped_at_entry else 1)
 
 
 if __name__ == '__main__':

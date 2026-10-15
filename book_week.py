@@ -1716,6 +1716,7 @@ def wait_until_target_time(target_time_str, page=None):
 
     Keeps browser session alive with periodic small interactions.
     """
+    check_operation_stop()
     target_hour, target_minute = map(int, target_time_str.split(':'))
     now = datetime.now()
     target = local_boundary(now.date(), target_hour, target_minute, now=now)
@@ -1737,6 +1738,7 @@ def wait_until_target_time(target_time_str, page=None):
 
     # Wait with periodic status updates and session keepalive
     while True:
+        check_operation_stop()
         remaining = seconds_between(target, datetime.now())
         if remaining <= 0:
             break
@@ -1836,6 +1838,7 @@ def wait_for_horizon_discovery_window(target_boundary, page=None):
     started earlier without exiting before its intended boundary exists.
     """
 
+    check_operation_stop()
     discovery_at = shift_clock(target_boundary, seconds=-EXTENSION_PREP_WINDOW_SECONDS)
     now = datetime.now()
     if as_utc(now) >= as_utc(discovery_at):
@@ -1847,6 +1850,7 @@ def wait_for_horizon_discovery_window(target_boundary, page=None):
     )
     last_keepalive = None
     while True:
+        check_operation_stop()
         remaining = seconds_between(discovery_at, datetime.now())
         if remaining <= 0:
             break
@@ -6706,6 +6710,7 @@ def target_boundary_datetime(target_time, *, base_date=None):
 def wait_before_runtime_target_window(target_time):
     """Wait outside the runtime lock before collecting live edge evidence."""
 
+    check_operation_stop()
     target_boundary = target_boundary_datetime(target_time)
     ready_at = shift_clock(target_boundary, seconds=-EXTENSION_PREP_WINDOW_SECONDS)
     now = datetime.now()
@@ -6717,6 +6722,7 @@ def wait_before_runtime_target_window(target_time):
         f"waiting {initial_wait:.0f}s before authentication"
     )
     while True:
+        check_operation_stop()
         remaining = seconds_between(ready_at, datetime.now())
         if remaining <= 0:
             break

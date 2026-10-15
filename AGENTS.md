@@ -1,3 +1,15 @@
+## 2026-10-15 Stop interrupts target and discovery waits
+
+- The pre-authentication target wait, horizon-discovery wait and normal target
+  countdown check the existing operation Stop on entry and every poll. They
+  previously waited until the target before observing cancellation. Maximum
+  sleep between checks remains one second; no browser or later action starts
+  after an observed Stop. Ownership and pending-receipt recovery are unchanged.
+- Six old-code failures cover Stop already set and Stop during each wait using
+  an advancing synthetic clock. All 79 focused operation, Pause, preparation, Save,
+  clock and explicit-action checks pass. Fresh workers import this source;
+  verification did not toggle a live hold or create/cancel a booking.
+
 ## 2026-10-15 free-horizon planning follows actual clock instants
 
 - Free-window forecasts, minimum-seed preparation and each extension endpoint
