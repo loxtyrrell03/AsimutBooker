@@ -7,7 +7,7 @@ the free window and weekday peak times. Saving applies to subsequent runs and
 invalidates old plans; an in-flight Save stops if its rules have changed.
 
 The selected values are local ceilings. ASIMUT may already enforce stricter
-limits, even while its information page still describes the previous rules.
+limits, so its information page and exact validation must be checked together.
 Its live available quota and exact booking checks remain mandatory. Both
 built-in presets retain the five-hour free window tested on the current site.
 The previous-quota preset does not promise the historical policy is still active.
@@ -37,22 +37,36 @@ credit. At exhausted quota the normal full free window applies. Explicit
 single-date/room actions and the Previous quotas preset retain their existing
 scoped planning behaviour. Quota alone cannot guarantee availability every day.
 
-The college's September 2026 rules allow six hours of advance reservations
-within a seven-day rolling horizon, one hour per weekday during peak time
-(09:00-16:00), and bookings lasting 30-120 minutes. Room-specific access and
-shorter room horizons continue to come from ASIMUT on every run.
+The authenticated [college rules](https://rwcmd.asimut.net/booking-info), checked
+on 15 October 2026, allow six hours of advance reservations within a seven-day
+rolling horizon and one hour per weekday during **09:00-15:00**. Exact unsaved
+checks confirmed the 15:00 cutoff: an interval crossing it received a peak-quota
+refusal, while one starting at 15:00 did not. The current preset normalizes its
+former 16:00 cutoff to 15:00; custom and previous-quota presets remain unchanged.
+The preferred practice period is separate and is not shortened by this change.
+Room-specific access and shorter room horizons come from ASIMUT on every run.
+
+The general session limits are 30-120 minutes, with a 60-minute same-room gap.
+The information page separately describes a 60-minute last-minute maximum.
+Existing verified receipts and newer agendas show this account successfully
+extending a free-window booking to 120 minutes on 14 October. That observed
+behavior does not establish a universal two-hour last-minute entitlement:
+Booker retains its live duration and exact-request checks for every create and
+extension. No experimental reservation was saved for this investigation.
 
 The free horizon is the next five hours. Both the start and end of a booking
 must be inside it. Available quota is still used normally; ASIMUT can allow a
 booking in that window when advance quota is exhausted. It is not five extra
-hours that can be used for future dates. The booker continues to enforce one
-hour of peak time even when ASIMUT permits a short-notice exception. Completed
-peak sessions still count for that day: finishing 12:00-13:00 does not allow
-another peak hour that afternoon. Further practice must avoid 09:00-16:00.
+hours that can be used for future dates. With the separately saved free-horizon
+peak exception enabled, Booker can use ASIMUT-approved additional peak practice
+inside that window. Verified 15 October receipts and agenda evidence include
+more than one hour before 15:00 for this account. Completed peak sessions still
+count: the exception does not reset the ordinary advance peak allowance. With
+the exception disabled, Booker retains the local cap even inside the window.
 
 For example, a weekday reservation from 14:00 to 14:30 can extend to 15:00 if
 no other reservation uses that day's peak allowance. A reservation starting at
-15:00 can extend to 17:00 because only 15:00-16:00 is peak time. Other peak
+15:00 can extend to 17:00 without using peak allowance. Other peak
 reservations reduce that allowance. An extension at exhausted advance quota
 must fit the entire edited reservation inside the five-hour window.
 

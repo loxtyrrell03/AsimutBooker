@@ -1,3 +1,27 @@
+## 2026-10-15 verified current peak cutoff is 15:00
+
+- Authenticated booking information and exact unsaved requests establish the
+  weekday peak window as 09:00-15:00. The current New preset uses that cutoff
+  and normalizes only its former 16:00 value, including older phone payloads.
+  Custom/legacy presets, the separately saved peak exception and preferred
+  practice hours are preserved. Reads do not rewrite settings.
+- Current verified receipts and newer agendas establish additional free-window
+  practice before 15:00 for this account. Earlier September examples counting
+  time after 15:00 as peak are insufficient under the current window. Other
+  students' specialist-room bookings do not establish owner eligibility.
+- The information page says 60 minutes for last-minute bookings, while existing
+  verified receipts prove a two-hour free-window extension was accepted. Retain
+  exact live duration/quota validation; neither example is blanket permission.
+  See `docs/booking-rules.md` and `docs/free-horizon-peak-exception.md`.
+- Three new regression methods fail against the prior cutoff, covering migration,
+  older phone payloads and valid 15:00 advance practice after peak exhaustion.
+  All 155 focused rule, quota, guard, preference, planner and advance tests pass.
+  The policy-failure fixture now isolates settings/report/dispatcher state;
+  advance fixtures explicitly use the current cutoff. Chromium/WebKit settings
+  checks pass at 320/390/844px with synthetic Pause state, plus TypeScript, lint
+  and build verification. Phone build `20261015-peak-cutoff` is prepared under
+  ignored `artifacts/friday-plan-audit-20261015/build`; activation is separate.
+
 ## 2026-10-15 free-window forecasts retain short preferred sessions
 
 - With time-first planning, free-window portfolios compare useful coverage,
@@ -1934,7 +1958,9 @@
 
 ## 2026-09-17 revised college quotas and free horizon (superseded by presets above)
 
-- Advance quota is six hours, with at most one weekday peak hour (09:00-16:00).
+- Advance quota is six hours, with at most one weekday peak hour. The current
+  09:00-15:00 cutoff was verified on 15 October; the former 16:00 assumption is
+  superseded. Preferred practice hours remain separate from this quota window.
   Live room/global horizons and duration limits remain authoritative; the live
   global horizon is seven days. Older YAML cannot raise the new quota caps.
 - `booking_quotas.py` reads the authenticated per-date quota endpoint in seconds.
@@ -1944,13 +1970,14 @@
   transactions retain reconciliation status, including earlier verified work.
 - Both endpoints must fit entirely inside the next five elapsed hours for a
   short-notice exception. It consumes any remaining credit normally and never
-  creates advance credit. The local one-hour peak cap also applies here, even
-  if ASIMUT waives that check. Targets, strict hours, conflicts, room access,
+  creates advance credit. The separately enabled free-horizon peak exception
+  permits additional peak practice only with exact ASIMUT approval. Without it,
+  the local cap remains. Targets, strict hours, conflicts, room access,
   duration, fragmentation and action limits still apply.
 - Scheduled runs check short-notice opportunities even when advance quota is
   full. Pending extensions retain priority and capacity; exact-time room fallback
   can use the same free window. Extensions use the complete edited interval,
-  not only the added tail, and stop at remaining peak allowance. Room upgrades,
+  not only the added tail, and apply the same conditional peak exception. Room upgrades,
   consolidation, progressive transfers and time edits retain identity/receipt
   checks. Existing over-limit reservations are never automatically reduced;
   whole-room upgrades may preserve their peak usage subject to live approval.
@@ -3026,7 +3053,7 @@ This tool automatically books music practice rooms on the RWCMD Asimut system be
 - **Room Preferences**: GUI ordering, exclusions, live instrument/type/feature requirements, minimum block length, and fragmentation policy
 - **Live Room Policy**: Refreshes the current AHC catalog plus selected promoted All Locations rooms, metadata, per-room horizons, and booking-window cutoff from Asimut before every authenticated booking or check run
 - **Scheduled Execution**: One non-overlapping task runs every 15 minutes (07:13-21:58) with AC/DC wake-timer requests and missed-start recovery
-- **RWCMD Booking Rules**: Six hours of advance reservations, one peak hour/day Mon-Fri 9am-4pm, a five-hour short-notice exception, and the greater of the configured/default same-room gap and Asimut's fresh minimum
+- **RWCMD Booking Rules**: Six hours of advance reservations, one peak hour/day Mon-Fri 9am-3pm, a five-hour short-notice exception, and the greater of the configured/default same-room gap and Asimut's fresh minimum
 - **Agenda Scanning**: Detects existing events/classes to avoid booking conflicts; extracts room names for same-room gap enforcement; distinguishes "Reservation" events from classes for accurate quota tracking
 - **Cancelled Event Filtering**: Ignores cancelled events (strikethrough/red styling) when scanning agenda
 - **GUI Control Panel**: Desktop application for monitoring, manual control, preferences, and automatic-schedule repair
@@ -3212,7 +3239,7 @@ This replaces obsolete per-time tasks with one `AsimutBooker_Recurring` task:
 The script enforces these rules:
 - **Rolling Quota**: Six hours of advance reservations; live credit returns as sessions finish, without a weekly reset (classes do not count)
 - **Free Horizon**: A full interval inside the next five hours can be approved when advance quota is exhausted; any available quota is consumed normally
-- **Peak Hours**: Maximum one hour **per day** during Mon-Fri 9am-4pm, including short-notice bookings
+- **Peak Hours**: Maximum one advance hour **per day** during Mon-Fri 9am-3pm; the separately enabled free-horizon exception requires the whole booking inside the window and exact ASIMUT approval
 - **Booking Duration**: Asimut currently reports 30-120 minutes; the GUI-selected minimum is enforced within those fresh limits
 - **Same-Room Gap**: Enforces the greater of the configured/default 60 minutes and Asimut's freshly reported minimum
 - **Room Horizons**: Uses each room's current site-reported advance window; arbitrary positive 15-minute horizons are supported

@@ -14,14 +14,15 @@ class BookingRules:
     peak_quota_minutes: int = 60
     free_horizon_minutes: int = 300
     peak_start_minutes: int = 540
-    peak_end_minutes: int = 960
+    peak_end_minutes: int = 900
     free_horizon_overrides_peak: bool = False
 
     def to_dict(self):
         return asdict(self)
 
 PRESETS = {'new': BookingRules(),
-           'legacy': BookingRules(preset='legacy', rolling_quota_hours=28, peak_quota_minutes=120)}
+           'legacy': BookingRules(preset='legacy', rolling_quota_hours=28, peak_quota_minutes=120,
+                                  peak_end_minutes=960)}
 PRESET_LABELS = {'new':'New quotas (6h / 1h peak)', 'legacy':'Previous quotas (28h / 2h peak)',
                  'custom':'Custom quotas'}
 
@@ -46,6 +47,13 @@ def load_booking_rules(settings):
     if type(values['free_horizon_overrides_peak']) is not bool:
         raise SettingsError('Free-horizon peak exception must be on or off')
     result = BookingRules(**values)
+    # Authenticated rules and exact unsaved checks verified 09:00-15:00 on
+    # 15 October 2026. Recognize only the former New preset, including payloads
+    # from an already-open phone. Custom/legacy windows remain owner choices.
+    if (preset == 'new' and replace(result, peak_end_minutes=900,
+            free_horizon_overrides_peak=base.free_horizon_overrides_peak) == base
+            and result.peak_end_minutes == 960):
+        result = replace(result, peak_end_minutes=900)
     if preset != 'custom' and replace(result, free_horizon_overrides_peak=base.free_horizon_overrides_peak) != base:
         raise SettingsError('Select custom before changing preset values')
     return result

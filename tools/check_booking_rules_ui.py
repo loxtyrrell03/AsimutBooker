@@ -12,6 +12,7 @@ from app_settings import save_settings, load_settings
 from assistant_context import ContextPaths
 from phone_api import build_phone_snapshot
 from phone_preferences import read_phone_preferences, save_phone_preferences, PreferenceConflict
+from booking_pause import read_pause
 from playwright.sync_api import sync_playwright, expect
 
 def check(dist):
@@ -40,6 +41,9 @@ def check(dist):
                         status,body=409,{'error':'preferences_changed','message':str(e)}
                     except (ValueError,RuntimeError) as e:
                         status,body=400,{'message':str(e)}
+                elif path=='/api/v1/booking-pause':
+                    assert route.request.method == 'GET'
+                    body=read_pause(settings)
                 elif path.startswith('/api/'):
                     body={'csrf_token':'fixture','bootstrap':state} if path.endswith('/session') else state
                 else:
@@ -54,6 +58,7 @@ def check(dist):
             preset=page.get_by_label('Booking rules preset',exact=True)
             expect(preset).to_have_value('legacy')
             expect(page.get_by_label('Weekday peak quota (minutes)',exact=True)).to_have_value('120')
+            expect(page.get_by_label('Weekday peak end',exact=True)).to_have_value('960')
             peak_switch=page.get_by_role('checkbox',name='Allow extra peak time within the free horizon')
             for width in (320,390,844):
                 page.set_viewport_size({'width':width,'height':844})
@@ -73,11 +78,13 @@ def check(dist):
                 page.keyboard.press('Escape')
                 expect(page.get_by_role('tooltip')).not_to_be_visible()
             preset.select_option('new')
+            expect(page.get_by_label('Weekday peak end',exact=True)).to_have_value('900')
             peak_switch=page.get_by_role('checkbox',name='Allow extra peak time within the free horizon')
             peak_switch.check()
             page.get_by_role('button',name='Save changes',exact=True).click()
             expect(page.get_by_role('button',name='Booking rules',exact=True)).to_be_visible()
             assert read_phone_preferences(settings)['booking_rules']['peak_quota_minutes']==60
+            assert read_phone_preferences(settings)['booking_rules']['peak_end_minutes']==900
             assert read_phone_preferences(settings)['booking_rules']['free_horizon_overrides_peak'] is True
             page.get_by_role('button',name='Booking rules',exact=True).click()
             expect(peak_switch).to_be_checked()

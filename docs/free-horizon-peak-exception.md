@@ -1,13 +1,18 @@
 # Free-horizon peak exception
 
-Authenticated, read-only checks on 21 September 2026 established that ASIMUT
-waives this account's peak quota for eligible free-horizon requests. Both live
-rolling and peak balances were zero. An exact same-day peak request entirely
-inside the five-hour window returned success with no quota warnings; next-day
-peak requests returned both rolling and peak quota warnings. No diagnostic
-reservation was saved. One other visible individual reservation contained 75
-peak minutes, but its creation time was unavailable: the decisive evidence is
-the account's exact server check, not that other reservation.
+Current evidence supports ASIMUT's free-horizon peak exception for this account:
+verified 15 October 2026 receipts and a newer complete agenda include more than
+one hour before 15:00. The authenticated rules describe last-minute booking
+regardless of quota. Exact unsaved next-day checks still refuse exhausted peak
+quota, distinguishing the exception from ordinary advance allowance.
+
+The 15 October audit corrected the peak window to **09:00-15:00**, confirmed by
+the information page and exact server checks across 15:00. Earlier September
+notes treated time after 15:00 as peak; those examples alone cannot establish
+the exception under the current window. The fresh survey found only two visible
+other-student bookings exceeding one actual peak hour, both in a specialist harp
+room. Their creation times and individual permissions were unavailable, so
+neither proves this account's eligibility. No diagnostic reservation was saved.
 
 `booking_rules.free_horizon_overrides_peak` enables the verified exception.
 Missing values remain false. The switch is independent of numeric quota presets,

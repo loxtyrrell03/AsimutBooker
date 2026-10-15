@@ -8,7 +8,7 @@ export function BookingRulesFields({ value, onChange }: { value: BookingRules; o
     <label>Booking rules preset<select aria-label="Booking rules preset" value={value.preset} onChange={event => {
       const preset = event.target.value as BookingRules['preset'];
       onChange(preset === 'custom' ? { ...value, preset } : { preset, free_horizon_overrides_peak: value.free_horizon_overrides_peak ?? false, rolling_quota_hours: preset === 'legacy' ? 28 : 6,
-        peak_quota_minutes: preset === 'legacy' ? 120 : 60, free_horizon_minutes: 300, peak_start_minutes: 540, peak_end_minutes: 960 });
+        peak_quota_minutes: preset === 'legacy' ? 120 : 60, free_horizon_minutes: 300, peak_start_minutes: 540, peak_end_minutes: preset === 'legacy' ? 960 : 900 });
     }}><option value="legacy">Previous quotas (28h / 2h peak)</option><option value="new">New quotas (6h / 1h peak)</option><option value="custom">Custom quotas</option></select></label>
     <p>ASIMUT must approve each booking. Its current limits may be lower than this preset.</p>
     {([['rolling_quota_hours', 'Advance quota (hours)', .5, 168, .25], ['peak_quota_minutes', 'Weekday peak quota (minutes)', 0, 1440, 15], ['free_horizon_minutes', 'Free horizon (minutes)', 0, 1440, 15]] as const).map(([key,label,min,max,step]) =>

@@ -31,6 +31,7 @@ class AdvanceRuntimeTests(unittest.TestCase):
         self.current_day = None
         self.stack.enter_context(patch.multiple(b, PRIORITY_ROOMS=['Weston','Corus','Other'],
             MINIMUM_BLOCK_MINUTES=30, MAX_BOOKING_HOURS=2, MAX_PEAK_HOURS=1,
+            PEAK_START=9, PEAK_END=15, FREE_HORIZON_OVERRIDES_PEAK=False,
             MAX_ROLLING_QUOTA_HOURS=6, ALLOW_FRAGMENTED_SESSIONS=True))
         self.horizons = self.stack.enter_context(patch.object(b, 'room_horizon_minutes', return_value=10080))
         clock = self.stack.enter_context(patch.object(runtime, 'datetime', wraps=datetime))
@@ -228,7 +229,8 @@ class AdvanceRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(row.primary)
         for candidate in (row.primary, *row.additional):
             self.assertIn(candidate.room, b.PRIORITY_ROOMS)
-            self.assertGreaterEqual(candidate.start_time, '17:00')
+            self.assertGreaterEqual(candidate.start_time, '15:00')
+            self.assertTrue(candidate.end_time <= '16:00' or candidate.start_time >= '17:00')
         self.assertLessEqual(sum(c.potential_minutes for c in (row.primary, *row.additional)), 180)
 
     def test_weekly_forecast_does_not_authorize_early_booking(self):
