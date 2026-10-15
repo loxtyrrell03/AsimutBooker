@@ -1,5 +1,17 @@
 ## 2026-10-15 Pause retires timed and queued booking work
 
+- Owned phone/desktop/Tempo runs carry a proven Pause stop reason from the
+  entry point or final preference guard into their result. They show a normal
+  stopped check with a Pause explanation, including after a quick Unpause,
+  instead of an unrelated generic failure. Current Pause state alone never
+  classifies an unrelated error. Exit codes and existing CLI behavior stay the
+  same; pending or unreadable receipts still take precedence as uncertain.
+- Three old-code failures cover Pause before work, during work and Pause-to-
+  Unpause. All 247 focused worker, ownership, receipt, preference, horizon and
+  quota checks pass. Tempo verifies the persisted stopped result and existing
+  dialog rendering separately. This is fresh-worker source activation; no live
+  booking or hold was changed for proof and no long-lived service restart is
+  needed for the subprocess result.
 - Mutation runs retain their initial Pause revision through pre-authentication
   waits, runtime ownership waits and the one allowed Tempo replan. A Pause or
   Pause-to-Unpause cycle stops that run at the next poll; it cannot acquire fresh

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from app_settings import InterProcessFileLock, SettingsError, load_settings
-from booking_pause import assert_booking_unpaused
+from booking_pause import assert_booking_unpaused, BookingPaused, pause_document
 from operation_control import check_operation_stop
 from tempo_coordination import CoordinationError, coordination_run, save_boundary as tempo_save_boundary
 
@@ -17,6 +17,10 @@ class BookingPreferencesChanged(SettingsError):
 
 class PreparedCoordinationChanged(BookingPreferencesChanged):
     """A prepared editor was discarded before Save after Tempo changed."""
+
+
+class BookingPauseChanged(BookingPreferencesChanged, BookingPaused):
+    """The shared Pause generation retired this run's permission."""
 
 
 _CONTROL_KEYS = (
@@ -76,12 +80,17 @@ def _settings_save_boundary():
         try:
             current = load_settings(path, missing_ok=not existed)
             changed = _controls(current) != expected
+            pause_changed = pause_document(current)['revision'] != pause_document(json.loads(expected))['revision']
         except (SettingsError, ValueError, TypeError) as exc:
             raise BookingPreferencesChanged("Preferences could not be rechecked; stopping before Save") from exc
+        if pause_changed:
+            raise BookingPauseChanged("Booking Pause changed during this run; stopping before Save")
         if changed:
             raise BookingPreferencesChanged("Preferences changed during this run; stopping before Save to replan")
         try:
             assert_booking_unpaused(current)
+        except BookingPaused as exc:
+            raise BookingPauseChanged(str(exc)) from exc
         except SettingsError as exc:
             raise BookingPreferencesChanged(str(exc)) from exc
         check_operation_stop()

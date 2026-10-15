@@ -29,11 +29,19 @@ class OperationStopped(SettingsError):
 
 @contextmanager
 def owned_operation(stop_path, progress, availability):
-    token = _CONTROL.set((stop_path, progress, availability))
+    outcome = {}
+    token = _CONTROL.set((stop_path, progress, availability, outcome))
     try:
-        yield
+        yield outcome
     finally:
         _CONTROL.reset(token)
+
+
+def report_pause_stop():
+    """Carry a proven Pause boundary to this operation's result classifier."""
+    control = _CONTROL.get()
+    if control is not None:
+        control[3]['stop_reason'] = 'booking_pause'
 
 
 def check_operation_stop():
@@ -46,7 +54,7 @@ def check_operation_stop():
 def operation_verification():
     """Finish read-only proof after Save even when Stop was requested."""
     control = _CONTROL.get()
-    token = _CONTROL.set((None, control[1], control[2]) if control else None)
+    token = _CONTROL.set((None, control[1], control[2], control[3]) if control else None)
     try:
         yield
     finally:

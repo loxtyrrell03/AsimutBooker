@@ -75,7 +75,7 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
             if booker_main(['--headless', '--agenda-only']) != 0:
                 return {'state': 'uncertain', 'message': 'The booking could not be checked. Try Check booking status again.'}
             return review_result(directory, root)
-        with owned_operation(stop, progress, availability), observe_room_grid(grid):
+        with owned_operation(stop, progress, availability) as outcome, observe_room_grid(grid):
             check_operation_stop()
             if action in RUN_ACTIONS:
                 if booker_main is None:
@@ -114,11 +114,14 @@ def execute(action, args, directory, *, root=ROOT, booker_main=None):
                     if result['state'] == 'running':
                         result.update(state='partial', message='The fill stopped. Review the remaining gaps before trying again.')
                     return result
+                if action == 'room_now' and (directory / 'room-now.json').exists():
+                    return json.loads((directory / 'room-now.json').read_text(encoding='utf-8'))
+                if code == 3 and outcome.get('stop_reason') == 'booking_pause':
+                    return {'state': 'stopped', 'reason': 'booking_pause',
+                            'message': 'Pause stopped this booking check. Any bookings already verified remain in the agenda.'}
                 if action == 'fill_range':
                     return {'state': 'rejected' if code == 6 else 'blocked',
                             'message': 'The fill did not start. Wait for other work to finish and check System health.'}
-                if action == 'room_now' and (directory / 'room-now.json').exists():
-                    return json.loads((directory / 'room-now.json').read_text(encoding='utf-8'))
                 if action == 'room_now' and code == 0:
                     return {'state': 'blocked', 'message': 'Asimut refused this booking. No room was confirmed; review the latest booking activity.'}
                 if code == 0:

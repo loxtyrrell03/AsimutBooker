@@ -13,6 +13,8 @@ from app_settings import atomic_write_json, load_settings, update_settings
 from booking_pause import read_pause, save_pause, assert_booking_unpaused
 from booking_preferences_guard import BookingPreferencesChanged, PreparedCoordinationChanged, booking_preference_run
 from operation_control import owned_operation
+from phone_operation_worker import execute
+from mutation_receipts import record_pending_create
 
 
 class PauseWaitTests(unittest.TestCase):
@@ -177,6 +179,55 @@ class PauseWaitTests(unittest.TestCase):
                     with booking_preference_run(self.path, {}), self.assertRaises(BookingPreferencesChanged):
                         getattr(b, name)(argument)
                     self.assertEqual(self.sleep.call_count, 1)
+
+    def test_owned_operation_explains_pause_as_a_normal_stop(self):
+        for moment in ('before', 'during', 'pause_resume'):
+            with self.subTest(moment=moment):
+                atomic_write_json(self.path, {})
+                directory = self.root / moment
+                directory.mkdir()
+                if moment == 'before':
+                    self.pause()
+                def worker(*args):
+                    self.pause()
+                    if moment == 'pause_resume':
+                        self.pause(False)
+                    with b.booking_save_boundary():
+                        self.fail('Pause must prevent the Save')
+                with patch.object(b, 'run_booking', side_effect=worker):
+                    result = execute('run', {}, directory, root=self.root, booker_main=b.main)
+                self.assertEqual(result['state'], 'stopped')
+                self.assertEqual(result.get('reason'), 'booking_pause')
+                self.assertIn('Pause', result['message'])
+                self.history.assert_not_called()
+
+    def test_pause_explanation_never_hides_pending_or_unreadable_outcomes(self):
+        self.pause()
+        directory = self.root / 'job'
+        directory.mkdir()
+        journal = self.root / 'data/mutation_receipts.json'
+        record_pending_create(room='Fixture', booking_date='2030-10-15',
+                              start='10:00', end='10:30', path=journal)
+        for corrupt in (False, True):
+            if corrupt:
+                journal.write_text('{broken', encoding='utf-8')
+            original = journal.read_bytes()
+            with patch.object(b, 'run_booking') as worker:
+                result = execute('run', {}, directory, root=self.root, booker_main=b.main)
+            self.assertEqual(result['state'], 'uncertain')
+            worker.assert_not_called()
+            self.assertEqual(journal.read_bytes(), original)
+
+    def test_unrelated_failure_while_paused_does_not_claim_pause_stopped_the_run(self):
+        directory = self.root / 'failed-job'
+        directory.mkdir()
+        def worker(*args):
+            self.pause()
+            raise OSError('Synthetic unrelated failure')
+        with patch.object(b, 'run_booking', side_effect=worker):
+            result = execute('run', {}, directory, root=self.root, booker_main=b.main)
+        self.assertEqual(result['state'], 'failed')
+        self.assertNotIn('reason', result)
 
 
 if __name__ == '__main__':

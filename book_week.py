@@ -13054,6 +13054,7 @@ def main(argv=None):
     from booking_pause import (
         assert_booking_unpaused, assert_pause_unchanged, pause_document, BookingPaused,
     )
+    from operation_control import report_pause_stop
     pause_check = None
     try:
         settings, practice_plan, room_preferences = _load_and_validate_runtime_settings()
@@ -13069,6 +13070,7 @@ def main(argv=None):
             if pause_check is not None:
                 pause_check()
     except BookingPaused as exc:
+        report_pause_stop()
         print(str(exc))
         return 0 if args.scheduled else 3
     except OperationStopped as exc:
@@ -13180,6 +13182,7 @@ def main(argv=None):
                      [f'Booking paused: {exc}', *completed_details], outcome='failed')
         return 4
     except BookingPaused as exc:
+        report_pause_stop()
         print(str(exc))
         return 0 if args.scheduled else 3
     except SettingsError as exc:
