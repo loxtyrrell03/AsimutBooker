@@ -1484,6 +1484,7 @@ class AsimutBookerGUI(QuietFocusGUI):
         if self._closing:
             return
         self._closing = True
+        self._close_booking_pause()
         if self.assistant_panel is not None:
             try:
                 self.assistant_panel.close()
@@ -1892,11 +1893,6 @@ class AsimutBookerGUI(QuietFocusGUI):
             anchor=tk.W,
             pady=(2, 2),
         )
-        ttk.Label(
-            preferences_tab,
-            text="Your practice, your preferences.",
-            style="Settings.Subtitle.TLabel",
-        ).pack(anchor=tk.W, pady=(2, 10))
 
         self.health_updated_var = tk.StringVar(value="Checking…")
         self.health_headline_vars = {

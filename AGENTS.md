@@ -1,3 +1,30 @@
+## 2026-10-15 desktop Pause survives closing its window
+
+- A requested Pause/Unpause save runs in a non-daemon thread, preserving the
+  existing bounded settings lock and revision check. Closing the window does
+  not abandon that requested save or block window teardown. The worker posts
+  only to its own result queue; all widget/timer work stays on Tk's main thread.
+- Exactly one Pause poll is retained. Explicit close and root destruction
+  cancel it, including the initial callback; repeated reads cannot multiply
+  timers. An uncertain reply or launch failure recovers through a read without
+  repeating the save. Unknown status keeps the action disabled and explicit.
+- Settings drops its filler subtitle and tightens existing spacing to retain
+  every settings group at 1040x740 with the Pause bar present. At 760x600 the
+  settings body scrolls while Pause stays visible. Existing controls, drafts,
+  fonts, colours and scheduling preferences are unchanged.
+- Three lifecycle regressions fail against the old source, including a real
+  child process that loses its requested Pause when closing before the daemon
+  save completes. All 44 UI/desktop checks and 105 guard/receipt checks pass.
+  The previous 1040x740 failure and orphaned Tk callback errors are resolved.
+  `tools/check_desktop_pause_ui.py` renders only an isolated, non-activating
+  fixture at 760/1040/1200 widths; geometry, scrolling, paused/unknown states,
+  no callback errors and unchanged temporary settings are checked. PNGs under
+  `artifacts/desktop-pause-lifecycle` were visually inspected.
+- This activates on the next desktop opening; no existing desktop process was
+  observed. No live hold, reservation, task or service was changed. This is a
+  reproduced desktop lifecycle fault, not evidence of what caused 14 October's
+  missed bookings. Live horizon-edge receipt/agenda timing remains outstanding.
+
 ## 2026-10-15 Stop messages require a checked worker outcome
 
 - Desktop workers persist a terminal result bound to their exact request UUID
@@ -14,8 +41,8 @@
 - Five desktop cases and three phone Stop cases fail against the prior source;
   all 166 focused desktop/worker/Pause/receipt/booking checks and 48 Tempo bridge
   checks pass. Tests use temporary results/journals and simulated subprocesses;
-  the real entry point is covered without a site Save. Broader desktop UI checks
-  retain a pre-existing 1040x740 settings overflow, reproduced on the prior GUI.
+  the real entry point is covered without a site Save. The pre-existing 1040x740
+  settings overflow found here is resolved by the desktop Pause lifecycle work.
 - Fresh owned subprocesses import the fix; desktop GUI code loads when opened.
   No existing desktop instance was observed, and no app, task or live hold was
   restarted or changed. Private comparison evidence is under ignored

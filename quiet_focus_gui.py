@@ -1,6 +1,7 @@
 """Quiet Focus shell adapter for the existing desktop controller."""
 from datetime import datetime
 from pathlib import Path
+from queue import Empty, SimpleQueue
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -49,36 +50,78 @@ class QuietFocusGUI:
         pause_bar.pack(fill='x')
         self._booking_pause_state = None
         self._booking_pause_working = False
+        self._booking_pause_closed = False
+        self._booking_pause_after_id = None
         self.booking_pause_label = ttk.Label(pause_bar, text='Checking booking status…')
         self.booking_pause_label.pack(side='left')
         HelpTip(pause_bar, 'Pause blocks new reservations and booking edits until you unpause. Existing reservations and your automatic schedule are kept.').pack(side='left', padx=8)
         self.booking_pause_button = ttk.Button(pause_bar, text='Pause bookings', command=self._save_booking_pause, state='disabled')
         self.booking_pause_button.pack(side='right')
-        self.root.after(0, self._poll_booking_pause)
+        self.root.bind('<Destroy>', self._close_booking_pause, add='+')
+        self._schedule_booking_pause_poll(0)
         self.quiet_goal_var=tk.StringVar(value='Your daily routine')
         self.quiet_health_var=tk.StringVar(value='Checking auto-booking...')
         content=ttk.Frame(self.root,style='Page.TFrame')
         content.pack(fill='both',expand=True)
         return content
 
-    def _poll_booking_pause(self):
-        if getattr(self, '_closing', False):
+    def _cancel_booking_pause_poll(self):
+        timer = getattr(self, '_booking_pause_after_id', None)
+        self._booking_pause_after_id = None
+        if timer is not None:
+            try:
+                self.root.after_cancel(timer)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def _close_booking_pause(self, event=None):
+        if event is not None and event.widget is not self.root:
             return
-        if not self._booking_pause_working:
+        self._booking_pause_closed = True
+        self._cancel_booking_pause_poll()
+        # An explicitly requested save finishes in its non-daemon worker. Do
+        # not block window close, cancel that choice or touch Tk from the worker.
+
+    def _schedule_booking_pause_poll(self, delay=3000):
+        self._cancel_booking_pause_poll()
+        if not getattr(self, '_closing', False) and not self._booking_pause_closed:
+            self._booking_pause_after_id = self.root.after(delay, self._poll_booking_pause)
+
+    def _poll_booking_pause(self):
+        self._cancel_booking_pause_poll()
+        if getattr(self, '_closing', False) or self._booking_pause_closed:
+            return
+        if self._booking_pause_working:
+            try:
+                result, error = self._booking_pause_results.get_nowait()
+            except Empty:
+                self._schedule_booking_pause_poll(100)
+                return
+            self._booking_pause_working = False
+            self._booking_pause_state = result
+            if error:
+                self.booking_pause_label.configure(text='Change unconfirmed · checking saved status')
+                self.booking_pause_button.configure(text='Checking status…', state='disabled')
+                self.log('Booking pause was not confirmed. Checking its saved status without repeating the change.', 'error')
+                self._schedule_booking_pause_poll()
+                return
+        else:
             from booking_pause import read_pause
             try:
                 self._booking_pause_state = read_pause()
-                paused = self._booking_pause_state['paused']
-                self.booking_pause_label.configure(text='Bookings paused · reservations kept' if paused else 'Room bookings')
-                self.booking_pause_button.configure(text='Unpause bookings' if paused else 'Pause bookings', state='normal')
             except Exception:
                 self._booking_pause_state = None
                 self.booking_pause_label.configure(text='Booking pause unavailable')
-                self.booking_pause_button.configure(state='disabled')
-        self.root.after(3000, self._poll_booking_pause)
+                self.booking_pause_button.configure(text='Pause unavailable', state='disabled')
+        if self._booking_pause_state is not None:
+            paused = self._booking_pause_state['paused']
+            self.booking_pause_label.configure(text='Bookings paused · reservations kept' if paused else 'Room bookings')
+            self.booking_pause_button.configure(text='Unpause bookings' if paused else 'Pause bookings', state='normal')
+        self._schedule_booking_pause_poll()
 
     def _save_booking_pause(self):
-        if self._booking_pause_working or not self._booking_pause_state:
+        if (self._booking_pause_working or not self._booking_pause_state
+                or getattr(self, '_closing', False) or self._booking_pause_closed):
             return
         from booking_pause import save_pause
         import uuid
@@ -86,23 +129,18 @@ class QuietFocusGUI:
                     request_id=str(uuid.uuid4()))
         self._booking_pause_working = True
         self.booking_pause_button.configure(state='disabled', text='Saving…')
-        def finished(result, error):
-            self._booking_pause_working = False
-            self._booking_pause_state = result
-            if error:
-                self.booking_pause_label.configure(text='Change unconfirmed · checking saved status')
-                self.log('Booking pause was not confirmed. Checking its saved status without repeating the change.', 'error')
-            else:
-                self.booking_pause_label.configure(text='Bookings paused · reservations kept' if result['paused'] else 'Room bookings')
-                self.booking_pause_button.configure(text='Unpause bookings' if result['paused'] else 'Pause bookings', state='normal')
+        results = self._booking_pause_results = SimpleQueue()
         def worker():
             try:
                 result, error = save_pause(args), None
             except Exception as exc:
                 result, error = None, exc
-            if not getattr(self, '_closing', False):
-                self.root.after(0, lambda: finished(result, error))
-        threading.Thread(target=worker, daemon=True).start()
+            results.put((result, error))
+        try:
+            threading.Thread(target=worker, daemon=False).start()
+        except Exception as exc:
+            results.put((None, exc))
+        self._schedule_booking_pause_poll(100)
 
     def _open_detail_page(self,key,owner='settings'):
         return DetailPage(self,key,owner)
@@ -157,7 +195,7 @@ class QuietFocusGUI:
         self.settings_scroll = ScrollPage(self.preferences_page)
         self.settings_scroll.pack(fill=tk.BOTH, expand=True)
         self.settings_sections = {}
-        body = tk.Frame(self.settings_scroll.content, bg=PAGE, padx=24, pady=24)
+        body = tk.Frame(self.settings_scroll.content, bg=PAGE, padx=24, pady=16)
         body.pack(fill=tk.BOTH, expand=True)
         return body
 
@@ -409,7 +447,7 @@ class QuietFocusGUI:
                ('Automatic booking','Automatic booking'))
         for i,(key,title) in enumerate(specs):
             tile=RoundedCard(self.settings_hub,fill=WHITE,padding=12,width=1)
-            tile.grid(row=i//2,column=i%2,sticky='nsew',padx=(0,8) if i%2==0 else (8,0),pady=8)
+            tile.grid(row=i//2,column=i%2,sticky='nsew',padx=(0,8) if i%2==0 else (8,0),pady=6)
             button=ttk.Button(tile.content,text=title+'  ›',style='Hub.TButton',command=lambda k=key:self._open_settings_group(k))
             button.pack(fill='x')
             summary=label(tile.content,size=13,color=MUTED,wraplength=330)

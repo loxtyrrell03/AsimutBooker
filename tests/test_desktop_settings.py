@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import gui
+from booking_pause import read_pause
 
 
 def descendants(widget):
@@ -105,6 +106,7 @@ class DesktopSettingsTests(unittest.TestCase):
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
         self.stack.enter_context(patch('gui.SETTINGS_FILE', self.settings))
+        self.stack.enter_context(patch('booking_pause.read_pause', side_effect=lambda: read_pause(self.settings)))
         for name in ('_initialize_assistant', 'refresh_status', '_scan_calendar_events',
                      '_refresh_booking_plan_display', 'load_room_catalog_cache'):
             self.stack.enter_context(patch.object(gui.AsimutBookerGUI, name))
