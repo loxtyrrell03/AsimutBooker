@@ -15,6 +15,21 @@
   Fresh workers import the fix. Long-lived phone/desktop owners need their
   normal controlled reload before the shorter queue wait is active; no live
   booking, Stop/Pause toggle, service or scheduled task was changed for tests.
+- Activated `d5bc110` in the existing idle phone host, and Tempo `7e6e0b4`
+  in its existing supervisor, with ownership checks and no task/route changes.
+  The phone's configured Codex helper had expired after an app update; only
+  that path was repaired under its config lock and the existing task restored.
+  Check the configured helper exists and its installed version before future
+  phone reloads. No open desktop window was relaunched.
+- Tempo runtime `2026.10.15.2`, authenticated APIs and connected Chromium/WebKit
+  390px views pass. Current owner data was preserved across reload, including
+  normal worker changes made between activation phases. Pause is clear and
+  pending receipts empty. Compare fresh agendas and receipts separately across
+  idle waits: concurrent owner operations can change reservations before reload.
+  Private evidence is in
+  `artifacts/stop-audit`, with a dated free-horizon comparison checkpoint.
+  Source/tests and connected PC browsers do not prove physical-phone use or
+  a successful live horizon-edge Save; the wider audit remains active.
 
 ## 2026-10-15 recurring checks cover early horizon openings
 
