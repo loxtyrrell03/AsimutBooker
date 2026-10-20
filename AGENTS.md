@@ -1,3 +1,22 @@
+## 2026-10-20 free-window priority and monitoring
+
+- Automatic On and clear Pause do not override the advance allocation hold.
+  With useful remaining credit, `advance_quota.fallback_lead_minutes: null`
+  inherits the daily planning lead; a 120-minute lead can defer a legal
+  five-hour free-window seed. Forecasts and execution share this calculation.
+- The owner's recovery request was applied through the validated preference
+  surface with an explicit 300-minute advance fallback lead. Other normalized
+  preferences were preserved. This allows natural five-hour seed openings
+  without removing site quota checks or the saved weekly allocation strategy.
+- `FREE_HORIZON_CHECK.next_opening` is the earliest of all future candidates,
+  not necessarily the selected primary. Compare the selected portfolio with
+  actual attempts, strict receipts and a newer complete agenda. A scoped
+  advance booking is not proof of a successful natural free-window edge.
+- Private recovery evidence and subsequent monitoring checkpoints are under
+  ignored `artifacts/free-horizon-monitor`. The existing conversation monitor
+  now tracks unmet demand and concrete blockers instead of equating an empty
+  exit-zero check with fulfillment. No second booking scheduler was added.
+
 ## 2026-10-15 verified current peak cutoff is 15:00
 
 - Authenticated booking information and exact unsaved requests establish the
