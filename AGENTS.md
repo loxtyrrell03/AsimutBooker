@@ -1,3 +1,23 @@
+## 2026-11-07 diagnosing short-notice practice shortfalls
+
+- Compare the accepted Tempo opportunity windows and personal agenda with the
+  saved booking window before treating a quiet free-horizon scan as a missed
+  room or quota failure. Tempo's tasks and buffers can leave only an evening
+  window. A full advance balance does not disable the short-notice pass.
+- Reconstruct a past day's booking history from verified creates, extensions,
+  edits and contemporary agendas. A later upcoming-only agenda can lose a
+  started reservation; its absence alone does not establish cancellation or
+  attendance. Compare an interrupted boundary attempt with the next receipt
+  before counting it as lost practice.
+- Use dated exclusions for a weekend without practice, then cancel exact
+  reservations and verify a newer agenda. Saving exclusions can queue a check
+  that temporarily owns the cancellation lock; wait for it to settle and
+  resolve a fresh selection without repeating the preference save.
+- A weekday preferred planning interval and matching advance period in
+  `prefer` mode can favor earlier time while retaining a separate strict
+  eligibility window and the same site quota. They rank eligible opportunities;
+  they cannot expand Tempo's authorized time or guarantee the daily target.
+
 ## 2026-10-20 free-window priority and monitoring
 
 - Automatic On and clear Pause do not override the advance allocation hold.
