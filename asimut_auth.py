@@ -930,6 +930,24 @@ def _password_rejection_is_visible(page) -> bool:
     ) is not None
 
 
+def _verification_failure_is_visible(page) -> bool:
+    """Recognize Microsoft's method error without logging account details."""
+
+    try:
+        matches = page.get_by_text(
+            re.compile(
+                r"Sorry,\s+we(?:'|’)re having trouble verifying your account",
+                re.IGNORECASE,
+            )
+        )
+        return any(
+            matches.nth(index).is_visible()
+            for index in range(min(matches.count(), 5))
+        )
+    except Exception:
+        return False
+
+
 def ensure_asimut_session(
     page,
     *,
@@ -1136,6 +1154,13 @@ def ensure_asimut_session(
                     "input[aria-label*='code' i]",
                 ),
             )
+            if code_input is None and _verification_failure_is_visible(page):
+                telemetry.report(page, "verification-error")
+                raise AutonomousLoginError(
+                    "Microsoft could not complete identity verification; its "
+                    "verification-method page reports an error. An explicit login "
+                    "repair may require another configured verification method."
+                )
             if code_input is not None:
                 telemetry.report(page, "otp")
                 if code_submitted:
@@ -1366,7 +1391,15 @@ def ensure_asimut_session(
                 page = wait_for_next_stage(page)
                 continue
 
-            if not password_submitted:
+            # Microsoft also shows the username in its identity banner while
+            # SMS controls render and after verification. Once this attempt
+            # has advanced, that text is not an initial account-picker choice.
+            if not (
+                email_submitted
+                or password_submitted
+                or sms_method_selected
+                or code_submitted
+            ):
                 account_choice = None
                 try:
                     matches = page.get_by_text(username, exact=True)

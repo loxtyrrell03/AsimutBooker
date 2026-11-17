@@ -1,3 +1,23 @@
+## 2026-11-17 saved-session SMS recovery
+
+- Saved Playwright state remains the first authentication path. Fresh workers
+  load it before considering Credential Manager or SMS; a saved session does
+  not guarantee Microsoft will continue accepting it.
+- Initial account-name selection is limited to the pre-authentication stage.
+  After submitting an email/password or choosing/submitting verification, the
+  same username in Microsoft's identity banner must not restart account choice.
+  This covers delayed SMS form rendering and delayed post-code navigation.
+- Microsoft's explicit "having trouble verifying your account" method error
+  now stops with a normalized verification failure instead of waiting through
+  the full login timeout. Secret redaction, one-code consumption, trusted-origin
+  checks and the existing authentication cooldown remain enforced.
+- All 36 authentication tests pass, including reproduced transition failures,
+  initial account selection, method-error refusal, saved-session reuse and
+  secret redaction. Live recovery reached Microsoft's SMS-method refusal;
+  authentication has not yet been restored. A configured alternative factor
+  may require owner participation. Do not equate the source repair with a
+  refreshed saved session or a successful booking run.
+
 ## 2026-11-07 diagnosing short-notice practice shortfalls
 
 - Compare the accepted Tempo opportunity windows and personal agenda with the

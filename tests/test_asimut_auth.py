@@ -277,6 +277,86 @@ class _PasswordOtpFlowPage:
         return _FlowLocator(self)
 
 
+class _SmsTransitionLocator(_FlowLocator):
+    def click(self, **kwargs):
+        if self.kind == "account-choice":
+            self.page.clicks.append(self.kind)
+            self.page.stage = "sms-method"
+            return
+        if self.kind == "identity-banner":
+            self.page.clicks.append(self.kind)
+            raise RuntimeError("Identity banner must not restart account selection")
+        if self.kind == "sms-option":
+            self.page.clicks.append(self.kind)
+            if self.page.verification_error:
+                self.page.stage = "verification-error"
+                return
+            self.page.stage = "sms-pending"
+            self.page.pending_stage = "otp"
+            self.page.pending_waits = 2 if self.page.delay_before_otp else 1
+            return
+        if self.kind == "otp-submit" and self.page.delay_after_otp:
+            self.page.clicks.append(self.kind)
+            self.page.stage = "redirect-pending"
+            self.page.pending_stage = "authenticated"
+            self.page.pending_waits = 2
+            return
+        super().click(**kwargs)
+
+
+class _SmsTransitionPage(_PasswordOtpFlowPage):
+    """A cached Microsoft identity needs SMS but no password submission."""
+
+    def __init__(
+        self,
+        *,
+        delay_before_otp=False,
+        delay_after_otp=False,
+        start_with_account_choice=False,
+        verification_error=False,
+    ):
+        super().__init__()
+        self.stage = "account-choice" if start_with_account_choice else "sms-method"
+        self.delay_before_otp = delay_before_otp
+        self.delay_after_otp = delay_after_otp
+        self.verification_error = verification_error
+        self.pending_stage = None
+        self.pending_waits = 0
+
+    def wait_for_timeout(self, timeout):
+        super().wait_for_timeout(timeout)
+        if self.pending_waits:
+            self.pending_waits -= 1
+            if not self.pending_waits:
+                self.stage = self.pending_stage
+                if self.stage == "authenticated":
+                    self.url = ASIMUT_BASE_URL
+
+    def get_by_role(self, role, *, name, exact=True):
+        if self.stage == "sms-method" and role == "button" and name == "Text":
+            return _SmsTransitionLocator(self, "sms-option", 1)
+        if self.stage == "otp" and name == "Verify":
+            return _SmsTransitionLocator(self, "otp-submit", 1)
+        return super().get_by_role(role, name=name, exact=exact)
+
+    def get_by_text(self, text, *, exact=False):
+        if (
+            self.stage == "verification-error"
+            and hasattr(text, "search")
+            and text.search("Sorry, we're having trouble verifying your account.")
+        ):
+            return _FlowLocator(self, "verification-error", 1)
+        if exact and text == "student@example.invalid" and self.stage == "account-choice":
+            return _SmsTransitionLocator(self, "account-choice", 1)
+        if (
+            exact
+            and text == "student@example.invalid"
+            and self.stage in ("sms-pending", "redirect-pending")
+        ):
+            return _SmsTransitionLocator(self, "identity-banner", 1)
+        return _FlowLocator(self)
+
+
 class SmsBridgeClientTests(unittest.TestCase):
     def test_health_uses_only_exact_ok_status(self):
         client = SmsBridgeClient()
@@ -518,6 +598,88 @@ class AuthObservabilityAndPageSelectionTests(unittest.TestCase):
             "PATH-CANARY",
         ):
             self.assertNotIn(canary, emitted)
+
+    def test_sms_only_transitions_do_not_click_the_identity_banner(self):
+        for delay_before_otp, delay_after_otp in (
+            (True, False), (False, True), (True, True)
+        ):
+            with self.subTest(before=delay_before_otp, after=delay_after_otp):
+                page = _SmsTransitionPage(
+                    delay_before_otp=delay_before_otp,
+                    delay_after_otp=delay_after_otp,
+                )
+                bridge = mock.Mock()
+                bridge.wait_for_code.return_value = "654321"
+                circuit = _MemoryCircuitBreaker()
+
+                result = ensure_asimut_session(
+                    page,
+                    credential_reader=lambda: StoredCredential(
+                        "student@example.invalid", "PASSWORD-CANARY"
+                    ),
+                    sms_bridge=bridge,
+                    timeout_seconds=5,
+                    telemetry_writer=mock.Mock(),
+                    circuit_breaker=circuit,
+                )
+
+                self.assertTrue(result.recovered)
+                self.assertTrue(result.used_sms)
+                self.assertFalse(result.used_password)
+                self.assertNotIn("identity-banner", page.clicks)
+                self.assertEqual(page.clicks.count("sms-option"), 1)
+                self.assertEqual(page.clicks.count("otp-submit"), 1)
+                bridge.wait_for_code.assert_called_once()
+                self.assertEqual(circuit.transient_failures, 0)
+                self.assertEqual(circuit.clears, 1)
+
+    def test_initial_account_selection_still_advances_to_sms_recovery(self):
+        page = _SmsTransitionPage(
+            start_with_account_choice=True,
+            delay_before_otp=True,
+            delay_after_otp=True,
+        )
+        bridge = mock.Mock()
+        bridge.wait_for_code.return_value = "654321"
+
+        result = ensure_asimut_session(
+            page,
+            credential_reader=lambda: StoredCredential(
+                "student@example.invalid", "PASSWORD-CANARY"
+            ),
+            sms_bridge=bridge,
+            timeout_seconds=5,
+            telemetry_writer=mock.Mock(),
+            circuit_breaker=_MemoryCircuitBreaker(),
+        )
+
+        self.assertTrue(result.recovered)
+        self.assertEqual(page.clicks.count("account-choice"), 1)
+        self.assertNotIn("identity-banner", page.clicks)
+        bridge.wait_for_code.assert_called_once()
+
+    def test_microsoft_verification_error_stops_before_consuming_a_code(self):
+        page = _SmsTransitionPage(verification_error=True)
+        bridge = mock.Mock()
+        circuit = _MemoryCircuitBreaker()
+
+        with self.assertRaisesRegex(
+            AutonomousLoginError, "Microsoft could not complete identity verification"
+        ):
+            ensure_asimut_session(
+                page,
+                credential_reader=lambda: StoredCredential(
+                    "student@example.invalid", "PASSWORD-CANARY"
+                ),
+                sms_bridge=bridge,
+                timeout_seconds=1,
+                telemetry_writer=mock.Mock(),
+                circuit_breaker=circuit,
+            )
+
+        bridge.wait_for_code.assert_not_called()
+        self.assertEqual(circuit.transient_failures, 1)
+        self.assertEqual(circuit.credential_rejections, 0)
 
     def test_click_timeout_is_accepted_only_after_semantic_advance(self):
         page = _PasswordOtpFlowPage(timeout_on_password_submit=True)
